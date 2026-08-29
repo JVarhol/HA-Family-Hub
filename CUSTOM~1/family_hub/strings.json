@@ -1,0 +1,120 @@
+{
+  "config": {
+    "step": {
+      "calendars": {
+        "title": "Family Hub",
+        "description": "Sets up the Theme Builder sidebar panel and the Family Week Calendar card - nothing on the next few screens is required, and everything here can also be changed later via Configure. First: pick any calendars you'd like Family Hub to watch for event reminders (from the calendar card's 'Remind me' field). Leave this empty if you don't want reminders, or aren't sure yet.",
+        "data": {
+          "calendars": "Calendars to monitor"
+        }
+      },
+      "grocy": {
+        "title": "Grocy (optional)",
+        "description": "Connect a self-hosted Grocy instance so the calendar card's Meal Suggestions box can offer 'Add from Grocy' - pulling in a recipe's name plus a link back to view it in Grocy. Leave both fields blank if you don't use Grocy; this can be added later from Configure.",
+        "data": {
+          "grocy_url": "Grocy URL (e.g. http://homeassistant.local:9192)",
+          "grocy_api_key": "Grocy API key"
+        }
+      },
+      "todo_lists": {
+        "title": "Meal Plan & Reminders lists",
+        "description": "The meal planner and standalone reminders each need a Home Assistant to-do list to store their items on. Pick existing lists below, or leave either field blank and check 'Create missing lists for me' to have Family Hub create a fresh Local To-do list automatically. Either way, once a list exists you'll still need to enter its entity id in the calendar card's own meal_plan_entity/reminders_entity config fields the first time you add the card to a dashboard.",
+        "data": {
+          "meal_plan_todo_entity": "Meal Plan list (optional)",
+          "reminders_todo_entity": "Reminders list (optional)",
+          "auto_create_todo_lists": "Create missing lists for me"
+        }
+      },
+      "notifications": {
+        "title": "Notifications",
+        "description": "Who should get notified? Pick a default target for calendar event reminders (used whenever a calendar doesn't have its own override) and, separately, which device(s) should get standalone Reminders (the Add Event modal's Reminder tab). Either can be left blank and set later from the card's own Settings or Configure > Calendar reminders.",
+        "data": {
+          "default_notify_target": "Default target for calendar reminders (e.g. notify.mobile_app_pixel_6a)",
+          "reminders_notify_targets": "Reminders notify target(s)"
+        }
+      },
+      "digest": {
+        "title": "Daily Digest (optional)",
+        "description": "Turn on a once-a-day notification summarizing today's events, due reminders, and planned meals - sent whether or not anyone has the dashboard open. Off by default; pick a time and who should receive it if you'd like it on now, or leave it off and turn it on later from the card's Settings or Configure.",
+        "data": {
+          "daily_digest_enabled": "Turn on the Daily Digest",
+          "daily_digest_time": "Send time (24-hour HH:MM, local time)",
+          "digest_recipients": "Send to"
+        }
+      },
+      "dashboard": {
+        "title": "Dashboard (optional)",
+        "description": "Would you like a dedicated Family Hub dashboard - one screen with the calendar card filling the whole view, the same full-dashboard layout this project has always recommended? There's no way for Home Assistant to build it automatically, so saying yes just prepares the exact YAML to paste in on the next screen (Settings > Dashboards > Add Dashboard > Edit in YAML), already filled in with the calendars and to-do lists picked so far.",
+        "data": {
+          "add_dashboard": "Prepare a Family Hub dashboard"
+        }
+      },
+      "finish": {
+        "title": "All set",
+        "description": "Meal Plan list: {meal_plan_entity}\nReminders list: {reminders_entity}\nDefault reminder notify target: {default_notify}\nDaily Digest: {daily_digest}\n\nDashboard YAML (Settings > Dashboards > Add Dashboard > Edit in YAML, paste this in and save):\n{dashboard_yaml}\n\nSetup is done - add the Family Week Calendar card to a dashboard to get started, or click Configure any time to change reminders, Grocy, or these to-do lists."
+      }
+    },
+    "abort": {
+      "already_configured": "Family Hub is already configured. Use Configure to change reminder settings, test a notification, or install an update."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Family Hub",
+        "menu_options": {
+          "reminders": "Calendar reminders",
+          "grocy": "Grocy",
+          "test_notify": "Test a notification",
+          "upcoming": "Upcoming notifications",
+          "update": "Update Family Hub"
+        }
+      },
+      "grocy": {
+        "title": "Grocy",
+        "description": "Optional: connect a self-hosted Grocy instance so the calendar card's Meal Suggestions box can offer 'Add from Grocy' - pulling in a recipe's name plus a link back to view it in Grocy (nothing else is copied in). Leave both fields blank if you don't use Grocy. The API key is stored here, in Family Hub's own integration settings - not in the card's Settings panel.",
+        "data": {
+          "grocy_url": "Grocy URL (e.g. http://homeassistant.local:9192)",
+          "grocy_api_key": "Grocy API key"
+        }
+      },
+      "reminders": {
+        "title": "Calendar reminders",
+        "description": "Optional: pick calendars to monitor and Family Hub will notify you ahead of any event with a reminder set (via the calendar card's 'Remind me' field). Leave calendars empty to turn reminders off. Per-calendar overrides take priority over the default target - one 'calendar.entity = notify.service_one,notify.service_two' line per calendar (list several devices with commas). This can also be managed from the calendar card itself: Settings > Calendars > Notify.",
+        "data": {
+          "calendars": "Calendars to monitor",
+          "default_notify_target": "Default notify target (e.g. notify.mobile_app_pixel_6a)",
+          "poll_minutes": "Check every (minutes)",
+          "calendar_notify_overrides": "Per-calendar notify overrides (optional)"
+        }
+      },
+      "test_notify": {
+        "title": "Test a notification",
+        "description": "Pick any registered notify target and Family Hub will send it a test message right now - independent of calendars or reminders. Use this to confirm a device is reachable before wiring it into a calendar, or to rule notify delivery in or out if reminders aren't arriving.",
+        "data": {
+          "target": "Notify target (e.g. notify.mobile_app_pixel_9)"
+        }
+      },
+      "upcoming": {
+        "title": "Upcoming notifications",
+        "description": "{summary}"
+      },
+      "update": {
+        "title": "Update Family Hub",
+        "description": "Install a new family_hub_vN.zip without touching the file system. The current install is backed up automatically before anything is overwritten. Home Assistant needs a restart afterward (Settings > System > Restart) to load the new code - your themes, calendars, and reminders are untouched either way.",
+        "data": {
+          "zip_file": "Update zip file"
+        }
+      }
+    },
+    "abort": {
+      "update_installed": "Installed version {version}. Restart Home Assistant (Settings > System > Restart) to finish loading the update.",
+      "test_sent": "Test notification sent to {target}. If it didn't arrive, check that device/service directly in Developer Tools > Actions, or check its own connectivity/registration (e.g. the Home Assistant Companion app on the phone) - Family Hub only hands off to the service, it doesn't control delivery from there."
+    },
+    "error": {
+      "update_failed": "Couldn't install the update: {error}",
+      "invalid_target": "\"{target}\" isn't a valid notify target - it should look like notify.mobile_app_something.",
+      "test_failed": "Couldn't send the test notification: {error}"
+    }
+  }
+}
