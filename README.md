@@ -1,8 +1,9 @@
 # Family Hub
 
-A full Home Assistant custom integration (`family_hub`, currently v1.63.0)
-that bundles three things that used to be separate installs into one
-install/update:
+A full Home Assistant custom integration (`family_hub`, currently v1.103.1)
+that bundles a whole family-tablet dashboard — calendar, chores, rewards,
+goals, and more — into one install/update, instead of a pile of separate
+integrations and cards:
 
 - **Family Week Calendar card** — a full-screen, tablet-friendly Lovelace
   card combining a weekly/monthly family calendar, a per-day meal planner,
@@ -10,18 +11,30 @@ install/update:
 - **Family Today card** — a small, single-day companion card you can paste
   onto any dashboard to see just today's events, meals, and due reminders,
   sharing the full card's config, entities, and theme automatically.
-- **Theming** — a set of built-in preset themes plus a per-device Theme
+- **Chores, Rewards, Goals & Routines** — a full second board (`Chores`,
+  `Rewards`, `Goals`, and a per-person `My Chores` card) covering
+  assignable/rotating/first-come chores with a star economy, a redeemable
+  rewards catalog, standalone or embedded goals, and Morning/Afternoon/
+  Night routine checklists — with a granular per-person permissions system
+  underneath it all. See [Chores, Rewards, Goals & Routines](#chores-rewards-goals--routines)
+  below.
+- **Theming** — a set of built-in preset themes, every installed native
+  Home Assistant theme available alongside them, plus a per-device Theme
   Selector card (a small gear-icon card for picking which theme this
   tablet/browser shows). A full custom Theme Builder panel exists in the
   codebase but isn't part of this beta release yet.
 - **Server-side notifications** — calendar-event reminders, standalone
-  reminders, and a once-a-day Daily Digest, all fired by the backend on a
-  schedule so they arrive whether or not anyone has the dashboard open.
+  reminders, chore due-date reminders, and a once-a-day Daily Digest, all
+  fired by the backend on a schedule so they arrive whether or not anyone
+  has the dashboard open.
 - **Recipe & meal planning, with or without Grocy** — a recipe box, meal
   suggestions, and recurring/templated meal planning work entirely on their
   own; connecting a self-hosted [Grocy](https://grocy.info) instance
   (optional) adds recipe importing, a live Recipe Viewer, shopping lists,
   Expiring Soon/Low Stock tracking, and matching Daily Digest lines on top.
+- **Screen Saver** — an idle-triggered full-screen video or camera-feed
+  overlay for a wall-mounted tablet, shared across every Family Hub card on
+  the same dashboard so it only ever runs once.
 
 Built to compete with commercial family-hub tablets (Skylight, Dragon
 Touch, etc.) while running entirely on your own Home Assistant instance.
@@ -49,6 +62,12 @@ Touch, etc.) while running entirely on your own Home Assistant instance.
   lead time) and **Reminder** (a standalone to-do-backed reminder with its
   own date/time and an optional "roll over to next day if not completed"
   toggle) — without leaving the card.
+- **Multi-person events**: any event's info popup gets an **"Also for"**
+  row — check off any other household member and the event shows in their
+  column too (Week/Month view), with a diagonal collage/stripe background
+  blending everyone's colors instead of one solid color. The event still
+  lives on exactly one real calendar; tagging is purely a display overlay,
+  nothing is duplicated onto anyone else's actual calendar.
 - **Print/export view**: prints (or "Save as PDF" via the browser's print
   dialog) whichever view — week or month — is currently on screen, carrying
   over the active theme's colors.
@@ -177,6 +196,139 @@ as described everywhere else in this README with no Grocy at all.
   notification described below, on top of their own on/off switch for
   showing up in the More menu at all.
 
+### Chores, Rewards, Goals & Routines
+A second board — separate `Chores`, `Rewards`, `Goals`, and `My Chores`
+cards, all talking to their own backend, no calendar/todo entities needed
+(see [Card configuration](#card-configuration) below for how to add them).
+Together they cover assignable chores with a star economy, a redeemable
+rewards catalog, one-off goals, and daily routine checklists, all gated by
+a granular per-person permissions system.
+
+**Chores**
+- **Assignment modes**: **Direct** (assign to one person), **Chore Bin**
+  (an admin assigns it later), **Auto-rotation** (takes turns through an
+  ordered rotation group), or **First come, first served** (anyone can
+  self-claim it with a **Claim** button). Chore Bin and First-come-first-
+  served chores both start out sitting in a shared **Chore Bin** column.
+- **Verification flow**: the assignee taps **Done**, sending it to
+  "Awaiting approval"; anyone with verify permission taps **Approve** (pays
+  out its star value, extends a 🔥 streak if it was on time) or **Reject**
+  ("↩ Sent back", with an optional note, reopens it for a redo).
+- **Recurrence, two independent ways**: a plain schedule (every N days, or
+  specific days of the week) that reopens the chore once it's both
+  approved and due again; and/or a sensor-driven auto-create trigger (an HA
+  entity state change, e.g. "Dryer finished") that cycles it back to open
+  on its own. A separate auto-complete trigger can also mark a chore done
+  automatically from a sensor.
+- **Dependencies, rotation groups, and notes**: a chore can require other
+  chores be approved first, cycle through an ordered rotation group of
+  people, and carry a free-text Notes field.
+- **Due dates, reminders, overdue penalties, streaks**: an optional due
+  date with configurable reminder lead times (the same 5m–1d choices as
+  calendar-event reminders), an optional one-time star penalty applied if
+  it goes overdue, and a 🔥 streak badge that grows with on-time approvals
+  and resets on a late one.
+- **Nudge button**: a one-tap 🔔 reminder push to whoever a chore is
+  currently assigned to.
+- **Waiting to Recur column**: an approved recurring/triggered chore moves
+  into its own "↻ Waiting to Recur" column (collapsible to a small counter
+  button) instead of sitting faded in someone's finished list.
+- **The "+" FAB**: a tabbed create modal — **Chore**, **Goal**, and (when
+  Routines is on) **Routine** — covers creating a chore, a goal, or
+  managing someone's routine items, all from one button.
+
+**Rewards**
+- **Star economy**: stars are earned via chore/goal approval and spent by
+  redeeming a catalog item; a balance can go negative (shown as "owes")
+  rather than being blocked from spending.
+- **Reward catalog**: title, star cost, an optional "what it's really
+  worth" note (e.g. "$20" — purely cosmetic), an icon (a 58-emoji picker
+  across 6 collapsible categories — Treats & Food, Screens & Games, Toys &
+  Fun Stuff, Outings & Activities, Money & Prizes, Achievement & Fun), and
+  a card color.
+- **How it works**: **Redeem any time** (a plain logged redemption),
+  **Stacks up** (e.g. allowance or TV time — each redemption adds a fixed
+  amount to a running per-person bank instead of being a one-off, spent
+  down later via a separate **Use** action), or **One-time** (the catalog
+  item deletes itself after its first use).
+- **Requires fulfillment**: an optional checkbox ("needs a parent to mark
+  it done before it counts", e.g. cash allowance) that holds a redemption
+  as pending until someone with pricing authority marks it done.
+- **Suggestions**: anyone without pricing authority can suggest a new
+  reward with no cost set; it waits in **Suggested Rewards** until someone
+  prices and approves (or rejects) it.
+- **History**: every star change (chore/goal payouts, redemptions,
+  overdue penalties, manual balance adjustments) is logged per person; a
+  redemption can be **Reversed** (deletes the log entry and refunds the
+  stars) or just **Cleared** (deletes it without a refund) by anyone with
+  override authority.
+
+**Goals**
+- **What a goal is**: a one-off achievement for one specific person —
+  title, target count (log progress that many times to complete it),
+  optional due date, and a reward that's either a flat star payout or one
+  specific item handed over straight from the Rewards catalog.
+- **Progress & verification**: each **Log** (or **Mark done**, for a
+  single-count goal) tap logs one occurrence; hitting the target sends it
+  for approval the same way a chore does. **Approve** pays out the reward;
+  **Send back** resets progress to zero for a genuine retry.
+- **Standalone card, or embedded**: `Goals` is its own Lovelace card, and
+  can also be shown right inside the Chores board (Settings → General →
+  "Show Goals on the Chores board") and/or the Rewards page ("Show Goals
+  on the Rewards page") — two independent toggles, both off by default.
+  Either way, goals can also be created from a Goal tab on the Chores/
+  Rewards "+" buttons.
+
+**Routines**
+- **Morning/Afternoon/Night checklists**: a per-person daily checklist
+  shown as an accordion on their own Chores board column, reset back to
+  unchecked every local midnight. No stars, no verification — checking an
+  item off is open to anyone.
+- **Card-style items with optional due times and days**: each item can
+  carry a due time (shown as a badge, turns amber if it's overdue) and/or
+  specific days of the week it applies to — leave the days blank for every
+  day. The board only ever shows what's scheduled for today.
+- **A real management modal**: adding, editing, and removing routine items
+  happens from a **Routine** tab on the Chores board's "+" button — pick a
+  person and a category, and manage every item for them regardless of
+  which days it's scheduled (unlike the board itself, which is always
+  today-only). The pencil icon on any routine item on the board jumps
+  straight into this tab, pre-scoped to that exact item.
+- **One household-wide switch**: Settings → General → "Routines" — off by
+  default; once on, everyone gets the three checklist accordions on their
+  own Chores column.
+
+**Permissions**
+- **Granted per-person** from Settings → **Permissions** (admin-only):
+  **Can assign chores to others**, **Can approve/verify completed
+  chores**, **Can mark any chore done (not just their own)**, **Can
+  override reward star costs**, and **Can add rewards to the catalog with
+  a star cost** (without it, their suggestions need approval first). A
+  real Home Assistant admin account always has every permission
+  implicitly.
+- **What anyone can do with no grants at all**: claim an unclaimed chore
+  from the Chore Bin, mark their own chore done, check off their own (or
+  anyone's) routine items, log their own goal's progress, and suggest a
+  new reward.
+
+### Screen Saver
+- **Idle-triggered overlay**: after a configurable idle timeout (any tap,
+  key press, or scroll resets it), a full-screen video or camera-feed
+  overlay takes over — any tap dismisses it. Shared across every Family
+  Hub card on the same dashboard, so a dashboard with several of these
+  cards only ever runs one screen saver, not one per card.
+- **Per-login opt-in**: the source (video or camera) and idle time are
+  shared household-wide, but whether the screen saver ever arms itself is
+  chosen per Home Assistant login under Settings → Screen Saver — a wall
+  tablet's login can have it on while a phone's stays off.
+- **Disable while a recipe is open**: an optional toggle that pauses the
+  idle countdown while a recipe's detail view is open, so it doesn't kick
+  in mid-recipe.
+- **A standalone companion card** (`family-hub-screensaver-card`) brings
+  the same shared screen saver to a dashboard that doesn't otherwise have
+  a Family Hub card on it, with an optional "return to this dashboard on
+  wake" setting.
+
 ### Reminders & notifications
 - **Standalone reminders**, stored as Home Assistant to-do items (not
   calendar events), with their own date/time, editable after creation from
@@ -231,7 +383,12 @@ as described everywhere else in this README with no Grocy at all.
   which saved theme this particular tablet/browser shows, independent of
   what other devices are showing.
 - **Global theme mode**: the calendar card can optionally follow a saved
-  theme directly instead of its own local theme settings.
+  theme directly instead of its own local theme settings. The "Use global
+  theme" dropdown lists two groups — your own saved presets, and a
+  **"Home Assistant"** group listing every native/installed HA theme
+  (`themes.yaml`, HACS themes, etc.) plus a synthesized "Default (Home
+  Assistant)" entry — so the dashboard can follow a theme you already have
+  installed in Home Assistant without recreating it by hand.
 - A full **Theme Builder sidebar panel** for building and saving your own
   custom named themes exists in the codebase but isn't part of this beta
   release yet — presets and the Theme Selector cover theming for now.
@@ -240,10 +397,13 @@ as described everywhere else in this README with no Grocy at all.
 - **Collapsible accordion sections** in Settings (Calendars, Menu Blocks,
   Countdown, Daily Digest, Theme colors, Theme fonts) to keep the panel
   manageable.
-- **Settings sync across devices**: all shared settings are stored in a
-  Home Assistant `todo` list entity, so every tablet/browser sees the same
-  configuration — except the timeline toggle and theme-selector pick, which
-  are deliberately per-device.
+- **Settings sync across devices**: all shared settings live in the
+  integration's own backend storage (with an automatic on-disk backup), so
+  every tablet/browser sees the same configuration — except the timeline
+  toggle and theme-selector pick, which are deliberately per-device. An
+  older `todo`-list-based settings entity is still read once, automatically,
+  as a one-time fallback for households updating from a very old version —
+  new installs never need one.
 - **Optional vertical scroll lock**, handy for kiosk-mode wall tablets.
 - Built-in **Debug Info** panel (Settings → Debug Info) showing fetched
   events, errors per calendar, and current settings.
@@ -258,19 +418,23 @@ as described everywhere else in this README with no Grocy at all.
 ## Requirements
 
 `family_hub` is installed as a real custom integration (`custom_components/
-family_hub`), not a raw card file — it serves the card and the Theme
-Selector card (plus a Theme Builder sidebar panel that isn't a documented
-feature of this beta yet — see [Theming](#theming) above), and
-best-effort auto-registers the cards as dashboard resources.
+family_hub`), not a raw card file — it serves the Family Week Calendar
+card, the Family Today companion card, the Chores/Rewards/Goals/My Chores
+board cards, the Screen Saver companion card, and the Theme Selector card
+(plus a Theme Builder sidebar panel that isn't a documented feature of
+this beta yet — see [Theming](#theming) above), and best-effort
+auto-registers all of them as dashboard resources.
 
-Because Settings, the recipe box, meal plan, meal templates, meal
-suggestions, and reminders are all stored as Home Assistant `todo` list
-entities (so they sync across every device automatically, with no size
-limits the way `input_text` helpers have), you'll want several `todo`
-entities before configuring the card. The easiest way is the built-in
-**Local To-do** integration — Settings → Devices & Services → Add
-Integration → **Local To-do** — create one list per row below and note the
-resulting entity IDs:
+The recipe box, meal plan, meal templates, meal suggestions, and
+standalone reminders are stored as Home Assistant `todo` list entities (so
+they sync across every device automatically, with no size limits the way
+`input_text` helpers have), so you'll want several `todo` entities before
+configuring the card. The easiest way is the built-in **Local To-do**
+integration — Settings → Devices & Services → Add Integration → **Local
+To-do** — create one list per row below and note the resulting entity IDs.
+(Card Settings, and everything in the Chores/Rewards/Goals/Routines board,
+need no `todo` entity at all — see the note above and
+[Chores, Rewards, Goals & Routines](#chores-rewards-goals--routines).)
 
 | Purpose | Example entity |
 |---|---|
@@ -279,7 +443,6 @@ resulting entity IDs:
 | Meal plan templates | `todo.meal_plan_templates` |
 | Meal suggestions | `todo.meal_suggestions` |
 | Standalone reminders | `todo.family_reminders` |
-| Card settings | `todo.family_calendar_settings` |
 
 You'll also want at least one `calendar.*` entity (a local HA calendar, a
 CalDAV/Google Calendar integration, etc.) to show events, and — for
@@ -295,8 +458,8 @@ repository:
 
 1. In Home Assistant, go to HACS → the ⋮ menu (top right) → **Custom
    repositories**, and add this repository's URL with category
-   **Integration** — or use this one-click link
-   
+   **Integration** — or use this one-click link (replace the owner/repo
+   below if you forked it):
    [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=JVarhol&repository=HA-Family-Hub&category=integration)
 2. Find **Family Hub** in HACS and click **Download**.
 3. Restart Home Assistant.
@@ -314,18 +477,22 @@ repository:
 2. Restart Home Assistant.
 3. Settings → Devices & Services → **Add Integration** → search for
    **Family Hub**. No configuration is required at this step — it just
-   registers the card and the Theme Selector card (a Theme Builder sidebar
-   item also appears; it's leftover from an in-progress feature not yet
-   documented for this beta — safe to ignore for now).
-4. Add the card to a dashboard (see below). If the dashboard resource
-   wasn't auto-registered for your Home Assistant version, add it manually
-   under Settings → Dashboards → Resources.
+   registers every card (Family Week Calendar, Family Today, Chores,
+   Rewards, Goals, My Chores, Screen Saver) and the Theme Selector card (a
+   Theme Builder sidebar item also appears; it's leftover from an
+   in-progress feature not yet documented for this beta — safe to ignore
+   for now).
+4. Add the card(s) you want to a dashboard (see below). If a dashboard
+   resource wasn't auto-registered for your Home Assistant version, add it
+   manually under Settings → Dashboards → Resources.
 5. Optional: Family Hub → **Configure** to turn on calendar reminders, pick
    notify devices, test a notification, or preview upcoming notifications.
    (Daily Digest on/off, send time, and recipients are configured from the
    card's own Settings, not this Configure menu.)
 
 ## Card configuration
+
+### Family Week Calendar card
 
 Add the card to a dashboard view via YAML (or the visual editor's "manual
 card" option):
@@ -348,7 +515,6 @@ meal_plan_entity: todo.meal_plan
 meal_templates_entity: todo.meal_plan_templates
 suggestions_entity: todo.meal_suggestions
 reminders_entity: todo.family_reminders
-settings_entity: todo.family_calendar_settings
 weather_entity: weather.forecast_home
 birthdays_entity: calendar.birthdays
 ```
@@ -361,7 +527,7 @@ birthdays_entity: calendar.birthdays
 | `meal_templates_entity` | no | `todo.meal_plan_templates` | `todo` entity backing whole-week meal templates. |
 | `suggestions_entity` | no | `todo.meal_suggestions` | `todo` entity backing the Meal Suggestions box. |
 | `reminders_entity` | no | `todo.family_reminders` | `todo` entity backing standalone reminders (Add Event modal's Reminder tab). |
-| `settings_entity` | no | `todo.family_calendar_settings` | `todo` entity backing all shared in-card Settings. |
+| `settings_entity` | no | `todo.family_calendar_settings` | An **older** `todo` entity, only ever read once as a legacy migration fallback if the card's own backend-stored Settings come back empty — not needed on a fresh install, and no longer where Settings actually live day to day (see the note in [Requirements](#requirements)). |
 | `weather_entity` | no | `weather.forecast_home` | Entity used for the daily high/low + icon in each day column. |
 | `birthdays_entity` | no | `calendar.birthdays` | Used to auto-tag birthday events with a 🎂 icon in Month view. |
 | `title` | no | `Family Calendar` | Card title (not currently rendered, reserved for future use). |
@@ -370,9 +536,51 @@ Everything else — which calendars show, their names/colors/badges/notify
 devices, meal block names/count, font sizes, every theme color, the
 timeline hour range, default view, countdown items and ticker, Daily
 Digest, whether meals show in Month view, and scroll lock — is configured
-from the ⚙️ **Settings** button on the card itself, and saved to
-`settings_entity` so it's shared across every device (with the exception of
-the timeline toggle and the per-device Theme Selector pick).
+from the ⚙️ **Settings** button on the card itself, and synced across every
+device automatically by the integration's own backend storage (with the
+exception of the timeline toggle and the per-device Theme Selector pick).
+
+### Chores, Rewards, Goals & My Chores cards
+
+None of these need a `people`/entity list or any `todo`/`calendar`
+entities at all — everything runs over Family Hub's own backend, and
+who's eligible is drawn from the members you've added under the calendar
+card's own Settings → Users tab. The only config option any of them takes
+is an optional `title`:
+
+```yaml
+type: custom:family-hub-chores-card
+title: Chores
+```
+
+```yaml
+type: custom:family-hub-rewards-card
+title: Rewards
+```
+
+```yaml
+type: custom:family-hub-goals-card
+title: Goals
+```
+
+`family-hub-my-chores-card` is a smaller, single-person companion (handy
+on a kid's own tablet/dashboard) showing just their own chores, goals, and
+routines rather than the full multi-column board.
+
+### Screen Saver companion card
+
+Only needed on a dashboard that doesn't otherwise have any Family Hub card
+on it (the Screen Saver itself is already shared automatically across any
+Family Hub cards already on a dashboard — see
+[Screen Saver](#screen-saver) above):
+
+```yaml
+type: custom:family-hub-screensaver-card
+title: Screen Saver
+```
+
+`return_dashboard_path` (optional) jumps to a chosen dashboard/view when
+the screen saver is dismissed, instead of staying wherever it fell asleep.
 
 ## Notes
 
@@ -380,8 +588,10 @@ the timeline toggle and the per-device Theme Selector pick).
   back to the Google Font "Varela Round" (loaded automatically).
 - Data (events, recipes, meal plan, meal templates, suggestions, weather,
   countdown, reminders) is polled every 60 seconds while the card is
-  connected; the backend poller (reminders, event alerts, Daily Digest)
-  runs independently on its own schedule (default every 5 minutes).
+  connected; the Chores/Rewards/Goals/My Chores/Routines board cards poll
+  the same way. The backend poller (reminders, event alerts, chore due
+  reminders, recurrence resets, Daily Digest) runs independently on its own
+  schedule (default every 5 minutes).
 - HA silently skips (rather than errors on) a service call targeting a
   `todo`/`calendar` entity that doesn't exist — the card checks entities
   exist up front and surfaces a visible error instead of failing silently.
@@ -389,7 +599,7 @@ the timeline toggle and the per-device Theme Selector pick).
 
 ## License
 
-Copyright (C) 2026 Bordello Labs.
+Copyright (C) 2026 JVarhol.
 
 Licensed under the GNU General Public License v3.0 (GPL-3.0) — see
 [LICENSE](LICENSE) for the full text. You're free to use, study, modify,
