@@ -25,6 +25,7 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import selector
 from homeassistant.util import slugify
 
@@ -43,6 +44,11 @@ from .const import (
     CONF_DEFAULT_NOTIFY,
     CONF_GROCY_API_KEY,
     CONF_GROCY_URL,
+    CONF_INITIAL_GOALS_IN_CHORES,
+    CONF_INITIAL_GOALS_IN_REWARDS,
+    CONF_INITIAL_MEMBER_USER_IDS,
+    CONF_INITIAL_ROUTINES_ENABLED,
+    CONF_INITIAL_USER_PROFILES,
     CONF_MEAL_PLAN_ENTITY,
     CONF_OVERRIDES_TEXT,
     CONF_POLL_MINUTES,
@@ -106,6 +112,137 @@ def _build_grocy_schema(defaults: dict[str, Any]) -> vol.Schema:
             vol.Optional(
                 CONF_GROCY_API_KEY, default=defaults.get(CONF_GROCY_API_KEY, "")
             ): selector.TextSelector(selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)),
+        }
+    )
+
+
+# v138+: the first-time setup wizard's opening "which features do you
+# want" step (async_step_features) - lets a household skip whole sections
+# of the wizard up front rather than clicking through and leaving
+# everything blank. Deliberately a small, fixed set of transient string
+# keys rather than config-entry options (see CONF_INITIAL_* in const.py
+# for the one set of wizard fields that DOES need to survive past this
+# flow) - self._selected_features only ever controls this flow run's own
+# step routing and is never persisted anywhere.
+_FEATURE_CHORES = "chores"
+_FEATURE_GROCY = "grocy"
+_FEATURE_REMINDERS = "reminders"
+_FEATURE_DIGEST = "digest"
+_ALL_FEATURES = (_FEATURE_CHORES, _FEATURE_GROCY, _FEATURE_REMINDERS, _FEATURE_DIGEST)
+_FEATURES_FIELD = "setup_features"
+
+_FEATURE_LABELS = {
+    _FEATURE_CHORES: "Chores, Rewards, Routines & Goals",
+    _FEATURE_GROCY: "Grocy",
+    _FEATURE_REMINDERS: "Reminders & Meal Plan to-do lists",
+    _FEATURE_DIGEST: "Daily Digest",
+}
+
+
+def _build_features_schema() -> vol.Schema:
+    # Every feature defaults to checked - a household that just clicks
+    # through this screen without touching anything sees the exact same
+    # full wizard this always was, before this step existed.
+    return vol.Schema(
+        {
+            vol.Optional(_FEATURES_FIELD, default=list(_ALL_FEATURES)): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        selector.SelectOptionDict(value=key, label=label)
+                        for key, label in _FEATURE_LABELS.items()
+                    ],
+                    multiple=True,
+                    mode=selector.SelectSelectorMode.LIST,
+                )
+            ),
+        }
+    )
+
+
+# async_step_users' own field name - reuses CONF_INITIAL_MEMBER_USER_IDS
+# directly as the form field rather than a separate transient name, since
+# that's exactly where the picked ids end up in self._collected_options
+# anyway (see the CONF_INITIAL_* docstring in const.py).
+async def _list_member_choices(hass: HomeAssistant) -> list[dict[str, str]]:
+    """Same shape/filter as __init__.py's family_hub/list_users websocket
+    command (_ws_list_users) - id + display name, system-generated
+    accounts (Supervisor and the like - nobody logs in as those) excluded,
+    sorted by name. Surfaced here a step earlier, before the config entry
+    (and therefore that websocket command) exists yet. Best-effort: an
+    empty list just means an empty picker, never blocks the wizard.
+    """
+    try:
+        users = await hass.auth.async_get_users()
+    except Exception:  # noqa: BLE001 - never block setup over the user list
+        return []
+    return sorted(
+        (
+            {"id": u.id, "name": u.name or u.id}
+            for u in users
+            if not getattr(u, "system_generated", False)
+        ),
+        key=lambda u: u["name"].lower(),
+    )
+
+
+def _build_users_schema(members: list[dict[str, str]]) -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Optional(CONF_INITIAL_MEMBER_USER_IDS, default=[]): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[selector.SelectOptionDict(value=m["id"], label=m["name"]) for m in members],
+                    multiple=True,
+                    mode=selector.SelectSelectorMode.LIST,
+                )
+            ),
+        }
+    )
+
+
+# async_step_member_profile's own two field names - one small form shown
+# once per member picked on the Users step (see that step's own docstring
+# for why this loops one-at-a-time instead of building one big dynamic
+# schema with a field per member: HA's translation strings are per FIELD
+# NAME, which can't cover an unbounded/variable set of member ids, but CAN
+# cover a title/description that gets a member's name interpolated in via
+# description_placeholders on a step reused once per member).
+_MEMBER_COLOR_FIELD = "member_color"
+_MEMBER_INCLUDE_FIELD = "member_include_in_chores"
+
+
+def _build_member_profile_schema(default_color: str) -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Optional(_MEMBER_COLOR_FIELD, default=default_color): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[selector.SelectOptionDict(value=c, label=c) for c in _PEOPLE_COLOR_PALETTE],
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Optional(_MEMBER_INCLUDE_FIELD, default=True): selector.BooleanSelector(),
+        }
+    )
+
+
+# async_step_chores_features' own three field names - the same Routines/
+# Goals-on-Chores/Goals-on-Rewards toggles Settings' "Chores, Rewards &
+# Routines" accordion has (see family-week-calendar-card.js), just asked
+# once up front here too. Off by default, same as they've always defaulted
+# to in Settings - picking "Chores, Rewards, Routines & Goals" on the
+# Features step only guarantees Chores/Rewards themselves (membership,
+# board, catalog) are ready to go; Routines/Goals are each their own
+# separate opt-in on top of that, same as they've always been.
+_ROUTINES_FIELD = "routines_enabled"
+_GOALS_IN_CHORES_FIELD = "goals_in_chores"
+_GOALS_IN_REWARDS_FIELD = "goals_in_rewards"
+
+
+def _build_chores_features_schema() -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Optional(_ROUTINES_FIELD, default=False): selector.BooleanSelector(),
+            vol.Optional(_GOALS_IN_CHORES_FIELD, default=False): selector.BooleanSelector(),
+            vol.Optional(_GOALS_IN_REWARDS_FIELD, default=False): selector.BooleanSelector(),
         }
     )
 
@@ -203,13 +340,28 @@ async def _create_local_todo_list(hass: HomeAssistant, name: str) -> str | None:
     Configure to type the resulting entity id in) is exactly the kind of
     first-run friction this wizard exists to remove.
 
-    Best-effort like everything else this wizard does: local_todo derives
-    the entity's object_id by slugifying the list name (see local_todo's own
-    config_flow.py), so the entity_id is predicted the same way rather than
-    looked up in the entity registry afterward - simpler, and correct for
-    the common case of a brand-new list name with no collision. If the flow
-    doesn't come back as a fresh create_entry for any reason (local_todo
-    isn't available, a list with that slug already exists, a future Home
+    Home Assistant's own async_init for a config flow is fully awaited end
+    to end - by the time it returns a create_entry result, local_todo's
+    async_setup_entry (and the todo.* entity it registers) has already run,
+    not just been scheduled - so the entity registry is looked up directly
+    rather than guessed at. This used to just predict the entity_id as
+    f"todo.{slugify(name)}" and stop there; that prediction is *usually*
+    right (local_todo does slugify the name for its own storage key) but
+    isn't guaranteed - Home Assistant silently appends _2/_3 to the object_id
+    on a collision with any *other* integration's existing todo.* entity
+    (local_todo's own create_entry only guards against colliding with
+    another local_todo list, not a global entity_id collision), which used
+    to mean this could hand back an entity_id that doesn't actually exist,
+    silently pointing Meal Plan/Reminders at nothing. Now the registry is
+    the source of truth - local_todo's entity sets its unique_id to the new
+    config entry's entry_id, so async_get_entity_id("todo", "local_todo",
+    entry_id) resolves the *real* entity_id every time. The slugify
+    prediction is kept only as a last-resort fallback for the unlikely case
+    the registry lookup itself comes back empty.
+
+    Best-effort like everything else this wizard does: if the flow doesn't
+    come back as a fresh create_entry for any reason (local_todo isn't
+    available, a list with that name already exists, a future Home
     Assistant release changes its config flow shape), this returns None and
     the caller falls back to leaving that entity unset, same as if the
     checkbox had been off - never blocks the rest of setup on it.
@@ -224,6 +376,15 @@ async def _create_local_todo_list(hass: HomeAssistant, name: str) -> str | None:
         return None
     if not isinstance(result, dict) or result.get("type") != "create_entry":
         return None
+    entry_id = getattr(result.get("result"), "entry_id", None)
+    if entry_id:
+        try:
+            registry = er.async_get(hass)
+            entity_id = registry.async_get_entity_id("todo", _LOCAL_TODO_DOMAIN, entry_id)
+        except Exception:  # noqa: BLE001 - the registry lookup is a nice-to-have, not required
+            entity_id = None
+        if entity_id:
+            return entity_id
     return f"todo.{slugify(name)}"
 
 
@@ -325,11 +486,14 @@ def _normalize_options(user_input: dict[str, Any] | None) -> dict[str, Any]:
 
 
 class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Single-instance setup, walking through three optional decisions -
-    calendars to monitor, Grocy, and Meal Plan/Reminders to-do lists -
-    before creating the entry. Every step accepts blank/default input and
-    moves on; nothing here is required to finish setup, matching how
-    Configure has always treated the same settings afterward."""
+    """Which features to turn on, who's in the household, chores/rewards
+    setup for them, calendars to monitor, Grocy, and Meal Plan/Reminders
+    to-do lists - before creating the entry. Every step accepts blank/
+    default input and moves on; nothing here is required to finish setup,
+    matching how Configure/the card's own Settings have always treated the
+    same settings afterward. The opening Features step (async_step_features)
+    controls which of the Chores/Grocy/Reminders/Digest sections below even
+    get shown - see that step's own docstring."""
 
     VERSION = 1
 
@@ -343,11 +507,134 @@ class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # (see _build_dashboard_yaml's docstring for why this can't just be
         # created automatically).
         self._dashboard_yaml: str | None = None
+        # Which optional sections the Features step turned on - controls
+        # step routing only, never persisted (see _ALL_FEATURES). Defaults
+        # to "everything on" so any code path that somehow checks this
+        # before async_step_features runs sees the same full wizard this
+        # always was, rather than skipping sections nobody chose to skip.
+        self._selected_features: set[str] = set(_ALL_FEATURES)
+        # Users/member-profile step state - see async_step_users/
+        # async_step_member_profile. _member_setup_queue is the ids still
+        # waiting for their own one-member-at-a-time profile screen (popped
+        # from the front as each is submitted); _member_profiles accumulates
+        # {user_id: {"color":..., "includeInChores":...}} as they go, folded
+        # into CONF_INITIAL_USER_PROFILES once the queue drains
+        # (async_step_chores_features); _member_names is id -> display name,
+        # fetched once in async_step_users, used only to caption each
+        # member's own profile screen.
+        self._member_setup_queue: list[str] = []
+        self._member_profiles: dict[str, dict[str, Any]] = {}
+        self._member_names: dict[str, str] = {}
+
+    def _feature_selected(self, feature: str) -> bool:
+        return feature in self._selected_features
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
         await self.async_set_unique_id(DOMAIN)
         self._abort_if_unique_id_configured()
-        return await self.async_step_calendars()
+        return await self.async_step_features()
+
+    async def async_step_features(self, user_input: dict[str, Any] | None = None):
+        """Opening screen: which optional sections of the rest of this
+        wizard does the household actually want? Every section defaults to
+        checked, so clicking straight through without touching anything
+        behaves exactly like the wizard always did before this step
+        existed - this only exists to let a household SKIP whole sections
+        (Chores/Rewards/Routines/Goals setup, Grocy, Reminders & Meal Plan,
+        Daily Digest) up front rather than clicking through screens for
+        features they don't want and leaving every field blank. Calendars,
+        Notifications, and the Dashboard offer are NOT gated behind a
+        feature choice here - they're cheap, universally-relevant screens
+        (or in Notifications' case, still relevant even with Chores/
+        Reminders off, since it also covers calendar event reminders) that
+        every household still sees."""
+        if user_input is not None:
+            self._selected_features = set(user_input.get(_FEATURES_FIELD) or [])
+            if self._feature_selected(_FEATURE_CHORES):
+                return await self.async_step_users()
+            return await self.async_step_calendars()
+
+        return self.async_show_form(step_id="features", data_schema=_build_features_schema())
+
+    async def async_step_users(self, user_input: dict[str, Any] | None = None):
+        """Pick which Home Assistant login accounts to add as Family Hub
+        members - reached only when "Chores, Rewards, Routines & Goals" was
+        checked on the Features step. This is the actual "add users" step:
+        membership (SETTINGS_KEY_MEMBER_USER_IDS) is what makes someone show
+        up on the Users/Permissions tabs, the Chores board, and every
+        assignment picker - previously only reachable by hand afterward via
+        the card's own Settings. The picks here don't take effect until
+        __init__.py's _maybe_seed_settings_from_setup_wizard runs on first
+        setup (see its own docstring, and CONF_INITIAL_* in const.py) -
+        there's no runtime Settings store to write into yet at this point in
+        the flow, only entry.options once the entry itself is created."""
+        if user_input is not None:
+            member_ids = [uid for uid in (user_input.get(CONF_INITIAL_MEMBER_USER_IDS) or []) if uid]
+            self._collected_options[CONF_INITIAL_MEMBER_USER_IDS] = member_ids
+            self._member_setup_queue = list(member_ids)
+            self._member_profiles = {}
+            return await self.async_step_member_profile()
+
+        members = await _list_member_choices(self.hass)
+        self._member_names = {m["id"]: m["name"] for m in members}
+        return self.async_show_form(
+            step_id="users",
+            data_schema=_build_users_schema(members),
+        )
+
+    async def async_step_member_profile(self, user_input: dict[str, Any] | None = None):
+        """One small screen per member picked on the Users step - their
+        board color (from the same six-color palette the generated
+        dashboard YAML already cycles through, see _PEOPLE_COLOR_PALETTE)
+        and whether they're included in Chores/Rewards (default yes - see
+        _isChoresIncluded in the chores card for how this same field is
+        read afterward). This is "set up chores for users," one member at a
+        time rather than one big dynamic form - see _MEMBER_COLOR_FIELD's
+        own comment for why. Loops by re-invoking itself: pops the member
+        that was just submitted for off the front of _member_setup_queue,
+        then either shows the next one or - once the queue is empty (which
+        is also true immediately, on the very first call, for a household
+        that picked zero members) - moves on to async_step_chores_features.
+        """
+        if user_input is not None and self._member_setup_queue:
+            user_id = self._member_setup_queue[0]
+            self._member_profiles[user_id] = {
+                "color": user_input.get(_MEMBER_COLOR_FIELD) or "",
+                "includeInChores": bool(user_input.get(_MEMBER_INCLUDE_FIELD, True)),
+            }
+            self._member_setup_queue.pop(0)
+
+        if not self._member_setup_queue:
+            return await self.async_step_chores_features()
+
+        user_id = self._member_setup_queue[0]
+        member_ids = self._collected_options.get(CONF_INITIAL_MEMBER_USER_IDS) or []
+        idx = member_ids.index(user_id) if user_id in member_ids else 0
+        default_color = _PEOPLE_COLOR_PALETTE[idx % len(_PEOPLE_COLOR_PALETTE)]
+        return self.async_show_form(
+            step_id="member_profile",
+            data_schema=_build_member_profile_schema(default_color),
+            description_placeholders={"member_name": self._member_names.get(user_id, user_id)},
+        )
+
+    async def async_step_chores_features(self, user_input: dict[str, Any] | None = None):
+        """The household-wide Routines/Goals-on-Chores/Goals-on-Rewards
+        toggles - same three fields, same off-by-default, as Settings' own
+        "Chores, Rewards & Routines" accordion (family-week-calendar-
+        card.js). Also where _member_profiles (built up one screen at a
+        time by async_step_member_profile) finally gets folded into
+        CONF_INITIAL_USER_PROFILES. Reached even when zero members were
+        picked (an empty profiles dict is a harmless no-op for
+        _maybe_seed_settings_from_setup_wizard) - Routines/Goals can still
+        be turned on for whoever gets added later."""
+        if user_input is not None:
+            self._collected_options[CONF_INITIAL_ROUTINES_ENABLED] = bool(user_input.get(_ROUTINES_FIELD, False))
+            self._collected_options[CONF_INITIAL_GOALS_IN_CHORES] = bool(user_input.get(_GOALS_IN_CHORES_FIELD, False))
+            self._collected_options[CONF_INITIAL_GOALS_IN_REWARDS] = bool(user_input.get(_GOALS_IN_REWARDS_FIELD, False))
+            self._collected_options[CONF_INITIAL_USER_PROFILES] = dict(self._member_profiles)
+            return await self.async_step_calendars()
+
+        return self.async_show_form(step_id="chores_features", data_schema=_build_chores_features_schema())
 
     async def async_step_calendars(self, user_input: dict[str, Any] | None = None):
         """Pick which calendar.* entities Family Hub should watch for
@@ -370,7 +657,12 @@ class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Optional Grocy connection, asked up front instead of only being
         discoverable later via Configure > Grocy - reuses that exact same
         schema, so filling it in here or there behaves identically. Leaving
-        both fields blank skips Grocy entirely, same as before."""
+        both fields blank skips Grocy entirely, same as before. Skipped
+        entirely (never even shown) when "Grocy" was unchecked on the
+        Features step - reachable afterward via Configure either way."""
+        if not self._feature_selected(_FEATURE_GROCY):
+            return await self.async_step_todo_lists()
+
         if user_input is not None:
             url = (user_input.get(CONF_GROCY_URL) or "").strip().rstrip("/")
             api_key = (user_input.get(CONF_GROCY_API_KEY) or "").strip()
@@ -395,7 +687,12 @@ class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         the calendar card itself still needs its own meal_plan_entity /
         reminders_entity config fields pointed at the same entity id (shown
         back on the next screen) the first time it's added to a dashboard,
-        since the card's config lives in Lovelace, not here."""
+        since the card's config lives in Lovelace, not here. Skipped
+        entirely when "Reminders & Meal Plan to-do lists" was unchecked on
+        the Features step."""
+        if not self._feature_selected(_FEATURE_REMINDERS):
+            return await self.async_step_notifications()
+
         if user_input is not None:
             meal_plan_entity = (user_input.get(CONF_MEAL_PLAN_ENTITY) or "").strip()
             reminders_entity = (user_input.get(CONF_REMINDERS_ENTITY) or "").strip()
@@ -461,7 +758,12 @@ class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         connection ready, so a household should switch it on on purpose,
         not discover it because a wizard defaulted it on. Reachable
         afterward via the card's own Settings or Configure either way,
-        same as everything else in this wizard."""
+        same as everything else in this wizard. Skipped entirely when
+        "Daily Digest" was unchecked on the Features step."""
+        if not self._feature_selected(_FEATURE_DIGEST):
+            self._collected_options[CONF_DAILY_DIGEST_ENABLED] = False
+            return await self.async_step_dashboard()
+
         if user_input is not None:
             enabled = bool(user_input.get(CONF_DAILY_DIGEST_ENABLED, False))
             self._collected_options[CONF_DAILY_DIGEST_ENABLED] = enabled

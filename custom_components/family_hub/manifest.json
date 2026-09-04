@@ -1,10 +1,17 @@
 {
   "domain": "family_hub",
   "name": "Family Hub",
-  "codeowners": ["@jaretvarholick"],
+  "codeowners": [
+    "@jaretvarholick"
+  ],
   "config_flow": true,
-  "dependencies": ["frontend", "http", "lovelace", "file_upload"],
-  "documentation": "https://github.com/jaretvarholick/family-hub",
+  "dependencies": [
+    "frontend",
+    "http",
+    "lovelace",
+    "file_upload"
+  ],
+  "documentation": "https://github.com/JVarhol/HA-Family-Hub",
   "iot_class": "local_polling",
-  "version": "1.63.0"
+  "version": "1.103.0"
 }

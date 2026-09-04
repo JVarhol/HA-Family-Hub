@@ -1,0 +1,139 @@
+create_chore:
+  name: Create chore
+  description: >-
+    Create a new Family Hub chore. Mirrors family_hub/chores/create on the
+    websocket API - the same action the chore-creation form on
+    family-hub-chores-card uses, available here for native HA automations,
+    scripts, and voice assistants.
+  fields:
+    title:
+      name: Title
+      description: What the chore is called.
+      required: true
+      example: Take out the trash
+      selector:
+        text:
+    assigned_to:
+      name: Assigned to
+      description: >-
+        A Home Assistant user ID, or "chore_bin" to drop it straight into
+        the shared Chore Bin unclaimed. Required for assignment_mode
+        "direct"; ignored (and resolved automatically) for every other mode.
+      required: false
+      selector:
+        text:
+    assignment_mode:
+      name: Assignment mode
+      description: How this chore gets assigned to someone.
+      required: false
+      default: direct
+      selector:
+        select:
+          options:
+            - direct
+            - chore_bin
+            - auto_rotation
+            - first_come_first_served
+    rotation_group:
+      name: Rotation group
+      description: >-
+        For assignment_mode "auto_rotation" only: the Home Assistant user
+        IDs who take turns on this chore, in order.
+      required: false
+      selector:
+        object:
+    star_value:
+      name: Star value
+      description: Stars awarded to whoever completes and gets this chore approved.
+      required: false
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 1000
+          mode: box
+    due_date:
+      name: Due date
+      description: ISO 8601 date/time this chore is due by.
+      required: false
+      selector:
+        datetime:
+    overdue_penalty:
+      name: Overdue penalty
+      description: Stars deducted (once) if this chore is still open past its due date.
+      required: false
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 1000
+          mode: box
+    dependencies:
+      name: Dependencies
+      description: Chore IDs that must be approved before this one can be completed.
+      required: false
+      selector:
+        object:
+
+complete_chore:
+  name: Complete chore
+  description: >-
+    Mark a chore done, entering pending verification. Mirrors
+    family_hub/chores/complete on the websocket API.
+  fields:
+    chore_id:
+      name: Chore
+      description: The chore's id.
+      required: true
+      selector:
+        text:
+
+approve_chore:
+  name: Approve chore
+  description: >-
+    Approve a pending-verification chore, disbursing its star value to
+    whoever completed it. Mirrors family_hub/chores/approve on the
+    websocket API - restricted the same way there (an admin, or a user
+    granted chore-verification permission).
+  fields:
+    chore_id:
+      name: Chore
+      description: The chore's id.
+      required: true
+      selector:
+        text:
+
+reject_chore:
+  name: Reject chore
+  description: >-
+    Send a pending-verification chore back to open instead of approving it -
+    no stars disbursed, no streak change. Mirrors family_hub/chores/reject
+    on the websocket API.
+  fields:
+    chore_id:
+      name: Chore
+      description: The chore's id.
+      required: true
+      selector:
+        text:
+    reason:
+      name: Reason
+      description: >-
+        Optional free-text note explaining why (e.g. "the trash still had
+        bags in it"), shown to whoever it's assigned to.
+      required: false
+      selector:
+        text:
+
+nudge_user:
+  name: Nudge user about a chore
+  description: >-
+    Send a one-click reminder notification about a single active chore.
+    Mirrors family_hub/chores/nudge on the websocket API.
+  fields:
+    chore_id:
+      name: Chore
+      description: The chore's id.
+      required: true
+      selector:
+        text:

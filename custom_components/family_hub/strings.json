@@ -1,9 +1,40 @@
 {
   "config": {
     "step": {
-      "calendars": {
+      "features": {
         "title": "Family Hub",
-        "description": "Sets up the Theme Builder sidebar panel and the Family Week Calendar card - nothing on the next few screens is required, and everything here can also be changed later via Configure. First: pick any calendars you'd like Family Hub to watch for event reminders (from the calendar card's 'Remind me' field). Leave this empty if you don't want reminders, or aren't sure yet.",
+        "description": "Sets up the Theme Builder sidebar panel and the Family Week Calendar card - nothing on the next few screens is required, and everything here can also be changed later via Configure. Which of these would you like to set up now? Anything left unchecked is skipped below (and can still be turned on any time later, from the card's own Settings or Configure).",
+        "data": {
+          "setup_features": "Features to set up now"
+        }
+      },
+      "users": {
+        "title": "Add users",
+        "description": "Who's in the household? Pick the Home Assistant logins that should be Family Hub members - this is what makes someone show up on the Users/Permissions tabs, the Chores board, and every chore/reward/routine assignment picker. Leave this empty if you'd rather add people later from the card's own Settings > Users tab.",
+        "data": {
+          "initial_member_user_ids": "Family Hub members"
+        }
+      },
+      "member_profile": {
+        "title": "Set up chores for {member_name}",
+        "description": "A board color for {member_name} (shown on the Chores/Rewards board and calendar), and whether they're included in Chores & Rewards at all - on by default; turn it off for a member who shouldn't get a Chores column or a stars balance (e.g. an adult who just wants the calendar). Both are editable any time from Settings > Users.",
+        "data": {
+          "member_color": "Board color",
+          "member_include_in_chores": "Include in Chores & Rewards"
+        }
+      },
+      "chores_features": {
+        "title": "Chores, Rewards & Routines",
+        "description": "A few more optional switches for the Chores board - all off by default, and all reachable later too from the card's own Settings > General > \"Chores, Rewards & Routines\".",
+        "data": {
+          "routines_enabled": "Routines (per-person daily checklists)",
+          "goals_in_chores": "Show Goals on the Chores board",
+          "goals_in_rewards": "Show Goals on the Rewards page"
+        }
+      },
+      "calendars": {
+        "title": "Calendars",
+        "description": "Pick any calendars you'd like Family Hub to watch for event reminders (from the calendar card's 'Remind me' field). Leave this empty if you don't want reminders, or aren't sure yet - reachable later via Configure either way.",
         "data": {
           "calendars": "Calendars to monitor"
         }
@@ -80,12 +111,12 @@
       },
       "reminders": {
         "title": "Calendar reminders",
-        "description": "Optional: pick calendars to monitor and Family Hub will notify you ahead of any event with a reminder set (via the calendar card's 'Remind me' field). Leave calendars empty to turn reminders off. Per-calendar overrides take priority over the default target - one 'calendar.entity = notify.service_one,notify.service_two' line per calendar (list several devices with commas). This can also be managed from the calendar card itself: Settings > Calendars > Notify.",
+        "description": "Pick calendars to monitor - Family Hub polls these for events with a reminder set (via the calendar card's 'Remind me' field). Leave calendars empty to turn reminders off. WHO gets notified is now managed per-person from the calendar card's own Settings > Notifications tab, where each Home Assistant login subscribes to the calendars/reminders/digest they want - the default target and per-calendar overrides below are the OLD household-wide settings, kept only as a record of what this install used to have (they were converted into starting per-user profiles the first time this version ran, and are no longer read by anything).",
         "data": {
           "calendars": "Calendars to monitor",
-          "default_notify_target": "Default notify target (e.g. notify.mobile_app_pixel_6a)",
+          "default_notify_target": "(Legacy) Default notify target",
           "poll_minutes": "Check every (minutes)",
-          "calendar_notify_overrides": "Per-calendar notify overrides (optional)"
+          "calendar_notify_overrides": "(Legacy) Per-calendar notify overrides"
         }
       },
       "test_notify": {

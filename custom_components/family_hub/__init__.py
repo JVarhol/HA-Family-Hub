@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import difflib
 import hashlib
+import html
 import itertools
 import json
 import logging
@@ -36,11 +37,28 @@ import voluptuous as vol
 from homeassistant.components import panel_custom, websocket_api
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
+
+# Chores/Rewards/Permissions - kept in their own modules (see each file's
+# docstring) rather than folded into this already-huge file. The chores
+# websocket module is named chores_websocket_api.py (not websocket_api.py)
+# and imported here as chores_ws_api - both matter, not just the alias:
+# `websocket_api` is already bound above to Home Assistant's own
+# homeassistant.components.websocket_api, and `from . import websocket_api`
+# would silently resolve to THAT already-bound name instead of loading a
+# same-named submodule (Python's from-import only imports a submodule when
+# the parent package doesn't already have an attribute by that name) - see
+# chores_websocket_api.py's own docstring for the full explanation and the
+# real bug this caused.
+from . import chore_engine
+from . import reward_engine
+from . import routine_engine
+from . import store as chores_store
+from . import chores_websocket_api as chores_ws_api
 
 from .const import (
     CARD_JS_URL,
@@ -49,11 +67,14 @@ from .const import (
     CONF_DAILY_DIGEST_TIME,
     CONF_DEFAULT_NOTIFY,
     CONF_GROCY_API_KEY,
-    CONF_GROCY_EXPIRING_DIGEST_ENABLED,
     CONF_GROCY_EXPIRING_ENABLED,
-    CONF_GROCY_LOW_STOCK_DIGEST_ENABLED,
     CONF_GROCY_LOW_STOCK_ENABLED,
     CONF_GROCY_URL,
+    CONF_INITIAL_GOALS_IN_CHORES,
+    CONF_INITIAL_GOALS_IN_REWARDS,
+    CONF_INITIAL_MEMBER_USER_IDS,
+    CONF_INITIAL_ROUTINES_ENABLED,
+    CONF_INITIAL_USER_PROFILES,
     CONF_MEAL_PLAN_ENTITY,
     CONF_NOTIFICATION_CLICK_PATH,
     CONF_OVERRIDES_TEXT,
@@ -64,6 +85,8 @@ from .const import (
     DEFAULT_LOOKAHEAD_HOURS,
     DEFAULT_POLL_MINUTES,
     DOMAIN,
+    EVENT_PEOPLE_OVERRIDES_STORAGE_KEY_PREFIX,
+    EVENT_PEOPLE_OVERRIDES_STORAGE_VERSION,
     ICON_URL,
     MAX_THEMES,
     NOTIFIED_RETENTION_HOURS,
@@ -78,9 +101,33 @@ from .const import (
     REMINDER_OVERRIDES_STORAGE_KEY_PREFIX,
     REMINDER_OVERRIDES_STORAGE_VERSION,
     REMINDER_ROLLOVER_MARKER_PATTERN,
+    REMINDER_SUBSCRIPTION_CALENDAR_ALERT,
+    REMINDER_SUBSCRIPTION_LEVELS,
     REMINDER_TYPE_MARKER_PATTERN,
     REMINDERS_STORAGE_KEY_PREFIX,
     REMINDERS_STORAGE_VERSION,
+    SETTINGS_KEY_USER_PROFILES,
+    SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED,
+    SETTINGS_KEY_MEMBER_USER_IDS,
+    SETTINGS_KEY_ROUTINES_ENABLED,
+    SETTINGS_KEY_GOALS_IN_CHORES,
+    SETTINGS_KEY_GOALS_IN_REWARDS,
+    SETTINGS_BACKUP_DIR_NAME,
+    SETTINGS_BACKUP_FILENAME,
+    DEFAULT_DIGEST_SECTIONS,
+    CHORE_BIN_SENTINEL,
+    CHORE_KEY_REMINDER_MINUTES,
+    CHORE_KEY_REMINDERS_FIRED,
+    CHORE_STATUS_OPEN,
+    CHORES_CARD_JS_URL,
+    MY_CHORES_CARD_JS_URL,
+    REWARDS_CARD_JS_URL,
+    GOALS_CARD_JS_URL,
+    SERVICE_CREATE_CHORE,
+    SERVICE_COMPLETE_CHORE,
+    SERVICE_APPROVE_CHORE,
+    SERVICE_REJECT_CHORE,
+    SERVICE_NUDGE_USER,
     GROCERY_PUSHED_STORAGE_KEY_PREFIX,
     GROCERY_PUSHED_STORAGE_VERSION,
     GROCY_CONVERSIONS_SYNC_GENERATION,
@@ -90,6 +137,7 @@ from .const import (
     SETTINGS_STORAGE_VERSION,
     RECIPES_STORAGE_KEY_PREFIX,
     RECIPES_STORAGE_VERSION,
+    SCREENSAVER_CARD_JS_URL,
     SUGGESTIONS_STORAGE_KEY_PREFIX,
     SUGGESTIONS_STORAGE_VERSION,
     THEME_SELECTOR_CARD_JS_URL,
@@ -492,6 +540,573 @@ def _overrides_to_text(overrides: dict[str, list[str]]) -> str:
     )
 
 
+# --- Per-user notification profiles -----------------------------------------
+#
+# See the big comment above SETTINGS_KEY_USER_PROFILES in const.py for the
+# shape stored at settings["userProfiles"]. Everything below reads that
+# dict (never the old CONF_DEFAULT_NOTIFY/CONF_OVERRIDES_TEXT map) once a
+# household has been migrated - _run_poll, _poll_reminders_todo and
+# _maybe_send_daily_digest all resolve "who gets notified" through these
+# three helpers instead of each duplicating profile-walking logic.
+
+
+def _default_user_profile() -> dict[str, Any]:
+    """A brand new user - nothing subscribed, nothing enabled - so adding
+    someone to Home Assistant never silently opts them into notifications
+    they never asked for.
+
+    Family Hub membership (whether this person shows up on the Users tab,
+    the Permissions tab, or anywhere a chore gets assigned) is NOT part of
+    a profile - see SETTINGS_KEY_MEMBER_USER_IDS in const.py. A profile can
+    exist for someone who isn't a member (their settings are simply not
+    read anywhere until they're added), and membership can exist for
+    someone with no profile yet (see _get_member_user_ids - a brand new
+    member gets this same default profile the first time they're actually
+    looked up)."""
+    return {
+        "notifyTargets": [],
+        "subscribedCalendars": [],
+        "remindersEnabled": False,
+        "digestEnabled": False,
+        "digestSections": dict(DEFAULT_DIGEST_SECTIONS),
+        "notifyRewardClaimed": False,
+        "notifyChoreApproved": False,
+    }
+
+
+def _get_user_profiles(settings: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Defensively pull settings['userProfiles'] out of the (schema-free,
+    card-owned) Settings blob. Mirrors the card's own _normalizeSettings
+    defensiveness - a malformed or missing entry degrades to "no profile"
+    rather than raising, since a corrupt single user's data must never take
+    down notifications for the rest of the household."""
+    if not isinstance(settings, dict):
+        return {}
+    raw = settings.get(SETTINGS_KEY_USER_PROFILES)
+    if not isinstance(raw, dict):
+        return {}
+    profiles: dict[str, dict[str, Any]] = {}
+    for user_id, profile in raw.items():
+        if not isinstance(profile, dict):
+            continue
+        targets = profile.get("notifyTargets")
+        calendars = profile.get("subscribedCalendars")
+        sections = profile.get("digestSections")
+        primary_calendar = profile.get("primaryCalendar")
+        reminder_subs = profile.get("remindersSubscriptions")
+        profiles[str(user_id)] = {
+            "notifyTargets": [str(t).strip() for t in targets if str(t).strip()] if isinstance(targets, list) else [],
+            "subscribedCalendars": [str(c).strip() for c in calendars if str(c).strip()] if isinstance(calendars, list) else [],
+            "remindersEnabled": bool(profile.get("remindersEnabled")),
+            "digestEnabled": bool(profile.get("digestEnabled")),
+            "digestSections": {
+                key: bool(sections.get(key, default)) if isinstance(sections, dict) else default
+                for key, default in DEFAULT_DIGEST_SECTIONS.items()
+            },
+            "notifyRewardClaimed": bool(profile.get("notifyRewardClaimed")),
+            "notifyChoreApproved": bool(profile.get("notifyChoreApproved")),
+            # Purely cosmetic on the backend (never read by any notify logic
+            # here) but carried through so _get_settings_and_profiles callers
+            # that need it (none yet) don't have to re-derive it - matches
+            # the same "the frontend owns this, backend just doesn't drop
+            # it" spirit as the untouched pass-through in _ws_set_settings.
+            "primaryCalendar": str(primary_calendar).strip() if isinstance(primary_calendar, str) else "",
+            # v130+: who this person has opted to see/be alerted about among
+            # OTHER people's individual reminders lists - see
+            # REMINDER_SUBSCRIPTION_LEVELS' own docstring in const.py. A
+            # malformed entry (not a dict, or a value outside the two known
+            # levels) degrades to "not subscribed to that one" rather than
+            # raising, same defensiveness as every other field here.
+            "remindersSubscriptions": {
+                str(person_entity).strip(): level
+                for person_entity, level in reminder_subs.items()
+                if isinstance(reminder_subs, dict) and str(person_entity).strip() and level in REMINDER_SUBSCRIPTION_LEVELS
+            } if isinstance(reminder_subs, dict) else {},
+        }
+    return profiles
+
+
+def _get_people(settings: dict[str, Any] | None) -> list[dict[str, str]]:
+    """Defensively pull settings["people"] out of the (schema-free, card-
+    owned) Settings blob, keeping only the two fields the backend itself
+    ever needs: each person's own calendar entity (their identity for
+    primaryCalendar/remindersSubscriptions matching) and their optional
+    individual reminders to-do list. Mirrors _get_user_profiles' own
+    defensiveness - a malformed people list just means "nobody's individual
+    reminders get polled," never a crash."""
+    if not isinstance(settings, dict):
+        return []
+    raw = settings.get("people")
+    if not isinstance(raw, list):
+        return []
+    people: list[dict[str, str]] = []
+    for p in raw:
+        if not isinstance(p, dict):
+            continue
+        entity = p.get("entity")
+        if not isinstance(entity, str) or not entity.strip():
+            continue
+        name = p.get("name")
+        reminders_entity = p.get("remindersEntity")
+        people.append(
+            {
+                "entity": entity.strip(),
+                "name": str(name).strip() if isinstance(name, str) and name.strip() else entity.strip(),
+                "remindersEntity": reminders_entity.strip() if isinstance(reminders_entity, str) else "",
+            }
+        )
+    return people
+
+
+def _get_member_user_ids(settings: dict[str, Any] | None) -> set[str]:
+    """Defensively pull settings['memberUserIds'] out of the Settings blob
+    as a set of ids, mirroring _get_user_profiles' own defensiveness - a
+    malformed or missing list degrades to "nobody's a member" rather than
+    raising or (worse) silently treating everyone as one.
+
+    Callers that need to distinguish "genuinely nobody" from "this key has
+    never been migrated yet" should check SETTINGS_KEY_MEMBER_USER_IDS's
+    presence themselves (see _maybe_migrate_member_user_ids) - by the time
+    anything reaches this helper, async_setup_entry has already guaranteed
+    the key is real for any household that's completed setup once on this
+    version, so "missing" and "empty" only differ during that one-time
+    migration itself."""
+    if not isinstance(settings, dict):
+        return set()
+    raw = settings.get(SETTINGS_KEY_MEMBER_USER_IDS)
+    if not isinstance(raw, list):
+        return set()
+    return {str(uid) for uid in raw if str(uid).strip()}
+
+
+async def _maybe_seed_settings_from_setup_wizard(
+    hass: HomeAssistant, entry: ConfigEntry, settings_store: Store
+) -> None:
+    """One-time seed of memberUserIds/userProfiles/routinesEnabled/
+    goalsShowInChores/goalsShowInRewards straight from the first-time setup
+    wizard's own Users/member-profile/Chores-features steps (see
+    config_flow.py's async_step_users/async_step_member_profile/
+    async_step_chores_features, and the CONF_INITIAL_* constants' own
+    docstring in const.py for the full config_flow -> entry.options ->
+    here handoff and why it has to work this way).
+
+    Guarded the exact same way as _maybe_migrate_member_user_ids just below
+    (never runs once SETTINGS_KEY_MEMBER_USER_IDS is already set, by
+    anything - a previous run of this function, that older function's own
+    backfill, or by hand via Settings) and must run BEFORE it, so a
+    wizard-seeded household short-circuits that older backfill entirely
+    instead of the two fighting over the same key.
+
+    entry.options.get(CONF_INITIAL_MEMBER_USER_IDS) being None (the key
+    entirely absent) means the wizard never reached its Users step this
+    run - either an upgraded pre-wizard install, or a household that
+    unchecked "Chores, Rewards, Routines & Goals" on the Features step -
+    and this is a deliberate no-op for both, leaving
+    _maybe_migrate_member_user_ids's own fallback to run normally. An
+    empty list (the key present but nobody picked) is NOT the same thing -
+    that's an explicit "seed to nobody," so memberUserIds gets set to []
+    and the older backfill is correctly skipped, same as if a household
+    had already visited Settings and removed everyone.
+    """
+    settings = await settings_store.async_load() or {}
+    if SETTINGS_KEY_MEMBER_USER_IDS in settings:
+        return
+    member_ids = entry.options.get(CONF_INITIAL_MEMBER_USER_IDS)
+    if member_ids is None:
+        return
+
+    settings[SETTINGS_KEY_MEMBER_USER_IDS] = sorted(set(member_ids))
+
+    initial_profiles = entry.options.get(CONF_INITIAL_USER_PROFILES) or {}
+    if initial_profiles:
+        profiles = dict(settings.get(SETTINGS_KEY_USER_PROFILES) or {})
+        for user_id, partial in initial_profiles.items():
+            if not isinstance(partial, dict):
+                continue
+            profiles[user_id] = {**_default_user_profile(), **partial}
+        settings[SETTINGS_KEY_USER_PROFILES] = profiles
+
+    if CONF_INITIAL_ROUTINES_ENABLED in entry.options:
+        settings[SETTINGS_KEY_ROUTINES_ENABLED] = bool(entry.options[CONF_INITIAL_ROUTINES_ENABLED])
+    if CONF_INITIAL_GOALS_IN_CHORES in entry.options:
+        settings[SETTINGS_KEY_GOALS_IN_CHORES] = bool(entry.options[CONF_INITIAL_GOALS_IN_CHORES])
+    if CONF_INITIAL_GOALS_IN_REWARDS in entry.options:
+        settings[SETTINGS_KEY_GOALS_IN_REWARDS] = bool(entry.options[CONF_INITIAL_GOALS_IN_REWARDS])
+
+    await settings_store.async_save(settings)
+    await _backup_settings(hass, settings)
+
+
+async def _maybe_migrate_member_user_ids(
+    hass: HomeAssistant, settings_store: Store, permissions: dict[str, Any]
+) -> None:
+    """One-time backfill of settings['memberUserIds'] (see its docstring in
+    const.py) for a household that's used Family Hub before this version -
+    without this, everyone who already appears on the Users/Permissions
+    tabs or the Chores board today would vanish the instant this ships,
+    since membership is now opt-in instead of "everyone, always."
+
+    Never runs twice (guarded by the key's own presence, not a separate
+    migrated flag - once it's set, even back to an empty list by someone
+    explicitly removing everyone, it's never touched again) and never
+    deletes anything - it only ever ADDS ids to a list.
+
+    Must run after both settings_store (for userProfiles) and the
+    Permissions store (passed in already-loaded) are available - see the
+    call site in async_setup_entry, right after permissions is loaded.
+    """
+    settings = await settings_store.async_load() or {}
+    if SETTINGS_KEY_MEMBER_USER_IDS in settings:
+        return
+
+    profiles = settings.get(SETTINGS_KEY_USER_PROFILES)
+    profile_ids = set(profiles.keys()) if isinstance(profiles, dict) else set()
+    permission_ids = set(permissions.keys()) if isinstance(permissions, dict) else set()
+    settings[SETTINGS_KEY_MEMBER_USER_IDS] = sorted(profile_ids | permission_ids)
+    await settings_store.async_save(settings)
+    await _backup_settings(hass, settings)
+
+
+async def _get_settings_and_profiles(hass: HomeAssistant, entry_data: dict[str, Any]) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Load the Settings store once and return (settings, profiles) together -
+    every notify-resolution call site needs both, and loading the Store
+    twice per poll tick for no reason is wasteful.
+
+    entry_data.get(...) rather than [...] - defensively tolerates a runtime
+    bucket that hasn't got a settings_store yet (belt-and-suspenders; every
+    real bucket set up in async_setup_entry has one) by treating it the
+    same as "no profiles configured", not a crash.
+    """
+    store: Store | None = entry_data.get("settings_store")
+    if store is None:
+        return {}, {}
+    settings = await store.async_load() or {}
+    return settings, _get_user_profiles(settings)
+
+
+def _settings_backup_path(hass: HomeAssistant) -> str:
+    """Where the durable Settings backup file lives - see
+    SETTINGS_BACKUP_DIR_NAME/SETTINGS_BACKUP_FILENAME in const.py for why."""
+    return hass.config.path(SETTINGS_BACKUP_DIR_NAME, SETTINGS_BACKUP_FILENAME)
+
+
+def _write_settings_backup_file(path: str, settings: dict[str, Any]) -> None:
+    """Blocking file write - always call via hass.async_add_executor_job.
+
+    Written to a temp file in the same directory and swapped into place with
+    os.replace (atomic on both POSIX and Windows), so a crash or power loss
+    mid-write can never leave a half-written, unparseable backup file behind.
+    """
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(settings, f)
+    os.replace(tmp_path, path)
+
+
+def _read_settings_backup_file(path: str) -> dict[str, Any] | None:
+    """Blocking file read - always call via hass.async_add_executor_job.
+
+    Never raises: a missing file, or one that somehow isn't valid JSON,
+    just means "nothing usable to restore" rather than crashing setup.
+    """
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+async def _backup_settings(hass: HomeAssistant, settings: dict[str, Any]) -> None:
+    """Best-effort durable copy of the full Settings blob (people, calendars,
+    badges, screen saver settings, notification profiles - everything that
+    lives in the Store family_hub/set_settings writes to), kept outside both
+    .storage/ and custom_components/family_hub/ so it survives even the
+    Family Hub config entry itself being removed and re-added (which
+    orphans the real Store by handing the next setup a brand-new entry_id).
+    Called after every real settings save - see _ws_set_settings and
+    _migrate_notify_profiles.
+
+    Deliberately never backs up an empty blob - a brand-new install's very
+    first (still-empty) load should never stomp on a previous install's
+    real backup before anything has actually been configured yet. A backup
+    failure (disk full, permissions, etc.) is logged and swallowed - it
+    must never block the real settings save that triggered it.
+    """
+    if not settings:
+        return
+    try:
+        await hass.async_add_executor_job(_write_settings_backup_file, _settings_backup_path(hass), settings)
+    except Exception as err:  # noqa: BLE001 - a backup failure is not fatal
+        _LOGGER.warning("Family Hub: could not write settings backup file: %s", err)
+
+
+async def _maybe_restore_settings_backup(hass: HomeAssistant, settings_store: Store) -> None:
+    """If this entry's Settings Store loads completely empty - the signature
+    of a brand-new entry_id that's never been written to, most commonly
+    because the Family Hub integration entry was removed and re-added - and
+    a durable backup file exists on disk from a previous install, restore
+    it into the store before anything else (including _migrate_notify_profiles,
+    which must be called AFTER this) reads from or writes to it.
+
+    Deliberately only triggers on a *completely* empty store, never a
+    partially-populated one - if any real key is present, this entry_id's
+    Store has genuine content (even if, say, someone intentionally cleared
+    every notification profile), and must never be silently overwritten.
+    A brand-new install with nothing configured yet and no prior backup
+    file on disk correctly does nothing here.
+    """
+    existing = await settings_store.async_load()
+    if existing:
+        return
+    try:
+        backup = await hass.async_add_executor_job(_read_settings_backup_file, _settings_backup_path(hass))
+    except Exception as err:  # noqa: BLE001 - never block setup over this
+        _LOGGER.warning("Family Hub: could not read settings backup file: %s", err)
+        return
+    if not backup:
+        return
+    await settings_store.async_save(backup)
+    _LOGGER.info(
+        "Family Hub: this install's settings store was empty, so notification "
+        "profiles and other card settings were restored from the backup at %s "
+        "(most likely because the Family Hub integration entry was removed and "
+        "re-added at some point).",
+        _settings_backup_path(hass),
+    )
+
+
+def _targets_for_calendar(profiles: dict[str, dict[str, Any]], calendar_entity: str) -> list[str]:
+    """Union (deduped, order-stable) of every subscribed user's notify
+    targets for one calendar - replaces the old single override list."""
+    seen: list[str] = []
+    for profile in profiles.values():
+        if calendar_entity in profile.get("subscribedCalendars", []):
+            for target in profile.get("notifyTargets", []):
+                if target not in seen:
+                    seen.append(target)
+    return seen
+
+
+def _targets_for_reminders(profiles: dict[str, dict[str, Any]]) -> list[str]:
+    """Union of every reminders-opted-in user's notify targets. Covers BOTH
+    reminder mechanisms (the to-do based standalone Reminders list AND
+    calendar events created via the Add Event modal's Reminder tab) - from
+    a family member's point of view there's only one "Reminders" toggle to
+    opt into, even though the backend still fires them via two different
+    pollers for storage reasons.
+
+    This is ONLY ever used for the single shared "family" reminders list
+    (CONF_REMINDERS_ENTITY) - see _targets_for_individual_reminders below
+    for a v130+ person's own individual list, which is gated by
+    subscriptions instead of this household-wide remindersEnabled flag."""
+    seen: list[str] = []
+    for profile in profiles.values():
+        if profile.get("remindersEnabled"):
+            for target in profile.get("notifyTargets", []):
+                if target not in seen:
+                    seen.append(target)
+    return seen
+
+
+def _targets_for_individual_reminders(profiles: dict[str, dict[str, Any]], person_entity: str) -> list[str]:
+    """Union (deduped, order-stable) of notify targets that should be
+    alerted about ONE person's individual reminders to-do list -
+    settings["people"][i]["remindersEntity"], see const.py's own docstring.
+
+    Two independent sources, unioned:
+      - The list's OWNER (whoever has this person_entity set as their own
+        primaryCalendar - see SETTINGS_KEY_USER_PROFILES) - gated by their
+        general remindersEnabled toggle, same opt-in semantics as the
+        family list has always used for "do I want reminder pushes at
+        all." A person with no primaryCalendar set (nobody's claimed this
+        list as "mine" yet) simply has no owner-side targets - the list
+        still exists and can still be polled/subscribed to, it just has
+        nobody notified as its "owner."
+      - Every OTHER profile that's explicitly opted into ALERTS for this
+        specific list via remindersSubscriptions[person_entity] ==
+        REMINDER_SUBSCRIPTION_CALENDAR_ALERT - independent of that
+        subscriber's own remindersEnabled flag (subscribing to someone
+        else's list with the alert tier is itself the opt-in; there's no
+        reason to also require the unrelated household-reminders toggle).
+        The plain REMINDER_SUBSCRIPTION_CALENDAR tier (no "_alert" suffix)
+        deliberately contributes no targets here - it only affects what
+        renders on the subscriber's own calendar, see the card's own
+        _fetchReminders.
+    """
+    seen: list[str] = []
+    for profile in profiles.values():
+        if profile.get("primaryCalendar") == person_entity and profile.get("remindersEnabled"):
+            for target in profile.get("notifyTargets", []):
+                if target not in seen:
+                    seen.append(target)
+    for profile in profiles.values():
+        if profile.get("remindersSubscriptions", {}).get(person_entity) == REMINDER_SUBSCRIPTION_CALENDAR_ALERT:
+            for target in profile.get("notifyTargets", []):
+                if target not in seen:
+                    seen.append(target)
+    return seen
+
+
+def _digest_recipients(profiles: dict[str, dict[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
+    """(user_id, profile) pairs for every user who wants the Daily Digest,
+    in a stable order (sorted by user id) so repeated polls/tests are
+    deterministic."""
+    return sorted(
+        ((user_id, profile) for user_id, profile in profiles.items() if profile.get("digestEnabled")),
+        key=lambda pair: pair[0],
+    )
+
+
+async def _detect_user_notify_targets(hass: HomeAssistant, user_id: str) -> list[str]:
+    """Best-effort: find notify.* targets that plausibly belong to this HA
+    login, via person.<x> whose attributes.user_id matches, then that
+    person's device_trackers -> device_tracker.<slug> -> a candidate
+    notify.mobile_app_<slug> service, kept only if that service actually
+    exists. Used both by the one-time migration (for every user, since
+    setup runs with full backend access regardless of who's logged in) and
+    by the card's own "Auto-detect" button for whoever is currently looking
+    at their own profile (hass.user.id) - never for anyone else, since
+    there's no way to safely guess a target for a login nobody has traced
+    to a person entity.
+
+    Never guesses beyond what's directly wired together in Home Assistant
+    itself - an empty list here just means "nothing to suggest", not an
+    error, and the person can always add a target by hand instead.
+    """
+    targets: list[str] = []
+    notify_services = set((hass.services.async_services().get("notify") or {}).keys())
+    for state in hass.states.async_all("person"):
+        if state.attributes.get("user_id") != user_id:
+            continue
+        for tracker_entity in state.attributes.get("device_trackers", []) or []:
+            if not isinstance(tracker_entity, str) or "." not in tracker_entity:
+                continue
+            slug = tracker_entity.split(".", 1)[1]
+            candidate = f"mobile_app_{slug}"
+            if candidate in notify_services:
+                target = f"notify.{candidate}"
+                if target not in targets:
+                    targets.append(target)
+    return targets
+
+
+async def _migrate_notify_profiles(hass: HomeAssistant, entry: ConfigEntry, settings_store: Store) -> None:
+    """One-time conversion of the old flat CONF_DEFAULT_NOTIFY/
+    CONF_OVERRIDES_TEXT system into per-user profiles, the first time a
+    household upgrades to this version. Never runs twice (guarded by
+    SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED in the same Settings blob) and
+    never deletes the old data - Configure's "Calendar reminders" screen
+    keeps showing exactly what it always did, it just stops being what the
+    poller actually reads once this has run.
+
+    For each real (non-system-generated) Home Assistant user, this
+    auto-detects their notify target(s) the same way the card's own
+    "Auto-detect" button does (see _detect_user_notify_targets), then
+    reverse-checks the OLD override map: any calendar/reminders/digest key
+    whose target list intersects that user's detected targets means this
+    user was effectively already getting that notification, so their new
+    profile is seeded to keep receiving it. A target string that doesn't
+    match any known user (a shared/group notify service, e.g.) simply
+    isn't attributable to anyone automatically - it's logged so the
+    migration is never silently lossy, and the household can add it back
+    to the right person's profile by hand from the card's new
+    Notifications tab.
+    """
+    settings = await settings_store.async_load() or {}
+    if settings.get(SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED):
+        return
+
+    # Second, independent safety net (see _ws_set_settings's own docstring
+    # for the full story of how this flag could go missing even for a
+    # household that migrated ages ago): if there's already real per-user
+    # profile data sitting in the store, that's proof migration already
+    # happened (or the household has been using per-user profiles all
+    # along) regardless of whether this flag survived - never derive
+    # fresh profiles from the old flat override system over the top of
+    # real, current per-user data. Just re-stamp the flag and move on, so
+    # this doesn't need to re-derive the same conclusion on every future
+    # restart either.
+    existing_profiles = settings.get(SETTINGS_KEY_USER_PROFILES)
+    if isinstance(existing_profiles, dict) and existing_profiles:
+        settings[SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED] = True
+        await settings_store.async_save(settings)
+        await _backup_settings(hass, settings)
+        _LOGGER.info(
+            "Family Hub: found existing per-user notification profiles without "
+            "the migrated flag set (see _ws_set_settings for how that can "
+            "happen) - left them untouched and just re-stamped the flag."
+        )
+        return
+
+    options = entry.options
+    default_target = options.get(CONF_DEFAULT_NOTIFY, "")
+    overrides = _parse_overrides(options.get(CONF_OVERRIDES_TEXT, ""))
+    calendars = options.get(CONF_CALENDARS, [])
+    reminders_entity = options.get(CONF_REMINDERS_ENTITY)
+
+    users = [u for u in await hass.auth.async_get_users() if not getattr(u, "system_generated", False)]
+
+    def _targets_for_key(key: str | None) -> list[str]:
+        if key and overrides.get(key):
+            return overrides[key]
+        return [default_target] if default_target else []
+
+    profiles: dict[str, dict[str, Any]] = {}
+    all_matched_targets: set[str] = set()
+    for user in users:
+        detected = await _detect_user_notify_targets(hass, user.id)
+        detected_set = set(detected)
+        all_matched_targets |= detected_set
+
+        subscribed_calendars = [
+            cal for cal in calendars if detected_set & set(_targets_for_key(cal))
+        ]
+        reminders_enabled = bool(detected_set & set(_targets_for_key(reminders_entity))) or bool(
+            detected_set & set(_targets_for_key(REMINDER_NOTIFY_KEY))
+        )
+        digest_enabled = bool(detected_set & set(_targets_for_key(DAILY_DIGEST_NOTIFY_KEY)))
+
+        profile = _default_user_profile()
+        profile["notifyTargets"] = detected
+        profile["subscribedCalendars"] = subscribed_calendars
+        profile["remindersEnabled"] = reminders_enabled
+        profile["digestEnabled"] = digest_enabled
+        profiles[user.id] = profile
+
+    # Anything referenced by the old config that no detected user's targets
+    # matched - can't attribute it automatically, but it shouldn't vanish
+    # without a trace either.
+    all_old_targets: set[str] = set(overrides.get(reminders_entity, []) if reminders_entity else [])
+    all_old_targets |= set(overrides.get(REMINDER_NOTIFY_KEY, []))
+    all_old_targets |= set(overrides.get(DAILY_DIGEST_NOTIFY_KEY, []))
+    for cal in calendars:
+        all_old_targets |= set(overrides.get(cal, []))
+    if default_target:
+        all_old_targets.add(default_target)
+    unmatched = sorted(all_old_targets - all_matched_targets)
+    if unmatched:
+        _LOGGER.warning(
+            "Family Hub: switching to per-user notifications - could not automatically "
+            "match these existing notify target(s) to a Home Assistant login, so they "
+            "were NOT carried over: %s. Add them back to the right person from the "
+            "card's Settings > Notifications tab if they should still get notified.",
+            ", ".join(unmatched),
+        )
+
+    settings[SETTINGS_KEY_USER_PROFILES] = profiles
+    settings[SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED] = True
+    await settings_store.async_save(settings)
+    await _backup_settings(hass, settings)
+    _LOGGER.info(
+        "Family Hub: migrated notification settings to %d per-user profile(s)", len(profiles)
+    )
+
+
 def _get_family_hub_entry(hass: HomeAssistant) -> ConfigEntry | None:
     """Family Hub is single-instance (config_flow sets unique_id=DOMAIN), so
     there is at most one config entry to find."""
@@ -700,14 +1315,103 @@ async def _ws_set_settings(
     "Settings" to-do item's JSON in. This is now the only place Settings are
     written - the old to-do item is left untouched on disk (never deleted or
     updated) as a harmless leftover, not kept in sync going forward.
+
+    Also refreshes the durable settings_backup.json file on disk (see
+    _backup_settings) with this exact save, so a later removed-and-re-added
+    config entry (a fresh, empty Store) has something to restore from.
+
+    IMPORTANT - this is a full REPLACE, not a merge: the card's JS builds
+    msg["settings"] itself from every field it knows about (see
+    _saveSettings's settingsObj literal) and this handler just saves that
+    object verbatim. Any key that lives in the Settings blob but that the
+    card's own JS doesn't know to read-and-resend gets silently dropped
+    from the store on every single save from the UI - this bit us for real
+    with SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED (a backend-only bookkeeping
+    flag the card's JS has never had any reason to know about), which was
+    getting stripped on the household's very first Settings save and
+    staying stripped forever after - meaning _migrate_notify_profiles
+    re-ran and clobbered real per-user notify targets/digest settings with
+    freshly auto-detected ones on every subsequent restart (which is most
+    noticeable right after updating, since that's when people usually
+    restart Home Assistant). Fixed two ways: carrying the flag forward
+    here whenever the incoming payload doesn't include it (so it can never
+    be silently dropped again), and a second, independent safety net in
+    _migrate_notify_profiles itself that refuses to overwrite non-empty
+    profile data even if this flag is somehow still missing.
     """
     entry_data = _get_family_hub_entry_data(hass)
     if entry_data is None:
         connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
         return
     store: Store = entry_data["settings_store"]
-    await store.async_save(msg["settings"])
+    new_settings = dict(msg["settings"])
+    if SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED not in new_settings:
+        existing = await store.async_load() or {}
+        if existing.get(SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED):
+            new_settings[SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED] = True
+    await store.async_save(new_settings)
+    await _backup_settings(hass, new_settings)
     connection.send_result(msg["id"], {"success": True})
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/list_users"})
+@websocket_api.async_response
+async def _ws_list_users(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Return the Home Assistant user accounts someone can actually log in
+    as, for the Settings > Screen Saver per-user toggle (see
+    _screenSaverApplicable in the card's JS) - letting a wall-mounted
+    tablet's own login have the screensaver on while a phone's login
+    leaves it off, without both sharing the one household-wide Settings
+    blob.
+
+    Deliberately its own command rather than having the card call Home
+    Assistant's built-in "config/auth/list" directly - that one is
+    @require_admin, so a non-admin family member's phone could open
+    Settings and fail to even see the toggle list. This command has no
+    such restriction (same as every other family_hub/* command), and only
+    ever returns id + name - nothing credential-related.
+
+    System-generated users (Home Assistant's own internal accounts, like
+    Supervisor - nobody logs in as those) are left out; nothing here needs
+    a live config entry, so this works even before Family Hub's own setup
+    is complete.
+    """
+    users = await hass.auth.async_get_users()
+    result = sorted(
+        (
+            {"id": u.id, "name": u.name or u.id}
+            for u in users
+            if not getattr(u, "system_generated", False)
+        ),
+        key=lambda u: u["name"].lower(),
+    )
+    connection.send_result(msg["id"], {"users": result})
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/detect_notify_target"})
+@websocket_api.async_response
+async def _ws_detect_notify_target(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Power the Notifications tab's "Auto-detect" button: best-effort find
+    notify.* target(s) for the CALLER's own login (connection.user.id) via
+    person/device_tracker matching (see _detect_user_notify_targets).
+
+    Deliberately only ever resolves the caller's own id - the whole point
+    of auto-detect is "here's what we found for the device you're looking
+    at Settings on right now"; suggesting a target for someone else's login
+    would be a guess Family Hub has no way to safely make (see the "manual
+    override always available, never silently assumed" note on the profile
+    editor itself).
+    """
+    user_id = connection.user.id if connection.user else None
+    if not user_id:
+        connection.send_result(msg["id"], {"targets": []})
+        return
+    targets = await _detect_user_notify_targets(hass, user_id)
+    connection.send_result(msg["id"], {"targets": targets})
 
 
 @websocket_api.websocket_command({vol.Required("type"): "family_hub/get_recipes"})
@@ -2312,33 +3016,31 @@ async def _ws_get_grocy_expiring_soon(
     {
         vol.Required("type"): "family_hub/set_grocy_expiring_enabled",
         vol.Required("enabled"): bool,
-        vol.Optional("digest_enabled", default=True): bool,
     }
 )
 @websocket_api.async_response
 async def _ws_set_grocy_expiring_enabled(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
 ) -> None:
-    """Turn the opt-in "Expiring Soon" feature (card list) on/off, and
-    independently whether it also contributes a line to the Daily Digest
-    (digest_enabled - see CONF_GROCY_EXPIRING_DIGEST_ENABLED). Both stored
-    in the config entry's options rather than the Settings Store, same
+    """Turn the opt-in "Expiring Soon" feature (card list) on/off. Stored in
+    the config entry's options rather than the Settings Store, same
     reasoning as CONF_DAILY_DIGEST_ENABLED: the always-running Daily
-    Digest poller needs to see these independent of anyone having the
-    dashboard open."""
+    Digest poller needs to see this independent of anyone having the
+    dashboard open. Whether it also contributes a line to the Daily Digest
+    is now decided per-person by their own profile checkbox alone (see
+    digestSections.grocyExpiring) - there is no household-level digest
+    gate anymore."""
     entry = _get_family_hub_entry(hass)
     if entry is None:
         connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
         return
     enabled = bool(msg["enabled"])
-    digest_enabled = bool(msg.get("digest_enabled", True))
     new_options = {
         **entry.options,
         CONF_GROCY_EXPIRING_ENABLED: enabled,
-        CONF_GROCY_EXPIRING_DIGEST_ENABLED: digest_enabled,
     }
     hass.config_entries.async_update_entry(entry, options=new_options)
-    connection.send_result(msg["id"], {"enabled": enabled, "digest_enabled": digest_enabled})
+    connection.send_result(msg["id"], {"enabled": enabled})
 
 
 async def _fetch_grocy_low_stock(session: aiohttp.ClientSession, url: str, api_key: str) -> list[dict]:
@@ -2421,31 +3123,29 @@ async def _ws_get_grocy_low_stock(
     {
         vol.Required("type"): "family_hub/set_grocy_low_stock_enabled",
         vol.Required("enabled"): bool,
-        vol.Optional("digest_enabled", default=True): bool,
     }
 )
 @websocket_api.async_response
 async def _ws_set_grocy_low_stock_enabled(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
 ) -> None:
-    """Turn the opt-in "Low Stock" feature (card list) on/off, and
-    independently whether it also contributes a line to the Daily Digest
-    (digest_enabled - see CONF_GROCY_LOW_STOCK_DIGEST_ENABLED) - stored in
+    """Turn the opt-in "Low Stock" feature (card list) on/off - stored in
     config entry options, same reasoning as
-    CONF_GROCY_EXPIRING_ENABLED/CONF_DAILY_DIGEST_ENABLED."""
+    CONF_GROCY_EXPIRING_ENABLED/CONF_DAILY_DIGEST_ENABLED. Whether it also
+    contributes a line to the Daily Digest is now decided per-person by
+    their own profile checkbox alone (see digestSections.grocyLowStock) -
+    there is no household-level digest gate anymore."""
     entry = _get_family_hub_entry(hass)
     if entry is None:
         connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
         return
     enabled = bool(msg["enabled"])
-    digest_enabled = bool(msg.get("digest_enabled", True))
     new_options = {
         **entry.options,
         CONF_GROCY_LOW_STOCK_ENABLED: enabled,
-        CONF_GROCY_LOW_STOCK_DIGEST_ENABLED: digest_enabled,
     }
     hass.config_entries.async_update_entry(entry, options=new_options)
-    connection.send_result(msg["id"], {"enabled": enabled, "digest_enabled": digest_enabled})
+    connection.send_result(msg["id"], {"enabled": enabled})
 
 
 @websocket_api.websocket_command(
@@ -2949,6 +3649,93 @@ _INGREDIENT_LEAD_RE = re.compile(
     r"\s*(?P<unit>[a-zA-Z]+)?\.?\s+(?P<rest>\S.*)$"
 )
 
+def _fully_unescape_html(text: str) -> str:
+    """Repeatedly html.unescape()s `text` until a pass makes no further
+    change, instead of assuming a single pass is enough.
+
+    A real recipe site's schema.org JSON-LD ingredient text turned up
+    doubly-escaped ("Salt &amp;amp; pepper" - a CMS bug that ran its own
+    escaping over already-escaped source text): a single unescape() only
+    peels off one layer, leaving a literal "&amp;" behind - which still
+    contains a real "&" character that would go on to confuse anything
+    splitting on it (see _split_combined_salt_pepper_line). Bounded at a
+    handful of passes so a pathological/adversarial input can't loop
+    forever; real-world double- or triple-encoding never comes close.
+    """
+    for _ in range(5):
+        unescaped = html.unescape(text)
+        if unescaped == text:
+            return text
+        text = unescaped
+    return text
+
+
+# The "Salt and Pepper Problem": both link-imported (schema.org
+# recipeIngredient array) and hand-pasted recipes overwhelmingly list these
+# two seasonings together on one line - "Salt and freshly ground black
+# pepper", "Kosher salt and pepper to taste", "salt & pepper" - since that's
+# how they're written in prose and on the shelf. Left alone, that one line
+# becomes exactly one row in the ingredient-matching review screen, which
+# then gets fuzzy-matched (often wrongly, e.g. against "Table Salt") as if
+# it were a single product, when really it's two independently stocked
+# ones. _split_combined_salt_pepper_line runs ahead of the existing
+# per-line parsing/matching so both import paths benefit without changing
+# either of them individually.
+_AND_JOINER_RE = re.compile(r"\s*(?:,\s*)?(?:\band\b|&)\s*", re.IGNORECASE)
+_SALT_WORD_RE = re.compile(r"\bsalt\b", re.IGNORECASE)
+_PEPPER_WORD_RE = re.compile(r"\bpepper\b", re.IGNORECASE)
+_SEASONING_TRAILING_QUALIFIER_RE = re.compile(
+    r",?\s*(to taste|for seasoning|for taste|as needed|to season)\s*$", re.IGNORECASE
+)
+
+
+def _split_combined_salt_pepper_line(raw: str) -> list[str]:
+    """Splits a single "salt and pepper"-style combined line into two
+    independent ingredient lines, one per seasoning, so each can be
+    tracked/matched on its own instead of collapsing into one mismatched
+    row.
+
+    Deliberately narrow: only triggers when the line has exactly one
+    and/& joiner with a "salt" word on one side and a "pepper" word on the
+    other, so it won't touch unrelated "X and Y" lines (like "macaroni and
+    cheese") or longer multi-item lists (like "salt, pepper, and paprika") -
+    both of those are left exactly as typed rather than guessed at. Any
+    non-matching or ambiguous line is returned unchanged as a single-item
+    list, so callers can always just `.extend()` the result.
+    """
+    text = raw.strip()
+    if not text or not (_SALT_WORD_RE.search(text) and _PEPPER_WORD_RE.search(text)):
+        return [raw]
+    parts = _AND_JOINER_RE.split(text)
+    if len(parts) != 2:
+        return [raw]
+    left, right = (p.strip(" ,") for p in parts)
+    if not left or not right:
+        return [raw]
+    has_salt_left, has_pepper_left = bool(_SALT_WORD_RE.search(left)), bool(_PEPPER_WORD_RE.search(left))
+    has_salt_right, has_pepper_right = bool(_SALT_WORD_RE.search(right)), bool(_PEPPER_WORD_RE.search(right))
+    # Exactly one side must carry "salt" and the other "pepper" - if both
+    # words ended up on the same side (an unexpected shape) this isn't a
+    # split this helper understands, so it's left alone.
+    if not (
+        (has_salt_left and has_pepper_right and not has_pepper_left and not has_salt_right)
+        or (has_pepper_left and has_salt_right and not has_salt_left and not has_pepper_right)
+    ):
+        return [raw]
+    # A trailing qualifier like "to taste" is usually only written once,
+    # attached to the second half after the and/& split ("salt and pepper
+    # to taste") - but it reads naturally applied to both once they're
+    # separated. Both halves are normalized to the same ", <qualifier>"
+    # shape (rather than a bare trailing phrase) since that's exactly the
+    # shape _strip_ingredient_asides elsewhere already knows how to clean
+    # off as a prep note before fuzzy-matching against real products.
+    trailing = _SEASONING_TRAILING_QUALIFIER_RE.search(right) or _SEASONING_TRAILING_QUALIFIER_RE.search(left)
+    if trailing:
+        qualifier = trailing.group(0).strip(" ,")
+        left = f"{_SEASONING_TRAILING_QUALIFIER_RE.sub('', left).strip(' ,')}, {qualifier}"
+        right = f"{_SEASONING_TRAILING_QUALIFIER_RE.sub('', right).strip(' ,')}, {qualifier}"
+    return [left, right]
+
 
 def _parse_ingredient_line(raw: str) -> dict:
     """Best-effort split of a raw ingredient line into an amount prefix, a
@@ -2987,17 +3774,30 @@ _QUANTITY_FRACTION_RE = re.compile(r"^(\d+)/(\d+)$")
 _QUANTITY_DECIMAL_FRACTION_RE = re.compile(
     r"^(\d+(?:\.\d+)?)?([¼½¾⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞])?$"
 )
+_QUANTITY_RANGE_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)$")
 
 
 def _parse_quantity_token(token: str) -> float | None:
-    """"1 1/2" / "1/2" / "1½" / "½" / "2" / "2.5" -> a plain float,
+    """"1 1/2" / "1/2" / "1½" / "½" / "2" / "2.5" / "1-2" -> a plain float,
     the same conversion the card's own _parseQuantityToken does client-side
     for the Recipe Viewer's servings scaler - kept in sync deliberately so a
     quantity that scales cleanly there also gets a real numeric `amount` on
     import instead of being discarded as pure display text.
 
-    Returns None for anything that isn't a single clean quantity - a range
-    ("3-4"), no leading number at all ("a pinch of salt"), or blank input -
+    A plain range ("1-2 potatoes", "3-4 cloves garlic") resolves to its
+    upper bound rather than being given up on as unparseable - a real
+    household reported this leaving very ordinary countable ingredients
+    ("1-2 russet potatoes") defaulting to "Don't count toward stock"
+    every time, since the card's own no_stock default is just "did the
+    backend hand back a usable number or not" (see
+    family-week-calendar-card.js). Picking the upper bound errs toward
+    having enough stock counted rather than running short - the same
+    "when in doubt, round up" choice already made elsewhere for a recipe
+    planned more than once with different Servings values (see
+    _groupWeekGrocyRecipes in the card).
+
+    Returns None for anything else that isn't a single clean quantity or
+    range - no leading number at all ("a pinch of salt"), or blank input -
     so the caller knows to leave the ingredient's Grocy stock-math amount
     unset (via not_check_stock_fulfillment) rather than invent a number
     that isn't actually in the recipe.
@@ -3016,6 +3816,9 @@ def _parse_quantity_token(token: str) -> float | None:
         whole = float(match.group(1)) if match.group(1) else 0.0
         frac = _QUANTITY_FRACTION_MAP.get(match.group(2), 0.0) if match.group(2) else 0.0
         return whole + frac
+    match = _QUANTITY_RANGE_RE.match(token)
+    if match:
+        return float(match.group(2))
     return None
 
 
@@ -3508,6 +4311,156 @@ def _best_text_match(query: str, candidates: list[tuple[int, str]], cutoff: floa
     return None
 
 
+def _whole_word_product_match(query: str, candidates: list[tuple[int, str]]):
+    """A second-chance match for short, generic single-word ingredients
+    ("Salt", "Pepper", "Sugar", "Butter", ...) that _best_text_match's
+    difflib ratio misses purely because they're so much shorter than the
+    specific real product name that already covers them - "salt" vs.
+    "Table Salt" scores only ~0.57 (2*overlap/combined-length), just under
+    the 0.6 cutoff, even though "Table Salt" is obviously the same product.
+    A household reported exactly this: the review screen offered the
+    curated reference-list suggestion ("Looks like Table Salt...") instead
+    of matching their own already-existing "Table Salt"/"Black Pepper"
+    Grocy products directly.
+
+    Deliberately narrow to avoid reintroducing the shared-word false match
+    the 0.6 cutoff above was raised to prevent (see that cutoff's own
+    comment - "chicken or vegetable stock" wrongly matching "Vegetable
+    Oil"): only fires for a single-word query (a multi-word phrase already
+    gets a fair shot from the ratio-based match, and carries the same
+    false-positive risk that raised the cutoff in the first place), and
+    only counts a match where that whole word appears as its own word in
+    the candidate name (not as part of a different word). Among multiple
+    hits the shortest candidate name wins - "Salt" over "Salted Butter" for
+    a query of "salt" - since fewer extra words means it's more likely the
+    plain product rather than a different one that merely shares the word.
+    Only ever pre-fills the review screen's dropdown, never anything
+    final - the existing manual picker is still right there to correct it.
+    """
+    words = [w for w in re.findall(r"[a-zA-Z']+", query.lower())]
+    if len(words) != 1 or len(words[0]) < 3:
+        return None
+    word = words[0]
+    word_re = re.compile(rf"\b{re.escape(word)}\b", re.IGNORECASE)
+    hits = [(cid, name) for cid, name in candidates if name and word_re.search(name)]
+    if not hits:
+        return None
+    best_id, best_name = min(hits, key=lambda h: len(h[1]))
+    return (best_id, best_name, 0.6)
+
+
+# "Pepper" the vegetable (bell pepper and its many-colored relatives) and
+# "pepper" the ground spice (black/white peppercorns) are completely
+# different foods that just happen to share one English word - difflib's
+# character-level ratio has no way to know that, which is exactly how a
+# real household's "bell pepper" ingredient line ended up fuzzy-matched
+# to their existing "Black Pepper" spice product (0.78 ratio, comfortably
+# over the 0.6 cutoff - "bell"/"black" are both 5-letter words sharing
+# several letters, on top of the identical "pepper"). Deliberately a
+# plain qualifier-word list, not any real category detection - same
+# "simple over clever" approach as the rest of this file's matching code.
+_PEPPER_VEGETABLE_WORDS = {
+    "bell", "sweet", "chili", "chile", "banana", "poblano", "jalapeno",
+    "jalapeño", "habanero", "cubanelle", "shishito", "serrano", "anaheim",
+    "cherry", "pepperoncini", "pimento", "pimiento", "capsicum",
+}
+
+
+def _pepper_kind(text: str) -> str | None:
+    """Whether `text` refers to the pepper *vegetable* or the pepper
+    *spice* - see _PEPPER_VEGETABLE_WORDS above for why that distinction
+    needs its own check. Returns None when `text` doesn't mention pepper
+    at all - nothing to disambiguate, so nothing for the caller to block.
+
+    An unqualified "pepper"/"peppers" (no vegetable or spice qualifier
+    word either way) defaults to "spice" rather than staying ambiguous -
+    per direction from the household running this integration: most
+    recipes and most households mean the ground spice when they just say
+    "pepper" (as in "salt and pepper"), so only an explicit vegetable-
+    pepper variety word (bell, chili, jalapeño, ...) should ever read as
+    the vegetable. This still only ever blocks a match, never manufactures
+    one - a bare "pepper" line is free to match a real "Black Pepper" (or
+    similarly plain "Pepper") product exactly as before, it just now also
+    correctly refuses a real vegetable-pepper product it has no business
+    matching.
+    """
+    words = set(re.findall(r"[a-zA-Z']+", text.lower()))
+    if "peppercorn" in words or "peppercorns" in words:
+        return "spice"
+    if "pepper" not in words and "peppers" not in words:
+        return None
+    if words & _PEPPER_VEGETABLE_WORDS:
+        return "vegetable"
+    return "spice"
+
+
+# A recipe ingredient often names a *processed form* of something that
+# also exists as a genuinely different, separately-stocked product in its
+# raw/whole/fresh form. A real household reported "1 teaspoon garlic
+# powder" silently matching their existing "Garlic" product (tracked by
+# the clove, a completely different purchase) - "garlic powder" vs.
+# "Garlic" scores 0.632 with difflib, comfortably over the 0.6 cutoff
+# above, simply because "garlic" is most of both strings.
+#
+# Checked the rest of grocery_reference.py for the same shape (a base
+# ingredient with its own entry AND a separate dried/ground/powder-form
+# entry) and it's a whole recurring category, not a one-off: most dried
+# herbs vs. their fresh counterpart (dried oregano/parsley/rosemary/
+# thyme/basil/sage/tarragon/marjoram/chives vs. the fresh herb), dried
+# fruit vs. fresh (dried cranberries/mango), ginger, onion, mustard
+# (the ground spice vs. the prepared condiment), cloves (whole vs.
+# ground, a real collision in BOTH directions), and ground vs. whole/cut
+# meats (ground chicken vs. a whole chicken, ground lamb vs. lamb chops/
+# roast, and the same for beef/turkey/pork/veal/venison/duck even though
+# grocery_reference.py doesn't happen to list a bare entry for those -
+# a household's own real product very plausibly is just named "Beef" or
+# "Turkey").
+#
+# _BASE_INGREDIENT_WORDS below is exactly that evidence-based list - not
+# a fully general "any dried/ground food" mechanism, since that would
+# also override cases where a bare match is *correct* and expected (e.g.
+# "ground cinnamon" matching a plain "Cinnamon" product is fine -
+# grocery_reference.py only has ONE cinnamon entry, "ground" is just an
+# alias of it, there's no competing fresh-cinnamon product to confuse it
+# with - same story for cumin, turmeric, nutmeg, cardamom, coriander).
+_PROCESSED_FORM_WORDS = {
+    "powder", "powdered", "granulated", "ground", "dried", "dehydrated", "minced",
+}
+_WHOLE_FORM_WORDS = {"whole", "fresh"}
+_BASE_INGREDIENT_WORDS = {
+    # herbs - dried vs. fresh
+    "basil", "oregano", "thyme", "parsley", "rosemary", "sage", "tarragon",
+    "marjoram", "chives",
+    # produce / aromatics - dried or powdered vs. fresh
+    "garlic", "ginger", "onion", "onions", "cranberry", "cranberries", "mango",
+    # spice / condiment - a bare product name could plausibly be either form
+    "mustard", "clove", "cloves",
+    # meat - ground vs. whole animal or a specific whole cut
+    "chicken", "beef", "turkey", "pork", "lamb", "veal", "venison", "duck",
+}
+
+
+def _ingredient_form_kind(text: str) -> str | None:
+    """Whether `text` explicitly signals the *processed* form (ground,
+    powdered, dried, minced...) or the *whole/fresh* form of one of the
+    known fresh-vs-processed collision words in _BASE_INGREDIENT_WORDS,
+    or neither. Returns None when `text` doesn't mention any of those
+    words at all, or mentions one with no qualifier either way - most
+    real Grocy product names are exactly that ("Garlic", "Oregano",
+    "Chicken", with no "fresh"/"whole" in the name at all). That's
+    deliberate: see this function's caller for why an unmarked name is
+    only sometimes treated as a conflict, not always.
+    """
+    words = set(re.findall(r"[a-zA-Z']+", text.lower()))
+    if not words & _BASE_INGREDIENT_WORDS:
+        return None
+    if words & _PROCESSED_FORM_WORDS:
+        return "processed"
+    if words & _WHOLE_FORM_WORDS:
+        return "whole"
+    return None
+
+
 _GROCERY_REFERENCE_CANDIDATES: list[tuple[int, str]] | None = None
 
 # Words real recipes routinely wrap around the actual grocery item -
@@ -3556,6 +4509,32 @@ def _strip_ingredient_asides(text: str) -> str:
     text = re.sub(r"\([^)]*\)", " ", text)
     text = text.split(",")[0]
     return re.sub(r"\s+", " ", text).strip()
+
+
+# A real household reported "2 tablespoons extra virgin olive oil" not
+# matching their existing "Olive Oil" product at all - "extra virgin
+# olive oil" vs. "Olive Oil" scores 0.581, just under the 0.6 cutoff,
+# because "extra virgin" is two whole words of noise a plain product name
+# never carries. Unlike _clean_ingredient_reference_text's much broader
+# descriptor stripping (deliberately NOT reused for real-product matching
+# - see _strip_ingredient_asides' docstring - because dropping words like
+# "or"/"and" reintroduces the "chicken or vegetable stock" -> "Vegetable
+# Oil" false match), these are purely quality/processing-grade words for
+# oils that never change what the product actually IS - "extra virgin"
+# and "virgin" both just mean "olive oil made a certain way," never a
+# different product than plain "olive oil" the way "diced" vs. "whole"
+# can matter elsewhere. Deliberately a tiny, oil-specific word list, not
+# a general quality-word stripper - "light"/"pure"/"refined" etc. are
+# left alone since those can be a real, deliberately different SKU for
+# some products (e.g. "light" olive oil is sometimes stocked separately
+# from regular), and this project's own "simple over clever" convention
+# favors a narrow, evidence-backed list over guessing at more.
+_OIL_GRADE_WORDS = {"extra", "extra-virgin", "virgin"}
+
+
+def _strip_oil_grade_words(text: str) -> str:
+    words = [w for w in text.split() if w.lower().strip("-") not in _OIL_GRADE_WORDS]
+    return " ".join(words).strip()
 
 
 def _clean_ingredient_reference_text(text: str) -> str:
@@ -3642,11 +4621,43 @@ def _match_grocery_reference(query: str) -> dict | None:
     # for: an exact or near-exact single word ("onion" out of "sweet
     # onion") that the full cleaned phrase scored too low on because of the
     # word next to it.
+    #
+    # A household reported "extra virgin olive oil" suggested as "Olives"
+    # instead of "Olive Oil": the cleaned phrase "virgin olive oil"
+    # already matches "Olive Oil" correctly at the phrase level (0.72),
+    # but the leftover single word "olive" then scores a hugely inflated
+    # 0.909 against the unrelated "Olives" entry (a short word against a
+    # short candidate name exaggerates difflib's overlap ratio) and used
+    # to silently overwrite the already-correct, more specific phrase-
+    # level match just because 0.909 > 0.72.
+    #
+    # The fix isn't to stop running this fallback once the phrase level
+    # found something - "kosher salt and pepper" genuinely NEEDS it: the
+    # cleaned phrase "salt pepper" itself coincidentally scores 0.727
+    # against the unrelated "Bell Pepper" (matching cutoff-clearing noise,
+    # same shape as the "vegetable stock"/"Vegetable Oil" false match
+    # elsewhere in this file), and only the per-word fallback's exact
+    # "salt" -> "Table Salt" match (via its "salt" alias) rescues the
+    # right answer. The actual difference between these two cases: in the
+    # olive-oil one, the leftover word ("olive") is already PART OF the
+    # phrase-level winner's own name ("Olive Oil") - a different,
+    # shorter-named candidate that merely shares that one word isn't new
+    # information, it's a strictly worse answer for a word the phrase
+    # level already accounted for. In the salt/pepper one, the leftover
+    # word ("salt") shares nothing with the phrase-level winner's name
+    # ("Bell Pepper") at all - it's genuinely new information the phrase
+    # level missed entirely. So: only let a single-word match override
+    # the current best when that word isn't already contained in the
+    # current best's own matched name.
     for word in cleaned.split():
         if len(word) < 3:
             continue
         match = _best_text_match(word, _GROCERY_REFERENCE_CANDIDATES, cutoff=0.85)
-        if match and (best is None or match[2] > best[2]):
+        if not match:
+            continue
+        if best is None:
+            best = match
+        elif match[2] > best[2] and word not in best[1].lower():
             best = match
     if not best:
         return None
@@ -3711,8 +4722,28 @@ async def _ws_match_recipe_ingredients(
         str(u.get("name") or "").strip().lower(): u["id"] for u in units if isinstance(u, dict) and "id" in u
     }
 
-    matches = []
+    # Some recipe sites' own schema.org JSON-LD embeds already-HTML-escaped
+    # (sometimes doubly so - "Salt &amp;amp; pepper" from a CMS that
+    # encoded the text twice) ingredient text instead of a plain "&" -
+    # _fully_unescape_html restores the real character(s) before anything
+    # else touches this line. This has to run before
+    # _split_combined_salt_pepper_line: that helper splits on a literal
+    # "&", and an un-decoded "&amp;" (or "&amp;amp;") would otherwise get
+    # cut mid-entity (into "Salt" + "amp; pepper", or worse "amp;amp;
+    # pepper") instead of at the real "&".
+    #
+    # Expand any combined "salt and pepper"-style lines into their own
+    # independent lines before the existing per-line parsing/matching loop
+    # runs - see _split_combined_salt_pepper_line for why this has to
+    # happen here rather than in either import path individually (both
+    # _ws_parse_recipe_url and _parse_recipe_text converge on this one
+    # handler, so a single fix here covers both).
+    expanded_ingredients: list[str] = []
     for raw in msg["ingredients"]:
+        expanded_ingredients.extend(_split_combined_salt_pepper_line(_fully_unescape_html(str(raw))))
+
+    matches = []
+    for raw in expanded_ingredients:
         parsed = _parse_ingredient_line(str(raw))
         # Raised from the plain _best_text_match default (0.5) - a real
         # household reported "2 1/2 cups chicken or vegetable stock"
@@ -3749,6 +4780,64 @@ async def _ws_match_recipe_ingredients(
             cleaned_match = _best_text_match(cleaned_product_text, product_candidates, cutoff=0.6)
             if cleaned_match and (product_match is None or cleaned_match[2] > product_match[2]):
                 product_match = cleaned_match
+        # A third, even narrower second chance for oil-grade noise words
+        # ("extra virgin olive oil" -> "olive oil") - see
+        # _strip_oil_grade_words for why this is safe alongside the
+        # broader-noise caution above. Tried against whichever of the raw
+        # or asides-stripped text is currently winning, same
+        # only-if-better guard as the tier above.
+        oil_grade_stripped = _strip_oil_grade_words(cleaned_product_text or parsed["product_text"])
+        if oil_grade_stripped and oil_grade_stripped.lower() != (cleaned_product_text or parsed["product_text"]).strip().lower():
+            oil_grade_match = _best_text_match(oil_grade_stripped, product_candidates, cutoff=0.6)
+            if oil_grade_match and (product_match is None or oil_grade_match[2] > product_match[2]):
+                product_match = oil_grade_match
+        # Still nothing? A short, generic single-word ingredient like
+        # "Salt" or "pepper" (very often what's left after
+        # _split_combined_salt_pepper_line above) needs a different kind
+        # of second chance than the cleaning above - the household's real
+        # product is usually named more specifically ("Table Salt", "Black
+        # Pepper"), and being short is exactly what sinks it under the
+        # ratio-based cutoff. See _whole_word_product_match for why this
+        # is safe to try unconditionally: it only fires for single-word
+        # queries, so it can't reintroduce the multi-word false-match
+        # problem the 0.6 cutoff above exists to prevent.
+        if product_match is None:
+            product_match = _whole_word_product_match(cleaned_product_text or parsed["product_text"], product_candidates)
+        # Whatever tier found it, reject a match where the ingredient and
+        # the matched product are talking about different kinds of pepper
+        # (the vegetable vs. the ground spice - see _pepper_kind) rather
+        # than accept a wrong-but-high-scoring match like "bell pepper" ->
+        # "Black Pepper". No match here is strictly safer than a
+        # confidently wrong one - it just falls through to the reference
+        # suggestion or the manual picker, same as any other miss.
+        if product_match is not None:
+            query_pepper_kind = _pepper_kind(cleaned_product_text or parsed["product_text"])
+            match_pepper_kind = _pepper_kind(product_match[1])
+            if query_pepper_kind and match_pepper_kind and query_pepper_kind != match_pepper_kind:
+                product_match = None
+        # Same idea, one guard down, but for the broader fresh/whole-vs-
+        # processed collision (garlic powder vs. Garlic, dried oregano
+        # vs. Oregano, ground chicken vs. a whole chicken, ...) - see
+        # _ingredient_form_kind for the full list and why it's scoped the
+        # way it is. Blocks the dominant real case - the ingredient names
+        # the processed form and the matched product's name carries no
+        # processed-form qualifier at all, since a household's fresh/
+        # whole product is essentially never actually named "Fresh
+        # Garlic", it's just "Garlic" - and the rarer reverse case, where
+        # the ingredient explicitly says "whole"/"fresh" and the matched
+        # product name is itself the processed form (e.g. "whole cloves"
+        # matching an existing "Ground Cloves" product). An ingredient
+        # that names one of these words with NO qualifier at all is left
+        # alone either way - that's the normal, desired case of a bare
+        # "basil"/"cinnamon"/"chicken" ingredient matching whatever
+        # single product a household actually stocks for it.
+        if product_match is not None:
+            query_form = _ingredient_form_kind(cleaned_product_text or parsed["product_text"])
+            match_form = _ingredient_form_kind(product_match[1])
+            if query_form == "processed" and match_form != "processed":
+                product_match = None
+            elif query_form == "whole" and match_form == "processed":
+                product_match = None
         unit_match = _best_text_match(parsed["unit_text"], unit_candidates, cutoff=0.6) if parsed["unit_text"] else None
         amount_value = _parse_quantity_token(parsed["amount_text"])
         unit_id = unit_match[0] if unit_match else None
@@ -4274,6 +5363,104 @@ async def _ws_set_daily_digest(
     )
 
 
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/send_daily_digest_now",
+        vol.Required("user_id"): str,
+        # Both optional and, when given, used as-is instead of looking up
+        # settings["userProfiles"][user_id] - lets the card's "Send test
+        # digest now" button (Notifications tab, per-person profile) send
+        # exactly what's currently on screen, including edits made in this
+        # Settings session that haven't been saved yet. Omitted (e.g. any
+        # future caller besides the card) falls back to the last-SAVED
+        # profile, same source of truth _maybe_send_daily_digest uses.
+        vol.Optional("notify_targets"): [str],
+        vol.Optional("digest_sections"): dict,
+    }
+)
+@websocket_api.async_response
+async def _ws_send_daily_digest_now(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Send one person's Daily Digest right now, on demand.
+
+    Deliberately independent of the household's once-a-day scheduled send
+    (_maybe_send_daily_digest): this never reads or writes digest_state's
+    "already sent today" flag, so pressing the button neither gets blocked
+    by today's regular send having already gone out, nor blocks (or
+    double-sends) tomorrow's regular send. It's purely a manual
+    test/resend - confirming a device actually receives the push and
+    previewing what today's digest currently says.
+    """
+    entry = _get_family_hub_entry(hass)
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry is None or entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+
+    user_id = str(msg["user_id"]).strip()
+    if not user_id:
+        connection.send_error(msg["id"], "invalid_user", "No user specified")
+        return
+
+    # Always loaded once up front now (used to be conditional on
+    # notify_targets/digest_sections not being explicitly overridden in the
+    # message) - v130+'s individual-reminders-list section needs this
+    # recipient's own resolved profile (for primaryCalendar/
+    # remindersSubscriptions) and the people list regardless of which of
+    # those two are overridden.
+    settings, profiles = await _get_settings_and_profiles(hass, entry_data)
+    profile_for_digest = profiles.get(user_id) or _default_user_profile()
+    people = _get_people(settings)
+
+    raw_targets = msg.get("notify_targets")
+    if isinstance(raw_targets, list) and raw_targets:
+        targets = [str(t).strip() for t in raw_targets if str(t).strip()]
+    else:
+        targets = profile_for_digest.get("notifyTargets", [])
+
+    if not targets:
+        connection.send_result(msg["id"], {"success": False, "sent": 0, "failed": 0, "error": "no_notify_target"})
+        return
+
+    raw_sections = msg.get("digest_sections")
+    if isinstance(raw_sections, dict):
+        digest_sections = {key: bool(raw_sections.get(key, default)) for key, default in DEFAULT_DIGEST_SECTIONS.items()}
+    else:
+        digest_sections = profile_for_digest.get("digestSections")
+
+    message = await _build_daily_digest_message(hass, entry, digest_sections, user_id, people=people, profile_for_digest=profile_for_digest)
+
+    sent = 0
+    failed = 0
+    for target in targets:
+        split_target = _split_notify_target(target)
+        if not split_target:
+            _LOGGER.warning(
+                "Family Hub: invalid notify target %r for on-demand Daily Digest - skipping this device", target
+            )
+            failed += 1
+            continue
+        notify_domain, notify_service = split_target
+        try:
+            await hass.services.async_call(
+                notify_domain,
+                notify_service,
+                {
+                    "title": "Good morning! Today's Family Hub digest",
+                    "message": message,
+                    "data": _notification_click_data(entry),
+                },
+                blocking=True,
+            )
+            sent += 1
+        except Exception as err:  # noqa: BLE001 - one failed device must not fail the whole request
+            _LOGGER.warning("Family Hub: failed to send on-demand Daily Digest via %s: %s", target, err)
+            failed += 1
+
+    connection.send_result(msg["id"], {"success": sent > 0, "sent": sent, "failed": failed})
+
+
 def _event_override_key(calendar_entity: str, start_ts: int, summary: str) -> str:
     # Matches identity the same way _dedup_key does (calendar + when + what
     # it's called - calendar.get_events has no stable uid) but keyed off a
@@ -4350,6 +5537,66 @@ async def _ws_set_reminder_override(
     connection.send_result(msg["id"], result)
 
 
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/get_event_people_overrides"})
+@websocket_api.async_response
+async def _ws_get_event_people_overrides(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Return every per-event "who else is this event also for" override,
+    for the card to look up by (calendar, start, summary) - same shape and
+    same reason as _ws_get_reminder_overrides above, just a different value
+    (a list of extra person calendar entity ids instead of reminder
+    minutes)."""
+    entry_data = _get_family_hub_entry_data(hass)
+    overrides = (entry_data or {}).get("event_people_overrides", {})
+    connection.send_result(msg["id"], {"overrides": overrides})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/set_event_people_override",
+        vol.Required("calendar_entity"): str,
+        vol.Required("start"): vol.Any(int, float),
+        vol.Required("summary"): str,
+        vol.Required("people"): [str],
+    }
+)
+@websocket_api.async_response
+async def _ws_set_event_people_override(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Mark an existing event (already created on ONE calendar - see
+    calendar_entity) as also involving other people, without physically
+    duplicating it onto their own real calendars - same
+    can't-rewrite-an-existing-event's-own-data constraint
+    _ws_set_reminder_override already works around, reusing the identical
+    _event_override_key identity. `people` is every OTHER person's calendar
+    entity id also involved (not including calendar_entity itself - that
+    person is already implied by the event living on their calendar). An
+    empty list clears the override entirely (removes the key) rather than
+    storing an empty list, since "no extra people" and "never tagged" mean
+    the same thing here - unlike reminder minutes, there's no meaningful
+    distinction to preserve, so this keeps the store from growing with
+    dead entries as people untag events over time."""
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    people = sorted({str(p) for p in msg["people"] if p and str(p) != msg["calendar_entity"]})
+    calendar_entity = msg["calendar_entity"]
+    key = _event_override_key(calendar_entity, int(msg["start"]), msg["summary"])
+    overrides: dict[str, list[str]] = entry_data.setdefault("event_people_overrides", {})
+    if people:
+        overrides[key] = people
+    else:
+        overrides.pop(key, None)
+    store: Store | None = entry_data.get("event_people_overrides_store")
+    if store is not None:
+        await store.async_save(overrides)
+
+    connection.send_result(msg["id"], {"key": key, "people": people})
+
+
 def _parse_reminder_minutes(description: str) -> list[int]:
     """Parse the (possibly multi-value) reminder marker into a sorted list of minutes.
 
@@ -4404,12 +5651,20 @@ async def _run_poll(
     store: Store,
     notified: dict[str, str],
     reminder_overrides: dict[str, list[int]] | None = None,
+    settings_store: Store | None = None,
 ) -> None:
     options = entry.options
     calendars = options.get(CONF_CALENDARS, [])
-    default_target = options.get(CONF_DEFAULT_NOTIFY, "")
-    overrides = _parse_overrides(options.get(CONF_OVERRIDES_TEXT, ""))
     reminder_overrides = reminder_overrides if reminder_overrides is not None else {}
+    # Per-user notification profiles (see const.py's SETTINGS_KEY_USER_
+    # PROFILES comment) are the source of truth for who gets notified -
+    # settings_store is optional only so tests/callers that don't care
+    # about notification delivery can omit it and get an empty profile set
+    # (no targets, every event logged-and-skipped, same as "nothing
+    # configured" always behaved).
+    profiles: dict[str, dict[str, Any]] = {}
+    if settings_store is not None:
+        _settings, profiles = await _get_settings_and_profiles(hass, {"settings_store": settings_store})
 
     if not calendars:
         return
@@ -4492,9 +5747,9 @@ async def _run_poll(
                 continue
 
             if is_reminder_type:
-                targets = overrides.get(REMINDER_NOTIFY_KEY) or ([default_target] if default_target else [])
+                targets = _targets_for_reminders(profiles)
             else:
-                targets = overrides.get(calendar_entity) or ([default_target] if default_target else [])
+                targets = _targets_for_calendar(profiles, calendar_entity)
             local_start = dt_util.as_local(event_start)
 
             # An event can carry several lead times (e.g. 10 and 30 minutes
@@ -4512,9 +5767,8 @@ async def _run_poll(
 
                 if not targets:
                     _LOGGER.warning(
-                        "Family Hub: no notify device configured for %s - "
-                        "skipping this %s",
-                        REMINDER_NOTIFY_KEY if is_reminder_type else calendar_entity,
+                        "Family Hub: nobody is subscribed to %s - skipping this %s",
+                        "Reminders" if is_reminder_type else calendar_entity,
                         "reminder" if is_reminder_type else "event's reminder",
                     )
                     notified[key] = now.isoformat()
@@ -4587,14 +5841,19 @@ def _prune_notified(notified: dict[str, str], now) -> bool:
     return bool(stale)
 
 
-async def _poll_reminders_todo(
+async def _poll_one_reminders_todo_list(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    store: Store,
     notified: dict[str, str],
-) -> None:
+    reminders_entity: str,
+    targets: list[str],
+    list_label: str | None = None,
+) -> bool:
     """Fire notifications for standalone reminders - Home Assistant to-do
-    items on CONF_REMINDERS_ENTITY, not calendar events.
+    items on ONE to-do list entity, not calendar events. Returns True if
+    `notified` was mutated (the caller is responsible for persisting it -
+    see _poll_reminders_todo below, which polls potentially several of
+    these lists per tick and only wants to save once).
 
     Unlike calendar events (which have no stable uid, so identity has to be
     reconstructed from start+summary), to-do items DO have a persistent uid
@@ -4605,15 +5864,15 @@ async def _poll_reminders_todo(
     from todo.get_items - there's no local marker to go stale, so a rename
     or reschedule done directly in Home Assistant is picked up automatically
     on the very next poll.
-    """
-    options = entry.options
-    reminders_entity = options.get(CONF_REMINDERS_ENTITY)
-    if not reminders_entity:
-        return
 
-    overrides = _parse_overrides(options.get(CONF_OVERRIDES_TEXT, ""))
-    default_target = options.get(CONF_DEFAULT_NOTIFY, "")
-    targets = overrides.get(reminders_entity) or ([default_target] if default_target else [])
+    list_label (v130+) is only ever set when this is one of a person's
+    individual lists (never the single shared family list) - it's folded
+    into the notification title so someone subscribed to more than one
+    person's reminders can tell at a glance whose list just fired, without
+    changing the family list's own notification wording at all.
+    """
+    if not reminders_entity:
+        return False
 
     try:
         response = await hass.services.async_call(
@@ -4627,11 +5886,12 @@ async def _poll_reminders_todo(
         _LOGGER.debug(
             "Family Hub: could not fetch reminders from %s: %s", reminders_entity, err
         )
-        return
+        return False
 
     items = ((response or {}).get(reminders_entity) or {}).get("items", [])
     now = dt_util.utcnow()
     changed = False
+    title_prefix = f"Reminder ({list_label})" if list_label else "Reminder"
 
     for item in items:
         uid = item.get("uid")
@@ -4696,7 +5956,7 @@ async def _poll_reminders_todo(
                     notify_domain,
                     notify_service,
                     {
-                        "title": f"Reminder: {summary}",
+                        "title": f"{title_prefix}: {summary}",
                         "message": f"{summary} - {local_due.strftime('%-I:%M %p')}",
                         "data": _notification_click_data(entry),
                     },
@@ -4715,11 +5975,179 @@ async def _poll_reminders_todo(
         # else: at least one device failed transiently and none succeeded -
         # leave undedup'd so it's retried next poll.
 
-    if _prune_notified(notified, now):
+    return changed
+
+
+async def _poll_reminders_todo(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    store: Store,
+    notified: dict[str, str],
+    settings_store: Store | None = None,
+) -> None:
+    """Orchestrates _poll_one_reminders_todo_list across every reminders
+    list that exists: the single shared "family" list (CONF_REMINDERS_ENTITY,
+    exactly the original single-list behavior this function always had) plus,
+    v130+, one call per person who's configured their own individual list
+    (settings["people"][i]["remindersEntity"] - see _get_people/const.py's
+    own docstring), each with its own owner-plus-alert-subscriber target
+    list (see _targets_for_individual_reminders).
+
+    A person's individual list that happens to be configured to the exact
+    same entity as the family list is skipped (not double-polled/double-
+    notified) - an unlikely misconfiguration, but harmless to guard for.
+    """
+    options = entry.options
+    family_entity = options.get(CONF_REMINDERS_ENTITY)
+
+    settings: dict[str, Any] = {}
+    profiles: dict[str, dict[str, Any]] = {}
+    if settings_store is not None:
+        settings, profiles = await _get_settings_and_profiles(hass, {"settings_store": settings_store})
+
+    changed = False
+    if family_entity:
+        family_targets = _targets_for_reminders(profiles)
+        if await _poll_one_reminders_todo_list(hass, entry, notified, family_entity, family_targets):
+            changed = True
+
+    for person in _get_people(settings):
+        person_reminders_entity = person["remindersEntity"]
+        if not person_reminders_entity or person_reminders_entity == family_entity:
+            continue
+        person_targets = _targets_for_individual_reminders(profiles, person["entity"])
+        if await _poll_one_reminders_todo_list(
+            hass, entry, notified, person_reminders_entity, person_targets, list_label=person["name"]
+        ):
+            changed = True
+
+    if _prune_notified(notified, dt_util.utcnow()):
         changed = True
 
     if changed:
         await store.async_save(notified)
+
+
+async def _poll_chore_due_reminders(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    chores: dict[str, dict[str, Any]],
+    profiles: dict[str, dict[str, Any]],
+    now=None,
+) -> bool:
+    """Poll-tick sweep (see _poll below, alongside sweep_overdue_chores/
+    sweep_due_recurrences) for chore due-date reminders - "remind me N
+    minutes before this is due," the exact same lead-time-before-a-moment
+    idea _run_poll already implements for calendar events, just pointed at
+    a chore's own due_date instead of an event's start.
+
+    Only ever considers a chore that is: open (not yet completed/approved -
+    there's nothing left to be reminded about otherwise), has a due_date
+    set, has a non-empty reminder_minutes list, and has a real assignee
+    (not CHORE_BIN_SENTINEL/unclaimed - nobody specific to tell). The
+    assignee's own userProfiles[uid].notifyChoreDue flag (default False,
+    same "opt in to nothing" convention as every other instant-notification
+    flag - see const.py) gates whether they actually receive it; their own
+    notifyTargets is where it goes.
+
+    Each configured lead time fires independently and is tracked on the
+    chore's own CHORE_KEY_REMINDERS_FIRED list (not the generic `notified`
+    dict _run_poll/_poll_reminders_todo use) so it naturally resets for a
+    fresh occurrence via update_chore (due_date/reminder_minutes edited) or
+    reset_recurring_chore (a brand new cycle) - see both functions' own
+    comments in chore_engine.py. Mirrors _run_poll's own "never fires late
+    for a missed window" rule: a lead time whose target moment has already
+    passed by the time a poll tick notices it simply never fires, exactly
+    like a calendar event reminder wouldn't either.
+
+    Returns True if any chore record was mutated (so the caller knows to
+    save the chores Store), same shape as chore_engine's own sweep
+    functions.
+    """
+    now = now or dt_util.utcnow()
+    changed = False
+    for chore in chores.values():
+        if chore.get("status") != CHORE_STATUS_OPEN:
+            continue
+        due = dt_util.parse_datetime(str(chore.get("due_date"))) if chore.get("due_date") else None
+        if due is None:
+            continue
+        if due.tzinfo is None:
+            due = dt_util.as_utc(due)
+        lead_minutes_list = chore.get(CHORE_KEY_REMINDER_MINUTES) or []
+        if not lead_minutes_list:
+            continue
+        assignee = chore.get("assigned_to")
+        if not assignee or assignee == CHORE_BIN_SENTINEL:
+            continue
+        profile = profiles.get(assignee) or {}
+        if not profile.get("notifyChoreDue"):
+            continue
+        targets = profile.get("notifyTargets") or []
+        if not targets:
+            continue
+
+        fired = set(chore.get(CHORE_KEY_REMINDERS_FIRED) or [])
+        chore_changed = False
+        local_due = dt_util.as_local(due)
+        title_text = chore.get("title") or "(untitled)"
+        for lead_minutes in lead_minutes_list:
+            if lead_minutes in fired:
+                continue
+            reminder_time = due - timedelta(minutes=lead_minutes)
+            if now < reminder_time:
+                continue
+            if now >= due:
+                # Missed window - same rule _run_poll applies to ordinary
+                # calendar-event reminders: a lead time nobody caught in
+                # time simply never fires, rather than firing late/at the
+                # wrong moment relative to what it promised ("10 minutes
+                # before" firing after the due moment has already passed
+                # would be actively misleading).
+                fired.add(lead_minutes)
+                chore_changed = True
+                continue
+
+            any_success = False
+            any_transient_failure = False
+            for target in targets:
+                split_target = _split_notify_target(target)
+                if not split_target:
+                    _LOGGER.warning(
+                        "Family Hub: invalid notify target %r for chore %r - skipping this device",
+                        target, title_text,
+                    )
+                    continue
+                notify_domain, notify_service = split_target
+                try:
+                    await hass.services.async_call(
+                        notify_domain,
+                        notify_service,
+                        {
+                            "title": f"Chore due soon: {title_text}",
+                            "message": f"{title_text} is due at {local_due.strftime('%-I:%M %p')}",
+                            "data": _notification_click_data(entry),
+                        },
+                        blocking=True,
+                    )
+                    any_success = True
+                except Exception as err:  # noqa: BLE001 - a failed notify must not crash the poll
+                    _LOGGER.warning(
+                        "Family Hub: failed to send chore-due notification via %s: %s", target, err
+                    )
+                    any_transient_failure = True
+
+            if any_success or not any_transient_failure:
+                fired.add(lead_minutes)
+                chore_changed = True
+            # else: every device failed transiently - leave undedup'd so
+            # this lead time is retried next poll, same as _run_poll.
+
+        if chore_changed:
+            chore[CHORE_KEY_REMINDERS_FIRED] = sorted(fired)
+            changed = True
+
+    return changed
 
 
 async def _roll_reminder_to_today(
@@ -4770,12 +6198,85 @@ async def _roll_reminder_to_today(
         return due_dt
 
 
-async def _build_daily_digest_message(hass: HomeAssistant, entry: ConfigEntry) -> str:
+async def _todo_summaries_due_today(hass: HomeAssistant, entity_id: str, today_start_utc, today_end_utc) -> list[str]:
+    """Summaries of every needs_action item on one to-do list whose due
+    time falls within [today_start_utc, today_end_utc) - the shared "Due
+    today" fetch-and-filter logic _build_daily_digest_message needs once
+    per list (the family list, plus v130+ one call per visible individual
+    list). A missing/unreachable list degrades to an empty result (logged,
+    not raised) so one bad list never blanks out the rest of the digest."""
+    try:
+        response = await hass.services.async_call(
+            "todo",
+            "get_items",
+            {"entity_id": entity_id, "status": ["needs_action"]},
+            blocking=True,
+            return_response=True,
+        )
+    except Exception as err:  # noqa: BLE001 - a missing to-do list must not stop the digest
+        _LOGGER.debug("Family Hub: digest could not fetch reminders from %s: %s", entity_id, err)
+        return []
+    items = ((response or {}).get(entity_id) or {}).get("items", [])
+    summaries: list[str] = []
+    for item in items:
+        due_raw = item.get("due")
+        if not due_raw:
+            continue
+        due_dt = dt_util.parse_datetime(str(due_raw))
+        if due_dt is None:
+            continue
+        if due_dt.tzinfo is None:
+            due_dt = dt_util.as_utc(due_dt)
+        if today_start_utc <= due_dt < today_end_utc:
+            summaries.append(item.get("summary") or "(untitled)")
+    return summaries
+
+
+async def _build_daily_digest_message(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    digest_sections: dict[str, bool] | None = None,
+    user_id: str | None = None,
+    people: list[dict[str, str]] | None = None,
+    profile_for_digest: dict[str, Any] | None = None,
+) -> str:
     """Build the "good morning" summary: today's calendar events, today's
-    due reminders, and today's planned meals - each section is skipped
-    entirely (not shown as "none") if there's nothing to say, so a light
-    day gets a short message instead of a wall of empty headers.
+    due reminders, today's planned meals, and (v112+) that recipient's own
+    pending chores - each section is skipped entirely (not shown as "none")
+    if there's nothing to say, so a light day gets a short message instead
+    of a wall of empty headers.
+
+    digest_sections is the per-user content customization from that
+    person's notification profile (settings["userProfiles"][uid][
+    "digestSections"], see const.py) - each key gates whether that
+    section is built AT ALL for this particular recipient, on top of
+    whatever global feature toggle (e.g. CONF_GROCY_EXPIRING_ENABLED)
+    already gates it being available to anyone. None means "no per-user
+    profile to consult" (e.g. the Configure options-flow preview) and
+    behaves as if every section were on, same as the digest always did
+    before per-user customization existed.
+
+    user_id is who the "pending chores" section is built for - unlike every
+    other section, it's inherently personal (whose chores, not the
+    household's), so it's None (section skipped, regardless of
+    digest_sections) for any caller that doesn't have a specific recipient
+    in hand.
+
+    people (v130+, from _get_people) and profile_for_digest (this
+    recipient's own already-resolved profile dict, the same one
+    digest_sections/user_id were pulled from) together drive which
+    individual reminders lists - settings["people"][i]["remindersEntity"] -
+    join the "Due today" section alongside the family list: this
+    recipient's own list (profile_for_digest["primaryCalendar"]) plus
+    every other person's list they're subscribed to at either tier (see
+    REMINDER_SUBSCRIPTION_LEVELS - the digest is a "can I see it" surface,
+    same as the calendar grid, not a "should I be alerted" one, so the
+    plain "calendar" tier counts here same as "calendar_alert"). Both
+    default None/skip entirely for any caller that doesn't have a specific
+    recipient's own profile in hand (e.g. the Configure options-flow
+    preview, same reasoning as user_id above).
     """
+    sections = digest_sections if digest_sections is not None else dict(DEFAULT_DIGEST_SECTIONS)
     options = entry.options
     now_local = dt_util.now()
     today_start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -4787,7 +6288,7 @@ async def _build_daily_digest_message(hass: HomeAssistant, entry: ConfigEntry) -
 
     # --- Today's calendar events ---
     event_lines: list[str] = []
-    for calendar_entity in options.get(CONF_CALENDARS, []):
+    for calendar_entity in (options.get(CONF_CALENDARS, []) if sections.get("calendar", True) else []):
         try:
             response = await hass.services.async_call(
                 "calendar",
@@ -4823,39 +6324,40 @@ async def _build_daily_digest_message(hass: HomeAssistant, entry: ConfigEntry) -
 
     # --- Today's due reminders ---
     reminders_entity = options.get(CONF_REMINDERS_ENTITY)
-    if reminders_entity:
-        try:
-            response = await hass.services.async_call(
-                "todo",
-                "get_items",
-                {"entity_id": reminders_entity, "status": ["needs_action"]},
-                blocking=True,
-                return_response=True,
+    reminder_lines: list[str] = []
+    if sections.get("reminders", True):
+        if reminders_entity:
+            reminder_lines.extend(
+                await _todo_summaries_due_today(hass, reminders_entity, today_start_utc, today_end_utc)
             )
-            items = ((response or {}).get(reminders_entity) or {}).get("items", [])
-            reminder_lines = []
-            for item in items:
-                due_raw = item.get("due")
-                if not due_raw:
-                    continue
-                due_dt = dt_util.parse_datetime(str(due_raw))
-                if due_dt is None:
-                    continue
-                if due_dt.tzinfo is None:
-                    due_dt = dt_util.as_utc(due_dt)
-                if today_start_utc <= due_dt < today_end_utc:
-                    reminder_lines.append(item.get("summary") or "(untitled)")
-            if reminder_lines:
-                lines.append("Due today:")
-                lines.extend(f"  - {line}" for line in sorted(reminder_lines))
-        except Exception as err:  # noqa: BLE001 - a missing to-do list must not stop the digest
-            _LOGGER.debug(
-                "Family Hub: digest could not fetch reminders from %s: %s", reminders_entity, err
-            )
+        # v130+: this recipient's OWN individual reminders list, plus every
+        # other person's list they're subscribed to (either tier - both
+        # "calendar" and "calendar_alert" make a list visible; only the
+        # alert tier additionally pushes a notification, handled entirely
+        # separately by _targets_for_individual_reminders/the poller, not
+        # here) - each labeled with whose list it came from so a digest
+        # covering more than one person's reminders stays legible. The
+        # family list above is never labeled, same as it always looked.
+        own_calendar = (profile_for_digest or {}).get("primaryCalendar") or ""
+        subs = (profile_for_digest or {}).get("remindersSubscriptions") or {}
+        for person in people or []:
+            person_entity = person.get("entity", "")
+            person_reminders_entity = person.get("remindersEntity", "")
+            if not person_reminders_entity or person_reminders_entity == reminders_entity:
+                continue
+            is_own = person_entity == own_calendar
+            if not is_own and person_entity not in subs:
+                continue
+            person_lines = await _todo_summaries_due_today(hass, person_reminders_entity, today_start_utc, today_end_utc)
+            label = person.get("name") or person_entity
+            reminder_lines.extend(f"{line} ({label})" for line in person_lines)
+    if reminder_lines:
+        lines.append("Due today:")
+        lines.extend(f"  - {line}" for line in sorted(reminder_lines))
 
     # --- Today's planned meals ---
     meal_plan_entity = options.get(CONF_MEAL_PLAN_ENTITY)
-    if meal_plan_entity:
+    if meal_plan_entity and sections.get("meals", True):
         try:
             response = await hass.services.async_call(
                 "todo",
@@ -4885,12 +6387,17 @@ async def _build_daily_digest_message(hass: HomeAssistant, entry: ConfigEntry) -
             )
 
     # --- Grocy: items expiring soon (opt-in, off by default - see
-    # CONF_GROCY_EXPIRING_ENABLED). Independently gated on
-    # CONF_GROCY_EXPIRING_DIGEST_ENABLED too - the feature can be on for
-    # the card's own "Expiring Soon" list while staying out of the
-    # morning digest; defaults to True (missing key = pre-dates this
-    # setting) so existing installs keep the line they already had. ---
-    if options.get(CONF_GROCY_EXPIRING_ENABLED) and options.get(CONF_GROCY_EXPIRING_DIGEST_ENABLED, True):
+    # CONF_GROCY_EXPIRING_ENABLED). Two-way gate: the household-wide
+    # feature must be on, AND this recipient's own digestSections.
+    # grocyExpiring toggle must be on - the feature can be on for the
+    # card's own "Expiring Soon" list while staying out of one particular
+    # person's digest via their own per-user toggle. There is no
+    # household-level digest-inclusion flag anymore - each person's
+    # profile checkbox is the sole control. ---
+    if (
+        options.get(CONF_GROCY_EXPIRING_ENABLED)
+        and sections.get("grocyExpiring", True)
+    ):
         grocy_url = options.get(CONF_GROCY_URL) or ""
         grocy_api_key = options.get(CONF_GROCY_API_KEY) or ""
         if grocy_url and grocy_api_key:
@@ -4907,10 +6414,13 @@ async def _build_daily_digest_message(hass: HomeAssistant, entry: ConfigEntry) -
                 _LOGGER.debug("Family Hub: digest could not fetch Grocy expiring stock: %s", err)
 
     # --- Grocy: items running low (opt-in, off by default - see
-    # CONF_GROCY_LOW_STOCK_ENABLED). Independently gated on
-    # CONF_GROCY_LOW_STOCK_DIGEST_ENABLED, same reasoning as the expiring-
-    # soon section above. ---
-    if options.get(CONF_GROCY_LOW_STOCK_ENABLED) and options.get(CONF_GROCY_LOW_STOCK_DIGEST_ENABLED, True):
+    # CONF_GROCY_LOW_STOCK_ENABLED). Same two-way gate as the expiring-
+    # soon section above (household feature + this recipient's own
+    # toggle). ---
+    if (
+        options.get(CONF_GROCY_LOW_STOCK_ENABLED)
+        and sections.get("grocyLowStock", True)
+    ):
         grocy_url = options.get(CONF_GROCY_URL) or ""
         grocy_api_key = options.get(CONF_GROCY_API_KEY) or ""
         if grocy_url and grocy_api_key:
@@ -4923,9 +6433,36 @@ async def _build_daily_digest_message(hass: HomeAssistant, entry: ConfigEntry) -
             except Exception as err:  # noqa: BLE001 - a Grocy hiccup must not stop the digest
                 _LOGGER.debug("Family Hub: digest could not fetch Grocy low stock: %s", err)
 
+    # --- That person's own pending chores (v112+, opt-in via digestSections.
+    # chores, default True). "Pending" = status "open" and assigned directly
+    # to them - not sitting unclaimed in the Chore Bin, and not
+    # pending_verification (that's already done and out of their hands,
+    # waiting on someone else) - so this reads as a to-do reminder, not a
+    # status report. Deliberately skipped (not an empty "chores" line) for
+    # someone with chores turned off entirely, same as every other section
+    # here degrades to nothing rather than an empty header when there's
+    # nothing to say. ---
+    if user_id and sections.get("chores", True):
+        entry_data = _get_family_hub_entry_data(hass)
+        chores = (entry_data or {}).get("chores") or {}
+        pending = [
+            c for c in chores.values()
+            if c.get("status") == CHORE_STATUS_OPEN and c.get("assigned_to") == user_id
+        ]
+        if pending:
+            lines.append("Your pending chores:")
+            lines.extend(f"  - {c.get('title') or '(untitled)'}" for c in sorted(pending, key=lambda c: c.get("title") or ""))
+
     if not lines:
         return "Nothing on the calendar, no reminders due, and no meals planned for today."
     return "\n".join(lines)
+
+
+def _digest_state_key(entry_id: str, user_id: str) -> str:
+    """digest_state entries used to be keyed by entry_id alone (one
+    household-wide digest); now each recipient has their own "already sent
+    today" flag, since content and send eligibility are per-user."""
+    return f"{entry_id}:{user_id}"
 
 
 async def _maybe_send_daily_digest(
@@ -4933,12 +6470,20 @@ async def _maybe_send_daily_digest(
     entry: ConfigEntry,
     digest_store: Store,
     digest_state: dict[str, str],
+    settings_store: Store | None = None,
 ) -> None:
     """Fire the Daily Digest once per day, the first poll cycle at or after
     its configured local send time - not a separately-scheduled callback,
     since the existing poll loop already runs often enough (default every 5
     minutes) that piggybacking on it is simpler than registering and
     re-registering a second timer whenever the configured time changes.
+
+    CONF_DAILY_DIGEST_ENABLED/CONF_DAILY_DIGEST_TIME stay household-wide
+    (the feature is on at all, and everyone who wants it gets it at the
+    same time) - but WHO gets it, and what's in each person's copy, is now
+    per-user: every profile with digestEnabled gets their own message
+    (built from their own digestSections) sent to their own notifyTargets,
+    with its own independent "already sent today" flag.
     """
     options = entry.options
     if not options.get(CONF_DAILY_DIGEST_ENABLED):
@@ -4951,52 +6496,76 @@ async def _maybe_send_daily_digest(
 
     now_local = dt_util.now()
     today_str = now_local.strftime("%Y-%m-%d")
-    if digest_state.get(entry.entry_id) == today_str:
-        return  # already sent today
     if (now_local.hour, now_local.minute) < (target_hour, target_minute):
         return  # not time yet today
 
-    overrides = _parse_overrides(options.get(CONF_OVERRIDES_TEXT, ""))
-    default_target = options.get(CONF_DEFAULT_NOTIFY, "")
-    targets = overrides.get(DAILY_DIGEST_NOTIFY_KEY) or ([default_target] if default_target else [])
-    if not targets:
-        _LOGGER.warning(
-            "Family Hub: Daily Digest is enabled but no notify device is configured - skipping today's digest"
-        )
-        digest_state[entry.entry_id] = today_str
-        await digest_store.async_save(digest_state)
+    settings: dict[str, Any] = {}
+    profiles: dict[str, dict[str, Any]] = {}
+    if settings_store is not None:
+        settings, profiles = await _get_settings_and_profiles(hass, {"settings_store": settings_store})
+    people = _get_people(settings)
+    recipients = _digest_recipients(profiles)
+    if not recipients:
+        # Nobody has opted in yet (e.g. right after migration, before anyone
+        # has visited the new Notifications tab) - nothing to send, and
+        # nothing to mark as sent either, so the very next person to enable
+        # their digest still gets it today rather than waiting until
+        # tomorrow because some earlier, unrelated poll tick "used up" the
+        # day's send.
         return
 
-    message = await _build_daily_digest_message(hass, entry)
-    any_success = False
-    any_transient_failure = False
-    for target in targets:
-        split_target = _split_notify_target(target)
-        if not split_target:
-            _LOGGER.warning("Family Hub: invalid notify target %r for Daily Digest - skipping this device", target)
-            continue
-        notify_domain, notify_service = split_target
-        try:
-            await hass.services.async_call(
-                notify_domain,
-                notify_service,
-                {
-                    "title": "Good morning! Today's Family Hub digest",
-                    "message": message,
-                    "data": _notification_click_data(entry),
-                },
-                blocking=True,
-            )
-            any_success = True
-        except Exception as err:  # noqa: BLE001 - a failed notify must not crash the poll
-            _LOGGER.warning("Family Hub: failed to send Daily Digest via %s: %s", target, err)
-            any_transient_failure = True
+    changed = False
+    for user_id, profile in recipients:
+        state_key = _digest_state_key(entry.entry_id, user_id)
+        if digest_state.get(state_key) == today_str:
+            continue  # already sent to this person today
 
-    if any_success or not any_transient_failure:
-        digest_state[entry.entry_id] = today_str
+        targets = profile.get("notifyTargets", [])
+        if not targets:
+            _LOGGER.warning(
+                "Family Hub: Daily Digest is enabled for a user with no notify target "
+                "configured - skipping today's digest for them"
+            )
+            digest_state[state_key] = today_str
+            changed = True
+            continue
+
+        message = await _build_daily_digest_message(hass, entry, profile.get("digestSections"), user_id, people=people, profile_for_digest=profile)
+        any_success = False
+        any_transient_failure = False
+        for target in targets:
+            split_target = _split_notify_target(target)
+            if not split_target:
+                _LOGGER.warning(
+                    "Family Hub: invalid notify target %r for Daily Digest - skipping this device", target
+                )
+                continue
+            notify_domain, notify_service = split_target
+            try:
+                await hass.services.async_call(
+                    notify_domain,
+                    notify_service,
+                    {
+                        "title": "Good morning! Today's Family Hub digest",
+                        "message": message,
+                        "data": _notification_click_data(entry),
+                    },
+                    blocking=True,
+                )
+                any_success = True
+            except Exception as err:  # noqa: BLE001 - a failed notify must not crash the poll
+                _LOGGER.warning("Family Hub: failed to send Daily Digest via %s: %s", target, err)
+                any_transient_failure = True
+
+        if any_success or not any_transient_failure:
+            digest_state[state_key] = today_str
+            changed = True
+        # else: every device failed transiently - leave this person unmarked
+        # so their digest is retried next poll rather than silently skipped
+        # for today.
+
+    if changed:
         await digest_store.async_save(digest_state)
-    # else: every device failed transiently - leave unmarked so it's retried
-    # on the next poll rather than silently skipping today's digest.
 
 
 async def _build_upcoming_summary(
@@ -5031,8 +6600,10 @@ async def _build_upcoming_summary(
             "Add it under Calendar reminders to include it.\n\n"
         )
 
-    default_target = options.get(CONF_DEFAULT_NOTIFY, "")
-    overrides = _parse_overrides(options.get(CONF_OVERRIDES_TEXT, ""))
+    profiles: dict[str, dict[str, Any]] = {}
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is not None:
+        _settings, profiles = await _get_settings_and_profiles(hass, entry_data)
     now = dt_util.utcnow()
     query_start = now - timedelta(minutes=POLL_QUERY_GRACE_MINUTES)
     window_end = now + timedelta(hours=DEFAULT_LOOKAHEAD_HOURS)
@@ -5083,10 +6654,10 @@ async def _build_upcoming_summary(
                 continue
 
             if is_reminder_type:
-                targets = overrides.get(REMINDER_NOTIFY_KEY) or ([default_target] if default_target else [])
+                targets = _targets_for_reminders(profiles)
             else:
-                targets = overrides.get(calendar_entity) or ([default_target] if default_target else [])
-            target_text = ", ".join(targets) if targets else "(no notify target configured)"
+                targets = _targets_for_calendar(profiles, calendar_entity)
+            target_text = ", ".join(targets) if targets else "(nobody subscribed)"
 
             for lead_minutes in lead_minutes_list:
                 reminder_time = event_start - timedelta(minutes=lead_minutes)
@@ -5119,8 +6690,8 @@ async def _build_upcoming_summary(
             reminder_items = ((reminder_response or {}).get(reminders_entity) or {}).get("items", [])
         except Exception:  # noqa: BLE001 - the to-do list may not exist (yet)
             reminder_items = []
-        reminder_targets = overrides.get(reminders_entity) or ([default_target] if default_target else [])
-        reminder_target_text = ", ".join(reminder_targets) if reminder_targets else "(no notify target configured)"
+        reminder_targets = _targets_for_reminders(profiles)
+        reminder_target_text = ", ".join(reminder_targets) if reminder_targets else "(nobody subscribed)"
         for item in reminder_items:
             uid = item.get("uid")
             due_raw = item.get("due")
@@ -5152,6 +6723,298 @@ async def _build_upcoming_summary(
     if len(rows) > max_rows:
         lines.append(f"...and {len(rows) - max_rows} more.")
     return warning + "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Chores: sensor-driven triggers + native services
+# ---------------------------------------------------------------------------
+
+
+def _chore_trigger_matches(trigger: Optional[dict], entity_id: str, old_state: Optional[str], new_state: Optional[str]) -> bool:
+    """A chore's auto_create_trigger/auto_complete_trigger field is a
+    {"entity_id": ..., "from_state": ..., "to_state": ...} matcher.
+    from_state/to_state of None/""/"*" means "don't care" (e.g. a trigger
+    that only cares the dryer is now "off", regardless of what it was
+    before)."""
+    if not isinstance(trigger, dict):
+        return False
+    if trigger.get("entity_id") != entity_id:
+        return False
+    from_state = trigger.get("from_state")
+    to_state = trigger.get("to_state")
+    if from_state not in (None, "", "*") and old_state != from_state:
+        return False
+    if to_state not in (None, "", "*") and new_state != to_state:
+        return False
+    return True
+
+
+async def _async_handle_chore_sensor_trigger(
+    hass: HomeAssistant, entry_data: dict[str, Any], entity_id: str, old_state: Optional[str], new_state: Optional[str]
+) -> None:
+    """The actual matching/reset/complete logic behind "Dryer finished
+    creates chore" / "Dishwasher opened marks complete" - given plain
+    entity_id/old_state/new_state strings so it's directly unit-testable
+    without needing real HA State/Event objects. See
+    _async_setup_chore_sensor_listener for the thin real-event-bus wiring
+    that calls this.
+
+    Deliberately scans every chore rather than maintaining a dynamic
+    per-entity subscription list: chores (and therefore which entity_ids
+    matter) can be created/edited/deleted at any time from three different
+    cards plus the websocket API and native services, and re-subscribing
+    homeassistant.helpers.event.async_track_state_change_event on every
+    single one of those changes would be a lot of bookkeeping for what is,
+    in practice, a handful of chores with sensor triggers configured at
+    all - a plain dict scan on every state_changed event is cheap enough
+    not to matter, and it means a chore's trigger fields take effect the
+    moment they're saved with no separate "apply" step.
+    """
+    chores = entry_data["chores"]
+    changed = False
+    for chore_id in list(chores.keys()):
+        chore = chores.get(chore_id)
+        if chore is None:
+            continue
+        if _chore_trigger_matches(chore.get("auto_create_trigger"), entity_id, old_state, new_state):
+            try:
+                if chore_engine.reset_recurring_chore(chores, hass, chore_id) is not None:
+                    changed = True
+            except chore_engine.ChoreError as err:
+                _LOGGER.debug("Family Hub: auto_create_trigger fired for chore %s but couldn't reset it: %s", chore_id, err)
+        chore = chores.get(chore_id)
+        if chore is None:
+            continue
+        if chore["status"] == CHORE_STATUS_OPEN and _chore_trigger_matches(
+            chore.get("auto_complete_trigger"), entity_id, old_state, new_state
+        ):
+            try:
+                chore_engine.complete_chore(chores, hass, chore_id, chore.get("assigned_to"))
+                changed = True
+            except chore_engine.ChoreError as err:
+                _LOGGER.debug("Family Hub: auto_complete_trigger fired for chore %s but couldn't complete it: %s", chore_id, err)
+    if changed:
+        await entry_data["chores_store"].async_save(chores)
+        await chores_store.backup_chores(hass, chores)
+        entity = entry_data.get("chores_todo_entity")
+        if entity is not None:
+            entity.async_write_ha_state()
+
+
+def _async_setup_chore_sensor_listener(hass: HomeAssistant, entry_data: dict[str, Any]):
+    """A single hass.bus listener for every state_changed event, filtering
+    internally (see _async_handle_chore_sensor_trigger's docstring for why
+    this is preferred here over a dynamically-managed
+    async_track_state_change_event subscription per chore). Returns the
+    cancel callable hass.bus.async_listen hands back, stored by the caller
+    (async_setup_entry) and invoked on unload."""
+
+    async def _handler(event) -> None:
+        entity_id = event.data.get("entity_id") if hasattr(event, "data") else None
+        if not entity_id:
+            return
+        old_state = event.data.get("old_state")
+        new_state = event.data.get("new_state")
+        old_state_str = getattr(old_state, "state", None)
+        new_state_str = getattr(new_state, "state", None)
+        await _async_handle_chore_sensor_trigger(hass, entry_data, entity_id, old_state_str, new_state_str)
+
+    return hass.bus.async_listen("state_changed", _handler)
+
+
+async def _notify_chore_approved_native(hass: HomeAssistant, entry_data: dict[str, Any], chore: dict[str, Any]) -> None:
+    """v123+: mirrors chores_websocket_api.py's own _notify_chore_approved -
+    an instant push to the chore's own assignee, gated by their profile's
+    notifyChoreApproved flag, kept in sync with (but duplicated from,
+    same reasoning as this module's own _split_notify_target having a
+    local copy over there) that module's version rather than imported, to
+    avoid a circular import between the two."""
+    assignee = chore.get("assigned_to") if chore else None
+    if not assignee:
+        return
+    settings_store = entry_data.get("settings_store")
+    settings = await settings_store.async_load() or {} if settings_store else {}
+    profile = (settings.get(SETTINGS_KEY_USER_PROFILES) or {}).get(assignee) or {}
+    if not profile.get("notifyChoreApproved"):
+        return
+    notify_targets = profile.get("notifyTargets") or []
+    if not notify_targets:
+        return
+    entry = _get_family_hub_entry(hass)
+    data = _notification_click_data(entry) if entry else {}
+    stars = int(chore.get("star_value") or 0)
+    stars_note = f" (+{stars} star{'s' if stars != 1 else ''})" if stars else ""
+    message = f"\"{chore.get('title')}\" was approved{stars_note}!"
+    for target in notify_targets:
+        split_target = _split_notify_target(target)
+        if not split_target:
+            continue
+        notify_domain, notify_service = split_target
+        try:
+            await hass.services.async_call(
+                notify_domain, notify_service,
+                {"title": "Family Hub chore approved", "message": message, "data": data},
+                blocking=True,
+            )
+        except Exception as err:  # noqa: BLE001 - a failed notify must never break approval itself
+            _LOGGER.warning("Family Hub: failed to send chore-approved notification via %s: %s", target, err)
+
+
+async def _notify_chore_rejected_native(hass: HomeAssistant, entry_data: dict[str, Any], chore: dict[str, Any]) -> None:
+    """v128+: the reject-side twin of _notify_chore_approved_native right
+    above - same "gated by the assignee's own profile flag, duplicated
+    rather than imported to avoid a circular import" shape, mirroring
+    chores_websocket_api.py's own _notify_chore_rejected. Includes the
+    verifier's optional reject_reason note in the message when one was
+    given (see const.py's CHORE_KEY_REJECT_REASON docstring)."""
+    assignee = chore.get("assigned_to") if chore else None
+    if not assignee:
+        return
+    settings_store = entry_data.get("settings_store")
+    settings = await settings_store.async_load() or {} if settings_store else {}
+    profile = (settings.get(SETTINGS_KEY_USER_PROFILES) or {}).get(assignee) or {}
+    if not profile.get("notifyChoreRejected"):
+        return
+    notify_targets = profile.get("notifyTargets") or []
+    if not notify_targets:
+        return
+    entry = _get_family_hub_entry(hass)
+    data = _notification_click_data(entry) if entry else {}
+    reason = (chore.get("reject_reason") or "").strip()
+    reason_note = f" - {reason}" if reason else ""
+    message = f"\"{chore.get('title')}\" was sent back, not approved{reason_note}."
+    for target in notify_targets:
+        split_target = _split_notify_target(target)
+        if not split_target:
+            continue
+        notify_domain, notify_service = split_target
+        try:
+            await hass.services.async_call(
+                notify_domain, notify_service,
+                {"title": "Family Hub chore sent back", "message": message, "data": data},
+                blocking=True,
+            )
+        except Exception as err:  # noqa: BLE001 - a failed notify must never break rejection itself
+            _LOGGER.warning("Family Hub: failed to send chore-rejected notification via %s: %s", target, err)
+
+
+async def _async_register_chore_services(hass: HomeAssistant) -> None:
+    """Native family_hub.* services (see services.yaml) - the same four
+    actions the websocket API exposes to the cards, for voice assistants/
+    native HA automations/scripts. Domain-wide (not per-entry, though
+    Family Hub is single-instance anyway) and idempotent - safe to call on
+    every async_setup_entry (e.g. a reload) without erroring or double-
+    registering.
+
+    Deliberately NOT permission-gated the way the websocket API is: a
+    native service call runs with whatever authority the household already
+    gave the automation/script/voice-assistant integration that invoked
+    it, the same trust model every other Home Assistant service uses (e.g.
+    light.turn_on isn't gated per-user) - the Permissions store only
+    governs the interactive card UI.
+    """
+    if hass.services.has_service(DOMAIN, SERVICE_CREATE_CHORE):
+        return
+
+    async def _handle_create_chore(call: ServiceCall) -> None:
+        entry_data = _get_family_hub_entry_data(hass)
+        if entry_data is None:
+            _LOGGER.warning("Family Hub: %s called but Family Hub isn't set up", SERVICE_CREATE_CHORE)
+            return
+        # A native service call isn't permission-gated (see this function's
+        # own docstring), but Family Hub membership isn't a permission -
+        # it's "does this person show up in Family Hub at all" - so it's
+        # still enforced here, the same as every other create_chore call
+        # site.
+        settings, _profiles = await _get_settings_and_profiles(hass, entry_data)
+        member_ids = _get_member_user_ids(settings)
+        try:
+            chore_engine.create_chore(
+                entry_data["chores"], hass, dict(call.data),
+                lambda uid: uid in member_ids,
+            )
+        except chore_engine.ChoreError as err:
+            _LOGGER.warning("Family Hub: %s failed: %s", SERVICE_CREATE_CHORE, err)
+            return
+        await entry_data["chores_store"].async_save(entry_data["chores"])
+        await chores_store.backup_chores(hass, entry_data["chores"])
+
+    async def _handle_complete_chore(call: ServiceCall) -> None:
+        entry_data = _get_family_hub_entry_data(hass)
+        if entry_data is None:
+            _LOGGER.warning("Family Hub: %s called but Family Hub isn't set up", SERVICE_COMPLETE_CHORE)
+            return
+        chore = entry_data["chores"].get(call.data.get("chore_id"))
+        try:
+            chore_engine.complete_chore(
+                entry_data["chores"], hass, call.data["chore_id"], chore.get("assigned_to") if chore else None
+            )
+        except chore_engine.ChoreError as err:
+            _LOGGER.warning("Family Hub: %s failed: %s", SERVICE_COMPLETE_CHORE, err)
+            return
+        await entry_data["chores_store"].async_save(entry_data["chores"])
+        await chores_store.backup_chores(hass, entry_data["chores"])
+
+    async def _handle_approve_chore(call: ServiceCall) -> None:
+        entry_data = _get_family_hub_entry_data(hass)
+        if entry_data is None:
+            _LOGGER.warning("Family Hub: %s called but Family Hub isn't set up", SERVICE_APPROVE_CHORE)
+            return
+        try:
+            chore = chore_engine.approve_chore(entry_data["chores"], entry_data["rewards"], hass, call.data["chore_id"], None)
+        except chore_engine.ChoreError as err:
+            _LOGGER.warning("Family Hub: %s failed: %s", SERVICE_APPROVE_CHORE, err)
+            return
+        await entry_data["chores_store"].async_save(entry_data["chores"])
+        await chores_store.backup_chores(hass, entry_data["chores"])
+        await entry_data["rewards_store"].async_save(entry_data["rewards"])
+        await chores_store.backup_rewards(hass, entry_data["rewards"])
+        # v123+: same notifyChoreApproved push chores_websocket_api.py's own
+        # ws_approve_chore sends - a native-service-triggered approval (an
+        # automation, a voice assistant) must notify the assignee too, not
+        # only an approval tapped from the card.
+        await _notify_chore_approved_native(hass, entry_data, chore)
+
+    async def _handle_reject_chore(call: ServiceCall) -> None:
+        entry_data = _get_family_hub_entry_data(hass)
+        if entry_data is None:
+            _LOGGER.warning("Family Hub: %s called but Family Hub isn't set up", SERVICE_REJECT_CHORE)
+            return
+        try:
+            chore = chore_engine.reject_chore(
+                entry_data["chores"], hass, call.data["chore_id"], None, call.data.get("reason")
+            )
+        except chore_engine.ChoreError as err:
+            _LOGGER.warning("Family Hub: %s failed: %s", SERVICE_REJECT_CHORE, err)
+            return
+        await entry_data["chores_store"].async_save(entry_data["chores"])
+        await chores_store.backup_chores(hass, entry_data["chores"])
+        # v128+: same notifyChoreRejected push chores_websocket_api.py's own
+        # ws_reject_chore sends - a native-service-triggered rejection (an
+        # automation, a voice assistant) must notify the assignee too, not
+        # only a rejection tapped from the card.
+        await _notify_chore_rejected_native(hass, entry_data, chore)
+
+    async def _handle_nudge_user(call: ServiceCall) -> None:
+        entry_data = _get_family_hub_entry_data(hass)
+        if entry_data is None:
+            _LOGGER.warning("Family Hub: %s called but Family Hub isn't set up", SERVICE_NUDGE_USER)
+            return
+        chore = entry_data["chores"].get(call.data.get("chore_id"))
+        if chore is None:
+            _LOGGER.warning("Family Hub: %s called for unknown chore %r", SERVICE_NUDGE_USER, call.data.get("chore_id"))
+            return
+        settings = await entry_data["settings_store"].async_load() or {}
+        profile = (settings.get(SETTINGS_KEY_USER_PROFILES) or {}).get(chore.get("assigned_to")) or {}
+        await chore_engine.send_nudge(
+            hass, chore, actor=None, notify_targets=profile.get("notifyTargets") or [], split_notify_target=_split_notify_target
+        )
+
+    hass.services.async_register(DOMAIN, SERVICE_CREATE_CHORE, _handle_create_chore)
+    hass.services.async_register(DOMAIN, SERVICE_COMPLETE_CHORE, _handle_complete_chore)
+    hass.services.async_register(DOMAIN, SERVICE_APPROVE_CHORE, _handle_approve_chore)
+    hass.services.async_register(DOMAIN, SERVICE_REJECT_CHORE, _handle_reject_chore)
+    hass.services.async_register(DOMAIN, SERVICE_NUDGE_USER, _handle_nudge_user)
 
 
 # ---------------------------------------------------------------------------
@@ -5266,6 +7129,8 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     websocket_api.async_register_command(hass, _ws_set_notify_overrides)
     websocket_api.async_register_command(hass, _ws_get_reminder_overrides)
     websocket_api.async_register_command(hass, _ws_set_reminder_override)
+    websocket_api.async_register_command(hass, _ws_get_event_people_overrides)
+    websocket_api.async_register_command(hass, _ws_set_event_people_override)
     websocket_api.async_register_command(hass, _ws_set_reminders_entity)
     websocket_api.async_register_command(hass, _ws_set_notification_click_path)
     websocket_api.async_register_command(hass, _ws_get_grocy_recipes)
@@ -5296,12 +7161,20 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     websocket_api.async_register_command(hass, _ws_create_grocy_product)
     websocket_api.async_register_command(hass, _ws_create_grocy_recipe)
     websocket_api.async_register_command(hass, _ws_set_daily_digest)
+    websocket_api.async_register_command(hass, _ws_send_daily_digest_now)
     websocket_api.async_register_command(hass, _ws_get_settings)
     websocket_api.async_register_command(hass, _ws_set_settings)
+    websocket_api.async_register_command(hass, _ws_list_users)
+    websocket_api.async_register_command(hass, _ws_detect_notify_target)
     websocket_api.async_register_command(hass, _ws_get_recipes)
     websocket_api.async_register_command(hass, _ws_set_recipes)
     websocket_api.async_register_command(hass, _ws_get_suggestions)
     websocket_api.async_register_command(hass, _ws_set_suggestions)
+
+    # Chores/Rewards/Permissions - see chores_websocket_api.py's own module
+    # docstring for why these 17 commands are registered as a batch from
+    # their own module rather than listed individually here.
+    chores_ws_api.async_register_all(hass)
 
     return True
 
@@ -5313,6 +7186,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     card_path = f"{integration_dir}/card/family-week-calendar-card.js"
     theme_selector_path = f"{integration_dir}/panel/theme-selector-card.js"
     today_card_path = f"{integration_dir}/card/family-today-card.js"
+    screensaver_card_path = f"{integration_dir}/card/family-screensaver-card.js"
+    chores_card_path = f"{integration_dir}/card/family-hub-chores-card.js"
+    my_chores_card_path = f"{integration_dir}/card/family-hub-my-chores-card.js"
+    rewards_card_path = f"{integration_dir}/card/family-hub-rewards-card.js"
+    goals_card_path = f"{integration_dir}/card/family-hub-goals-card.js"
     icon_path = f"{integration_dir}/icon.png"
 
     static_paths = [
@@ -5320,6 +7198,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         StaticPathConfig(CARD_JS_URL, card_path, False),
         StaticPathConfig(THEME_SELECTOR_CARD_JS_URL, theme_selector_path, False),
         StaticPathConfig(TODAY_CARD_JS_URL, today_card_path, False),
+        StaticPathConfig(SCREENSAVER_CARD_JS_URL, screensaver_card_path, False),
+        StaticPathConfig(CHORES_CARD_JS_URL, chores_card_path, False),
+        StaticPathConfig(MY_CHORES_CARD_JS_URL, my_chores_card_path, False),
+        StaticPathConfig(REWARDS_CARD_JS_URL, rewards_card_path, False),
+        StaticPathConfig(GOALS_CARD_JS_URL, goals_card_path, False),
     ]
     icon_exists = await hass.async_add_executor_job(os.path.isfile, icon_path)
     if icon_exists:
@@ -5333,10 +7216,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     card_hash = await hass.async_add_executor_job(_file_content_hash, card_path)
     theme_selector_hash = await hass.async_add_executor_job(_file_content_hash, theme_selector_path)
     today_card_hash = await hass.async_add_executor_job(_file_content_hash, today_card_path)
+    screensaver_card_hash = await hass.async_add_executor_job(_file_content_hash, screensaver_card_path)
+    chores_card_hash = await hass.async_add_executor_job(_file_content_hash, chores_card_path)
+    my_chores_card_hash = await hass.async_add_executor_job(_file_content_hash, my_chores_card_path)
+    rewards_card_hash = await hass.async_add_executor_job(_file_content_hash, rewards_card_path)
+    goals_card_hash = await hass.async_add_executor_job(_file_content_hash, goals_card_path)
     panel_url_versioned = f"{PANEL_JS_URL}?v={panel_hash}"
     card_url_versioned = f"{CARD_JS_URL}?v={card_hash}"
     theme_selector_url_versioned = f"{THEME_SELECTOR_CARD_JS_URL}?v={theme_selector_hash}"
     today_card_url_versioned = f"{TODAY_CARD_JS_URL}?v={today_card_hash}"
+    screensaver_card_url_versioned = f"{SCREENSAVER_CARD_JS_URL}?v={screensaver_card_hash}"
+    chores_card_url_versioned = f"{CHORES_CARD_JS_URL}?v={chores_card_hash}"
+    my_chores_card_url_versioned = f"{MY_CHORES_CARD_JS_URL}?v={my_chores_card_hash}"
+    rewards_card_url_versioned = f"{REWARDS_CARD_JS_URL}?v={rewards_card_hash}"
+    goals_card_url_versioned = f"{GOALS_CARD_JS_URL}?v={goals_card_hash}"
     icon_url_versioned = ""
     if icon_exists:
         icon_hash = await hass.async_add_executor_job(_file_content_hash, icon_path)
@@ -5362,6 +7255,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _register_dashboard_resource(hass, card_url_versioned)
     _register_dashboard_resource(hass, theme_selector_url_versioned)
     _register_dashboard_resource(hass, today_card_url_versioned)
+    _register_dashboard_resource(hass, screensaver_card_url_versioned)
+    _register_dashboard_resource(hass, chores_card_url_versioned)
+    _register_dashboard_resource(hass, my_chores_card_url_versioned)
+    _register_dashboard_resource(hass, rewards_card_url_versioned)
+    _register_dashboard_resource(hass, goals_card_url_versioned)
 
     themes = await _load_themes(hass)
     _register_ha_themes(hass, themes)
@@ -5378,6 +7276,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     reminder_overrides: dict[str, list[int]] = await reminder_overrides_store.async_load() or {}
 
+    event_people_overrides_store: Store = Store(
+        hass,
+        EVENT_PEOPLE_OVERRIDES_STORAGE_VERSION,
+        f"{EVENT_PEOPLE_OVERRIDES_STORAGE_KEY_PREFIX}_{entry.entry_id}",
+    )
+    event_people_overrides: dict[str, list[str]] = await event_people_overrides_store.async_load() or {}
+
     digest_store: Store = Store(
         hass, DAILY_DIGEST_STORAGE_VERSION, f"{DAILY_DIGEST_STORAGE_KEY_PREFIX}_{entry.entry_id}"
     )
@@ -5386,6 +7291,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     settings_store: Store = Store(
         hass, SETTINGS_STORAGE_VERSION, f"{SETTINGS_STORAGE_KEY_PREFIX}_{entry.entry_id}"
     )
+    # Must run before _migrate_notify_profiles: that function's own
+    # settings_store.async_load() would otherwise see the same empty store
+    # and treat it as "never migrated," writing a fresh (empty) profile set
+    # and marking it migrated - which would make this store look non-empty
+    # by the time anything else could restore it. See its docstring.
+    await _maybe_restore_settings_backup(hass, settings_store)
+    await _migrate_notify_profiles(hass, entry, settings_store)
 
     recipes_store: Store = Store(
         hass, RECIPES_STORAGE_VERSION, f"{RECIPES_STORAGE_KEY_PREFIX}_{entry.entry_id}"
@@ -5405,10 +7317,72 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass, GROCERY_PUSHED_STORAGE_VERSION, f"{GROCERY_PUSHED_STORAGE_KEY_PREFIX}_{entry.entry_id}"
     )
 
+    # Chores/Rewards/Permissions - see store.py's own module docstring for
+    # why these are three separate Store-backed files rather than more keys
+    # in the general Settings blob. Each gets the same durable-backup
+    # restore-before-load treatment settings_store already gets above (see
+    # _maybe_restore_settings_backup's call a few lines up) - a store that
+    # loads completely empty (most commonly a brand-new entry_id from the
+    # config entry being removed and re-added) is refilled from its own
+    # family_hub_backups/*.json file before anything reads from it.
+    chores_store_obj = chores_store.create_chores_store(hass, entry)
+    await chores_store.maybe_restore_chores_backup(hass, chores_store_obj)
+    chores = await chores_store.async_load_chores(chores_store_obj)
+    rewards_store_obj = chores_store.create_rewards_store(hass, entry)
+    await chores_store.maybe_restore_rewards_backup(hass, rewards_store_obj)
+    rewards = await chores_store.async_load_rewards(rewards_store_obj)
+    permissions_store_obj = chores_store.create_permissions_store(hass, entry)
+    await chores_store.maybe_restore_permissions_backup(hass, permissions_store_obj)
+    permissions = await chores_store.async_load_permissions(permissions_store_obj)
+    routines_store_obj = chores_store.create_routines_store(hass, entry)
+    await chores_store.maybe_restore_routines_backup(hass, routines_store_obj)
+    routines = await chores_store.async_load_routines(routines_store_obj)
+    # v133+: Goals - see goal_engine.py's own module docstring. Same
+    # restore-before-load treatment as the four stores just above.
+    goals_store_obj = chores_store.create_goals_store(hass, entry)
+    await chores_store.maybe_restore_goals_backup(hass, goals_store_obj)
+    goals = await chores_store.async_load_goals(goals_store_obj)
+    # Catches the "Home Assistant was off/restarted overnight" case - see
+    # routine_engine.maybe_reset_daily's own docstring for why this also
+    # needs to run on every later poll tick below, not just here.
+    if routine_engine.maybe_reset_daily(routines):
+        await routines_store_obj.async_save(routines)
+        await chores_store.backup_routines(hass, routines)
+
+    # Must run before _maybe_migrate_member_user_ids just below - a
+    # household that picked members/chores settings on the setup wizard's
+    # own Users/Chores-features steps gets seeded straight from that
+    # (entry.options, via config_flow.py), which then makes the older
+    # backfill-from-permissions-and-profiles migration a no-op for them
+    # (both share the same "already set" guard). See this function's own
+    # docstring for the full picture.
+    await _maybe_seed_settings_from_setup_wizard(hass, entry, settings_store)
+    # Must run after both userProfiles (in settings_store) and permissions
+    # (just loaded above) exist, so an existing household's "everyone
+    # already visible" state can be backfilled into the new opt-in
+    # memberUserIds list exactly once - see its own docstring.
+    await _maybe_migrate_member_user_ids(hass, settings_store, permissions)
+
     async def _poll(_now=None) -> None:
-        await _run_poll(hass, entry, reminders_store, notified, reminder_overrides)
-        await _poll_reminders_todo(hass, entry, reminders_store, notified)
-        await _maybe_send_daily_digest(hass, entry, digest_store, digest_state)
+        await _run_poll(hass, entry, reminders_store, notified, reminder_overrides, settings_store)
+        await _poll_reminders_todo(hass, entry, reminders_store, notified, settings_store)
+        await _maybe_send_daily_digest(hass, entry, digest_store, digest_state, settings_store)
+        penalized = chore_engine.sweep_overdue_chores(chores, rewards, hass)
+        recurred = chore_engine.sweep_due_recurrences(chores, hass)
+        _chore_settings, chore_profiles = await _get_settings_and_profiles(hass, {"settings_store": settings_store})
+        reminded = await _poll_chore_due_reminders(hass, entry, chores, chore_profiles)
+        if penalized or recurred or reminded:
+            await chores_store_obj.async_save(chores)
+            await chores_store.backup_chores(hass, chores)
+            entity = hass.data.get(DOMAIN, {}).get("entries", {}).get(entry.entry_id, {}).get("chores_todo_entity")
+            if entity is not None:
+                entity.async_write_ha_state()
+        if penalized:
+            await rewards_store_obj.async_save(rewards)
+            await chores_store.backup_rewards(hass, rewards)
+        if routine_engine.maybe_reset_daily(routines):
+            await routines_store_obj.async_save(routines)
+            await chores_store.backup_routines(hass, routines)
 
     poll_minutes = entry.options.get(CONF_POLL_MINUTES, DEFAULT_POLL_MINUTES)
     cancel = async_track_time_interval(hass, _poll, timedelta(minutes=poll_minutes))
@@ -5419,13 +7393,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "reminders_store": reminders_store,
         "reminder_overrides": reminder_overrides,
         "reminder_overrides_store": reminder_overrides_store,
+        "event_people_overrides": event_people_overrides,
+        "event_people_overrides_store": event_people_overrides_store,
         "digest_store": digest_store,
         "digest_state": digest_state,
         "settings_store": settings_store,
         "recipes_store": recipes_store,
         "suggestions_store": suggestions_store,
         "grocery_pushed_store": grocery_pushed_store,
+        "chores_store": chores_store_obj,
+        "chores": chores,
+        "rewards_store": rewards_store_obj,
+        "rewards": rewards,
+        "permissions_store": permissions_store_obj,
+        "permissions": permissions,
+        "routines_store": routines_store_obj,
+        "routines": routines,
+        "goals_store": goals_store_obj,
+        "goals": goals,
     }
+
+    cancel_chore_sensor_listener = _async_setup_chore_sensor_listener(
+        hass, hass.data[DOMAIN]["entries"][entry.entry_id]
+    )
+    hass.data[DOMAIN]["entries"][entry.entry_id]["cancel_chore_sensor_listener"] = cancel_chore_sensor_listener
+    await _async_register_chore_services(hass)
+    await hass.config_entries.async_forward_entry_setups(entry, ["todo"])
 
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
@@ -5448,9 +7441,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Cancel polling and remove the sidebar panel + any native themes we registered."""
+    await hass.config_entries.async_unload_platforms(entry, ["todo"])
+
     entry_data = hass.data.get(DOMAIN, {}).get("entries", {}).pop(entry.entry_id, None)
     if entry_data and entry_data.get("cancel"):
         entry_data["cancel"]()
+    if entry_data and entry_data.get("cancel_chore_sensor_listener"):
+        entry_data["cancel_chore_sensor_listener"]()
 
     try:
         from homeassistant.components.frontend import async_remove_panel

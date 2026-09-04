@@ -822,6 +822,63 @@ _RAW_REFERENCE_ROWS: list[tuple[str, tuple[str, ...], str, str, str, float | Non
     ("Almond Butter", (), "Other", "each", "tablespoon", None),
     ("Cashew Butter", (), "Other", "each", "tablespoon", None),
     ("Nutella", ("chocolate hazelnut spread",), "Other", "each", "tablespoon", None),
+    # ------------------------------------------------------------------
+    # Everyday coverage expansion (2026-09) - common household items that
+    # weren't yet in this list, found by cross-checking a batch of
+    # candidate items against every existing NAME *and* ALIAS first (not
+    # just names) to avoid creating a near-duplicate of something already
+    # reachable a different way - e.g. "2% milk"/"skim milk" already
+    # resolve to "Whole Milk" via its own aliases, and "salted butter"
+    # already resolves to "Unsalted Butter" the same way, so neither
+    # needed a new entry despite seeming like an obvious gap at first.
+    # Deliberately skips anything that would reopen the exact fresh-vs-
+    # processed collision _ingredient_form_kind exists to guard against
+    # in __init__.py (no new bare-word entry that only differs from an
+    # existing one by a dried/ground/powder qualifier).
+    # ------------------------------------------------------------------
+    ("Yukon Gold Potato", ("yukon gold potatoes",), "Produce", "pound", "pound", None),
+    ("Red Potato", ("red potatoes",), "Produce", "pound", "pound", None),
+    ("Baby Potatoes", ("baby potato", "new potatoes", "petite potatoes"), "Produce", "pound", "pound", None),
+    ("Fingerling Potatoes", ("fingerling potato",), "Produce", "pound", "pound", None),
+    ("Portobello Mushroom", ("portobello mushrooms", "portabella mushroom", "portabella mushrooms"), "Produce", "pound", "each", None),
+    ("Shiitake Mushroom", ("shiitake mushrooms",), "Produce", "pound", "pound", None),
+    ("Oyster Mushroom", ("oyster mushrooms",), "Produce", "pound", "pound", None),
+    ("Enoki Mushroom", ("enoki mushrooms",), "Produce", "package", "package", None),
+    ("Heirloom Tomato", ("heirloom tomatoes",), "Produce", "pound", "each", None),
+    ("Celery Root", ("celeriac",), "Produce", "each", "each", None),
+    ("Kohlrabi", (), "Produce", "each", "each", None),
+    ("Chayote", ("chayote squash",), "Produce", "each", "each", None),
+    ("Broccolini", ("baby broccoli",), "Produce", "bunch", "bunch", None),
+    ("Broccoli Rabe", ("rapini",), "Produce", "bunch", "bunch", None),
+    ("Canned Chicken", (), "Canned Goods", "can", "cup", None),
+    ("Canned Salmon", (), "Canned Goods", "can", "cup", None),
+    ("Canned Green Chilies", ("diced green chilies", "chopped green chilies", "green chiles"), "Canned Goods", "can", "can", None),
+    ("Water Chestnuts", ("canned water chestnuts",), "Canned Goods", "can", "can", None),
+    ("Bamboo Shoots", ("canned bamboo shoots",), "Canned Goods", "can", "can", None),
+    ("Canned San Marzano Tomatoes", ("san marzano tomatoes",), "Canned Goods", "can", "can", None),
+    ("Turkey Bacon", (), "Meat", "package", "slice", None),
+    ("Canadian Bacon", (), "Meat", "package", "slice", None),
+    ("Colby Jack Cheese", ("colby jack",), "Dairy", "pound", "cup", None),
+    ("Havarti Cheese", ("havarti",), "Dairy", "each", "ounce", None),
+    ("Manchego Cheese", ("manchego",), "Dairy", "each", "ounce", None),
+    ("Queso Fresco", (), "Dairy", "each", "cup", None),
+    ("Cotija Cheese", ("cotija",), "Dairy", "each", "cup", None),
+    ("Light Cream", ("coffee cream", "table cream"), "Dairy", "pint", "cup", 2),
+    ("Vanilla Yogurt", (), "Dairy", "each", "cup", None),
+    ("Lactose-Free Milk", ("lactaid milk", "lactaid"), "Dairy", "gallon", "cup", 16),
+    ("Rice Milk", (), "Beverages", "each", "cup", None),
+    ("Cashew Milk", (), "Beverages", "each", "cup", None),
+    ("Chia Seeds", (), "Pantry", "each", "tablespoon", None),
+    ("Flax Seed", ("ground flaxseed", "flaxseed meal", "flaxseed"), "Pantry", "each", "tablespoon", None),
+    ("Hemp Seeds", ("hemp hearts",), "Pantry", "each", "tablespoon", None),
+    ("Wheat Germ", (), "Baking", "each", "tablespoon", None),
+    ("Vital Wheat Gluten", (), "Baking", "each", "tablespoon", None),
+    ("Xanthan Gum", (), "Baking", "each", "teaspoon", None),
+    ("Protein Powder", (), "Other", "each", "scoop", None),
+    ("Coconut Aminos", (), "Condiments", "each", "tablespoon", None),
+    ("Liquid Smoke", (), "Condiments", "each", "teaspoon", None),
+    ("Browning Sauce", ("gravy browning", "kitchen bouquet"), "Condiments", "each", "tablespoon", None),
+    ("Lavash", (), "Bakery", "package", "each", None),
 ]
 
 GROCERY_REFERENCE: list[dict] = [
