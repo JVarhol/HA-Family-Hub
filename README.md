@@ -1,6 +1,6 @@
 # Family Hub
 
-A full Home Assistant custom integration (`family_hub`, currently v1.103.1)
+A full Home Assistant custom integration (`family_hub`, currently v1.109.8)
 that bundles a whole family-tablet dashboard — calendar, chores, rewards,
 goals, and more — into one install/update, instead of a pile of separate
 integrations and cards:
@@ -596,10 +596,71 @@ the screen saver is dismissed, instead of staying wherever it fell asleep.
   `todo`/`calendar` entity that doesn't exist — the card checks entities
   exist up front and surfaces a visible error instead of failing silently.
 
+## Changelog
+
+Recent versions (backend `manifest.json` version in parentheses):
+
+109.6:
+Meal Planning:
+
+Meals now have Leftover ability or multiday meals. Select days where the leftovers can be used. Clicking days with leftovers (indicated by the recycle symbol) will open the original day's meal card.
+Move Meal to Another week: edit a meal and under more options there is now a place to move a meal to another week. We always supported rearranging meals in a week by clicking on the edit button on the top right of the calendar but this makes you able to move meals to another week.
+New option for no meal cards in settings for users who don’t want the meal planner.
+Meal cards now allow additional recipes, add recipes for sides, desserts, and more!
+Meal cards now show description.
+Fixed a bug preventing meals to be un-favorited. 
+New permission for Edit Menu, users without permission are only allowed to add suggestions.
+
+
+Chores
+
+Chores now can be completed ‘X’ times. Example: “Complete 3 Loads of Laundry” Click each time the task is done until the chore is marked complete.
+Users now have a permission to not require their chores to need approval to mark complete. Chores also have a do not require approval check box when creating
+Chores now move into a completed accordion once finished.
+Chores expiring soon now show first.
+New Setting to toggle show date due or date and time due
+Chores and routines now have a login button at the top right. Setup a user pin code in the users settings page. Upon clicking the login button you will be asked what user is logging in and what their pin is. All that users' permissions will be inherited when logged in. Claim Rewards, edit chores, approve chores etc while logged in. Click to logout.
+
+Routines
+
+Routine events can now earn stars, choose to require approval or not on creation. 
+
+Goals:
+
+The Goals card is now My Goals. Shows just the goals of the current user.
+Added a way to mark a goal completely to hide. 
+
+Rewards
+
+Users can now gift stars to another user, Click the gift box and type how many to transfer.
+
+Calendar
+Calendar now allows you to add people to an event on the calendar. Choose the primary calendar to add events to then who else is involved. The card will show stripes indicating all members of the event.
+New views: Portrait (a new week view for vertical monitors), Month + Day (A New month view, shows the month, click a day to see its events)
+New Setting to grey out events passed on the calendar. Find it under the calendar tab in settings. 
+Fixed an issue causing Planner view to not show badges
+Settings now allows a user to set what their default week and month views are. This is device specific.
+
+Themes:
+
+Added “Liquid Glass” Themes.
+
+Other:
+
+Optimized calendar card for smaller displays
+
+NEW CARDS:
+
+My Pantry
+My Pantry is a new card in this release that creates a card to see and edit your inventory in Grocy. Shows Tracked Items (Things in Grocy) and untracked items (Things not counted in Grocy). Sort by Expiring soon, Expired, Name, Location and more. 
+
+ToDo
+The new Todo Card allows users to see multiple todo and grocery shopping lists on one screen, drag and drop cards between todo lists, click to open a todo modal etc. Make a Kanbahn board, a multi store shopping list and more. Excited to see what the community does with this one!
+
 
 ## License
 
-Copyright (C) 2026 JVarhol.
+Copyright (C) 2026 Bordello Labs.
 
 Licensed under the GNU General Public License v3.0 (GPL-3.0) — see
 [LICENSE](LICENSE) for the full text. You're free to use, study, modify,
