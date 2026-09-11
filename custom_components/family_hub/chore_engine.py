@@ -51,7 +51,10 @@ from .const import (
     CHORE_KEY_APPROVED_BY,
     CHORE_KEY_COMPLETED_AT,
     CHORE_KEY_COMPLETED_BY,
+    CHORE_KEY_NO_APPROVAL_REQUIRED,
     CHORE_KEY_OVERDUE_PENALTY_APPLIED,
+    CHORE_KEY_QUANTITY_REMAINING,
+    CHORE_KEY_QUANTITY_TOTAL,
     CHORE_KEY_RECUR_NEXT_DUE,
     CHORE_KEY_REJECT_REASON,
     CHORE_KEY_REJECTED_AT,
@@ -65,6 +68,7 @@ from .const import (
     CHORE_STATUS_APPROVED,
     CHORE_STATUS_OPEN,
     CHORE_STATUS_PENDING_VERIFICATION,
+    PERMISSION_AUTO_APPROVE,
 )
 from .reward_engine import add_stars
 
@@ -149,6 +153,22 @@ def _normalize_recur_type(value: Any) -> Optional[str]:
     if value not in CHORE_RECUR_TYPES:
         raise ChoreError("invalid_recur_type", f"Unknown recur_type: {value!r}")
     return value
+
+
+def _normalize_quantity_total(value: Any) -> Optional[int]:
+    """Quantity-based chores ("3 loads of laundry") - None/0/blank all mean
+    "not a quantity chore," same as every other opt-in numeric field in
+    this file (star_value, overdue_penalty). Anything below 1 collapses to
+    None rather than raising, since the Create/Edit Chore modal's quantity
+    field is just an optional number input a household can leave blank -
+    there's no meaningful distinction between "left blank" and "typed 0."""
+    if value in (None, ""):
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 1 else None
 
 
 def _normalize_recur_weekdays(value: Any) -> list[int]:
@@ -250,6 +270,9 @@ def default_chore(**overrides: Any) -> dict[str, Any]:
         CHORE_KEY_REJECTED_AT: None,
         CHORE_KEY_REJECT_REASON: None,
         CHORE_KEY_REMINDERS_FIRED: [],
+        CHORE_KEY_NO_APPROVAL_REQUIRED: False,
+        CHORE_KEY_QUANTITY_TOTAL: None,
+        CHORE_KEY_QUANTITY_REMAINING: None,
     }
     chore.update(overrides)
     return chore
@@ -340,6 +363,7 @@ def create_chore(
             _check_user_enabled(is_user_enabled, member)
 
     recur_type = _normalize_recur_type(payload.get("recur_type"))
+    quantity_total = _normalize_quantity_total(payload.get(CHORE_KEY_QUANTITY_TOTAL))
 
     chore = default_chore(
         id=new_chore_id(),
@@ -359,6 +383,17 @@ def create_chore(
         recur_type=recur_type,
         recur_interval_days=max(0, int(payload.get("recur_interval_days") or 0)),
         recur_weekdays=_normalize_recur_weekdays(payload.get("recur_weekdays")),
+        **{
+            CHORE_KEY_NO_APPROVAL_REQUIRED: bool(payload.get(CHORE_KEY_NO_APPROVAL_REQUIRED)),
+            CHORE_KEY_QUANTITY_TOTAL: quantity_total,
+            # A fresh chore's remaining count always starts equal to its
+            # total - there's no partial progress to speak of yet. None
+            # (quantity_total unset) means an ordinary chore, so remaining
+            # stays None too - see chore_skips_verification's sibling check
+            # in complete_chore, which only branches on quantity at all
+            # when quantity_total is actually set.
+            CHORE_KEY_QUANTITY_REMAINING: quantity_total,
+        },
     )
     if mode == CHORE_ASSIGNMENT_MODE_DIRECT and not chore.get("assigned_to"):
         raise ChoreError("missing_assignee", "A direct chore needs someone assigned to it.")
@@ -429,10 +464,98 @@ def claim_chore(
     return chore
 
 
-def complete_chore(chores: dict[str, dict[str, Any]], hass: HomeAssistant, chore_id: str, actor: Optional[str]) -> dict[str, Any]:
+def chore_skips_verification(chore: dict[str, Any], permissions: Optional[dict[str, dict[str, Any]]] = None) -> bool:
+    """True when a completion of THIS chore should go straight from open to
+    approved with no pending_verification stop at all. Either of two
+    independent exemptions is enough:
+
+    - the chore itself has CHORE_KEY_NO_APPROVAL_REQUIRED set (the Add/Edit
+      Chore modal's "Doesn't require approval" checkbox) - applies no
+      matter who completes it, or
+    - its current assignee has been granted PERMISSION_AUTO_APPROVE in the
+      Permissions store (the "doesn't require approval" toggle on a
+      person's own entry in the Users tab) - applies no matter which chore
+      it is.
+
+    This is a plain data lookup, not an authorization check - it doesn't
+    decide who's ALLOWED to complete the chore (that's still ws_complete_chore's
+    job), only whether the completion that's already been allowed also
+    clears verification. That keeps it consistent with this module's
+    docstring promise that the state machine doesn't reach into the
+    Permissions store itself: callers hand it that store's contents
+    (or leave it out, e.g. todo.py/services that don't have it handy - the
+    chore-level exemption still applies) rather than this module fetching it."""
+    if chore.get(CHORE_KEY_NO_APPROVAL_REQUIRED):
+        return True
+    if not permissions:
+        return False
+    assignee = chore.get("assigned_to")
+    if not assignee or assignee == CHORE_BIN_SENTINEL:
+        return False
+    return bool((permissions.get(assignee) or {}).get(PERMISSION_AUTO_APPROVE))
+
+
+def _apply_approval(chore: dict[str, Any], rewards: dict[str, Any], approver: Optional[str]) -> int:
+    """The state-changing core shared by approve_chore (the normal, human-
+    in-the-loop path) and complete_chore's auto-approve shortcut
+    (chore_skips_verification) - both need the exact same streak/status/
+    recurrence/star bookkeeping, differing only in what got them here and
+    what event they fire afterward, which stays the caller's job. Returns
+    the star_value actually disbursed (0 if none) purely so the caller can
+    put an accurate stars_disbursed on its own event without recomputing it."""
+    due = _parse_dt(chore.get("due_date"))
+    completed = _parse_dt(chore.get(CHORE_KEY_COMPLETED_AT))
+    on_time = due is None or completed is None or completed <= due
+    chore["streak_count"] = int(chore.get("streak_count") or 0) + 1 if on_time else 0
+
+    chore["status"] = CHORE_STATUS_APPROVED
+    chore[CHORE_KEY_APPROVED_BY] = approver
+    chore[CHORE_KEY_APPROVED_AT] = _now_iso()
+    chore[CHORE_KEY_UPDATED_AT] = chore[CHORE_KEY_APPROVED_AT]
+    chore[CHORE_KEY_REJECTED_BY] = None
+    chore[CHORE_KEY_REJECTED_AT] = None
+    chore[CHORE_KEY_REJECT_REASON] = None
+
+    if chore.get("recur_type"):
+        next_due = _compute_next_recur_due(chore, dt_util.utcnow())
+        chore[CHORE_KEY_RECUR_NEXT_DUE] = next_due.isoformat() if next_due else None
+    else:
+        chore[CHORE_KEY_RECUR_NEXT_DUE] = None
+
+    assignee = chore.get("assigned_to")
+    star_value = int(chore.get("star_value") or 0)
+    disbursed = 0
+    if assignee and assignee != CHORE_BIN_SENTINEL and star_value:
+        add_stars(rewards, assignee, star_value, reason=f"Chore approved: {chore.get('title')}", source="chore_approved")
+        disbursed = star_value
+
+    if chore.get("assignment_mode") == CHORE_ASSIGNMENT_MODE_AUTO_ROTATION:
+        group = chore.get("rotation_group") or []
+        if group:
+            chore["rotation_pointer"] = (int(chore.get("rotation_pointer") or 0) + 1) % len(group)
+
+    return disbursed
+
+
+def complete_chore(
+    chores: dict[str, dict[str, Any]],
+    rewards: dict[str, Any],
+    hass: HomeAssistant,
+    chore_id: str,
+    actor: Optional[str],
+    permissions: Optional[dict[str, dict[str, Any]]] = None,
+) -> dict[str, Any]:
     """Mark a chore done, entering pending_verification - the first half of
     the verification gate (Completed -> Pending Verification). Blocked by
-    any not-yet-approved dependency."""
+    any not-yet-approved dependency.
+
+    Takes `rewards` and an optional `permissions` now (previously just
+    took `chores`/`hass`) so it can go straight on to _apply_approval
+    itself when chore_skips_verification says this one's exempt from the
+    gate entirely - see that function's docstring. Every existing caller
+    that doesn't care about the exemption (or doesn't have a permissions
+    dict handy) can still just pass permissions=None; the chore-level
+    CHORE_KEY_NO_APPROVAL_REQUIRED exemption still applies either way."""
     chore = _get_chore(chores, chore_id)
     if chore["status"] != CHORE_STATUS_OPEN:
         raise ChoreError("not_open", "This chore isn't open (already completed, or awaiting approval).")
@@ -447,10 +570,46 @@ def complete_chore(chores: dict[str, dict[str, Any]], hass: HomeAssistant, chore
         )
 
     previous = chore["status"]
+
+    quantity_total = chore.get(CHORE_KEY_QUANTITY_TOTAL)
+    if quantity_total:
+        remaining = chore.get(CHORE_KEY_QUANTITY_REMAINING)
+        if remaining is None:
+            remaining = quantity_total
+        remaining -= 1
+        if remaining > 0:
+            # Still units left in this batch ("3 loads of laundry" -> 2 ->
+            # 1) - one unit just got done, but the chore stays "open" and
+            # nothing else (verification gate, streak, stars) happens until
+            # the count actually reaches zero. complete_chore gets called
+            # once per unit; only the LAST call falls through to the
+            # ordinary completion flow below.
+            chore[CHORE_KEY_QUANTITY_REMAINING] = remaining
+            chore[CHORE_KEY_UPDATED_AT] = _now_iso()
+            _fire_chore_event(
+                hass, chore, previous_status=previous, actor=actor,
+                extra={"event": "quantity_decremented", "quantity_remaining": remaining},
+            )
+            return chore
+        # Last unit - record the count hitting zero, then fall through to
+        # the normal completion flow right below exactly as if this were
+        # an ordinary (non-quantity) chore.
+        chore[CHORE_KEY_QUANTITY_REMAINING] = 0
+
     chore["status"] = CHORE_STATUS_PENDING_VERIFICATION
     chore[CHORE_KEY_COMPLETED_BY] = actor or chore.get("assigned_to")
     chore[CHORE_KEY_COMPLETED_AT] = _now_iso()
     chore[CHORE_KEY_UPDATED_AT] = chore[CHORE_KEY_COMPLETED_AT]
+
+    if chore_skips_verification(chore, permissions):
+        approver = actor or chore.get("assigned_to")
+        disbursed = _apply_approval(chore, rewards, approver)
+        _fire_chore_event(
+            hass, chore, previous_status=previous, actor=actor,
+            extra={"auto_approved": True, "stars_disbursed": disbursed},
+        )
+        return chore
+
     _fire_chore_event(hass, chore, previous_status=previous, actor=actor)
     return chore
 
@@ -474,51 +633,11 @@ def approve_chore(
     if chore["status"] != CHORE_STATUS_PENDING_VERIFICATION:
         raise ChoreError("not_pending", "This chore isn't waiting on approval.")
 
-    due = _parse_dt(chore.get("due_date"))
-    completed = _parse_dt(chore.get(CHORE_KEY_COMPLETED_AT))
-    on_time = due is None or completed is None or completed <= due
-    chore["streak_count"] = int(chore.get("streak_count") or 0) + 1 if on_time else 0
-
     previous = chore["status"]
-    chore["status"] = CHORE_STATUS_APPROVED
-    chore[CHORE_KEY_APPROVED_BY] = approver
-    chore[CHORE_KEY_APPROVED_AT] = _now_iso()
-    chore[CHORE_KEY_UPDATED_AT] = chore[CHORE_KEY_APPROVED_AT]
-    # A clean approval has nothing left to explain - clear out any note
-    # left by an earlier reject_chore on a prior attempt at this same
-    # occurrence (see const.py's CHORE_KEY_REJECT_REASON docstring; these
-    # are deliberately left in place through the redo-and-resubmit cycle,
-    # only cleared here once the chore is actually approved).
-    chore[CHORE_KEY_REJECTED_BY] = None
-    chore[CHORE_KEY_REJECTED_AT] = None
-    chore[CHORE_KEY_REJECT_REASON] = None
-
-    # Plain-schedule recurrence (see const.py's CHORE_RECUR_TYPE_* docstring):
-    # a chore with a recur_type gets its next occurrence computed right now,
-    # from this exact approval moment, so sweep_due_recurrences (the poll-
-    # tick sweep) knows when to pop it back open on its own with no sensor
-    # involved. A chore with no recur_type simply gets no recur_next_due -
-    # it stays approved forever unless its own auto_create_trigger fires,
-    # exactly like before this existed.
-    if chore.get("recur_type"):
-        next_due = _compute_next_recur_due(chore, dt_util.utcnow())
-        chore[CHORE_KEY_RECUR_NEXT_DUE] = next_due.isoformat() if next_due else None
-    else:
-        chore[CHORE_KEY_RECUR_NEXT_DUE] = None
-
-    assignee = chore.get("assigned_to")
-    star_value = int(chore.get("star_value") or 0)
-    if assignee and assignee != CHORE_BIN_SENTINEL and star_value:
-        add_stars(rewards, assignee, star_value, reason=f"Chore approved: {chore.get('title')}", source="chore_approved")
-
-    if chore.get("assignment_mode") == CHORE_ASSIGNMENT_MODE_AUTO_ROTATION:
-        group = chore.get("rotation_group") or []
-        if group:
-            chore["rotation_pointer"] = (int(chore.get("rotation_pointer") or 0) + 1) % len(group)
-
+    disbursed = _apply_approval(chore, rewards, approver)
     _fire_chore_event(
         hass, chore, previous_status=previous, actor=approver,
-        extra={"stars_disbursed": star_value if assignee and assignee != CHORE_BIN_SENTINEL else 0},
+        extra={"stars_disbursed": disbursed},
     )
     return chore
 
@@ -588,6 +707,12 @@ def reset_recurring_chore(chores: dict[str, dict[str, Any]], hass: HomeAssistant
     chore[CHORE_KEY_APPROVED_BY] = None
     chore[CHORE_KEY_APPROVED_AT] = None
     chore[CHORE_KEY_OVERDUE_PENALTY_APPLIED] = False
+    # A quantity-based chore's next occurrence starts with the full count
+    # again ("3 loads of laundry" every week, not "0 loads" forever after
+    # the first cycle used them all up) - ordinary chores have
+    # quantity_total=None so this is a no-op for them.
+    if chore.get(CHORE_KEY_QUANTITY_TOTAL):
+        chore[CHORE_KEY_QUANTITY_REMAINING] = chore[CHORE_KEY_QUANTITY_TOTAL]
     # A fresh occurrence deserves a fresh shot at its own reminder_minutes,
     # same reasoning update_chore already applies when due_date/reminder_
     # minutes themselves change - see CHORE_KEY_REMINDERS_FIRED's own
@@ -721,6 +846,8 @@ _EDITABLE_FIELDS = (
     "recur_type",
     "recur_interval_days",
     "recur_weekdays",
+    CHORE_KEY_NO_APPROVAL_REQUIRED,
+    CHORE_KEY_QUANTITY_TOTAL,
 )
 
 
@@ -763,6 +890,15 @@ def update_chore(
         chore[CHORE_KEY_REMINDERS_FIRED] = []
     if "notes" in fields:
         chore["notes"] = str(fields["notes"] or "").strip()
+    if CHORE_KEY_QUANTITY_TOTAL in fields:
+        new_total = _normalize_quantity_total(fields[CHORE_KEY_QUANTITY_TOTAL])
+        chore[CHORE_KEY_QUANTITY_TOTAL] = new_total
+        # Editing the count resets progress on the current (still-open,
+        # per the guard above) cycle - same "definition changed, invalidate
+        # old bookkeeping" reasoning as due_date/reminder_minutes just
+        # above. There's no partial-progress number that would still make
+        # sense against a different total anyway.
+        chore[CHORE_KEY_QUANTITY_REMAINING] = new_total
     if "dependencies" in fields:
         dependencies = [str(d) for d in (fields["dependencies"] or []) if d and d != chore_id]
         unknown = [d for d in dependencies if d not in chores]
@@ -785,6 +921,8 @@ def update_chore(
         chore["recur_interval_days"] = max(0, int(fields["recur_interval_days"] or 0))
     if "recur_weekdays" in fields:
         chore["recur_weekdays"] = _normalize_recur_weekdays(fields["recur_weekdays"])
+    if CHORE_KEY_NO_APPROVAL_REQUIRED in fields:
+        chore[CHORE_KEY_NO_APPROVAL_REQUIRED] = bool(fields[CHORE_KEY_NO_APPROVAL_REQUIRED])
     chore[CHORE_KEY_UPDATED_AT] = _now_iso()
     return chore
 

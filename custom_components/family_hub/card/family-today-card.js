@@ -298,6 +298,7 @@ class FamilyTodayCard extends HTMLElement {
           name: p.name || p.entity,
           color: p.color || palette[i % palette.length],
           badges: Array.isArray(p.badges) ? p.badges : [],
+          remindersEntity: p.remindersEntity || "",
         }));
     }
     return this._config.people;
@@ -609,35 +610,95 @@ class FamilyTodayCard extends HTMLElement {
     if (!best) return null;
     return { uid: best.uid, name: best.name, description: best.description, link: best.link, color: best.color, recur: "weekly" };
   }
+  // v144.2+ (task #21): mirrors the full calendar card's own v130+
+  // multi-list subscription rule (see family-week-calendar-card.js's
+  // _fetchReminders) instead of only ever pulling from the one shared
+  // family list. Every logged-in profile also sees, folded into the same
+  // this._todayReminders array: their OWN individual list (settings.
+  // people[i].remindersEntity for whichever person their userProfile.
+  // primaryCalendar points at), shown unconditionally - no subscription
+  // needed for your own list - and every OTHER person's individual list
+  // they're subscribed to at EITHER tier (remindersSubscriptions[personEntity]
+  // === "calendar" or "calendar_alert"; both tiers are equivalent to
+  // "visible" here, same as the calendar card). Each returned item is
+  // tagged with which list it came from (listEntity), that list's color
+  // (null for the family list) and personName (null for the family list)
+  // so "Done" can target the right entity and items can be styled per
+  // owner. A person whose individual list entity happens to equal the
+  // family entity is only ever fetched once.
   async _fetchTodayReminders() {
     if (!this._hass) return;
+    const familyEntity = this._config.reminders_entity;
+    const lists = [{ entity: familyEntity, color: null, personName: null, isFamily: true }];
     try {
-      const items = await this._getItems(this._config.reminders_entity);
-      const today = new Date();
-      const dateKey = this._dateKey(today);
-      this._todayReminders = items
-        .filter((it) => it.status === "needs_action" && it.due)
-        .map((it) => {
-          const parsed = this._parseReminderRollover(it.description || "");
-          return {
-            uid: it.uid,
-            summary: it.summary || "(untitled)",
-            due: new Date(it.due),
-            description: parsed.description,
-            rollover: parsed.rollover,
-          };
+      const settings = this._getSettings();
+      const profiles = settings.userProfiles || {};
+      const myUserId = this._hass.user && this._hass.user.id;
+      const myProfile = myUserId ? profiles[myUserId] : null;
+      if (myProfile) {
+        const people = this._getPeople();
+        const subs = myProfile.remindersSubscriptions || {};
+        const seenEntities = new Set([familyEntity]);
+        for (const person of people) {
+          if (!person.remindersEntity || seenEntities.has(person.remindersEntity)) continue;
+          const isOwn = !!myProfile.primaryCalendar && person.entity === myProfile.primaryCalendar;
+          const subLevel = subs[person.entity];
+          const visible = isOwn || subLevel === "calendar" || subLevel === "calendar_alert";
+          if (!visible) continue;
+          seenEntities.add(person.remindersEntity);
+          lists.push({ entity: person.remindersEntity, color: person.color, personName: person.name, isFamily: false });
+        }
+      }
+    } catch (e) {
+      // No profile/individual-list data yet (or something malformed about
+      // it) - the shared family list above still works fine on its own.
+    }
+    const today = new Date();
+    const dateKey = this._dateKey(today);
+    try {
+      const fetchedLists = await Promise.all(
+        lists.map(async (list) => {
+          try {
+            const items = await this._getItems(list.entity);
+            return items
+              .filter((it) => it.status === "needs_action" && it.due)
+              .map((it) => {
+                const parsed = this._parseReminderRollover(it.description || "");
+                const due = new Date(it.due);
+                if (isNaN(due.getTime())) return null;
+                return {
+                  uid: it.uid,
+                  summary: it.summary || "(untitled)",
+                  due,
+                  description: parsed.description,
+                  rollover: parsed.rollover,
+                  listEntity: list.entity,
+                  color: list.color,
+                  personName: list.personName,
+                  isFamily: list.isFamily,
+                };
+              })
+              .filter(Boolean);
+          } catch (e) {
+            // That particular list's to-do entity doesn't exist yet - skip
+            // it, the other lists still show.
+            return [];
+          }
         })
-        .filter((r) => !isNaN(r.due.getTime()) && this._dateKey(r.due) === dateKey)
+      );
+      this._todayReminders = fetchedLists
+        .flat()
+        .filter((r) => this._dateKey(r.due) === dateKey)
         .sort((a, b) => a.due - b.due);
     } catch (e) {
       this._todayReminders = [];
     }
     this._render();
   }
-  async _markReminderDone(uid) {
+  async _markReminderDone(uid, listEntity) {
     if (!this._hass || !uid) return;
     try {
-      await this._hass.callService("todo", "update_item", { item: uid, status: "completed" }, { entity_id: this._config.reminders_entity });
+      await this._hass.callService("todo", "update_item", { item: uid, status: "completed" }, { entity_id: listEntity || this._config.reminders_entity });
     } catch (e) {
     }
     this._fetchTodayReminders();
@@ -768,6 +829,7 @@ background-image: var(--fc-bg-overlay-image, none);
 .row .dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
 .row .label { flex: 1 1 auto; font-size: var(--fs-event, 14px); color: var(--fc-text); min-width: 0; overflow-wrap: break-word; }
 .row .meta { font-size: var(--fs-chip, 13px); color: var(--fc-text-secondary); flex: 0 0 auto; white-space: nowrap; }
+.reminder-owner { font-size: 0.85em; color: var(--fc-text-secondary); font-weight: 400; }
 .row .done-btn { flex: 0 0 auto; border: none; border-radius: 8px; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 11px; font-weight: 700; padding: 6px 10px; cursor: pointer; }
 .empty { font-size: var(--fs-event, 14px); color: var(--fc-text-secondary); font-style: italic; padding: 4px 2px; }
 .footer-actions { flex: 0 0 auto; }
@@ -940,14 +1002,14 @@ background-image: var(--fc-bg-overlay-image, none);
       remindersEl.innerHTML = this._todayReminders
         .map(
           (r, idx) =>
-            `<div class="row" data-idx="${idx}"><span class="dot" style="background:${TODAY_REMINDER_COLOR}"></span><span class="label">&#128276; ${r.summary}</span><span class="meta">${this._fmtTime(r.due)}</span><button type="button" class="done-btn" data-uid="${r.uid}">Done</button></div>`
+            `<div class="row" data-idx="${idx}"><span class="dot" style="background:${r.color || TODAY_REMINDER_COLOR}"></span><span class="label">&#128276; ${r.summary}${r.personName ? ` <span class="reminder-owner">(${r.personName})</span>` : ""}</span><span class="meta">${this._fmtTime(r.due)}</span><button type="button" class="done-btn" data-uid="${r.uid}" data-list-entity="${r.listEntity}">Done</button></div>`
         )
         .join("");
       remindersEl.querySelectorAll(".done-btn").forEach((btn) => {
         btn.addEventListener("click", (e) => {
           e.stopPropagation();
           btn.disabled = true;
-          this._markReminderDone(btn.dataset.uid);
+          this._markReminderDone(btn.dataset.uid, btn.dataset.listEntity);
         });
       });
       remindersEl.querySelectorAll(".row").forEach((row) => {
@@ -958,13 +1020,13 @@ background-image: var(--fc-bg-overlay-image, none);
           const rows = [{ text: `Due ${this._fmtTime(r.due)}` }];
           if (r.description) rows.push({ text: r.description, secondary: true });
           this._openDetail({
-            chip: "Reminder",
-            chipColor: TODAY_REMINDER_COLOR,
+            chip: r.personName ? `Reminder • ${r.personName}` : "Reminder",
+            chipColor: r.color || TODAY_REMINDER_COLOR,
             title: r.summary,
             rows,
             actionLabel: "✓ Mark done",
             actionHandler: () => {
-              this._markReminderDone(r.uid);
+              this._markReminderDone(r.uid, r.listEntity);
               this._closeDetail();
             },
           });

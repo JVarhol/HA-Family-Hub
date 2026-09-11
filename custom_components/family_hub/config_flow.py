@@ -260,14 +260,25 @@ def _build_calendars_schema(defaults: dict[str, Any]) -> vol.Schema:
 
 
 def _build_todo_lists_schema(defaults: dict[str, Any]) -> vol.Schema:
+    # Both entity fields are optional (leave blank + "Create missing lists
+    # for me" to have Family Hub make one) - EntitySelector's own validator
+    # is homeassistant.helpers.config_validation.entity_id_or_uuid, which
+    # rejects "" with "Entity is neither a valid entity ID nor a valid
+    # UUID". The default of "" from a never-configured install would
+    # therefore fail validation the moment the form was submitted as-is, so
+    # each field accepts a bare "" alongside a real entity selection.
     return vol.Schema(
         {
             vol.Optional(
                 CONF_MEAL_PLAN_ENTITY, default=defaults.get(CONF_MEAL_PLAN_ENTITY, "")
-            ): selector.EntitySelector(selector.EntitySelectorConfig(domain="todo")),
+            ): vol.Any(
+                "", selector.EntitySelector(selector.EntitySelectorConfig(domain="todo"))
+            ),
             vol.Optional(
                 CONF_REMINDERS_ENTITY, default=defaults.get(CONF_REMINDERS_ENTITY, "")
-            ): selector.EntitySelector(selector.EntitySelectorConfig(domain="todo")),
+            ): vol.Any(
+                "", selector.EntitySelector(selector.EntitySelectorConfig(domain="todo"))
+            ),
             vol.Optional(
                 CONF_AUTO_CREATE_TODO_LISTS, default=True
             ): selector.BooleanSelector(),

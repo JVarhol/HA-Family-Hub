@@ -1,4 +1,8 @@
-const TB_MAX_THEMES = 8;
+// Must match const.py's MAX_THEMES - 6 original presets + Liquid Glass/
+// Liquid Glass Dark = 8 built-ins, bumped to 10 so a fresh install still
+// has room for 2 custom themes instead of the Add button being disabled
+// from the first load.
+const TB_MAX_THEMES = 10;
 const TB_LEGACY_COLOR_KEY_MAP = { gold: "accent", goldText: "accentText", green: "accent2", terracotta: "accent3", chipBg: "surfaceAlt", blockBg: "surface2" };
 
 class ThemeBuilderPanel extends HTMLElement {
@@ -100,6 +104,7 @@ class ThemeBuilderPanel extends HTMLElement {
       borderWidth: 1,
       accentBorderWidth: 2,
       cardOpacity: 100,
+      glassBlur: 0,
       effects: {
         shadow: { enabled: true, color: "#000000", opacity: 0.16, blurRadius: 8, spreadRadius: 0, offsetX: 0, offsetY: 2 },
         glow: { enabled: false, color: "#8f5a00", opacity: 0.6, blurRadius: 16 },
@@ -139,6 +144,7 @@ class ThemeBuilderPanel extends HTMLElement {
       borderWidth: t && typeof t.borderWidth === "number" ? t.borderWidth : blank.borderWidth,
       accentBorderWidth: t && typeof t.accentBorderWidth === "number" ? t.accentBorderWidth : blank.accentBorderWidth,
       cardOpacity: t && typeof t.cardOpacity === "number" ? t.cardOpacity : blank.cardOpacity,
+      glassBlur: t && typeof t.glassBlur === "number" ? t.glassBlur : blank.glassBlur,
       effects: { shadow, glow },
       background,
     };
@@ -269,6 +275,8 @@ class ThemeBuilderPanel extends HTMLElement {
           border-width: var(--p-border-width, 1px); border-color: var(--p-border, #ddd);
           color: var(--p-text, #222);
           box-shadow: var(--p-box-shadow, none);
+          backdrop-filter: blur(var(--p-glass-blur, 0px));
+          -webkit-backdrop-filter: blur(var(--p-glass-blur, 0px));
         }
         .tb-preview-day::before {
           content: ""; position: absolute; inset: calc(-1 * var(--p-bg-blur-px, 0px)); z-index: 0;
@@ -641,6 +649,10 @@ class ThemeBuilderPanel extends HTMLElement {
           <span>Card / chip transparency (<span class="tb-opacity-val">${theme.cardOpacity}</span>%)</span>
           <input type="range" class="tb-opacity" min="20" max="100" value="${theme.cardOpacity}" />
         </label>
+        <label class="tb-appearance-row">
+          <span>Glass blur (<span class="tb-glass-blur-val">${theme.glassBlur}</span>px) - pairs with transparency above for a "liquid glass" look</span>
+          <input type="range" class="tb-glass-blur" min="0" max="24" value="${theme.glassBlur}" />
+        </label>
       </div>
       <div class="tb-section">
         <h2>Shadow</h2>
@@ -772,6 +784,13 @@ class ThemeBuilderPanel extends HTMLElement {
       theme.cardOpacity = parseInt(e.target.value, 10);
       const val = editor.querySelector(".tb-opacity-val");
       if (val) val.textContent = theme.cardOpacity;
+      this._markDirty();
+      this._updatePreview();
+    });
+    editor.querySelector(".tb-glass-blur").addEventListener("input", (e) => {
+      theme.glassBlur = parseInt(e.target.value, 10);
+      const blurVal = editor.querySelector(".tb-glass-blur-val");
+      if (blurVal) blurVal.textContent = theme.glassBlur;
       this._markDirty();
       this._updatePreview();
     });
@@ -921,6 +940,7 @@ class ThemeBuilderPanel extends HTMLElement {
     const c = theme.colors;
     const bg = theme.background || {};
     preview.style.setProperty("--p-bg", this._hexToRgba(c.card, theme.cardOpacity));
+    preview.style.setProperty("--p-glass-blur", `${theme.glassBlur || 0}px`);
     preview.style.setProperty("--p-border", c.border);
     preview.style.setProperty("--p-border-width", `${theme.borderWidth}px`);
     preview.style.setProperty("--p-accent-border-width", `${theme.accentBorderWidth}px`);

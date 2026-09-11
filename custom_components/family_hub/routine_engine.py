@@ -26,6 +26,7 @@ from typing import Any, Callable, Optional
 from homeassistant.util import dt as dt_util
 
 from .const import ROUTINE_CATEGORIES
+from .reward_engine import LEDGER_SOURCE_ROUTINE_APPROVED, add_stars
 
 IsUserEnabled = Callable[[str], bool]
 
@@ -83,6 +84,14 @@ def _now_iso() -> str:
     return dt_util.utcnow().isoformat()
 
 
+def _validate_star_value(star_value: Any) -> int:
+    try:
+        n = int(star_value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, n)
+
+
 def create_item(
     routines: dict[str, Any],
     user_id: str,
@@ -91,6 +100,8 @@ def create_item(
     is_user_enabled: Optional[IsUserEnabled] = None,
     due_time: Optional[str] = None,
     days_of_week: Optional[list[int]] = None,
+    star_value: int = 0,
+    no_approval_required: bool = False,
 ) -> dict[str, Any]:
     """Add one checklist item under `user_id`'s `category` routine. Raises
     if user_id isn't a real Family Hub member (same membership gate as
@@ -99,7 +110,17 @@ def create_item(
     days_of_week (optional list of 0=Monday..6=Sunday - empty/omitted means
     every day) are both validated via _validate_due_time/_validate_days_of_
     week - see their docstring comment just above for why the shapes are
-    what they are."""
+    what they are.
+
+    star_value (v141+, default 0) is this module's opt-in bridge to the
+    star-reward system chore_engine.py/reward_engine.py otherwise own
+    exclusively - most items still earn nothing, same as before this
+    existed. When it's non-zero, no_approval_required decides how the
+    stars get paid: True pays them the moment toggle_item checks the item
+    (mirroring CHORE_KEY_NO_APPROVAL_REQUIRED's own "skip the gate
+    entirely" exemption), False (the default) leaves the item pending_
+    approval instead until a verifier calls approve_item - see both
+    functions below for the actual payout logic."""
     if category not in ROUTINE_CATEGORIES:
         raise RoutineError("invalid_category", f"Unknown routine category: {category!r}")
     title = str(title or "").strip()
@@ -122,6 +143,15 @@ def create_item(
         "done": False,
         "due_time": due_time,
         "days_of_week": days_of_week,
+        "star_value": _validate_star_value(star_value),
+        "no_approval_required": bool(no_approval_required),
+        # Both transient, day-scoped bookkeeping for the star payout below -
+        # neither means anything for a star_value=0 item, and both get
+        # cleared back to False every morning by maybe_reset_daily alongside
+        # "done" itself, so a recurring item's star is earnable fresh each
+        # day it's checked off rather than being a one-time bonus.
+        "pending_approval": False,
+        "stars_disbursed_today": False,
         "created_at": _now_iso(),
         "updated_at": _now_iso(),
     }
@@ -135,15 +165,25 @@ def update_item(
     title: str,
     due_time: Optional[str] = None,
     days_of_week: Optional[list[int]] = None,
+    star_value: int = 0,
+    no_approval_required: bool = False,
 ) -> dict[str, Any]:
-    """Edit an existing item's title/due_time/days_of_week in place - the
-    "manage items" flow from the Routine tab of the Chores card's FAB
-    modal (v136+). Deliberately does NOT allow moving an item to a
-    different user_id/category - those are set once at creation (matches
-    the picker-driven "which person/category am I managing right now" UI,
-    which just deletes-and-recreates in that rare case rather than needing
-    a move operation here). Same PERMISSION_ASSIGN gate as create_item/
-    delete_item, enforced by the caller (ws_update_routine_item)."""
+    """Edit an existing item's title/due_time/days_of_week/star_value/
+    no_approval_required in place - the "manage items" flow from the
+    Routine tab of the Chores card's FAB modal (v136+). Deliberately does
+    NOT allow moving an item to a different user_id/category - those are
+    set once at creation (matches the picker-driven "which person/category
+    am I managing right now" UI, which just deletes-and-recreates in that
+    rare case rather than needing a move operation here). Same
+    PERMISSION_ASSIGN gate as create_item/delete_item, enforced by the
+    caller (ws_update_routine_item).
+
+    Changing star_value/no_approval_required never touches today's
+    pending_approval/stars_disbursed_today bookkeeping - editing the
+    reward on an item that's already checked off today shouldn't
+    retroactively grant or claw back stars for a decision already made
+    under the old settings; the new value only takes effect the next time
+    the item is toggled."""
     item = _get_item(routines, item_id)
     title = str(title or "").strip()
     if not title:
@@ -151,6 +191,8 @@ def update_item(
     item["title"] = title
     item["due_time"] = _validate_due_time(due_time)
     item["days_of_week"] = _validate_days_of_week(days_of_week)
+    item["star_value"] = _validate_star_value(star_value)
+    item["no_approval_required"] = bool(no_approval_required)
     item["updated_at"] = _now_iso()
     return item
 
@@ -162,16 +204,70 @@ def _get_item(routines: dict[str, Any], item_id: str) -> dict[str, Any]:
     return item
 
 
-def toggle_item(routines: dict[str, Any], item_id: str, done: bool) -> dict[str, Any]:
+def toggle_item(
+    routines: dict[str, Any], rewards: dict[str, Any], item_id: str, done: bool, actor: Optional[str] = None
+) -> dict[str, Any]:
     """Mark one item done/not-done - the checkbox action, open to anyone
     (no permission gate here; see chores_websocket_api.py's ws_toggle_
     routine_item for why: this is a personal daily checklist on a shared
     kitchen tablet, not a reward-bearing chore, so the same low-stakes
     self-serve principle as claim_chore applies, minus even the "first tap
     wins" race-safety concern since checking your own already-checked item
-    again is harmless)."""
+    again is harmless).
+
+    v141+: takes `rewards` now (previously just `routines`) for the
+    optional star_value payout. Unchecking (done=False) never pays or
+    claws back anything - it just clears pending_approval (so re-checking
+    later asks for approval fresh) and leaves stars_disbursed_today alone
+    (an already-approved/auto-paid star for today stays paid, same "no
+    un-approve" philosophy as chore_engine.approve_chore). Checking
+    (done=True) on a star_value item that hasn't paid out yet today either
+    pays immediately (no_approval_required) or flips on pending_approval
+    for a verifier to resolve via approve_item - a star_value of 0 (most
+    items) skips all of this and behaves exactly as it always has."""
     item = _get_item(routines, item_id)
     item["done"] = bool(done)
+    if not done:
+        item["pending_approval"] = False
+        item["updated_at"] = _now_iso()
+        return item
+
+    star_value = int(item.get("star_value") or 0)
+    if star_value and not item.get("stars_disbursed_today"):
+        if item.get("no_approval_required"):
+            add_stars(
+                rewards, item["user_id"], star_value,
+                reason=f"Routine item completed: {item.get('title')}", source=LEDGER_SOURCE_ROUTINE_APPROVED,
+            )
+            item["stars_disbursed_today"] = True
+            item["pending_approval"] = False
+        else:
+            item["pending_approval"] = True
+    item["updated_at"] = _now_iso()
+    return item
+
+
+def approve_item(routines: dict[str, Any], rewards: dict[str, Any], item_id: str, approver: Optional[str] = None) -> dict[str, Any]:
+    """The manual half of the routine star payout - toggle_item's
+    counterpart to chore_engine.approve_chore, for an item whose
+    no_approval_required is false (the default whenever star_value is
+    set). Only pays out (and only CAN be called meaningfully) while the
+    item is still checked and genuinely awaiting approval; a caller
+    approving an already-paid or never-pending item is a no-op that
+    returns the item unchanged rather than double-paying or erroring -
+    matches this module's general "idempotent, cheap to call" style (see
+    maybe_reset_daily)."""
+    item = _get_item(routines, item_id)
+    if not item.get("pending_approval") or item.get("stars_disbursed_today"):
+        return item
+    star_value = int(item.get("star_value") or 0)
+    if star_value:
+        add_stars(
+            rewards, item["user_id"], star_value,
+            reason=f"Routine item approved: {item.get('title')}", source=LEDGER_SOURCE_ROUTINE_APPROVED,
+        )
+    item["stars_disbursed_today"] = True
+    item["pending_approval"] = False
     item["updated_at"] = _now_iso()
     return item
 
@@ -203,5 +299,10 @@ def maybe_reset_daily(routines: dict[str, Any], today: Optional[date] = None) ->
     items = routines.setdefault("items", {})
     for item in items.values():
         item["done"] = False
+        # Star bookkeeping is scoped to "today" (see create_item's own
+        # docstring) - a new day means a fresh shot at earning/approving
+        # the star again, exactly like "done" itself resetting.
+        item["pending_approval"] = False
+        item["stars_disbursed_today"] = False
     routines["last_reset_date"] = today_str
     return True

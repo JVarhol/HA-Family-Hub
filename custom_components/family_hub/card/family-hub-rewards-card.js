@@ -37,6 +37,7 @@ if (!window.__familyHubScreenSaver) {
     let overlayEl = null;
     let activityBound = false;
     let boundActivity = null;
+    let settingsSnapshot = null;
 
     function defaultSettings() {
       return { screenSaver: { sourceType: "video", videoUrl: "", cameraEntity: "", idleSeconds: 180, usersEnabled: {} } };
@@ -70,6 +71,28 @@ if (!window.__familyHubScreenSaver) {
       } catch (e) {
         if (!settingsCache) settingsCache = defaultSettings();
       }
+      maybeResetIdleTimer();
+    }
+    // v144.12+: this used to call resetIdleTimer() unconditionally on every
+    // single poll tick (startPolling, every 60s), whether or not anything
+    // about the screenSaver settings had actually changed. That meant any
+    // household with idleSeconds set above 60 (the poll interval - and the
+    // DEFAULT idle time, 180s, is already well above it) could never
+    // actually see the screensaver on a card that shares this controller
+    // (Chores/Rewards/My Chores): a genuinely idle card's countdown kept
+    // getting clobbered and restarted from zero every 60 seconds by the
+    // poll itself, so it never survived long enough to reach
+    // showScreenSaver(). This wrapper only calls the real reset when the
+    // screenSaver settings sub-object has changed since the last time this
+    // ran (or on the very first call) - a poll tick that finds nothing new
+    // leaves a real in-progress countdown alone. A genuine change (new idle
+    // time, source, or a login toggled on/off) still re-arms immediately
+    // with the fresh value, same as before. Mirrors the calendar card's own
+    // separate _maybeResetScreenSaverIdleTimer fix for its own idle timer.
+    function maybeResetIdleTimer() {
+      const key = JSON.stringify(getSettings().screenSaver || null);
+      if (key === settingsSnapshot) return;
+      settingsSnapshot = key;
       resetIdleTimer();
     }
     function applicable() {
@@ -306,6 +329,11 @@ const REWARD_ICON_CHOICES = REWARD_ICON_CATEGORIES.reduce((all, cat) => all.conc
 const GOAL_STATUS_OPEN = "open";
 const GOAL_STATUS_PENDING_VERIFICATION = "pending_verification";
 const GOAL_STATUS_APPROVED = "approved";
+// v144.15+: mirrors const.py's GOAL_STATUS_ARCHIVED - see
+// family-hub-goals-card.js's own comment on this same constant for the
+// full "Complete" button reasoning; here it's just used to hide an
+// archived goal from this card's embedded Goals section entirely.
+const GOAL_STATUS_ARCHIVED = "archived";
 
 class FamilyHubRewardsCard extends HTMLElement {
   static getStubConfig() {
@@ -360,6 +388,14 @@ class FamilyHubRewardsCard extends HTMLElement {
     await Promise.all([this._fetchSettings(), this._fetchUsers(), this._fetchRewardsState(), this._fetchMyPermissions()]);
     if (this._getSettings().useGlobalTheme) await this._fetchGlobalThemes();
     if (this._goalsInRewardsEnabled()) await this._fetchGoals();
+    // v144+ task #29: who (if anyone) can kiosk-PIN-login on this card -
+    // decides whether the Login button even shows at all (see
+    // _updateKioskLoginUi). Awaited, same as every other first-load fetch
+    // here - _fetchKioskLoginUsers already fails soft (an empty list) on
+    // any error, so this never blocks a household that's never touched the
+    // feature for more than one quick round trip.
+    await this._fetchKioskLoginUsers();
+    this._updateKioskLoginUi();
     this._startPolling();
     this._registerScreenSaver();
     this._render();
@@ -372,17 +408,47 @@ class FamilyHubRewardsCard extends HTMLElement {
   _registerScreenSaver() {
     if (window.__familyHubScreenSaver && this._hass) window.__familyHubScreenSaver.registerClient(this, this._hass);
   }
+  // v144.9+: the actual poll-refresh body, pulled out of _startPolling's
+  // setInterval callback so connectedCallback (below) can also fire it
+  // IMMEDIATELY on reconnect - rather than only via _startPolling(), whose
+  // setInterval doesn't invoke its callback until the first tick 20s
+  // later. Switching between HA dashboard views/tabs disconnects this
+  // custom element from the DOM (disconnectedCallback) and reconnects it
+  // when you switch back (connectedCallback) - "reload when you click
+  // their tab" - so this makes that switch itself the trigger, with the
+  // existing 20s interval remaining as the fallback the rest of the time.
+  _pollTick() {
+    this._fetchRewardsState();
+    if (this._goalsInRewardsEnabled()) this._fetchGoals();
+  }
   _startPolling() {
     if (this._interval) return;
-    this._interval = setInterval(() => {
-      this._fetchRewardsState();
-      if (this._goalsInRewardsEnabled()) this._fetchGoals();
-    }, 20 * 1000);
+    this._interval = setInterval(() => this._pollTick(), 20 * 1000);
   }
   connectedCallback() {
     if (this._hass && !this._interval) {
-      if (this._firstLoadPromise) this._firstLoadPromise.then(() => this.isConnected && this._startPolling());
-      else this._startPolling();
+      if (this._firstLoadPromise) {
+        // Guard against a disconnect+reconnect happening again while THIS
+        // SAME first-load promise is still pending (a masonry/grid
+        // dashboard view re-parenting card elements while it lays itself
+        // out can do this - see test_initial_load_race.js's own docstring
+        // for the calendar card's version of this exact race) - without
+        // this flag, each reconnect during that window would stack
+        // another .then() and fire _pollTick() an extra time once the
+        // promise finally resolves, duplicating the very first fetch.
+        if (!this._reconnectPollPending) {
+          this._reconnectPollPending = true;
+          this._firstLoadPromise.then(() => {
+            this._reconnectPollPending = false;
+            if (!this.isConnected) return;
+            this._pollTick();
+            this._startPolling();
+          });
+        }
+      } else {
+        this._pollTick();
+        this._startPolling();
+      }
     }
     this._registerScreenSaver();
   }
@@ -397,10 +463,26 @@ class FamilyHubRewardsCard extends HTMLElement {
   getGridOptions() {
     return { columns: 8, min_columns: 6, max_columns: 12, min_rows: 6 };
   }
+  // v144+ task #29: while a kiosk PIN elevation is active (this._kioskElevation,
+  // see _submitKioskLogin), _isAdmin/_myUserId/_hasPermission all answer AS
+  // that elevated household member instead of the real (usually shared,
+  // unprivileged) kiosk HA login - same elevation-aware trio as family-hub-
+  // chores-card.js's own copy (copy-pasted, not shared - independently-
+  // loaded Lovelace resources, same convention as every other cross-file
+  // duplication in this project). Almost everything on this card (which
+  // balance is "mine", whose bank an item's "Use" button spends from, which
+  // action buttons show) already keys off these three methods, so making
+  // just these elevation-aware is enough to make the whole card behave as
+  // if that person is genuinely logged in. The server calls this card makes
+  // for a kiosk-elevatable action still separately carry elevation_token
+  // (see _kioskMsg) - the real permission decision is always re-checked
+  // there, this is only about what the UI shows.
   _isAdmin() {
+    if (this._kioskElevation) return !!this._kioskElevation.is_admin;
     return !!(this._hass && this._hass.user && this._hass.user.is_admin);
   }
   _myUserId() {
+    if (this._kioskElevation) return this._kioskElevation.user_id;
     return this._hass && this._hass.user ? this._hass.user.id : null;
   }
   // v127+: family_hub/permissions/get_mine is open to any authenticated
@@ -423,7 +505,157 @@ class FamilyHubRewardsCard extends HTMLElement {
   }
   _hasPermission(key) {
     if (this._isAdmin()) return true;
+    if (this._kioskElevation) return !!(this._kioskElevation.permissions && this._kioskElevation.permissions[key]);
     return !!this._myPermissions[key];
+  }
+  // v144+ task #29: kiosk PIN login. this._kioskElevation is null when
+  // nobody's elevated, else {token, user_id, name, is_admin, permissions,
+  // expires_in} - exactly what family_hub/kiosk/elevate returns. Every
+  // server call this card makes for an action a kiosk login should be able
+  // to do (claim/add a reward, approve/reject a suggestion, approve/reject
+  // a goal) is wrapped through _kioskMsg so the backend can re-derive and
+  // re-check the REAL permission itself - this card's own _isAdmin/
+  // _myUserId/_hasPermission overrides above only ever control what the UI
+  // shows, never what the server allows.
+  _kioskMsg(base) {
+    return this._kioskElevation ? Object.assign({}, base, { elevation_token: this._kioskElevation.token }) : base;
+  }
+  async _fetchKioskLoginUsers() {
+    if (!this._hass) return;
+    try {
+      const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/kiosk/list_login_users" });
+      this._kioskLoginUsers = (result && result.users) || [];
+    } catch (e) {
+      this._kioskLoginUsers = [];
+    }
+  }
+  _updateKioskLoginUi() {
+    const root = this._root;
+    if (!root) return;
+    const btn = root.querySelector(".kiosk-login-btn");
+    if (!btn) return;
+    btn.hidden = !this._kioskElevation && !(this._kioskLoginUsers && this._kioskLoginUsers.length);
+    if (this._kioskElevation) {
+      btn.textContent = `\u{1F464} ${this._kioskElevation.name} · Log out`;
+      btn.classList.add("active");
+      btn.title = "Tap to log out of this kiosk session";
+    } else {
+      btn.textContent = "\u{1F512} Login";
+      btn.classList.remove("active");
+      btn.title = "Log in as a specific household member on this kiosk display";
+    }
+  }
+  async _onKioskLoginBtnClick() {
+    if (this._kioskElevation) await this._kioskLogout();
+    else await this._openKioskLoginModal();
+  }
+  async _openKioskLoginModal() {
+    await this._fetchKioskLoginUsers();
+    const root = this._root;
+    if (!root) return;
+    const overlay = root.querySelector(".kiosk-login-overlay");
+    const pickerEl = root.querySelector(".kiosk-login-user-picker");
+    const errEl = root.querySelector(".kiosk-login-error");
+    const pinEl = root.querySelector(".kiosk-login-pin-input");
+    if (errEl) errEl.textContent = "";
+    if (pinEl) pinEl.value = "";
+    this._kioskLoginSelectedUserId = null;
+    if (pickerEl) {
+      pickerEl.textContent = "";
+      if (!this._kioskLoginUsers.length) {
+        const empty = document.createElement("div");
+        empty.className = "kiosk-login-empty";
+        empty.textContent = "No one is set up for kiosk login yet - an admin can enable it under Settings > Users.";
+        pickerEl.appendChild(empty);
+      } else {
+        this._kioskLoginUsers.forEach((u) => {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "kiosk-login-user-btn";
+          btn.dataset.userId = u.id;
+          btn.textContent = u.name;
+          btn.addEventListener("click", () => {
+            pickerEl.querySelectorAll(".kiosk-login-user-btn").forEach((b) => b.classList.remove("active"));
+            btn.classList.add("active");
+            this._kioskLoginSelectedUserId = u.id;
+            if (pinEl) pinEl.focus();
+          });
+          pickerEl.appendChild(btn);
+        });
+      }
+    }
+    if (overlay) overlay.classList.add("open");
+    if (pinEl) pinEl.focus();
+  }
+  _closeKioskLoginModal() {
+    const overlay = this._root && this._root.querySelector(".kiosk-login-overlay");
+    if (overlay) overlay.classList.remove("open");
+  }
+  async _submitKioskLogin() {
+    const root = this._root;
+    if (!root || !this._hass) return;
+    const errEl = root.querySelector(".kiosk-login-error");
+    const pinEl = root.querySelector(".kiosk-login-pin-input");
+    const userId = this._kioskLoginSelectedUserId;
+    const pin = pinEl ? pinEl.value.trim() : "";
+    if (!userId) {
+      if (errEl) errEl.textContent = "Pick who's logging in first.";
+      return;
+    }
+    if (!pin) {
+      if (errEl) errEl.textContent = "Enter a PIN.";
+      return;
+    }
+    try {
+      const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/kiosk/elevate", user_id: userId, pin });
+      this._kioskElevation = result;
+      this._closeKioskLoginModal();
+      this._updateKioskLoginUi();
+      this._resetKioskIdleTimer();
+      // Everything on the card (whose balance is "mine", which action
+      // buttons show) is derived from _myUserId/_hasPermission, both now
+      // elevation-aware - re-rendering is what actually makes the card
+      // reflect the newly logged-in person.
+      this._render();
+    } catch (e) {
+      if (errEl) errEl.textContent = (e && e.message) || "Incorrect PIN.";
+      if (pinEl) {
+        pinEl.value = "";
+        pinEl.focus();
+      }
+    }
+  }
+  // Auto logout after 45 seconds of inactivity, per the spec - re-armed by
+  // any tap/key/scroll on this card (see _build's own activity listeners)
+  // while elevated; a no-op the rest of the time so this card isn't
+  // running a timer nobody asked for.
+  _resetKioskIdleTimer() {
+    if (this._kioskIdleTimer) {
+      clearTimeout(this._kioskIdleTimer);
+      this._kioskIdleTimer = null;
+    }
+    if (!this._kioskElevation) return;
+    this._kioskIdleTimer = setTimeout(() => this._kioskLogout(), 45000);
+  }
+  async _kioskLogout() {
+    if (this._kioskIdleTimer) {
+      clearTimeout(this._kioskIdleTimer);
+      this._kioskIdleTimer = null;
+    }
+    const elevation = this._kioskElevation;
+    this._kioskElevation = null;
+    this._updateKioskLoginUi();
+    this._render();
+    if (elevation && this._hass) {
+      try {
+        // Best-effort - even if this fails (offline, etc.) the token's own
+        // KIOSK_ELEVATION_TTL_SECONDS backstop on the backend still expires
+        // it; the UI has already logged out locally either way.
+        await this._hass.connection.sendMessagePromise({ type: "family_hub/kiosk/deelevate", token: elevation.token });
+      } catch (e) {
+        /* best-effort */
+      }
+    }
   }
   // Whoever can add straight to the catalog with a price (and so is also
   // the audience for approving/rejecting someone else's suggestion) -
@@ -475,20 +707,62 @@ class FamilyHubRewardsCard extends HTMLElement {
   }
   async _approveGoal(id) {
     try {
-      await this._hass.connection.sendMessagePromise({ type: "family_hub/goals/approve", goal_id: id });
+      await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/goals/approve", goal_id: id }));
       await this._fetchGoals();
     } catch (e) {
       /* no-op */
     }
   }
-  async _rejectGoal(id) {
-    const reason = window.prompt("Why is this being sent back? (optional)", "");
+  // v144.15+: was a window.prompt() (couldn't tell "Cancel the whole
+  // action" from "send with an empty reason" - Cancel/Esc on a native
+  // prompt still rejected with a blank reason) - converted to a real modal,
+  // same .reject-modal/.cancel-btn/.save-btn/.modal-actions/.form-error
+  // convention family-hub-chores-card.js's own _openRejectModal/
+  // _submitReject and family-hub-goals-card.js's own reject modal already
+  // use, just goal-only here (this card never rejects a chore).
+  _openRejectModal(id) {
+    const goal = this._goals.find((g) => g.id === id);
+    if (!goal) return;
+    const overlay = this._root.querySelector(".reject-modal");
+    const box = overlay.querySelector(".modal-box");
+    box.innerHTML = `
+      <h3>Send back "${this._esc(goal.title)}"</h3>
+      <label>Anything you want to tell them about why? (optional)<textarea class="f-reject-reason" rows="3" placeholder="Not quite - try again"></textarea></label>
+      <div class="modal-actions">
+        <button class="cancel-btn">Cancel</button>
+        <button class="save-btn">Send back</button>
+      </div>
+      <div class="form-error"></div>
+    `;
+    box.querySelector(".cancel-btn").addEventListener("click", () => overlay.classList.remove("open"));
+    box.querySelector(".save-btn").addEventListener("click", () => this._submitRejectGoal(id, overlay, box));
+    overlay.classList.add("open");
+    box.querySelector(".f-reject-reason").focus();
+  }
+  async _submitRejectGoal(id, overlay, box) {
+    const reason = box.querySelector(".f-reject-reason").value.trim();
+    overlay.classList.remove("open");
     try {
-      await this._hass.connection.sendMessagePromise({ type: "family_hub/goals/reject", goal_id: id, reason: reason || "" });
-      await this._fetchGoals();
+      await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/goals/reject", goal_id: id, reason }));
     } catch (e) {
       /* no-op */
     }
+    await this._fetchGoals();
+  }
+  // v144.15+: household report - achieved goals had no way to complete/
+  // hide them here either (only the standalone Goals card got this in
+  // v144.13, then family-hub-chores-card.js's own embedded block in
+  // v144.15) - same family_hub/goals/archive ws command + no-reward-
+  // side-effects contract as those. Re-fetching goals afterward drops the
+  // now-archived goal out of _goalRowHtml's rendering (see the filter
+  // added to wherever this card builds its goals list below).
+  async _archiveGoal(id) {
+    try {
+      await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/goals/archive", goal_id: id }));
+    } catch (e) {
+      /* no-op */
+    }
+    await this._fetchGoals();
   }
   _goalRowHtml(goal) {
     const target = Math.max(1, goal.target_count || 1);
@@ -504,6 +778,9 @@ class FamilyHubRewardsCard extends HTMLElement {
       } else actions += `<span class="suggestion-pending">Awaiting approval</span>`;
     } else if (goal.status === GOAL_STATUS_APPROVED) {
       actions += `<span class="suggestion-pending">&#10003; Achieved</span>`;
+      if (goal.assigned_to === this._myUserId() || this._hasPermission("can_assign")) {
+        actions += `<button type="button" class="goal-complete-btn" data-id="${goal.id}">Complete</button>`;
+      }
     }
     return `
       <div class="suggestion-row goal-row" data-id="${goal.id}">
@@ -530,10 +807,31 @@ class FamilyHubRewardsCard extends HTMLElement {
   _getSettings() {
     return this._settingsCache || this._defaultSettings();
   }
+  // v144.6+: "This device's theme" - a device-local override of the shared
+  // Settings > Appearance theme choice, same key/mechanism
+  // family-week-calendar-card.js's own _getDeviceThemeOverride uses (see
+  // its own comment) and configured from that card's Settings modal (this
+  // card has none of its own - see the top-of-file comment on why Settings
+  // lives only on the calendar card). "" = follow the household setting
+  // (nothing changes for anyone who hasn't touched this); "__default__" =
+  // force this device's own plain/local look regardless of what the
+  // household picked; anything else is a specific theme id this device
+  // wants instead.
+  _getDeviceThemeOverride() {
+    let raw = "";
+    try {
+      raw = localStorage.getItem("familyHubDeviceThemeOverrideLocal") || "";
+    } catch (e) {
+    }
+    return raw;
+  }
   _resolveTheme(settings) {
+    const override = this._getDeviceThemeOverride();
+    const useGlobalTheme = override ? override !== "__default__" : settings.useGlobalTheme;
+    const globalThemeId = override ? (override === "__default__" ? "" : override) : settings.globalThemeId;
     const local = settings.theme || this._defaultTheme();
-    if (!settings.useGlobalTheme || !settings.globalThemeId) return local;
-    const g = (this._globalThemes || []).find((t) => t && t.id === settings.globalThemeId);
+    if (!useGlobalTheme || !globalThemeId) return local;
+    const g = (this._globalThemes || []).find((t) => t && t.id === globalThemeId);
     if (!g) return local;
     const defaultTheme = this._defaultTheme();
     const colors = {};
@@ -541,12 +839,37 @@ class FamilyHubRewardsCard extends HTMLElement {
       const v = g.colors && g.colors[k];
       colors[k] = typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v) ? v : defaultTheme.colors[k];
     });
-    return { colors };
+    // v144.5+: cardOpacity/glassBlur (the "liquid glass" look - see the
+    // Liquid Glass/Liquid Glass Dark built-in presets) aren't part of
+    // defaultTheme (a local/custom theme with neither set just means
+    // "fully opaque, no blur"), so they're read straight off the global
+    // theme rather than validated against a default-theme shape like
+    // colors above - same fix family-week-calendar-card.js's own
+    // _resolveTheme already applies for its own global-theme branch.
+    const cardOpacity = typeof g.cardOpacity === "number" ? g.cardOpacity : 100;
+    const glassBlur = typeof g.glassBlur === "number" ? g.glassBlur : 0;
+    return { colors, cardOpacity, glassBlur };
+  }
+  _hexToRgba(hex, alpha) {
+    const h = (hex || "#000000").replace("#", "");
+    if (h.length !== 6) return "rgba(0,0,0,0)";
+    const r = parseInt(h.substr(0, 2), 16);
+    const g = parseInt(h.substr(2, 2), 16);
+    const b = parseInt(h.substr(4, 2), 16);
+    const a = Math.max(0, Math.min(1, typeof alpha === "number" ? alpha : 1));
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
   _applyThemeVars() {
     const theme = this._resolveTheme(this._getSettings());
+    // v144.5+: same "liquid glass" support family-week-calendar-card.js has
+    // - a theme's cardOpacity/glassBlur (100/0 defaults, both no-ops) turn
+    // the card/surface backgrounds translucent and blur whatever shows
+    // through them, so picking a Liquid Glass theme actually looks glassy
+    // on this card too, not just the calendar.
+    const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
+    const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
     this.style.setProperty("--fc-bg", theme.colors.bg);
-    this.style.setProperty("--fc-card", theme.colors.card);
+    this.style.setProperty("--fc-card", this._hexToRgba(theme.colors.card, cardOpacity / 100));
     this.style.setProperty("--fc-border", theme.colors.border);
     this.style.setProperty("--fc-text", theme.colors.text);
     this.style.setProperty("--fc-text-secondary", theme.colors.textSecondary);
@@ -554,8 +877,9 @@ class FamilyHubRewardsCard extends HTMLElement {
     this.style.setProperty("--fc-accent-text", theme.colors.accentText);
     this.style.setProperty("--fc-accent2", theme.colors.accent2);
     this.style.setProperty("--fc-accent3", theme.colors.accent3);
-    this.style.setProperty("--fc-surface-alt", theme.colors.surfaceAlt);
-    this.style.setProperty("--fc-surface2", theme.colors.surface2);
+    this.style.setProperty("--fc-surface-alt", this._hexToRgba(theme.colors.surfaceAlt, cardOpacity / 100));
+    this.style.setProperty("--fc-surface2", this._hexToRgba(theme.colors.surface2, cardOpacity / 100));
+    this.style.setProperty("--fc-glass-blur", `${glassBlur}px`);
   }
   async _fetchSettings() {
     if (!this._hass) return;
@@ -666,7 +990,10 @@ class FamilyHubRewardsCard extends HTMLElement {
       <ha-card>
         <div class="header">
           <div class="title"></div>
-          <button class="manage-btn" hidden>Manage catalog</button>
+          <div class="actions">
+            <button class="manage-btn" hidden>Manage catalog</button>
+            <button class="kiosk-login-btn" title="Log in as a specific household member on this kiosk display" hidden>&#128274; Login</button>
+          </div>
         </div>
         <div class="balances"></div>
         <div class="section-title">Reward catalog</div>
@@ -682,6 +1009,21 @@ class FamilyHubRewardsCard extends HTMLElement {
       </ha-card>
       <div class="modal-overlay create-reward-modal"><div class="modal-box"></div></div>
       <div class="modal-overlay star-history-modal"><div class="modal-box star-history-box"></div></div>
+      <div class="modal-overlay gift-stars-modal"><div class="modal-box"></div></div>
+      <div class="modal-overlay reject-modal"><div class="modal-box"></div></div>
+      <div class="modal-overlay kiosk-login-overlay">
+        <div class="modal-box kiosk-login-box">
+          <button type="button" class="star-history-close-btn kiosk-login-close" title="Close">&#10005;</button>
+          <h2>&#128274; Kiosk login</h2>
+          <div class="kiosk-login-user-picker"></div>
+          <input type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" class="kiosk-login-pin-input" placeholder="PIN" />
+          <div class="kiosk-login-error"></div>
+          <div class="modal-actions">
+            <button class="cancel-btn kiosk-login-cancel">Cancel</button>
+            <button class="save-btn kiosk-login-submit">Log in</button>
+          </div>
+        </div>
+      </div>
       <button class="add-reward-fab" title="Add a reward" aria-haspopup="true">&#65291;</button>
     `;
     this._root = root;
@@ -711,6 +1053,21 @@ class FamilyHubRewardsCard extends HTMLElement {
       this._manageOpen = !this._manageOpen;
       this._render();
     });
+    // v144+ task #29: kiosk PIN login - see _onKioskLoginBtnClick's own
+    // docstring for the full picture.
+    root.querySelector(".kiosk-login-btn").addEventListener("click", () => this._onKioskLoginBtnClick());
+    root.querySelector(".kiosk-login-close").addEventListener("click", () => this._closeKioskLoginModal());
+    root.querySelector(".kiosk-login-cancel").addEventListener("click", () => this._closeKioskLoginModal());
+    root.querySelector(".kiosk-login-submit").addEventListener("click", () => this._submitKioskLogin());
+    root.querySelector(".kiosk-login-pin-input").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") this._submitKioskLogin();
+    });
+    // Any tap/key/scroll anywhere on the card resets the 45-second idle
+    // clock while elevated - same convention as family-hub-chores-card.js's
+    // own identical listeners, scoped to this card's own root.
+    ["pointerdown", "keydown", "wheel", "touchstart"].forEach((evt) => {
+      root.addEventListener(evt, () => this._resetKioskIdleTimer(), { passive: true });
+    });
     root.addEventListener("click", (e) => this._onClick(e));
   }
 
@@ -720,9 +1077,11 @@ class FamilyHubRewardsCard extends HTMLElement {
     const goalLogBtn = e.target.closest(".goal-log-btn");
     const goalApproveBtn = e.target.closest(".goal-approve-btn");
     const goalRejectBtn = e.target.closest(".goal-reject-btn");
+    const goalCompleteBtn = e.target.closest(".goal-complete-btn");
     if (goalLogBtn) return this._logGoalProgress(goalLogBtn.dataset.id);
     if (goalApproveBtn) return this._approveGoal(goalApproveBtn.dataset.id);
-    if (goalRejectBtn) return this._rejectGoal(goalRejectBtn.dataset.id);
+    if (goalRejectBtn) return this._openRejectModal(goalRejectBtn.dataset.id);
+    if (goalCompleteBtn) return this._archiveGoal(goalCompleteBtn.dataset.id);
     if (claimBtn) return this._claim(claimBtn.dataset.id);
     if (delBtn) return this._deleteItem(delBtn.dataset.id);
     // v129+: Edit an existing catalog item - opens the same Add-reward
@@ -732,6 +1091,8 @@ class FamilyHubRewardsCard extends HTMLElement {
     if (editBtn) return this._openCreateRewardModal(this._catalog.find((it) => it.id === editBtn.dataset.id));
     if (e.target.closest(".adjust-plus-btn")) return this._adjustBalance(e.target.closest(".adjust-plus-btn").dataset.user, 1);
     if (e.target.closest(".adjust-minus-btn")) return this._adjustBalance(e.target.closest(".adjust-minus-btn").dataset.user, -1);
+    const giftBtn = e.target.closest(".gift-stars-btn");
+    if (giftBtn) return this._openGiftStarsModal(giftBtn.dataset.user, giftBtn.dataset.name);
     const historyDeleteBtn = e.target.closest(".history-delete-btn");
     if (historyDeleteBtn) return this._deleteRedemption(historyDeleteBtn.dataset.id);
     const historyReverseBtn = e.target.closest(".history-reverse-btn");
@@ -838,7 +1199,7 @@ class FamilyHubRewardsCard extends HTMLElement {
   async _claim(itemId) {
     const statusEl = this._root.querySelector(`.catalog-item[data-id="${itemId}"] .claim-status`);
     try {
-      await this._hass.connection.sendMessagePromise({ type: "family_hub/rewards/redeem", item_id: itemId });
+      await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/rewards/redeem", item_id: itemId }));
       await this._fetchRewardsState();
     } catch (e) {
       if (statusEl) statusEl.textContent = "Not enough stars yet.";
@@ -1191,7 +1552,7 @@ class FamilyHubRewardsCard extends HTMLElement {
   }
   async _approveSuggestion(suggestionId, costStars) {
     try {
-      await this._hass.connection.sendMessagePromise({ type: "family_hub/rewards/approve_suggestion", suggestion_id: suggestionId, cost_stars: costStars });
+      await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/rewards/approve_suggestion", suggestion_id: suggestionId, cost_stars: costStars }));
       await this._fetchRewardsState();
     } catch (e) {
       /* no-op */
@@ -1199,7 +1560,7 @@ class FamilyHubRewardsCard extends HTMLElement {
   }
   async _rejectSuggestion(suggestionId) {
     try {
-      await this._hass.connection.sendMessagePromise({ type: "family_hub/rewards/reject_suggestion", suggestion_id: suggestionId });
+      await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/rewards/reject_suggestion", suggestion_id: suggestionId }));
       await this._fetchRewardsState();
     } catch (e) {
       /* no-op */
@@ -1211,6 +1572,63 @@ class FamilyHubRewardsCard extends HTMLElement {
       await this._fetchRewardsState();
     } catch (e) {
       /* no-op */
+    }
+  }
+  // Task #31: give some of the viewer's OWN stars to another household
+  // member - self-serve and instant, same "no admin approval needed" shape
+  // _claim already has (see reward_engine.gift_stars' own docstring).
+  // v144.7+: was a window.prompt() single-value input; converted to a
+  // proper modal (matching every other Family Hub multi-field input, and
+  // per the household's own request) since a bare browser prompt can't
+  // show the recipient's name/current balance as anything but plain
+  // interpolated text and has no room for a real validation message.
+  // Routed through _kioskMsg so a kid elevated at a shared kiosk can gift
+  // their own stars too (task #29's elevation-aware convention, same as
+  // _claim).
+  _openGiftStarsModal(toUserId, toName) {
+    const overlay = this._root.querySelector(".gift-stars-modal");
+    const box = overlay.querySelector(".modal-box");
+    const myBalance = this._balances[this._myUserId()] || 0;
+    box.innerHTML = `
+      <h3>Gift stars to ${this._esc(toName || "them")}</h3>
+      <div class="m-hint">You have ${myBalance} star${myBalance === 1 ? "" : "s"}.</div>
+      <label>How many stars<input type="number" class="gift-amount-input" min="1" max="${myBalance}" placeholder="1"></label>
+      <div class="form-error gift-stars-error" hidden></div>
+      <div class="modal-actions">
+        <button class="cancel-btn gift-stars-cancel-btn">Cancel</button>
+        <button class="save-btn gift-stars-send-btn">Send gift</button>
+      </div>
+    `;
+    box.querySelector(".gift-stars-cancel-btn").addEventListener("click", () => this._closeGiftStarsModal());
+    box.querySelector(".gift-stars-send-btn").addEventListener("click", () => this._submitGiftStars(toUserId));
+    const input = box.querySelector(".gift-amount-input");
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") this._submitGiftStars(toUserId);
+    });
+    overlay.classList.add("open");
+    input.focus();
+  }
+  _closeGiftStarsModal() {
+    const overlay = this._root.querySelector(".gift-stars-modal");
+    if (overlay) overlay.classList.remove("open");
+  }
+  async _submitGiftStars(toUserId) {
+    const overlay = this._root.querySelector(".gift-stars-modal");
+    const box = overlay.querySelector(".modal-box");
+    const errEl = box.querySelector(".gift-stars-error");
+    const amount = parseInt(box.querySelector(".gift-amount-input").value, 10);
+    if (!(amount > 0)) {
+      errEl.textContent = "Enter how many stars to gift.";
+      errEl.hidden = false;
+      return;
+    }
+    try {
+      await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/rewards/gift_stars", to_user_id: toUserId, amount }));
+      await this._fetchRewardsState();
+      this._closeGiftStarsModal();
+    } catch (e) {
+      errEl.textContent = (e && e.message) || "Couldn't send the gift - check the balance and try again.";
+      errEl.hidden = false;
     }
   }
   // v128+: spend part of a banked reward - see const.py's REWARD_REDEEM_MODES
@@ -1335,11 +1753,18 @@ class FamilyHubRewardsCard extends HTMLElement {
   _balanceCardHtml(user) {
     const bal = this._balances[user.id] || 0;
     const isAdmin = this._isAdmin();
+    // Task #31: a "Gift" button on every OTHER household member's balance
+    // card - self-serve, like redemption (see _giftStars' own docstring),
+    // never shown on the viewer's own card (there's nothing to gift to
+    // yourself - reward_engine.gift_stars rejects it server-side too, this
+    // is just the frontend not offering a button that would always fail).
+    const canGift = user.id !== this._myUserId();
     return `
       <div class="balance-card" style="border-color:${this._userColor(user.id)}">
         <span class="balance-dot" style="background:${this._userColor(user.id)}"></span>
         <button type="button" class="balance-name" data-user="${user.id}" title="See ${this._esc(user.name)}'s full star history">${this._esc(user.name)}</button>
         <span class="balance-stars">&#11088; ${bal}</span>
+        ${canGift ? `<button type="button" class="gift-stars-btn" data-user="${user.id}" data-name="${this._esc(user.name)}" title="Gift some of your own stars to ${this._esc(user.name)}">&#127873;</button>` : ""}
         ${isAdmin ? `<span class="balance-adjust"><button class="adjust-minus-btn" data-user="${user.id}">-</button><button class="adjust-plus-btn" data-user="${user.id}">+</button></span>` : ""}
       </div>
     `;
@@ -1486,8 +1911,14 @@ class FamilyHubRewardsCard extends HTMLElement {
     const goalsTitle = this._root.querySelector(".goals-title");
     const goalsList = this._root.querySelector(".goals");
     const goalsEnabled = this._goalsInRewardsEnabled();
-    goalsTitle.hidden = !goalsEnabled || !this._goals.length;
-    goalsList.innerHTML = goalsEnabled && this._goals.length ? this._goals.map((g) => this._goalRowHtml(g)).join("") : "";
+    // v144.15+: archived goals (household hit "Complete" on them - see
+    // _archiveGoal/goal-complete-btn above) are left out of this embedded
+    // list entirely, same as family-hub-chores-card.js's own
+    // _goalsBlockHtml filter and the standalone Goals card's _myGoals() -
+    // there's no Completed accordion here, so "Complete" just means "hide."
+    const visibleGoals = this._goals.filter((g) => g.status !== GOAL_STATUS_ARCHIVED);
+    goalsTitle.hidden = !goalsEnabled || !visibleGoals.length;
+    goalsList.innerHTML = goalsEnabled && visibleGoals.length ? visibleGoals.map((g) => this._goalRowHtml(g)).join("") : "";
 
     // v127+: pending suggestions are visible to EVERYONE whenever there
     // are any (not gated behind _manageOpen/_isAdmin like the catalog's
@@ -1527,7 +1958,20 @@ class FamilyHubRewardsCard extends HTMLElement {
       ha-card { background: var(--fc-bg); color: var(--fc-text); padding: 14px; height: 100%; box-sizing: border-box; overflow-y: auto; }
       .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
       .title { font-size: 18px; font-weight: 800; }
+      .actions { display: flex; align-items: center; gap: 8px; }
       .manage-btn { border: none; border-radius: 12px; padding: 6px 12px; font-size: 12px; font-weight: 700; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; }
+      /* v144+ task #29: kiosk PIN login button + modal - same shape as
+         family-hub-chores-card.js's own identical copy. .active here means
+         "someone is currently logged in", same as manage-btn's own toggle. */
+      .kiosk-login-btn { border: 1px solid var(--fc-border); border-radius: 12px; padding: 6px 12px; font-size: 12px; font-weight: 700; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; }
+      .kiosk-login-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
+      .kiosk-login-box { max-width: 360px; }
+      .kiosk-login-user-picker { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+      .kiosk-login-user-btn { border: 2px solid var(--fc-border); border-radius: 12px; padding: 10px 14px; font-weight: 700; background: var(--fc-card); color: var(--fc-text); cursor: pointer; }
+      .kiosk-login-user-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
+      .kiosk-login-empty { color: var(--fc-text-secondary); font-size: 13px; }
+      .kiosk-login-pin-input { width: 100%; box-sizing: border-box; font-size: 22px; letter-spacing: 6px; text-align: center; padding: 10px; border-radius: 10px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); }
+      .kiosk-login-error { color: #b3462c; font-size: 13px; min-height: 18px; margin-top: 6px; }
       .section-title { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; color: var(--fc-text-secondary); margin: 14px 0 6px; }
       .balances { display: flex; gap: 8px; flex-wrap: wrap; }
       .balance-card { display: flex; align-items: center; gap: 6px; background: var(--fc-card); border: 2px solid; border-radius: 12px; padding: 6px 10px; font-size: 13px; font-weight: 700; }
@@ -1540,8 +1984,22 @@ class FamilyHubRewardsCard extends HTMLElement {
       .balance-stars { color: var(--fc-accent); }
       .balance-adjust { display: flex; gap: 2px; margin-left: 4px; }
       .balance-adjust button { border: none; border-radius: 50%; width: 18px; height: 18px; line-height: 1; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; font-weight: 800; }
+      .gift-stars-btn { border: none; border-radius: 50%; width: 20px; height: 20px; line-height: 1; background: var(--fc-surface-alt); cursor: pointer; font-size: 12px; padding: 0; }
       .catalog { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
       .catalog-item { background: var(--fc-card); border-radius: 12px; padding: 10px; text-align: center; position: relative; box-shadow: var(--fc-shadow, 0 2px 5px rgba(0,0,0,0.08)); display: flex; flex-direction: column; }
+      /* v144.5+: "Liquid glass" support, same convention as
+         family-week-calendar-card.js - see that file's own comment on its
+         backdrop-filter rule for the full reasoning. Zero-cost for every
+         existing theme (blur(0px) is a no-op); -webkit- prefix needed for
+         Safari/iOS webviews. */
+      .catalog-item, .balance-card, .cancel-btn, .gift-stars-btn,
+      .goal-reject-btn, .kiosk-login-btn, .kiosk-login-pin-input,
+      .kiosk-login-user-btn, .m-icon-toggle, .m-icon-grid, .m-icon-choice,
+      .m-color-reset-btn, .manage-btn, .catalog-mode-badge,
+      .catalog-use-bank-btn, .suggestion-cost-input, .suggestion-reject-btn {
+        backdrop-filter: blur(var(--fc-glass-blur, 0px));
+        -webkit-backdrop-filter: blur(var(--fc-glass-blur, 0px));
+      }
       .catalog-icon { font-size: 22px; }
       .catalog-title { font-weight: 700; font-size: 13px; margin: 4px 0; }
       .catalog-cost { font-size: 12px; color: var(--fc-accent); margin-bottom: 6px; }

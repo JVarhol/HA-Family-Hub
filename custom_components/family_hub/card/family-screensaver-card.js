@@ -55,23 +55,64 @@ class FamilyScreensaverCard extends HTMLElement {
   }
   setConfig(config) {
     config = config || {};
+    // v140+: an optional wrapped `card:` (any Lovelace card config, built-in
+    // or custom:*) - for a panel-view dashboard, which only ever holds
+    // exactly ONE card, so this companion card couldn't previously be added
+    // alongside whatever the household actually wanted showing on that
+    // display. Configuring it as:
+    //   type: custom:family-hub-screensaver-card
+    //   card: { <the household's real single card config> }
+    // makes THIS card the dashboard's one card, rendering the wrapped card
+    // at full size while still running the exact same idle-timer/overlay
+    // logic in the background - see _ensureScreenSaverOverlay's own
+    // comment on why that overlay is appended to document.body and so
+    // doesn't care what this card's own footprint looks like. Leaving
+    // `card` out keeps this card's original behavior exactly as it was
+    // (invisible except in edit mode) for a dashboard that already has
+    // room for a second, dedicated card.
+    const hasCard = config.card && typeof config.card === "object";
     this._config = {
       title: (config.title || "Screen Saver").toString(),
       return_dashboard_path: (config.return_dashboard_path || "").toString().trim(),
+      card: hasCard ? config.card : null,
     };
     if (this._settingsCache === undefined) this._settingsCache = null;
     if (this._screenSaverSettingsSnapshot === undefined) this._screenSaverSettingsSnapshot = null;
     if (this._dashboards === undefined) this._dashboards = null;
     if (this._editModeInternal === undefined) this._editModeInternal = false;
     if (!this._built) this._build();
+    if (hasCard) this._ensureWrappedCardElement();
     this._render();
   }
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
+    if (this._wrappedCardEl) this._wrappedCardEl.hass = hass;
     if (first) {
       this._firstLoadPromise = this._initFirstLoad();
     }
+  }
+  // Lazily creates (once) and keeps mounted the actual child card element
+  // for the `card:` config option above, using Home Assistant's own
+  // officially-supported `loadCardHelpers().createCardElement()` - the
+  // same mechanism cards like auto-entities/layout-card use to embed an
+  // arbitrary other card, rather than hand-rolling support for a handful
+  // of built-in types and leaving every other custom card unsupported.
+  async _ensureWrappedCardElement() {
+    if (this._wrappedCardEl || !this._config.card) return;
+    if (typeof window.loadCardHelpers !== "function") {
+      // Extremely old frontend without the helper - not worth a manual
+      // fallback for a case this unlikely; the wrapped card area just
+      // stays empty and _renderWrappedCard below reports why.
+      this._wrappedCardHelpersMissing = true;
+      this._render();
+      return;
+    }
+    const helpers = await window.loadCardHelpers();
+    const el = helpers.createCardElement(this._config.card);
+    el.hass = this._hass;
+    this._wrappedCardEl = el;
+    this._renderWrappedCard();
   }
   // Home Assistant's own dashboard editor sets this on any card element
   // that defines it, so the card can tell "someone is editing this
@@ -154,13 +195,39 @@ class FamilyScreensaverCard extends HTMLElement {
   // 1 row is as small as that reservation gets. Shrinking or hiding that
   // reserved slot further is a Layout-tab/grid-card limitation, not
   // something this card can opt out of on its own.
+  // Delegates to the wrapped card's own size once one exists, so a
+  // panel-view dashboard's masonry/sections view (if it's ever switched
+  // away from true panel mode) reserves the space the actual visible
+  // content needs rather than the 1-row minimum this card uses on its own.
   getCardSize() {
+    if (this._wrappedCardEl && typeof this._wrappedCardEl.getCardSize === "function") {
+      try {
+        const size = this._wrappedCardEl.getCardSize();
+        if (typeof size === "number") return size;
+      } catch (e) {
+        // fall through to the standalone default below
+      }
+    }
     return 1;
   }
   getLayoutOptions() {
+    if (this._wrappedCardEl && typeof this._wrappedCardEl.getLayoutOptions === "function") {
+      try {
+        return this._wrappedCardEl.getLayoutOptions();
+      } catch (e) {
+        // fall through
+      }
+    }
     return { grid_rows: 1, grid_columns: "full", min_rows: 1 };
   }
   getGridOptions() {
+    if (this._wrappedCardEl && typeof this._wrappedCardEl.getGridOptions === "function") {
+      try {
+        return this._wrappedCardEl.getGridOptions();
+      } catch (e) {
+        // fall through
+      }
+    }
     return { columns: 12, rows: 1, min_rows: 1 };
   }
   // Only the screenSaver slice of the shared settings blob is read here -
@@ -431,7 +498,10 @@ color: #423d34;
 .field label { display: block; font-size: 12px; font-weight: 700; margin-bottom: 4px; }
 .field select { width: 100%; box-sizing: border-box; font-size: 14px; padding: 8px 10px; border-radius: 8px; border: 1px solid #e6ddc4; background: #fff; color: #423d34; font-family: inherit; }
 .status { font-size: 11px; color: #96877a; margin-top: 8px; font-style: italic; }
+.wrapped-card-host { display: none; }
+.wrapped-card-host.active { display: block; }
 </style>
+<div class="wrapped-card-host"></div>
 <div class="card-root">
 <div class="title-row"><span class="title-text"></span><span class="badge">Edit-mode only</span></div>
 <div class="hint">Invisible once you're done editing this dashboard - it keeps the screensaver running in the background from wherever it's placed. Screen source, idle time, and which logins it's on for are all set from the full calendar card's own Settings &rarr; Screen Saver section.</div>
@@ -460,9 +530,32 @@ color: #423d34;
   }
   _render() {
     if (!this._root) return;
-    this.classList.toggle("fh-ss-hidden", !this._editModeInternal);
+    const hasCard = !!this._config.card;
+    // With a wrapped card configured, this card is meant to be the
+    // dashboard's actual visible content (a panel view's one-and-only
+    // card) - never hidden, and the dashed-border "edit-mode only" face
+    // never shown, since there's no separate real content sitting
+    // alongside it the way there is for the standalone companion use.
+    this.classList.toggle("fh-ss-hidden", !hasCard && !this._editModeInternal);
+    this._root.querySelector(".card-root").style.display = hasCard ? "none" : "";
+    this._root.querySelector(".wrapped-card-host").classList.toggle("active", hasCard);
+    if (hasCard) {
+      this._renderWrappedCard();
+      return;
+    }
     this._root.querySelector(".title-text").textContent = this._config.title || "Screen Saver";
     if (this._editModeInternal) this._renderEditFace();
+  }
+  _renderWrappedCard() {
+    const host = this._root && this._root.querySelector(".wrapped-card-host");
+    if (!host) return;
+    if (this._wrappedCardEl) {
+      if (this._wrappedCardEl.parentElement !== host) host.appendChild(this._wrappedCardEl);
+      return;
+    }
+    if (this._wrappedCardHelpersMissing) {
+      host.textContent = "This frontend version can't embed another card here - update Home Assistant, or use this card standalone instead.";
+    }
   }
   _renderEditFace() {
     const root = this._root;

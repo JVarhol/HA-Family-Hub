@@ -14,6 +14,15 @@ separate pieces:
     (best-effort) auto-registered as a dashboard resource, so future card
     updates are "replace the file, restart Home Assistant" - no more manual
     minify-and-paste into a dashboard resource.
+
+v1.109.6: menu suggestions + the new can_edit_menu permission - "anyone can
+suggest but only ones with edit menu permission can edit [the menu]." Adds
+a menu_suggestions_store plus four websocket commands (get/add/apply/remove
+_menu_suggestion) further down this file. Read the long design note above
+_encode_dish_description before changing any of it: apply_menu_suggestion is
+genuinely backend-permission-checked and makes the todo.* write itself,
+while ordinary edit/move/delete of an already-placed meal stays frontend-
+gated only, on purpose.
 """
 from __future__ import annotations
 
@@ -27,6 +36,7 @@ import logging
 import math
 import os
 import re
+import uuid
 from datetime import timedelta
 from typing import Any, Optional
 from urllib.parse import quote, urlsplit
@@ -55,6 +65,7 @@ from homeassistant.util import dt as dt_util
 # chores_websocket_api.py's own docstring for the full explanation and the
 # real bug this caused.
 from . import chore_engine
+from . import pantry_engine
 from . import reward_engine
 from . import routine_engine
 from . import store as chores_store
@@ -118,11 +129,14 @@ from .const import (
     CHORE_BIN_SENTINEL,
     CHORE_KEY_REMINDER_MINUTES,
     CHORE_KEY_REMINDERS_FIRED,
+    CHORE_STATUS_APPROVED,
     CHORE_STATUS_OPEN,
     CHORES_CARD_JS_URL,
     MY_CHORES_CARD_JS_URL,
     REWARDS_CARD_JS_URL,
     GOALS_CARD_JS_URL,
+    PANTRY_CARD_JS_URL,
+    TODO_CARD_JS_URL,
     SERVICE_CREATE_CHORE,
     SERVICE_COMPLETE_CHORE,
     SERVICE_APPROVE_CHORE,
@@ -137,9 +151,14 @@ from .const import (
     SETTINGS_STORAGE_VERSION,
     RECIPES_STORAGE_KEY_PREFIX,
     RECIPES_STORAGE_VERSION,
+    MENU_SUGGESTIONS_STORAGE_KEY_PREFIX,
+    MENU_SUGGESTIONS_STORAGE_VERSION,
+    PERMISSION_EDIT_MENU,
     SCREENSAVER_CARD_JS_URL,
     SUGGESTIONS_STORAGE_KEY_PREFIX,
     SUGGESTIONS_STORAGE_VERSION,
+    TODO_CARD_CONFIG_STORAGE_KEY_PREFIX,
+    TODO_CARD_CONFIG_STORAGE_VERSION,
     THEME_SELECTOR_CARD_JS_URL,
     THEME_STORAGE_KEY,
     THEME_STORAGE_VERSION,
@@ -214,8 +233,19 @@ def _theme(
     border_width: int = 1,
     accent_border_width: int = 2,
     card_opacity: int = 100,
+    glass_blur: int = 0,
+    bg_image: str = "",
 ) -> dict:
-    """Build a theme dict with the standard (generic) shape."""
+    """Build a theme dict with the standard (generic) shape.
+
+    glass_blur (px, default 0) and bg_image (default "", i.e. none) back
+    the "liquid glass" look (see the liquidglass/liquidglassdark presets
+    below): glass_blur drives the calendar card's backdrop-filter on its
+    --fc-card/--fc-surface-alt/--fc-surface2 surfaces (0 = no change for
+    every other preset), and bg_image gives those two presets a bundled
+    backdrop to actually blur - without one, translucent cards just show a
+    blurred flat color, which reads as "dim" rather than "glass".
+    """
     return {
         "id": theme_id,
         "name": name,
@@ -246,12 +276,46 @@ def _theme(
         "borderWidth": border_width,
         "accentBorderWidth": accent_border_width,
         "cardOpacity": card_opacity,
+        "glassBlur": glass_blur,
         "effects": {
             "shadow": dict(DEFAULT_SHADOW),
             "glow": {**DEFAULT_GLOW, "color": accent},
         },
-        "background": dict(DEFAULT_BACKGROUND),
+        "background": {**DEFAULT_BACKGROUND, "image": bg_image} if bg_image else dict(DEFAULT_BACKGROUND),
     }
+
+
+def _liquid_glass_bg_image(dark: bool) -> str:
+    """A small embedded "aurora mesh" backdrop for the two Liquid Glass
+
+    presets - soft blurred color blobs behind a base fill, purely so a
+    household that picks Liquid Glass sees an actual frosted-glass effect
+    immediately (translucent cards blurring *something* colorful) rather
+    than just dimmed flat cards over a plain background the moment they
+    haven't also picked their own photo. Plain inline SVG (base64 data URI,
+    same embedding style as HALLOWEEN_BG_IMAGE on the card side) - no
+    network fetch, no bundled binary asset, consistent with this project's
+    "no build step" single-file philosophy.
+    """
+    base = "#0b0f1a" if dark else "#eef3f8"
+    blobs = (
+        ("#2f6fb0", "#6a4fc9", "#1f8f82", "#a3315f")
+        if dark
+        else ("#7fc4ff", "#b79bff", "#7de8d0", "#ffb8d9")
+    )
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600">'
+        '<defs><filter id="b" x="-50%" y="-50%" width="200%" height="200%">'
+        '<feGaussianBlur stdDeviation="70"/></filter></defs>'
+        f'<rect width="800" height="600" fill="{base}"/>'
+        f'<circle cx="120" cy="120" r="220" fill="{blobs[0]}" filter="url(#b)" opacity="0.55"/>'
+        f'<circle cx="650" cy="180" r="200" fill="{blobs[1]}" filter="url(#b)" opacity="0.5"/>'
+        f'<circle cx="700" cy="520" r="240" fill="{blobs[2]}" filter="url(#b)" opacity="0.5"/>'
+        f'<circle cx="150" cy="520" r="200" fill="{blobs[3]}" filter="url(#b)" opacity="0.45"/>'
+        '</svg>'
+    )
+    encoded = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
 
 
 def _seed_themes() -> list[dict]:
@@ -293,6 +357,28 @@ def _seed_themes() -> list[dict]:
             text_secondary="#a67d78", accent="#c9789a", accent_text="#fff5f7",
             accent2="#6b8f6a", accent3="#d98a6a", surface_alt="#f7e3e0", surface2="#faeae8",
         ),
+        # Apple-style "liquid glass": bright, translucent, blurred panels
+        # (cardOpacity + glassBlur - see _theme's own docstring) over a
+        # bundled soft color-mesh backdrop. Light and dark are two separate
+        # presets (not one auto-switching theme) since Theme Builder/the
+        # calendar card have no light/dark-mode-aware theme concept at all
+        # today (unlike raw HA themes' optional "modes" key, which nothing
+        # here reads) - see the household's own request for "both light and
+        # dark modes".
+        _theme(
+            "liquidglass", "Liquid Glass",
+            bg="#eef3f8", card="#ffffff", border="#d7e3f0", text="#1c2733",
+            text_secondary="#66758a", accent="#0a84ff", accent_text="#ffffff",
+            accent2="#30b0c7", accent3="#ff3b30", surface_alt="#eef4fb", surface2="#e4edf7",
+            card_opacity=62, glass_blur=16, bg_image=_liquid_glass_bg_image(dark=False),
+        ),
+        _theme(
+            "liquidglassdark", "Liquid Glass Dark",
+            bg="#0b0f1a", card="#1c2230", border="#3a4257", text="#eef2f8",
+            text_secondary="#9aa7bd", accent="#409cff", accent_text="#04101f",
+            accent2="#32d1e0", accent3="#ff6961", surface_alt="#242c3d", surface2="#20283a",
+            card_opacity=55, glass_blur=18, bg_image=_liquid_glass_bg_image(dark=True),
+        ),
     ]
 
 
@@ -319,6 +405,7 @@ def _migrate_theme(theme: dict) -> dict:
     theme.setdefault("borderWidth", 1)
     theme.setdefault("accentBorderWidth", 2)
     theme.setdefault("cardOpacity", 100)
+    theme.setdefault("glassBlur", 0)
     return theme
 
 
@@ -1015,7 +1102,7 @@ async def _migrate_notify_profiles(hass: HomeAssistant, entry: ConfigEntry, sett
     isn't attributable to anyone automatically - it's logged so the
     migration is never silently lossy, and the household can add it back
     to the right person's profile by hand from the card's new
-    Notifications tab.
+    Users tab.
     """
     settings = await settings_store.async_load() or {}
     if settings.get(SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED):
@@ -1094,7 +1181,7 @@ async def _migrate_notify_profiles(hass: HomeAssistant, entry: ConfigEntry, sett
             "Family Hub: switching to per-user notifications - could not automatically "
             "match these existing notify target(s) to a Home Assistant login, so they "
             "were NOT carried over: %s. Add them back to the right person from the "
-            "card's Settings > Notifications tab if they should still get notified.",
+            "card's Settings > Users tab if they should still get notified.",
             ", ".join(unmatched),
         )
 
@@ -1338,6 +1425,30 @@ async def _ws_set_settings(
     be silently dropped again), and a second, independent safety net in
     _migrate_notify_profiles itself that refuses to overwrite non-empty
     profile data even if this flag is somehow still missing.
+
+    v144+ task #29 hit the exact same class of bug with a kiosk PIN's
+    pinHash/pinSalt (chores_websocket_api.py's ws_kiosk_set_pin writes
+    those two fields directly to the store, deliberately bypassing this
+    handler entirely so the general, ungated set_settings command could
+    never be used to plant a PIN - see that section's own module
+    docstring). The card's JS never reads pinHash/pinSalt back at all (by
+    design - a PIN hash/salt has no business ever reaching a browser), so
+    _normalizeUserProfiles's per-user object literal simply doesn't carry
+    those two keys, and every ordinary Settings save - even one totally
+    unrelated to kiosk login, e.g. toggling someone else's color - was
+    silently wiping every household member's just-set PIN back to unset
+    the next time this handler ran, because it saved the JS's own
+    stripped-down copy of userProfiles verbatim over the real one. This
+    reproduced as "the kiosk keeps saying wrong PIN" even with the exact
+    right PIN, some unknown amount of time (as short as the very next
+    Settings save) after an admin set it. Fixed the same way as the
+    migrated-flag bug above: for each user_id the incoming payload's own
+    userProfiles carries, carry the EXISTING pinHash/pinSalt forward
+    whenever the incoming profile for that user doesn't already specify
+    them - "specifies", not "is falsy," so ws_kiosk_set_pin's own PIN-clear
+    path (which explicitly pops both keys before saving) is never
+    second-guessed by this carry-forward the next time an ordinary
+    Settings save happens to run after it.
     """
     entry_data = _get_family_hub_entry_data(hass)
     if entry_data is None:
@@ -1345,13 +1456,446 @@ async def _ws_set_settings(
         return
     store: Store = entry_data["settings_store"]
     new_settings = dict(msg["settings"])
-    if SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED not in new_settings:
+    needs_existing = SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED not in new_settings or "userProfiles" in new_settings
+    if needs_existing:
         existing = await store.async_load() or {}
-        if existing.get(SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED):
+        if SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED not in new_settings and existing.get(SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED):
             new_settings[SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED] = True
+        existing_profiles = existing.get("userProfiles")
+        new_profiles = new_settings.get("userProfiles")
+        if isinstance(existing_profiles, dict) and isinstance(new_profiles, dict):
+            for user_id, existing_profile in existing_profiles.items():
+                if not isinstance(existing_profile, dict):
+                    continue
+                pin_hash = existing_profile.get("pinHash")
+                pin_salt = existing_profile.get("pinSalt")
+                if not pin_hash or not pin_salt:
+                    continue
+                incoming_profile = new_profiles.get(user_id)
+                if not isinstance(incoming_profile, dict):
+                    continue
+                if "pinHash" not in incoming_profile and "pinSalt" not in incoming_profile:
+                    incoming_profile["pinHash"] = pin_hash
+                    incoming_profile["pinSalt"] = pin_salt
     await store.async_save(new_settings)
     await _backup_settings(hass, new_settings)
     connection.send_result(msg["id"], {"success": True})
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/get_todo_card_config"})
+@websocket_api.async_response
+async def _ws_get_todo_card_config(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Return the To-Do Lists card's own list selection (v146.5+) - which
+    todo.* entities and which Grocy shopping lists the FAB's List(s) tab has
+    picked. Backed by its own small Store (TODO_CARD_CONFIG_STORAGE_KEY_
+    PREFIX - see that constant's own comment for why this is a SEPARATE
+    store rather than folded into the shared family_hub/get_settings blob).
+
+    Returns `{"entities": null, "grocy_list_ids": null}` (both null, not an
+    empty list) when nothing has ever been saved here yet - the card's own
+    JS (_fetchTodoCardConfig) treats null as "nothing saved to the backend
+    yet, fall back to whatever the card's own YAML/dashboard config still
+    carries" (the legacy source, from before this store existed), and only
+    once the household saves through the List(s) tab does this become the
+    one source of truth from then on, even an explicitly empty selection
+    (`[]`, not null).
+    """
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    store: Store = entry_data["todo_card_config_store"]
+    saved = await store.async_load()
+    entities = saved.get("entities") if isinstance(saved, dict) else None
+    grocy_list_ids = saved.get("grocy_list_ids") if isinstance(saved, dict) else None
+    connection.send_result(
+        msg["id"],
+        {
+            "entities": entities if isinstance(entities, list) else None,
+            "grocy_list_ids": grocy_list_ids if isinstance(grocy_list_ids, list) else None,
+        },
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/set_todo_card_config",
+        vol.Required("entities"): [str],
+        vol.Required("grocy_list_ids"): [vol.Coerce(int)],
+    }
+)
+@websocket_api.async_response
+async def _ws_set_todo_card_config(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Persist the To-Do Lists card's list selection (v146.5+) - see
+    _ws_get_todo_card_config's own docstring. This store holds ONLY these
+    two fields and only this card ever writes to it, so - unlike
+    family_hub/set_settings - a plain full replace on every save is safe:
+    there's no other party's own save that could clobber a field it
+    doesn't know about.
+    """
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    store: Store = entry_data["todo_card_config_store"]
+    await store.async_save({"entities": msg["entities"], "grocy_list_ids": msg["grocy_list_ids"]})
+    connection.send_result(msg["id"], {"success": True})
+
+
+# ---------------------------------------------------------------------------
+# Menu suggestions (v1.109.6+) - "need a permission to edit menu, prevents
+# kids from messing with the menu, anyone can suggest but only ones with
+# edit menu permission can edit."
+#
+# The four commands below back the new PERMISSION_EDIT_MENU ("can_edit_menu")
+# granular permission (see const.py's CHORE_PERMISSIONS, which is the single
+# generic list of every grantable permission across chores/rewards/menu, and
+# family-week-calendar-card.js's own _canEditMenu/_openEditorForDate for the
+# UI half).
+#
+# DESIGN NOTE / KNOWN, DELIBERATE LIMITATION - please read before "fixing"
+# this. The weekly meal plan ("the menu") is not Family Hub data: it lives
+# on a native Home Assistant todo.* entity (CONF_MEAL_PLAN_ENTITY), and the
+# calendar card has always written to it DIRECTLY from the browser via
+# hass.callService("todo", "add_item"/"update_item"/"remove_item", ...),
+# with per-meal metadata packed as JSON into each item's description field
+# (encoded/decoded by the card's own _upsertMealPlan/_parseDishDescription).
+# There is no Family Hub websocket command in that write path at all, which
+# is unlike Chores, where every mutating action goes through a handler that
+# calls _has_permission.
+#
+# Fully backend-enforcing the menu would mean re-implementing that entire
+# meal-plan CRUD surface server-side in Python - including a byte-exact
+# Python twin of the JS description encoder, covering recurring anchors,
+# leftovers day-pickers, additional recipes, colors, Grocy servings - and
+# then keeping the two encoders in lockstep forever. That's a large, risky
+# duplication whose most likely failure mode is silent drift corrupting
+# real meal data, for a threat model that is "stop a kid from rearranging
+# dinner," not "stop an attacker."
+#
+# So the split is deliberate:
+#   - COMMITTING A SUGGESTION into the real menu IS genuinely backend-
+#     permission-checked: apply_menu_suggestion below re-derives the
+#     caller's permission via _has_permission and makes the todo.* service
+#     call itself, server-side. The client never gets to do that write.
+#   - ORDINARY edit/move/delete of an ALREADY-PLACED meal remains
+#     FRONTEND-gated only (the card hides those controls and offers
+#     "Suggest" instead when _canEditMenu() is false). A UI-restricted user
+#     could technically still call the todo.* services directly from
+#     outside the card - exactly the same caveat that already applies to
+#     every other frontend-gated action in this app, and no worse than the
+#     status quo before this version, where the menu had NO gating at all.
+# If the menu is ever migrated off todo.* onto a Family Hub store of its
+# own, that limitation disappears on its own and this note can go.
+# ---------------------------------------------------------------------------
+
+
+def _encode_dish_description(
+    description: str = "",
+    link: str = "",
+    color: str = "",
+    block_index: int = 0,
+    grocy_recipe_id: Any = None,
+    servings: Any = None,
+) -> str:
+    """Python twin of the calendar card's own meal-plan description
+    encoder (see _upsertMealPlan in family-week-calendar-card.js, and
+    _parseDishDescription for the matching decoder) - the JSON blob stuffed
+    into a meal-plan to-do item's `description` field.
+
+    Field names and shape must match the JS exactly or the card will read
+    a meal applied from here as a blank/differently-blocked entry. Only the
+    fields a suggestion can actually carry are emitted with real values;
+    the rest are written at their documented defaults (recur None,
+    spanDays 1, additionalRecipes [], leftoverDates []) rather than
+    omitted, so a suggestion-applied meal is byte-shaped like any meal the
+    card itself would have written. A suggestion deliberately cannot
+    propose a recurring meal, leftovers, or additional recipes - those are
+    menu-shaping decisions for someone who can edit the menu, and anyone
+    with can_edit_menu can add them afterwards in the normal editor.
+
+    separators=(",", ":") is NOT used - the JS side's JSON.stringify emits
+    ", " / ": " spacing, and nothing compares these strings byte-for-byte,
+    so plain json.dumps is both fine and closer to what round-trips.
+    """
+    return json.dumps(
+        {
+            "description": description or "",
+            "link": link or "",
+            "color": color or "",
+            "block": int(block_index or 0),
+            "recur": None,
+            "grocyRecipeId": grocy_recipe_id if grocy_recipe_id else None,
+            "servings": servings if isinstance(servings, int) else None,
+            "spanDays": 1,
+            "additionalRecipes": [],
+            "leftoverDates": [],
+        }
+    )
+
+
+async def _load_menu_suggestions(entry_data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Read the pending menu-suggestion queue out of its Store, always as a
+    plain list - an empty/never-written store loads as None, and a
+    hand-edited one could be anything, so both degrade to []."""
+    store: Store = entry_data["menu_suggestions_store"]
+    saved = await store.async_load()
+    if isinstance(saved, dict):
+        items = saved.get("suggestions")
+    else:
+        items = saved
+    return [s for s in items if isinstance(s, dict)] if isinstance(items, list) else []
+
+
+async def _save_menu_suggestions(entry_data: dict[str, Any], suggestions: list[dict[str, Any]]) -> None:
+    store: Store = entry_data["menu_suggestions_store"]
+    await store.async_save({"suggestions": suggestions})
+
+
+def _actor_display_name(hass: HomeAssistant, connection: websocket_api.ActiveConnection) -> str:
+    """Best-effort human name for whoever's on the connection, for the
+    "suggested by Emma" label. Falls back to the raw id (then "Someone")
+    rather than failing - a suggestion with an unresolvable name is still
+    a perfectly usable suggestion."""
+    user = getattr(connection, "user", None)
+    if user is None:
+        return "Someone"
+    return getattr(user, "name", None) or getattr(user, "id", None) or "Someone"
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/get_menu_suggestions"})
+@websocket_api.async_response
+async def _ws_get_menu_suggestions(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Every pending menu suggestion for this config entry. Open to any
+    authenticated connection on purpose - a kid needs to see (and be able
+    to retract) their own pending suggestion, and there is nothing private
+    in the queue: it's a list of dinner ideas."""
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    connection.send_result(msg["id"], {"suggestions": await _load_menu_suggestions(entry_data)})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/add_menu_suggestion",
+        vol.Required("date_key"): str,
+        vol.Required("block_index"): vol.Coerce(int),
+        vol.Required("name"): str,
+        vol.Optional("description"): str,
+        vol.Optional("link"): str,
+        vol.Optional("grocy_recipe_id"): vol.Any(int, str, None),
+        vol.Optional("servings"): vol.Any(int, None),
+    }
+)
+@websocket_api.async_response
+async def _ws_add_menu_suggestion(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """"Anyone can suggest" - this is the one command in the set with no
+    permission gate at all (beyond being an authenticated HA user), which
+    is the entire point of the feature.
+
+    suggested_by / suggested_by_name / created_at / uid are all stamped
+    SERVER-SIDE and any client-supplied values for them are ignored (they
+    aren't even in the schema) - identity fields are never trusted from
+    the client, same rule every other handler in this integration follows.
+    """
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    name = (msg.get("name") or "").strip()
+    date_key = (msg.get("date_key") or "").strip()
+    if not name or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_key):
+        connection.send_error(
+            msg["id"], "invalid_format", "A menu suggestion needs a name and a YYYY-MM-DD date_key."
+        )
+        return
+    suggestion = {
+        "uid": uuid.uuid4().hex,
+        "date_key": date_key,
+        "block_index": int(msg.get("block_index") or 0),
+        "name": name,
+        "description": (msg.get("description") or "").strip(),
+        "link": (msg.get("link") or "").strip(),
+        "grocy_recipe_id": msg.get("grocy_recipe_id") or None,
+        "servings": msg.get("servings") if isinstance(msg.get("servings"), int) else None,
+        "suggested_by": chores_ws_api._actor_id(connection),
+        "suggested_by_name": _actor_display_name(hass, connection),
+        "created_at": dt_util.utcnow().isoformat(),
+    }
+    suggestions = await _load_menu_suggestions(entry_data)
+    suggestions.append(suggestion)
+    await _save_menu_suggestions(entry_data, suggestions)
+    connection.send_result(msg["id"], {"suggestion": suggestion})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/apply_menu_suggestion",
+        vol.Required("uid"): str,
+    }
+)
+@websocket_api.async_response
+async def _ws_apply_menu_suggestion(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Commit a pending suggestion into the real meal plan. THIS is the
+    genuinely backend-enforced half of can_edit_menu (see the design note
+    above this block): the permission is re-derived server-side from the
+    Permissions store via _has_permission - a real HA admin always passes -
+    and the todo.* write is then made BY HOME ASSISTANT ITSELF here, not by
+    the browser. A kid's card can call this all it likes; without the
+    permission it gets "forbidden" and nothing is written.
+
+    On success the suggestion is removed from the queue (it's been
+    answered). If the todo.* call fails, the suggestion is deliberately
+    LEFT in the queue so nothing is silently lost and the household can
+    retry once the meal-plan entity is fixed.
+    """
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    if not chores_ws_api._has_permission(entry_data, connection, PERMISSION_EDIT_MENU):
+        connection.send_error(
+            msg["id"],
+            "forbidden",
+            "You don't have permission to edit the menu - ask someone who does to apply this suggestion.",
+        )
+        return
+    entry = _get_family_hub_entry(hass)
+    meal_plan_entity = (entry.options if entry else {}).get(CONF_MEAL_PLAN_ENTITY)
+    if not meal_plan_entity:
+        connection.send_error(msg["id"], "not_found", "No meal plan to-do list is configured.")
+        return
+    suggestions = await _load_menu_suggestions(entry_data)
+    suggestion = next((s for s in suggestions if s.get("uid") == msg["uid"]), None)
+    if suggestion is None:
+        connection.send_error(msg["id"], "not_found", "That menu suggestion no longer exists.")
+        return
+    date_key = suggestion.get("date_key") or ""
+    block_index = int(suggestion.get("block_index") or 0)
+    payload = _encode_dish_description(
+        description=suggestion.get("description") or "",
+        link=suggestion.get("link") or "",
+        # No color: a suggestion has never had one to propose, and the
+        # card's own _parseDishDescription treats a falsy color as "use
+        # the theme default" - exactly what a freshly applied meal wants.
+        color="",
+        block_index=block_index,
+        grocy_recipe_id=suggestion.get("grocy_recipe_id"),
+        servings=suggestion.get("servings"),
+    )
+    # Is something already planned for this exact day + block? Same rule
+    # _upsertMealPlan uses: match on the CONCRETE item due on this date
+    # carrying this block index (a projected "repeat weekly"/leftovers meal
+    # has no item of its own here, and applying over one correctly creates
+    # a one-off override for just this date, leaving the anchor alone).
+    existing_uid = None
+    try:
+        response = await hass.services.async_call(
+            "todo",
+            "get_items",
+            {"entity_id": meal_plan_entity, "status": ["needs_action", "completed"]},
+            blocking=True,
+            return_response=True,
+        )
+        for item in ((response or {}).get(meal_plan_entity) or {}).get("items", []) or []:
+            if str(item.get("due") or "")[:10] != date_key:
+                continue
+            try:
+                parsed = json.loads(item.get("description") or "{}")
+            except (ValueError, TypeError):
+                parsed = {}
+            item_block = parsed.get("block") if isinstance(parsed, dict) else None
+            if int(item_block or 0) == block_index:
+                existing_uid = item.get("uid")
+                break
+    except Exception as err:  # noqa: BLE001 - a list we can't read just means "add a new item"
+        _LOGGER.debug("Family Hub: could not read meal plan %s before applying suggestion: %s", meal_plan_entity, err)
+
+    try:
+        if existing_uid:
+            await hass.services.async_call(
+                "todo",
+                "update_item",
+                {
+                    "entity_id": meal_plan_entity,
+                    "item": existing_uid,
+                    "rename": suggestion.get("name") or "",
+                    "description": payload,
+                    "due_date": date_key,
+                },
+                blocking=True,
+            )
+        else:
+            await hass.services.async_call(
+                "todo",
+                "add_item",
+                {
+                    "entity_id": meal_plan_entity,
+                    "item": suggestion.get("name") or "",
+                    "description": payload,
+                    "due_date": date_key,
+                },
+                blocking=True,
+            )
+    except Exception as err:  # noqa: BLE001 - surfaced to the caller, suggestion kept for a retry
+        _LOGGER.warning("Family Hub: failed to apply menu suggestion to %s: %s", meal_plan_entity, err)
+        connection.send_error(msg["id"], "unknown_error", f"Could not update the meal plan: {err}")
+        return
+
+    remaining = [s for s in suggestions if s.get("uid") != msg["uid"]]
+    await _save_menu_suggestions(entry_data, remaining)
+    connection.send_result(msg["id"], {"applied": suggestion, "suggestions": remaining})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/remove_menu_suggestion",
+        vol.Required("uid"): str,
+    }
+)
+@websocket_api.async_response
+async def _ws_remove_menu_suggestion(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Dismiss (or retract) a pending suggestion without applying it.
+
+    Two ways to pass, deliberately: someone with can_edit_menu (or a real
+    admin) can clear out anyone's suggestion - they're the ones the queue
+    is addressed to - and the ORIGINAL SUGGESTER can always retract their
+    own, so a kid who changed their mind isn't stuck waiting for a parent
+    to tidy up after them. Anyone else gets "forbidden"; a kid can't
+    delete their sibling's idea.
+    """
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    suggestions = await _load_menu_suggestions(entry_data)
+    suggestion = next((s for s in suggestions if s.get("uid") == msg["uid"]), None)
+    if suggestion is None:
+        connection.send_error(msg["id"], "not_found", "That menu suggestion no longer exists.")
+        return
+    is_own = bool(suggestion.get("suggested_by")) and suggestion.get("suggested_by") == chores_ws_api._actor_id(connection)
+    if not is_own and not chores_ws_api._has_permission(entry_data, connection, PERMISSION_EDIT_MENU):
+        connection.send_error(
+            msg["id"], "forbidden", "You can only remove your own menu suggestions."
+        )
+        return
+    remaining = [s for s in suggestions if s.get("uid") != msg["uid"]]
+    await _save_menu_suggestions(entry_data, remaining)
+    connection.send_result(msg["id"], {"suggestions": remaining})
 
 
 @websocket_api.websocket_command({vol.Required("type"): "family_hub/list_users"})
@@ -1395,7 +1939,7 @@ async def _ws_list_users(
 async def _ws_detect_notify_target(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
 ) -> None:
-    """Power the Notifications tab's "Auto-detect" button: best-effort find
+    """Power the Users tab's "Auto-detect" button: best-effort find
     notify.* target(s) for the CALLER's own login (connection.user.id) via
     person/device_tracker matching (see _detect_user_notify_targets).
 
@@ -1764,6 +2308,116 @@ async def _ws_get_grocy_recipes(
         recipes.append({"id": recipe_id, "name": name, "link": f"{url}/recipe/{recipe_id}"})
     recipes.sort(key=lambda r: r["name"].lower())
     connection.send_result(msg["id"], {"configured": True, "recipes": recipes})
+
+
+async def _sync_grocy_recipes_to_recipe_box(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """v143+ task #27: "Grocy recipes should always sync to the recipe box -
+    a user should not have to 'import a recipe' using the 'Add from Grocy'
+    button, it should just always be there and always work and always stay
+    updated." Called from _poll (every poll_minutes, plus once at startup -
+    see async_setup_entry) so a recipe added or renamed in Grocy shows up
+    in the Recipe Box on its own, no button press required.
+
+    Writes the exact same "just a name + a link back to Grocy" shape the
+    manual Add-from-Grocy picker has always written (see the JS's own
+    _upsertDish) - ingredients/instructions are still never duplicated in,
+    they stay fetched on demand by the Recipe Viewer via
+    get_grocy_recipe_detail, completely unchanged by this.
+
+    Matching is by grocyRecipeId, not name - a household may have already
+    renamed their own Recipe Box copy of a Grocy recipe, and this must
+    never stomp on that. A recipe whose grocyRecipeId isn't seen among
+    Grocy's own list only has its name/link touched (kept in step with
+    Grocy); everything else about it - rating, category, image,
+    description - is the household's own and is never overwritten here. A
+    Grocy recipe with no existing match gets a brand new Recipe Box entry,
+    unrated (see the v143+ "recipes come in hearted" bug fix - this must
+    start unrated same as the manual picker does). A Recipe Box entry
+    whose Grocy recipe has since been deleted is deliberately left alone -
+    this only ever adds/updates, never deletes, same caution every other
+    sync job in this file (_sync_standard_unit_conversions) already
+    follows.
+
+    Best-effort and silent: an unconfigured or unreachable Grocy is a
+    normal, common state (most poll cycles, for a household that hasn't
+    set Grocy up at all) - this must never raise or block the rest of
+    _poll's own work over it.
+    """
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        return
+    url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
+    api_key = (entry.options.get(CONF_GROCY_API_KEY) if entry else "") or ""
+    if not url or not api_key:
+        return
+
+    session = async_get_clientsession(hass)
+    try:
+        async with session.get(
+            f"{url}/api/objects/recipes",
+            headers={"GROCY-API-KEY": api_key},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status != 200:
+                return
+            data = await resp.json(content_type=None)
+    except Exception:  # noqa: BLE001 - best-effort background sync, never raise
+        return
+
+    grocy_recipes = []
+    for item in data if isinstance(data, list) else []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        recipe_id = item.get("id")
+        if not name or recipe_id is None:
+            continue
+        grocy_recipes.append({"id": recipe_id, "name": name, "link": f"{url}/recipe/{recipe_id}"})
+    if not grocy_recipes:
+        return
+
+    store: Store = entry_data["recipes_store"]
+    stored = await store.async_load() or {}
+    if not stored.get("migrated"):
+        # The Recipe Box store hasn't run its own one-time legacy todo.
+        # recipe_box migration yet (see the JS's own _fetchRecipes) - that
+        # only happens the first time the card itself loads with a real
+        # hass connection. Writing anything here first would permanently
+        # skip that migration (the card only migrates when NOT already
+        # migrated) and silently lose whatever recipes were sitting in the
+        # old to-do list. Simplest safe answer: do nothing until the card
+        # has migrated at least once: next poll cycle after that picks
+        # right up where this left off.
+        return
+    recipe_list = list(stored.get("recipes", []))
+    by_grocy_id = {
+        r.get("grocyRecipeId"): r
+        for r in recipe_list
+        if isinstance(r, dict) and r.get("grocyRecipeId") is not None
+    }
+    changed = False
+    for g in grocy_recipes:
+        existing = by_grocy_id.get(g["id"])
+        if existing is None:
+            recipe_list.append(
+                {
+                    "uid": f"rcp_{uuid.uuid4().hex[:12]}",
+                    "name": g["name"],
+                    "description": "",
+                    "link": g["link"],
+                    "rating": None,
+                    "grocyRecipeId": g["id"],
+                    "category": "",
+                    "image": "",
+                }
+            )
+            changed = True
+        elif existing.get("name") != g["name"] or existing.get("link") != g["link"]:
+            existing["name"] = g["name"]
+            existing["link"] = g["link"]
+            changed = True
+    if changed:
+        await store.async_save({"recipes": recipe_list, "migrated": True})
 
 
 def _format_grocy_ingredient_amount(pos: dict, unit: dict) -> str:
@@ -2587,6 +3241,61 @@ async def _ws_toggle_grocy_shopping_list_item(
     connection.send_result(msg["id"], {"configured": True, "success": True})
 
 
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/update_grocy_shopping_list_item",
+        vol.Required("item_id"): vol.Coerce(int),
+        vol.Optional("name"): str,
+        vol.Optional("note"): str,
+        vol.Optional("amount"): vol.Coerce(float),
+    }
+)
+@websocket_api.async_response
+async def _ws_update_grocy_shopping_list_item(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Edits a shopping-list row's own plain fields directly - PUT
+    /api/objects/shopping_list/{id} (GenericEntityApiController::EditObject),
+    the same generic partial-object-update call _ws_toggle_grocy_shopping_
+    list_item already makes for {"done": ...} and _adjust_grocy_shopping_
+    list_units_for_purchase makes for {"amount", "qu_id"} - just with
+    whichever of name/note/amount were actually given, so an item's other
+    fields (done, product_id, ...) are left untouched.
+
+    Powers the To-Do Lists card's item detail modal for a Grocy-backed
+    item - `note` and `amount` are always meaningful; `name` only actually
+    changes what shows up for a FREETEXT row (no product_id) - a
+    product-linked row's own display name always comes from the linked
+    product record, not this field, same as Grocy's own UI, so the card's
+    own modal only offers to rename a row when it has no product link.
+    """
+    entry = _get_family_hub_entry(hass)
+    url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
+    api_key = (entry.options.get(CONF_GROCY_API_KEY) if entry else "") or ""
+    if not url or not api_key:
+        connection.send_result(msg["id"], {"configured": False, "success": False})
+        return
+
+    body: dict[str, Any] = {}
+    if "name" in msg:
+        body["name"] = msg["name"]
+    if "note" in msg:
+        body["note"] = msg["note"]
+    if "amount" in msg:
+        body["amount"] = msg["amount"]
+    if not body:
+        connection.send_result(msg["id"], {"configured": True, "success": True})
+        return
+
+    session = async_get_clientsession(hass)
+    try:
+        await _grocy_api_put(session, url, api_key, f"/api/objects/shopping_list/{msg['item_id']}", body)
+    except Exception as err:  # noqa: BLE001
+        connection.send_result(msg["id"], {"configured": True, "success": False, "error": str(err)})
+        return
+    connection.send_result(msg["id"], {"configured": True, "success": True})
+
+
 @websocket_api.websocket_command({vol.Required("type"): "family_hub/get_grocy_shopping_lists"})
 @websocket_api.async_response
 async def _ws_get_grocy_shopping_lists(
@@ -2856,6 +3565,16 @@ async def _ws_create_grocy_quantity_unit(
         vol.Optional("best_before_date"): str,
         vol.Optional("price"): vol.Coerce(float),
         vol.Optional("list_id", default=1): vol.Coerce(int),
+        # v146.2+ (To-Do card put-away): true when product_id here came
+        # from _ws_match_grocy_product's fuzzy suggestion rather than a
+        # genuine Grocy-native link on this row (Grocy only auto-links a
+        # row to a product when the shopping list item was added via an
+        # exact-name match in the first place - see
+        # _ws_add_grocy_shopping_list_item's own "matched_product" - so a
+        # freetext row picked up by a fuzzy match here has no such link).
+        # See this handler's own docstring below for why that changes
+        # which Grocy call removes the row afterward.
+        vol.Optional("unlink_by_row_id", default=False): bool,
     }
 )
 @websocket_api.async_response
@@ -2869,18 +3588,33 @@ async def _ws_put_away_grocy_shopping_list_item(
     barcode-scan-to-purchase flow uses, transaction_type "purchase";
     `price` there is the same per-stock-unit purchase price field Grocy's
     own UI records, which is what feeds the shopping list's own cost
-    estimate and each product's `last_price` elsewhere in this file) -
-    then taken off the shopping list the same way Grocy's own UI does when
-    marking a shopping list item purchased: POST
-    /api/stock/shoppinglist/remove-product
-    (StockApiController::RemoveProductFromShoppingList), rather than
-    deleting the row directly, so a partially-fulfilled amount decrements
-    correctly instead of always removing the whole row.
+    estimate and each product's `last_price` elsewhere in this file).
 
-    item_id isn't used in either Grocy call (product_id/amount from the
-    shopping list row the card already has locally are what both need) -
-    it's only carried in the message so a failure response can be matched
-    back to the right row in the card's list.
+    Removing the row afterward then branches on `unlink_by_row_id`:
+      - False (the original/default behavior, still what the calendar
+        card's own Grocy Shopping List viewer always sends): POST
+        /api/stock/shoppinglist/remove-product
+        (StockApiController::RemoveProductFromShoppingList) - matches by
+        product_id/list_id and decrements the row's own amount, so a
+        partially-fulfilled put-away decrements correctly instead of
+        always removing the whole row. Only correct when the row genuinely
+        carries that product_id in Grocy's own data, which is why this
+        stays the default.
+      - True (the To-Do card's put-away flow, when product_id was
+        resolved via a fuzzy match rather than a real link on the row):
+        remove-product would silently find nothing to match (the row has
+        no real product_id of its own) and leave a stale row on the list
+        even though stock was just added - so this deletes the specific
+        row directly by its own id instead (DELETE
+        /api/objects/shopping_list/{item_id}, the same call
+        _ws_remove_grocy_shopping_list_item makes), which works regardless
+        of whether Grocy itself ever linked this row to a product.
+
+    item_id isn't used in the stock-add call (product_id/amount from the
+    shopping list row the card already has locally are what that needs) -
+    it's carried in the message so a failure response can be matched back
+    to the right row in the card's list, and so the row-id-delete branch
+    above has something to delete.
     """
     entry = _get_family_hub_entry(hass)
     url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
@@ -2903,17 +3637,107 @@ async def _ws_put_away_grocy_shopping_list_item(
     session = async_get_clientsession(hass)
     try:
         await _grocy_api_post(session, url, api_key, f"/api/stock/products/{msg['product_id']}/add", body)
-        await _grocy_api_post(
-            session,
-            url,
-            api_key,
-            "/api/stock/shoppinglist/remove-product",
-            {"product_id": msg["product_id"], "product_amount": msg["amount"], "list_id": msg.get("list_id", 1)},
-        )
+        if msg.get("unlink_by_row_id"):
+            await _grocy_api_delete(session, url, api_key, f"/api/objects/shopping_list/{msg['item_id']}")
+        else:
+            await _grocy_api_post(
+                session,
+                url,
+                api_key,
+                "/api/stock/shoppinglist/remove-product",
+                {"product_id": msg["product_id"], "product_amount": msg["amount"], "list_id": msg.get("list_id", 1)},
+            )
     except Exception as err:  # noqa: BLE001
         connection.send_result(msg["id"], {"configured": True, "success": False, "error": str(err)})
         return
     connection.send_result(msg["id"], {"configured": True, "success": True})
+
+
+def _match_grocy_products(query: str, candidates: list[tuple[int, str]], limit: int = 6, cutoff: float = 0.35):
+    """Fuzzy-ranks `candidates` (id, name) against `query`, returning up to
+    `limit` results as [{product_id, name, score}], best first, score >=
+    `cutoff`. Same plain difflib character-similarity scoring
+    _best_text_match uses elsewhere in this file, just returning a short
+    ranked list instead of only the single best hit - see
+    _ws_match_grocy_product's own docstring for why the To-Do card's
+    put-away flow wants a pickable list rather than an auto-applied guess.
+
+    _whole_word_product_match's own narrow single-word fallback (see that
+    function's docstring - "salt" -> "Table Salt", missed by the plain
+    ratio) is folded in first, ahead of the ratio-sorted results, exactly
+    like the recipe importer's own matching cascade does.
+    """
+    query_lower = (query or "").strip().lower()
+    if not query_lower:
+        return []
+    scored = []
+    for candidate_id, name in candidates:
+        score = difflib.SequenceMatcher(None, query_lower, (name or "").strip().lower()).ratio()
+        scored.append((candidate_id, name, score))
+    scored.sort(key=lambda t: t[2], reverse=True)
+
+    results = []
+    seen_ids = set()
+    whole = _whole_word_product_match(query, candidates)
+    if whole and whole[0] not in seen_ids:
+        results.append({"product_id": whole[0], "name": whole[1], "score": round(whole[2], 3)})
+        seen_ids.add(whole[0])
+    for candidate_id, name, score in scored:
+        if len(results) >= limit:
+            break
+        if score < cutoff or candidate_id in seen_ids:
+            continue
+        results.append({"product_id": candidate_id, "name": name, "score": round(score, 3)})
+        seen_ids.add(candidate_id)
+    return results
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/match_grocy_product",
+        vol.Required("text"): str,
+    }
+)
+@websocket_api.async_response
+async def _ws_match_grocy_product(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Fuzzy-matches free text (typically a Grocy shopping-list freetext
+    row's own name - one added via Grocy's own site, or through
+    family_hub/add_grocy_shopping_list_item's own freetext fallback when
+    no exact-name match existed at add time, see that handler's own
+    docstring) against this household's existing Grocy product catalog.
+    Powers the To-Do Lists card's Put Away flow for a shopping-list row
+    that has no product_id of its own: rather than "Put Away" being
+    unavailable for anything Grocy didn't already link to a product (the
+    calendar card's own Grocy Shopping List viewer's long-standing
+    restriction), the card can suggest likely product matches here and let
+    the household confirm one before it's used to add real stock.
+
+    Returns a short ranked candidate list (_match_grocy_products) rather
+    than auto-picking the top hit - unlike the recipe importer's own
+    ingredient matching (which only ever pre-fills a review screen's
+    dropdown, still subject to a final Import click), a put-away here
+    writes real Grocy stock immediately on confirm, so a wrong silent pick
+    is a real-inventory mistake, not just an undo-able form field.
+    """
+    entry = _get_family_hub_entry(hass)
+    url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
+    api_key = (entry.options.get(CONF_GROCY_API_KEY) if entry else "") or ""
+    if not url or not api_key:
+        connection.send_result(msg["id"], {"configured": False, "matches": []})
+        return
+
+    session = async_get_clientsession(hass)
+    try:
+        products = await _grocy_api_get(session, url, api_key, "/api/objects/products")
+    except Exception as err:  # noqa: BLE001
+        connection.send_result(msg["id"], {"configured": True, "matches": [], "error": str(err)})
+        return
+
+    candidates = [(p["id"], p.get("name", "")) for p in products if isinstance(p, dict) and "id" in p]
+    matches = _match_grocy_products(msg["text"], candidates)
+    connection.send_result(msg["id"], {"configured": True, "matches": matches})
 
 
 async def _fetch_grocy_expiring_stock(
@@ -3951,8 +4775,21 @@ _STANDARD_UNIT_CONVERSIONS = {
 # a household's own Grocy unit names onto the canonical names used as keys
 # in _STANDARD_UNIT_CONVERSIONS above.
 _UNIT_NAME_ALIASES = {
-    "tsp": "teaspoon", "tsps": "teaspoon", "t": "teaspoon", "teaspoons": "teaspoon",
-    "tbsp": "tablespoon", "tbsps": "tablespoon", "tbs": "tablespoon", "T": "tablespoon", "tablespoons": "tablespoon",
+    # v143+: the single-letter "t"/"T" entries this dict used to have
+    # (t -> teaspoon, T -> tablespoon) are deliberately gone. Every lookup
+    # into this dict goes through _normalize_unit_name_for_conversion,
+    # which lowercases its input BEFORE the lookup - so the "T" key could
+    # never actually be reached (it silently collided with "t" and always
+    # lost), and a household's own units are matched case-insensitively on
+    # purpose (see _match_unit_text_against_existing below, added for the
+    # exact "a household already has Tsp/TSPs for teaspoon" case). Once
+    # matching is case-insensitive, "t" vs "T" can't be told apart at all,
+    # and teaspoon-vs-tablespoon is a real 3x-volume mix-up, not a safe one
+    # to guess on a single ambiguous letter - better to leave a bare "t"/"T"
+    # ingredient line unmatched (falls through to the manual picker) than
+    # silently guess wrong in either direction.
+    "tsp": "teaspoon", "tsps": "teaspoon", "teaspoons": "teaspoon",
+    "tbsp": "tablespoon", "tbsps": "tablespoon", "tbs": "tablespoon", "tablespoons": "tablespoon",
     "fl oz": "fluid ounce", "fl. oz.": "fluid ounce", "fluid ounces": "fluid ounce",
     "c": "cup", "cups": "cup",
     "pt": "pint", "pints": "pint",
@@ -3977,6 +4814,59 @@ def _normalize_unit_name_for_conversion(name: str) -> str:
     so a match isn't missed purely over capitalization or an abbreviation."""
     key = (name or "").strip().lower()
     return _UNIT_NAME_ALIASES.get(key, key)
+
+
+def _match_unit_text_against_existing(
+    unit_text: str, units: list[dict]
+) -> tuple[int, str, float] | None:
+    """v143+: matches a recipe ingredient line's own raw unit text (e.g.
+    "tsp", "Tsp.", "TSPs") against a household's EXISTING Grocy quantity
+    units, preferring the same alias-based canonical matching
+    _sync_standard_unit_conversions already uses for conversions
+    (_normalize_unit_name_for_conversion/_UNIT_NAME_ALIASES) over plain
+    difflib character-similarity (_best_text_match).
+
+    This exists because _best_text_match alone was missing exactly this
+    case: "tsp" vs "teaspoon" only scores ~0.55 on difflib's ratio (well
+    under its 0.6 cutoff) since the two strings barely overlap character-
+    for-character, even though they obviously mean the same thing to a
+    person. A household that already had a "Teaspoon" unit in Grocy but
+    wrote "tsp"/"Tsp"/"TSPs" in their own recipes got no match at all -
+    which fed into "+ Add new unit" and could create a near-duplicate
+    ("tsp" AND "Teaspoon" both existing as separate real Grocy units) for
+    a household that already had the real thing.
+
+    Tries, in order: (1) exact case-insensitive name match (unchanged fast
+    path, same as before this existed); (2) alias-canonical match - both
+    the query and every candidate's name normalize to the same
+    _UNIT_NAME_ALIASES canonical key (first candidate to reach a given
+    canonical key wins if a household happens to have two units that
+    normalize the same way - a genuinely ambiguous setup with no safe way
+    to pick between them, same reasoning _sync_standard_unit_conversions
+    uses for its own "ambiguous_units" skip, just resolved here by
+    priority-order instead of skipping outright, since this call site
+    always needs to return its single best guess or nothing); (3) falls
+    back to the existing plain fuzzy match for anything neither of those
+    catches (typos, partial words, multi-word unit phrases) - this never
+    makes matching MORE conservative than before, only fixes the specific
+    known-abbreviation gap.
+    """
+    query = (unit_text or "").strip()
+    if not query:
+        return None
+    unit_rows = [u for u in units if isinstance(u, dict) and "id" in u]
+    query_lower = query.lower()
+    for u in unit_rows:
+        if str(u.get("name") or "").strip().lower() == query_lower:
+            return (u["id"], u.get("name", ""), 1.0)
+    query_canonical = _normalize_unit_name_for_conversion(query)
+    if query_canonical:
+        for u in unit_rows:
+            candidate_canonical = _normalize_unit_name_for_conversion(u.get("name", ""))
+            if candidate_canonical and candidate_canonical == query_canonical:
+                return (u["id"], u.get("name", ""), 1.0)
+    candidates = [(u["id"], u.get("name", "")) for u in unit_rows]
+    return _best_text_match(query, candidates, cutoff=0.6)
 
 
 def _resolve_standard_unit_conversion_factor(from_name: str, to_name: str) -> float | None:
@@ -4838,7 +5728,11 @@ async def _ws_match_recipe_ingredients(
                 product_match = None
             elif query_form == "whole" and match_form == "processed":
                 product_match = None
-        unit_match = _best_text_match(parsed["unit_text"], unit_candidates, cutoff=0.6) if parsed["unit_text"] else None
+        # v143+: was a plain _best_text_match call - see
+        # _match_unit_text_against_existing's own docstring for the real
+        # household abbreviation cases (tsp/Tsp/TSPs, etc.) that missed
+        # entirely under difflib's character-similarity ratio alone.
+        unit_match = _match_unit_text_against_existing(parsed["unit_text"], units) if parsed["unit_text"] else None
         amount_value = _parse_quantity_token(parsed["amount_text"])
         unit_id = unit_match[0] if unit_match else None
         product_id = product_match[0] if product_match else None
@@ -5049,6 +5943,685 @@ async def _ws_create_grocy_product(
             "set it under that product's Quantity unit conversions in Grocy."
         )
     connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/get_grocy_categories"})
+@websocket_api.async_response
+async def _ws_get_grocy_categories(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """GET /api/objects/product_groups - Grocy's "Categories" (its own name
+    for what this project calls category everywhere else, e.g. the recipe
+    box), for the My Pantry card's product editor's Category picker and its
+    stock-list category badge/sort. Same {"configured"/list-of-{id,name}}
+    shape as _ws_get_grocy_locations just above it."""
+    entry = _get_family_hub_entry(hass)
+    url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
+    api_key = (entry.options.get(CONF_GROCY_API_KEY) if entry else "") or ""
+    if not url or not api_key:
+        connection.send_result(msg["id"], {"configured": False, "categories": []})
+        return
+
+    session = async_get_clientsession(hass)
+    try:
+        rows = await _grocy_api_get(session, url, api_key, "/api/objects/product_groups")
+    except Exception as err:  # noqa: BLE001
+        connection.send_result(msg["id"], {"configured": True, "categories": [], "error": str(err)})
+        return
+
+    categories = [
+        {"id": row.get("id"), "name": str(row.get("name") or f"Category #{row.get('id')}")}
+        for row in (rows if isinstance(rows, list) else [])
+        if isinstance(row, dict) and row.get("id") is not None
+    ]
+    categories.sort(key=lambda c: c["name"].lower())
+    connection.send_result(msg["id"], {"configured": True, "categories": categories})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/create_grocy_category",
+        vol.Required("name"): str,
+    }
+)
+@websocket_api.async_response
+async def _ws_create_grocy_category(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """POST /api/objects/product_groups - lets the My Pantry card's product
+    editor offer "+ New category" without a trip to Grocy's own admin UI
+    first, same reasoning/shape as _ws_create_grocy_location and
+    _ws_create_grocy_quantity_unit."""
+    entry = _get_family_hub_entry(hass)
+    url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
+    api_key = (entry.options.get(CONF_GROCY_API_KEY) if entry else "") or ""
+    if not url or not api_key:
+        connection.send_result(msg["id"], {"configured": False, "success": False})
+        return
+
+    name = msg["name"].strip()
+    if not name:
+        connection.send_result(msg["id"], {"configured": True, "success": False, "error": "Give the category a name first"})
+        return
+
+    session = async_get_clientsession(hass)
+    try:
+        result = await _grocy_api_post(session, url, api_key, "/api/objects/product_groups", {"name": name})
+    except Exception as err:  # noqa: BLE001
+        connection.send_result(msg["id"], {"configured": True, "success": False, "error": str(err)})
+        return
+
+    new_id = (result or {}).get("created_object_id") if isinstance(result, dict) else None
+    try:
+        new_id = int(new_id) if new_id is not None else None
+    except (TypeError, ValueError):
+        new_id = None
+    connection.send_result(
+        msg["id"],
+        {"configured": True, "success": True, "category": {"id": new_id, "name": name}},
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/get_grocy_product_details",
+        vol.Required("product_id"): vol.Coerce(int),
+    }
+)
+@websocket_api.async_response
+async def _ws_get_grocy_product_details(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """GET /api/objects/products/{id} - the My Pantry card's "Edit product"
+    modal's own Read, alongside _ws_create_grocy_product (Create),
+    _ws_update_grocy_product (Update, just below) and _ws_delete_grocy_
+    product (Delete) rounding out full CRUD on a Grocy product's core
+    fields - as opposed to _ws_get_grocy_stock_entries just above, which is
+    that product's individual stock purchases, not the product record
+    itself."""
+    entry = _get_family_hub_entry(hass)
+    url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
+    api_key = (entry.options.get(CONF_GROCY_API_KEY) if entry else "") or ""
+    if not url or not api_key:
+        connection.send_result(msg["id"], {"configured": False, "product": None})
+        return
+
+    session = async_get_clientsession(hass)
+    try:
+        product = await _grocy_api_get(session, url, api_key, f"/api/objects/products/{msg['product_id']}")
+    except Exception as err:  # noqa: BLE001
+        connection.send_result(msg["id"], {"configured": True, "product": None, "error": str(err)})
+        return
+    if not isinstance(product, dict):
+        connection.send_result(msg["id"], {"configured": True, "product": None, "error": "Product not found."})
+        return
+
+    try:
+        min_stock_amount = float(product.get("min_stock_amount") or 0)
+    except (TypeError, ValueError):
+        min_stock_amount = 0.0
+    connection.send_result(
+        msg["id"],
+        {
+            "configured": True,
+            "product": {
+                "id": product.get("id"),
+                "name": str(product.get("name") or ""),
+                "location_id": product.get("location_id"),
+                "qu_id_stock": product.get("qu_id_stock"),
+                "qu_id_purchase": product.get("qu_id_purchase"),
+                "product_group_id": product.get("product_group_id"),
+                "min_stock_amount": min_stock_amount,
+                "description": str(product.get("description") or ""),
+            },
+        },
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/update_grocy_product",
+        vol.Required("product_id"): vol.Coerce(int),
+        vol.Required("name"): str,
+        vol.Required("location_id"): vol.Coerce(int),
+        vol.Required("qu_id_stock"): vol.Coerce(int),
+        vol.Optional("qu_id_purchase"): vol.Coerce(int),
+        vol.Optional("product_group_id"): vol.Any(vol.Coerce(int), None),
+        vol.Optional("min_stock_amount", default=0): vol.Coerce(float),
+        vol.Optional("description", default=""): str,
+    }
+)
+@websocket_api.async_response
+async def _ws_update_grocy_product(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """PUT /api/objects/products/{id} (GenericEntityApiController::
+    EditObject) - the My Pantry card's "Edit product" modal Save button,
+    the Update in full CRUD on a product's own core fields (name, default
+    location, category, stock/purchase quantity unit, min stock amount,
+    description) - as opposed to _ws_update_grocy_stock_entry, which edits
+    one specific purchase's amount/best-before/price/location, not the
+    product record.
+
+    Unlike _ws_create_grocy_product, this never touches quantity_unit_
+    conversions - changing a product's stock or purchase unit after it
+    already has real stock behaves the same as doing it by hand on Grocy's
+    own product edit screen (Grocy doesn't retroactively convert existing
+    stock entries just because the units changed), so that stays a Grocy/
+    household concern same as it would be through Grocy's own UI."""
+    entry = _get_family_hub_entry(hass)
+    url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
+    api_key = (entry.options.get(CONF_GROCY_API_KEY) if entry else "") or ""
+    if not url or not api_key:
+        connection.send_result(msg["id"], {"configured": False, "success": False})
+        return
+
+    name = msg["name"].strip()
+    if not name:
+        connection.send_result(msg["id"], {"configured": True, "success": False, "error": "A product name is required."})
+        return
+
+    body: dict[str, Any] = {
+        "name": name,
+        "location_id": msg["location_id"],
+        "qu_id_stock": msg["qu_id_stock"],
+        "qu_id_purchase": msg.get("qu_id_purchase") or msg["qu_id_stock"],
+        "product_group_id": msg.get("product_group_id"),
+        "min_stock_amount": msg["min_stock_amount"],
+        "description": msg["description"],
+    }
+
+    session = async_get_clientsession(hass)
+    try:
+        await _grocy_api_put(session, url, api_key, f"/api/objects/products/{msg['product_id']}", body)
+    except Exception as err:  # noqa: BLE001
+        connection.send_result(msg["id"], {"configured": True, "success": False, "error": str(err)})
+        return
+    connection.send_result(msg["id"], {"configured": True, "success": True})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/delete_grocy_product",
+        vol.Required("product_id"): vol.Coerce(int),
+    }
+)
+@websocket_api.async_response
+async def _ws_delete_grocy_product(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """DELETE /api/objects/products/{id} - the My Pantry card's "Edit
+    product" modal Delete button, the Delete in full CRUD on a product.
+    Grocy itself refuses (with its own real error message, surfaced as-is
+    per this file's usual convention - see _ws_create_grocy_product's own
+    docstring on why errors are never guessed at or swallowed) to delete a
+    product still referenced elsewhere it can't cascade (e.g. an existing
+    recipe ingredient) - that error comes back to the card exactly as
+    Grocy phrased it."""
+    entry = _get_family_hub_entry(hass)
+    url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
+    api_key = (entry.options.get(CONF_GROCY_API_KEY) if entry else "") or ""
+    if not url or not api_key:
+        connection.send_result(msg["id"], {"configured": False, "success": False})
+        return
+
+    session = async_get_clientsession(hass)
+    try:
+        await _grocy_api_delete(session, url, api_key, f"/api/objects/products/{msg['product_id']}")
+    except Exception as err:  # noqa: BLE001
+        connection.send_result(msg["id"], {"configured": True, "success": False, "error": str(err)})
+        return
+    connection.send_result(msg["id"], {"configured": True, "success": True})
+
+
+async def _fetch_pantry_stock(session, url: str, api_key: str) -> list[dict]:
+    """GET /api/stock (StockApiController::GetCurrentStock) - every product
+    currently in stock, resolved against /api/objects/products the same way
+    every other product-name lookup in this file already does (see e.g.
+    _ws_get_grocy_recipe_detail's products_by_id dict just above), since
+    /api/stock's own rows carry only product_id, not a name.
+
+    Rows with amount <= 0 are dropped - Grocy can leave a zero-amount row
+    behind briefly around a consume/transfer, and "0 in stock" has no
+    business showing up on a household's at-a-glance Pantry list.
+
+    v144.17+: also resolves each product's own default location, category
+    (Grocy's "product group"), and stock quantity unit into display names,
+    plus its min_stock_amount (used to flag a row as low_stock) - the My
+    Pantry card's full-CRUD pass needs these for its location/category
+    badges, "sort by location," and low-stock flagging without a separate
+    round trip per row. Each of the three extra lookups is wrapped in its
+    own try/except and just comes back empty on failure rather than failing
+    the whole stock list - a household with an older Grocy that 404s on one
+    of these (or a momentary hiccup) still gets their stock list, just
+    without those particular badges/sort keys that call, same "degrade
+    gracefully rather than all-or-nothing" spirit as _ws_create_grocy_
+    product's own conversion_error handling above."""
+    stock_rows = await _grocy_api_get(session, url, api_key, "/api/stock")
+    products = await _grocy_api_get(session, url, api_key, "/api/objects/products")
+    products_by_id = {p["id"]: p for p in products if isinstance(p, dict) and "id" in p}
+
+    locations_by_id: dict[int, str] = {}
+    categories_by_id: dict[int, str] = {}
+    units_by_id: dict[int, str] = {}
+    try:
+        locations = await _grocy_api_get(session, url, api_key, "/api/objects/locations")
+        locations_by_id = {loc["id"]: str(loc.get("name") or "") for loc in locations if isinstance(loc, dict) and "id" in loc}
+    except Exception:  # noqa: BLE001 - best-effort, see docstring
+        pass
+    try:
+        categories = await _grocy_api_get(session, url, api_key, "/api/objects/product_groups")
+        categories_by_id = {c["id"]: str(c.get("name") or "") for c in categories if isinstance(c, dict) and "id" in c}
+    except Exception:  # noqa: BLE001 - best-effort, see docstring
+        pass
+    try:
+        units = await _grocy_api_get(session, url, api_key, "/api/objects/quantity_units")
+        units_by_id = {u["id"]: str(u.get("name") or "") for u in units if isinstance(u, dict) and "id" in u}
+    except Exception:  # noqa: BLE001 - best-effort, see docstring
+        pass
+
+    items = []
+    for row in stock_rows if isinstance(stock_rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            amount = float(row.get("amount") or 0)
+        except (TypeError, ValueError):
+            amount = 0.0
+        if amount <= 0:
+            continue
+        product_id = row.get("product_id")
+        product = products_by_id.get(product_id, {})
+        best_before_raw = row.get("best_before_date")
+        best_before = dt_util.parse_date(str(best_before_raw)) if best_before_raw else None
+        location_id = product.get("location_id")
+        category_id = product.get("product_group_id")
+        unit_id = product.get("qu_id_stock")
+        try:
+            min_stock_amount = float(product.get("min_stock_amount") or 0)
+        except (TypeError, ValueError):
+            min_stock_amount = 0.0
+        items.append(
+            {
+                "product_id": product_id,
+                "name": str(product.get("name") or f"Product #{product_id}"),
+                "amount": amount,
+                "best_before_date": best_before.isoformat() if best_before else None,
+                "location_id": location_id,
+                "location_name": locations_by_id.get(location_id) if location_id is not None else None,
+                "category_id": category_id,
+                "category_name": categories_by_id.get(category_id) if category_id is not None else None,
+                "unit_name": units_by_id.get(unit_id) if unit_id is not None else None,
+                "min_stock_amount": min_stock_amount,
+                "low_stock": min_stock_amount > 0 and amount < min_stock_amount,
+            }
+        )
+    items.sort(key=lambda it: it["name"].lower())
+    return items
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/get_pantry_stock"})
+@websocket_api.async_response
+async def _ws_get_pantry_stock(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Powers the My Pantry card's main "Grocy Stock" list - see this file's
+    other Grocy passthrough handlers (_ws_get_grocy_locations and friends)
+    for the same configured/error-handling shape."""
+    entry = _get_family_hub_entry(hass)
+    url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
+    api_key = (entry.options.get(CONF_GROCY_API_KEY) if entry else "") or ""
+    if not url or not api_key:
+        connection.send_result(msg["id"], {"configured": False, "stock": []})
+        return
+
+    session = async_get_clientsession(hass)
+    try:
+        items = await _fetch_pantry_stock(session, url, api_key)
+    except Exception as err:  # noqa: BLE001
+        connection.send_result(msg["id"], {"configured": True, "stock": [], "error": str(err)})
+        return
+    connection.send_result(msg["id"], {"configured": True, "stock": items})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/get_grocy_stock_entries",
+        vol.Required("product_id"): vol.Coerce(int),
+    }
+)
+@websocket_api.async_response
+async def _ws_get_grocy_stock_entries(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """GET /api/stock/products/{id}/entries (StockApiController::
+    GetProductEntries) for the My Pantry card's per-product "Edit entries"
+    modal - each individual stock entry (a distinct purchase/best-before
+    date) rather than the product's single summed amount."""
+    entry = _get_family_hub_entry(hass)
+    url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
+    api_key = (entry.options.get(CONF_GROCY_API_KEY) if entry else "") or ""
+    if not url or not api_key:
+        connection.send_result(msg["id"], {"configured": False, "entries": []})
+        return
+
+    session = async_get_clientsession(hass)
+    try:
+        rows = await _grocy_api_get(session, url, api_key, f"/api/stock/products/{msg['product_id']}/entries")
+    except Exception as err:  # noqa: BLE001
+        connection.send_result(msg["id"], {"configured": True, "entries": [], "error": str(err)})
+        return
+
+    entries = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict) or row.get("id") is None:
+            continue
+        try:
+            amount = float(row.get("amount") or 0)
+        except (TypeError, ValueError):
+            amount = 0.0
+        try:
+            price = float(row["price"]) if row.get("price") not in (None, "") else None
+        except (TypeError, ValueError):
+            price = None
+        entries.append(
+            {
+                "id": row.get("id"),
+                "amount": amount,
+                "best_before_date": row.get("best_before_date"),
+                # v144.17+: full-CRUD pass - price/location_id are real
+                # columns on Grocy's own stock entry rows (a purchase's
+                # price and where that specific purchase is stored), passed
+                # through the same way amount/best_before_date already were
+                # so the My Pantry card's Edit entries modal can show and
+                # edit them per entry (see _ws_update_grocy_stock_entry's
+                # own docstring just below).
+                "price": price,
+                "location_id": row.get("location_id"),
+            }
+        )
+    connection.send_result(msg["id"], {"configured": True, "entries": entries})
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/get_pantry_picker_data"})
+@websocket_api.async_response
+async def _ws_get_pantry_picker_data(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Products + quantity units for the My Pantry card's "Add stock" modal
+    (its existing-product picker, and the stock-unit select shown once
+    someone checks "this isn't in Grocy yet") - same {"id", "name"} shape
+    _ws_match_recipe_ingredients already returns per-candidate."""
+    entry = _get_family_hub_entry(hass)
+    url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
+    api_key = (entry.options.get(CONF_GROCY_API_KEY) if entry else "") or ""
+    if not url or not api_key:
+        connection.send_result(msg["id"], {"configured": False, "products": [], "units": []})
+        return
+
+    session = async_get_clientsession(hass)
+    try:
+        products = await _grocy_api_get(session, url, api_key, "/api/objects/products")
+        units = await _grocy_api_get(session, url, api_key, "/api/objects/quantity_units")
+    except Exception as err:  # noqa: BLE001
+        connection.send_result(msg["id"], {"configured": True, "products": [], "units": [], "error": str(err)})
+        return
+
+    product_list = sorted(
+        (
+            {"id": p["id"], "name": str(p.get("name") or f"Product #{p['id']}")}
+            for p in (products if isinstance(products, list) else [])
+            if isinstance(p, dict) and "id" in p
+        ),
+        key=lambda p: p["name"].lower(),
+    )
+    unit_list = sorted(
+        (
+            {"id": u["id"], "name": str(u.get("name") or f"Unit #{u['id']}")}
+            for u in (units if isinstance(units, list) else [])
+            if isinstance(u, dict) and "id" in u
+        ),
+        key=lambda u: u["name"].lower(),
+    )
+    connection.send_result(msg["id"], {"configured": True, "products": product_list, "units": unit_list})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/pantry_add_stock",
+        vol.Required("product_id"): vol.Coerce(int),
+        vol.Required("amount"): vol.Coerce(float),
+        vol.Optional("location_id"): vol.Coerce(int),
+        vol.Optional("best_before_date"): str,
+    }
+)
+@websocket_api.async_response
+async def _ws_pantry_add_stock(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """The My Pantry card's "Add stock" modal - POST
+    /api/stock/products/{id}/add, transaction_type "purchase", same body
+    shape as _ws_put_away_grocy_shopping_list_item just without the
+    shopping-list-removal half of that flow (there's no shopping list item
+    behind an Add Stock click here). location_id is optional - Grocy falls
+    back to the product's own default location when it's omitted, same as
+    leaving Grocy's own "Purchase" form's location picker on its default."""
+    entry = _get_family_hub_entry(hass)
+    url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
+    api_key = (entry.options.get(CONF_GROCY_API_KEY) if entry else "") or ""
+    if not url or not api_key:
+        connection.send_result(msg["id"], {"configured": False, "success": False})
+        return
+
+    if msg["amount"] <= 0:
+        connection.send_result(msg["id"], {"configured": True, "success": False, "error": "Amount must be greater than 0."})
+        return
+
+    body: dict[str, Any] = {"amount": msg["amount"], "transaction_type": "purchase"}
+    if msg.get("location_id") is not None:
+        body["location_id"] = msg["location_id"]
+    best_before_date = str(msg.get("best_before_date") or "").strip()
+    if best_before_date:
+        body["best_before_date"] = best_before_date
+
+    session = async_get_clientsession(hass)
+    try:
+        await _grocy_api_post(session, url, api_key, f"/api/stock/products/{msg['product_id']}/add", body)
+    except Exception as err:  # noqa: BLE001
+        connection.send_result(msg["id"], {"configured": True, "success": False, "error": str(err)})
+        return
+    connection.send_result(msg["id"], {"configured": True, "success": True})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/pantry_consume_stock",
+        vol.Required("product_id"): vol.Coerce(int),
+        vol.Required("amount"): vol.Coerce(float),
+    }
+)
+@websocket_api.async_response
+async def _ws_pantry_consume_stock(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """The My Pantry card's stock-row "&minus;" (remove) button - POST
+    /api/stock/products/{id}/consume, transaction_type "consume",
+    spoiled=false (StockApiController::ConsumeProduct - the same call
+    Grocy's own "Consume" button on a product's stock page makes)."""
+    entry = _get_family_hub_entry(hass)
+    url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
+    api_key = (entry.options.get(CONF_GROCY_API_KEY) if entry else "") or ""
+    if not url or not api_key:
+        connection.send_result(msg["id"], {"configured": False, "success": False})
+        return
+
+    if msg["amount"] <= 0:
+        connection.send_result(msg["id"], {"configured": True, "success": False, "error": "Amount must be greater than 0."})
+        return
+
+    session = async_get_clientsession(hass)
+    try:
+        await _grocy_api_post(
+            session,
+            url,
+            api_key,
+            f"/api/stock/products/{msg['product_id']}/consume",
+            {"amount": msg["amount"], "transaction_type": "consume", "spoiled": False},
+        )
+    except Exception as err:  # noqa: BLE001
+        connection.send_result(msg["id"], {"configured": True, "success": False, "error": str(err)})
+        return
+    connection.send_result(msg["id"], {"configured": True, "success": True})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/update_grocy_stock_entry",
+        vol.Required("entry_id"): vol.Coerce(int),
+        vol.Required("amount"): vol.Coerce(float),
+        vol.Optional("best_before_date"): vol.Any(str, None),
+        vol.Optional("price"): vol.Any(vol.Coerce(float), None),
+        vol.Optional("location_id"): vol.Any(vol.Coerce(int), None),
+    }
+)
+@websocket_api.async_response
+async def _ws_update_grocy_stock_entry(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """The My Pantry card's "Edit entries" modal Save button - PUT
+    /api/stock/entry/{id} (StockApiController::EditEntry), one call per
+    edited entry row (the card itself loops over its rows and awaits each
+    of these in turn - see family-hub-pantry-card.js's _submitEditStock).
+
+    v144.17+: price and location_id are optional on top of the original
+    amount/best_before_date - both are only sent to Grocy when the caller
+    actually included them (same "only touch what was passed" spirit as
+    pantry_engine.py's update_extra), so older callers that only ever sent
+    amount/best_before_date keep behaving exactly as before."""
+    entry = _get_family_hub_entry(hass)
+    url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
+    api_key = (entry.options.get(CONF_GROCY_API_KEY) if entry else "") or ""
+    if not url or not api_key:
+        connection.send_result(msg["id"], {"configured": False, "success": False})
+        return
+
+    if msg["amount"] < 0:
+        connection.send_result(msg["id"], {"configured": True, "success": False, "error": "Amount can't be negative."})
+        return
+
+    body: dict[str, Any] = {"amount": msg["amount"], "best_before_date": msg.get("best_before_date") or None}
+    if msg.get("price") is not None:
+        body["price"] = msg["price"]
+    if msg.get("location_id") is not None:
+        body["location_id"] = msg["location_id"]
+
+    session = async_get_clientsession(hass)
+    try:
+        await _grocy_api_put(session, url, api_key, f"/api/stock/entry/{msg['entry_id']}", body)
+    except Exception as err:  # noqa: BLE001
+        connection.send_result(msg["id"], {"configured": True, "success": False, "error": str(err)})
+        return
+    connection.send_result(msg["id"], {"configured": True, "success": True})
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/pantry_extras/list"})
+@websocket_api.async_response
+async def _ws_pantry_extras_list(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """The My Pantry card's "Also Tracking" list - see pantry_engine.py's
+    own module docstring for what an extra is."""
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    extras = entry_data["pantry_extras"]
+    connection.send_result(msg["id"], {"extras": list(extras.values())})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/pantry_extras/create",
+        vol.Required("name"): str,
+        vol.Optional("quantity", default=""): str,
+        vol.Optional("location", default=""): str,
+        vol.Optional("expiration_date"): vol.Any(str, None),
+        vol.Optional("notes", default=""): str,
+    }
+)
+@websocket_api.async_response
+async def _ws_pantry_extras_create(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    extras = entry_data["pantry_extras"]
+    try:
+        extra = pantry_engine.create_extra(extras, msg)
+    except pantry_engine.PantryError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    await entry_data["pantry_extras_store"].async_save(extras)
+    await chores_store.backup_pantry_extras(hass, extras)
+    connection.send_result(msg["id"], {"extra": extra})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/pantry_extras/update",
+        vol.Required("extra_id"): str,
+        vol.Optional("name"): str,
+        vol.Optional("quantity"): str,
+        vol.Optional("location"): str,
+        vol.Optional("expiration_date"): vol.Any(str, None),
+        vol.Optional("notes"): str,
+    }
+)
+@websocket_api.async_response
+async def _ws_pantry_extras_update(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    extras = entry_data["pantry_extras"]
+    fields = {k: v for k, v in msg.items() if k not in ("type", "id", "extra_id")}
+    try:
+        extra = pantry_engine.update_extra(extras, msg["extra_id"], fields)
+    except pantry_engine.PantryError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    await entry_data["pantry_extras_store"].async_save(extras)
+    await chores_store.backup_pantry_extras(hass, extras)
+    connection.send_result(msg["id"], {"extra": extra})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/pantry_extras/delete",
+        vol.Required("extra_id"): str,
+    }
+)
+@websocket_api.async_response
+async def _ws_pantry_extras_delete(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    extras = entry_data["pantry_extras"]
+    try:
+        pantry_engine.delete_extra(extras, msg["extra_id"])
+    except pantry_engine.PantryError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    await entry_data["pantry_extras_store"].async_save(extras)
+    await chores_store.backup_pantry_extras(hass, extras)
+    connection.send_result(msg["id"], {"success": True})
 
 
 @websocket_api.websocket_command(
@@ -5369,7 +6942,7 @@ async def _ws_set_daily_digest(
         vol.Required("user_id"): str,
         # Both optional and, when given, used as-is instead of looking up
         # settings["userProfiles"][user_id] - lets the card's "Send test
-        # digest now" button (Notifications tab, per-person profile) send
+        # digest now" button (Users tab, per-person profile) send
         # exactly what's currently on screen, including edits made in this
         # Settings session that haven't been saved yet. Omitted (e.g. any
         # future caller besides the card) falls back to the last-SAVED
@@ -6507,7 +8080,7 @@ async def _maybe_send_daily_digest(
     recipients = _digest_recipients(profiles)
     if not recipients:
         # Nobody has opted in yet (e.g. right after migration, before anyone
-        # has visited the new Notifications tab) - nothing to send, and
+        # has visited the new Users tab) - nothing to send, and
         # nothing to mark as sent either, so the very next person to enable
         # their digest still gets it today rather than waiting until
         # tomorrow because some earlier, unrelated poll tick "used up" the
@@ -6772,6 +8345,7 @@ async def _async_handle_chore_sensor_trigger(
     """
     chores = entry_data["chores"]
     changed = False
+    rewards_changed = False
     for chore_id in list(chores.keys()):
         chore = chores.get(chore_id)
         if chore is None:
@@ -6789,13 +8363,23 @@ async def _async_handle_chore_sensor_trigger(
             chore.get("auto_complete_trigger"), entity_id, old_state, new_state
         ):
             try:
-                chore_engine.complete_chore(chores, hass, chore_id, chore.get("assigned_to"))
+                completed = chore_engine.complete_chore(
+                    chores, entry_data["rewards"], hass, chore_id, chore.get("assigned_to"),
+                    permissions=entry_data.get("permissions"),
+                )
                 changed = True
+                if completed.get("status") == CHORE_STATUS_APPROVED:
+                    rewards_changed = True
             except chore_engine.ChoreError as err:
                 _LOGGER.debug("Family Hub: auto_complete_trigger fired for chore %s but couldn't complete it: %s", chore_id, err)
     if changed:
         await entry_data["chores_store"].async_save(chores)
         await chores_store.backup_chores(hass, chores)
+        if rewards_changed:
+            # Auto-approved on completion (chore_skips_verification) - stars
+            # were disbursed into entry_data["rewards"] in memory; persist
+            # that too, same as the websocket API's ws_complete_chore does.
+            await entry_data["rewards_store"].async_save(entry_data["rewards"])
         entity = entry_data.get("chores_todo_entity")
         if entity is not None:
             entity.async_write_ha_state()
@@ -6946,14 +8530,21 @@ async def _async_register_chore_services(hass: HomeAssistant) -> None:
             return
         chore = entry_data["chores"].get(call.data.get("chore_id"))
         try:
-            chore_engine.complete_chore(
-                entry_data["chores"], hass, call.data["chore_id"], chore.get("assigned_to") if chore else None
+            completed = chore_engine.complete_chore(
+                entry_data["chores"], entry_data["rewards"], hass, call.data["chore_id"],
+                chore.get("assigned_to") if chore else None,
+                permissions=entry_data.get("permissions"),
             )
         except chore_engine.ChoreError as err:
             _LOGGER.warning("Family Hub: %s failed: %s", SERVICE_COMPLETE_CHORE, err)
             return
         await entry_data["chores_store"].async_save(entry_data["chores"])
         await chores_store.backup_chores(hass, entry_data["chores"])
+        if completed.get("status") == CHORE_STATUS_APPROVED:
+            # Auto-approved on completion (chore_skips_verification) -
+            # stars were disbursed into entry_data["rewards"] in memory;
+            # persist that too, same as ws_complete_chore does.
+            await entry_data["rewards_store"].async_save(entry_data["rewards"])
 
     async def _handle_approve_chore(call: ServiceCall) -> None:
         entry_data = _get_family_hub_entry_data(hass)
@@ -7143,8 +8734,10 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     websocket_api.async_register_command(hass, _ws_add_grocy_shopping_list_item)
     websocket_api.async_register_command(hass, _ws_remove_grocy_shopping_list_item)
     websocket_api.async_register_command(hass, _ws_toggle_grocy_shopping_list_item)
+    websocket_api.async_register_command(hass, _ws_update_grocy_shopping_list_item)
     websocket_api.async_register_command(hass, _ws_get_grocy_locations)
     websocket_api.async_register_command(hass, _ws_put_away_grocy_shopping_list_item)
+    websocket_api.async_register_command(hass, _ws_match_grocy_product)
     websocket_api.async_register_command(hass, _ws_get_grocy_expiring_soon)
     websocket_api.async_register_command(hass, _ws_set_grocy_expiring_enabled)
     websocket_api.async_register_command(hass, _ws_get_grocy_low_stock)
@@ -7159,11 +8752,35 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     websocket_api.async_register_command(hass, _ws_parse_recipe_text)
     websocket_api.async_register_command(hass, _ws_match_recipe_ingredients)
     websocket_api.async_register_command(hass, _ws_create_grocy_product)
+    websocket_api.async_register_command(hass, _ws_get_grocy_categories)
+    websocket_api.async_register_command(hass, _ws_create_grocy_category)
+    websocket_api.async_register_command(hass, _ws_get_grocy_product_details)
+    websocket_api.async_register_command(hass, _ws_update_grocy_product)
+    websocket_api.async_register_command(hass, _ws_delete_grocy_product)
+    websocket_api.async_register_command(hass, _ws_get_pantry_stock)
+    websocket_api.async_register_command(hass, _ws_get_grocy_stock_entries)
+    websocket_api.async_register_command(hass, _ws_get_pantry_picker_data)
+    websocket_api.async_register_command(hass, _ws_pantry_add_stock)
+    websocket_api.async_register_command(hass, _ws_pantry_consume_stock)
+    websocket_api.async_register_command(hass, _ws_update_grocy_stock_entry)
+    websocket_api.async_register_command(hass, _ws_pantry_extras_list)
+    websocket_api.async_register_command(hass, _ws_pantry_extras_create)
+    websocket_api.async_register_command(hass, _ws_pantry_extras_update)
+    websocket_api.async_register_command(hass, _ws_pantry_extras_delete)
     websocket_api.async_register_command(hass, _ws_create_grocy_recipe)
     websocket_api.async_register_command(hass, _ws_set_daily_digest)
     websocket_api.async_register_command(hass, _ws_send_daily_digest_now)
     websocket_api.async_register_command(hass, _ws_get_settings)
     websocket_api.async_register_command(hass, _ws_set_settings)
+    websocket_api.async_register_command(hass, _ws_get_todo_card_config)
+    websocket_api.async_register_command(hass, _ws_set_todo_card_config)
+    # v1.109.6+: menu suggestions / can_edit_menu - see the design note
+    # above _encode_dish_description for which of these is genuinely
+    # backend-enforced and which stays frontend-gated.
+    websocket_api.async_register_command(hass, _ws_get_menu_suggestions)
+    websocket_api.async_register_command(hass, _ws_add_menu_suggestion)
+    websocket_api.async_register_command(hass, _ws_apply_menu_suggestion)
+    websocket_api.async_register_command(hass, _ws_remove_menu_suggestion)
     websocket_api.async_register_command(hass, _ws_list_users)
     websocket_api.async_register_command(hass, _ws_detect_notify_target)
     websocket_api.async_register_command(hass, _ws_get_recipes)
@@ -7191,6 +8808,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     my_chores_card_path = f"{integration_dir}/card/family-hub-my-chores-card.js"
     rewards_card_path = f"{integration_dir}/card/family-hub-rewards-card.js"
     goals_card_path = f"{integration_dir}/card/family-hub-goals-card.js"
+    # v144.3+: the My Pantry card (task #18, shipped v140-v142/1.107.0) was
+    # never actually wired into this whole registration block - the file
+    # existed and its tests passed, but Home Assistant had never once
+    # served its JS or registered it as a Lovelace resource, so it could
+    # never appear in the Add Card picker no matter what was searched for.
+    # Every other card here (chores/rewards/goals/etc.) has always had its
+    # own static path + dashboard-resource registration; this was simply
+    # missed when the pantry card was built. Fixed by following the exact
+    # same four-step pattern (static path below, content-hash cache-busting
+    # further down, then _register_dashboard_resource) every other card
+    # already uses.
+    pantry_card_path = f"{integration_dir}/card/family-hub-pantry-card.js"
+    # v146+ - the To-Do Lists card (see family-hub-todo-card.js's own module
+    # docstring / const.py's TODO_CARD_JS_URL comment). Follows the exact
+    # same four-step pattern as every card above (static path here, hash +
+    # versioned URL further down, then _register_dashboard_resource) - no
+    # websocket commands to register alongside it since this card has no
+    # backend storage of its own.
+    todo_card_path = f"{integration_dir}/card/family-hub-todo-card.js"
     icon_path = f"{integration_dir}/icon.png"
 
     static_paths = [
@@ -7203,6 +8839,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         StaticPathConfig(MY_CHORES_CARD_JS_URL, my_chores_card_path, False),
         StaticPathConfig(REWARDS_CARD_JS_URL, rewards_card_path, False),
         StaticPathConfig(GOALS_CARD_JS_URL, goals_card_path, False),
+        StaticPathConfig(PANTRY_CARD_JS_URL, pantry_card_path, False),
+        StaticPathConfig(TODO_CARD_JS_URL, todo_card_path, False),
     ]
     icon_exists = await hass.async_add_executor_job(os.path.isfile, icon_path)
     if icon_exists:
@@ -7221,6 +8859,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     my_chores_card_hash = await hass.async_add_executor_job(_file_content_hash, my_chores_card_path)
     rewards_card_hash = await hass.async_add_executor_job(_file_content_hash, rewards_card_path)
     goals_card_hash = await hass.async_add_executor_job(_file_content_hash, goals_card_path)
+    pantry_card_hash = await hass.async_add_executor_job(_file_content_hash, pantry_card_path)
+    todo_card_hash = await hass.async_add_executor_job(_file_content_hash, todo_card_path)
     panel_url_versioned = f"{PANEL_JS_URL}?v={panel_hash}"
     card_url_versioned = f"{CARD_JS_URL}?v={card_hash}"
     theme_selector_url_versioned = f"{THEME_SELECTOR_CARD_JS_URL}?v={theme_selector_hash}"
@@ -7230,6 +8870,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     my_chores_card_url_versioned = f"{MY_CHORES_CARD_JS_URL}?v={my_chores_card_hash}"
     rewards_card_url_versioned = f"{REWARDS_CARD_JS_URL}?v={rewards_card_hash}"
     goals_card_url_versioned = f"{GOALS_CARD_JS_URL}?v={goals_card_hash}"
+    pantry_card_url_versioned = f"{PANTRY_CARD_JS_URL}?v={pantry_card_hash}"
+    todo_card_url_versioned = f"{TODO_CARD_JS_URL}?v={todo_card_hash}"
     icon_url_versioned = ""
     if icon_exists:
         icon_hash = await hass.async_add_executor_job(_file_content_hash, icon_path)
@@ -7260,6 +8902,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _register_dashboard_resource(hass, my_chores_card_url_versioned)
     _register_dashboard_resource(hass, rewards_card_url_versioned)
     _register_dashboard_resource(hass, goals_card_url_versioned)
+    _register_dashboard_resource(hass, pantry_card_url_versioned)
+    _register_dashboard_resource(hass, todo_card_url_versioned)
 
     themes = await _load_themes(hass)
     _register_ha_themes(hass, themes)
@@ -7307,6 +8951,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass, SUGGESTIONS_STORAGE_VERSION, f"{SUGGESTIONS_STORAGE_KEY_PREFIX}_{entry.entry_id}"
     )
 
+    todo_card_config_store: Store = Store(
+        hass, TODO_CARD_CONFIG_STORAGE_VERSION, f"{TODO_CARD_CONFIG_STORAGE_KEY_PREFIX}_{entry.entry_id}"
+    )
+
+    # v1.109.6+: pending menu suggestions ("anyone can suggest, only
+    # can_edit_menu can apply") - see MENU_SUGGESTIONS_STORAGE_KEY_PREFIX's
+    # own comment in const.py for why this is its own store.
+    menu_suggestions_store: Store = Store(
+        hass, MENU_SUGGESTIONS_STORAGE_VERSION, f"{MENU_SUGGESTIONS_STORAGE_KEY_PREFIX}_{entry.entry_id}"
+    )
+
     grocy_conversions_sync_store: Store = Store(
         hass,
         GROCY_CONVERSIONS_SYNC_STORAGE_VERSION,
@@ -7342,6 +8997,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     goals_store_obj = chores_store.create_goals_store(hass, entry)
     await chores_store.maybe_restore_goals_backup(hass, goals_store_obj)
     goals = await chores_store.async_load_goals(goals_store_obj)
+    # v144.13+: Pantry "extras" - see pantry_engine.py's own module
+    # docstring. Same restore-before-load treatment as Goals just above.
+    pantry_extras_store_obj = chores_store.create_pantry_extras_store(hass, entry)
+    await chores_store.maybe_restore_pantry_extras_backup(hass, pantry_extras_store_obj)
+    pantry_extras = await chores_store.async_load_pantry_extras(pantry_extras_store_obj)
     # Catches the "Home Assistant was off/restarted overnight" case - see
     # routine_engine.maybe_reset_daily's own docstring for why this also
     # needs to run on every later poll tick below, not just here.
@@ -7367,6 +9027,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await _run_poll(hass, entry, reminders_store, notified, reminder_overrides, settings_store)
         await _poll_reminders_todo(hass, entry, reminders_store, notified, settings_store)
         await _maybe_send_daily_digest(hass, entry, digest_store, digest_state, settings_store)
+        await _sync_grocy_recipes_to_recipe_box(hass, entry)
         penalized = chore_engine.sweep_overdue_chores(chores, rewards, hass)
         recurred = chore_engine.sweep_due_recurrences(chores, hass)
         _chore_settings, chore_profiles = await _get_settings_and_profiles(hass, {"settings_store": settings_store})
@@ -7400,6 +9061,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "settings_store": settings_store,
         "recipes_store": recipes_store,
         "suggestions_store": suggestions_store,
+        "todo_card_config_store": todo_card_config_store,
+        "menu_suggestions_store": menu_suggestions_store,
         "grocery_pushed_store": grocery_pushed_store,
         "chores_store": chores_store_obj,
         "chores": chores,
@@ -7411,6 +9074,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "routines": routines,
         "goals_store": goals_store_obj,
         "goals": goals,
+        "pantry_extras_store": pantry_extras_store_obj,
+        "pantry_extras": pantry_extras,
     }
 
     cancel_chore_sensor_listener = _async_setup_chore_sensor_listener(

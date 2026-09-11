@@ -44,6 +44,9 @@ from .const import (
     GOALS_BACKUP_FILENAME,
     GOALS_STORAGE_KEY_PREFIX,
     GOALS_STORAGE_VERSION,
+    PANTRY_EXTRAS_BACKUP_FILENAME,
+    PANTRY_EXTRAS_STORAGE_KEY_PREFIX,
+    PANTRY_EXTRAS_STORAGE_VERSION,
     PERMISSIONS_BACKUP_FILENAME,
     PERMISSIONS_STORAGE_KEY_PREFIX,
     PERMISSIONS_STORAGE_VERSION,
@@ -79,6 +82,10 @@ def create_goals_store(hass: HomeAssistant, entry: ConfigEntry) -> Store:
     return Store(hass, GOALS_STORAGE_VERSION, f"{GOALS_STORAGE_KEY_PREFIX}_{entry.entry_id}")
 
 
+def create_pantry_extras_store(hass: HomeAssistant, entry: ConfigEntry) -> Store:
+    return Store(hass, PANTRY_EXTRAS_STORAGE_VERSION, f"{PANTRY_EXTRAS_STORAGE_KEY_PREFIX}_{entry.entry_id}")
+
+
 async def async_load_chores(store: Store) -> dict[str, dict[str, Any]]:
     """chore_id -> chore record. An empty/missing store is a household that
     has never created a chore yet - not an error."""
@@ -92,6 +99,15 @@ async def async_load_goals(store: Store) -> dict[str, dict[str, Any]]:
     why Goals is a separate store/engine despite the shape match). An
     empty/missing store is a household that has never created a goal yet -
     not an error."""
+    data = await store.async_load()
+    return data if isinstance(data, dict) else {}
+
+
+async def async_load_pantry_extras(store: Store) -> dict[str, dict[str, Any]]:
+    """extra_id -> extra record (see pantry_engine.py's own module
+    docstring) - same flat {id: record} shape as async_load_goals above. An
+    empty/missing store is a household that has never added an "Also
+    Tracking" extra yet - not an error."""
     data = await store.async_load()
     return data if isinstance(data, dict) else {}
 
@@ -325,3 +341,11 @@ async def backup_goals(hass: HomeAssistant, goals: dict[str, Any]) -> None:
 
 async def maybe_restore_goals_backup(hass: HomeAssistant, store: Store) -> None:
     await _maybe_restore_backup(hass, store, GOALS_BACKUP_FILENAME, label="goals")
+
+
+async def backup_pantry_extras(hass: HomeAssistant, pantry_extras: dict[str, Any]) -> None:
+    await _backup_data(hass, PANTRY_EXTRAS_BACKUP_FILENAME, pantry_extras, label="pantry_extras")
+
+
+async def maybe_restore_pantry_extras_backup(hass: HomeAssistant, store: Store) -> None:
+    await _maybe_restore_backup(hass, store, PANTRY_EXTRAS_BACKUP_FILENAME, label="pantry_extras")

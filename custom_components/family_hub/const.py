@@ -14,7 +14,13 @@ DOMAIN = "family_hub"
 # are picked up automatically, with no migration step.
 THEME_STORAGE_KEY = "theme_builder_themes"
 THEME_STORAGE_VERSION = 1
-MAX_THEMES = 8
+# 6 original built-in presets + Liquid Glass / Liquid Glass Dark (added
+# together) = 8 built-ins, so this is bumped from the old 8 to 10 to
+# preserve the same 2 custom-theme slots every household already had
+# headroom for - without this bump, a fresh install would seed all 8
+# slots with presets and the Theme Builder "Add theme" button would be
+# permanently disabled from the very first load.
+MAX_THEMES = 10
 
 REMINDERS_STORAGE_KEY_PREFIX = "family_hub_reminders_notified"
 REMINDERS_STORAGE_VERSION = 1
@@ -136,6 +142,11 @@ PERMISSIONS_BACKUP_FILENAME = "permissions_backup.json"
 ROUTINES_BACKUP_FILENAME = "routines_backup.json"
 # v133+ - see the "--- Goals ---" section below for what this store holds.
 GOALS_BACKUP_FILENAME = "goals_backup.json"
+# v144.13+ - see pantry_engine.py's own module docstring for what this store
+# holds (the "Also Tracking" extras list only - the main Pantry stock list
+# is Grocy's own numbers, not owned by this project at all, so there's
+# nothing of its own to back up there).
+PANTRY_EXTRAS_BACKUP_FILENAME = "pantry_extras_backup.json"
 
 # Recipe Box and Meal Suggestions moved off their to-do lists (todo.recipe_box
 # / todo.meal_suggestions) onto their own Store-backed lists, for the same
@@ -156,6 +167,48 @@ RECIPES_STORAGE_KEY_PREFIX = "family_hub_recipes"
 RECIPES_STORAGE_VERSION = 1
 SUGGESTIONS_STORAGE_KEY_PREFIX = "family_hub_suggestions"
 SUGGESTIONS_STORAGE_VERSION = 1
+
+# To-Do Lists card's own list selection (v146.5+; family_hub/get_todo_card_
+# config and family_hub/set_todo_card_config in __init__.py) - which todo.*
+# entities and which Grocy shopping lists the FAB's List(s) tab has picked.
+# Deliberately its OWN small Store, separate from SETTINGS_STORAGE_KEY_PREFIX
+# above, rather than folded into that shared blob: the calendar card's own
+# Settings modal does a full-replace save of that blob from its own known
+# fields (see _ws_set_settings's docstring on SETTINGS_KEY_NOTIFY_PROFILES_
+# MIGRATED getting silently stripped that exact way) and would have no idea
+# this card's keys exist, silently wiping them on its very next unrelated
+# save. This used to live only in the card's own Lovelace config
+# (`entities`/`grocy_list_ids`, round-tripped via setConfig + a
+# config-changed event) - that never actually persisted reliably, since
+# nothing listens for config-changed outside of the dashboard's own "Edit
+# Card" editing flow, so a plain page reload (no editing involved at all)
+# silently reverted to whatever was last saved to the dashboard's own
+# stored YAML/storage config, which for most households was nothing.
+TODO_CARD_CONFIG_STORAGE_KEY_PREFIX = "family_hub_todo_card_config"
+TODO_CARD_CONFIG_STORAGE_VERSION = 1
+
+# Menu suggestions (v1.109.6+; family_hub/get_menu_suggestions,
+# add_menu_suggestion, apply_menu_suggestion and remove_menu_suggestion in
+# __init__.py) - the "anyone can suggest, only someone with
+# PERMISSION_EDIT_MENU can actually put it on the menu" half of the new
+# can_edit_menu permission. Each entry is a pending proposal for one
+# specific day + meal block:
+#   {uid, date_key, block_index, name, description, link, grocy_recipe_id,
+#    servings, suggested_by, suggested_by_name, created_at}
+# and lives here (a plain pending queue) rather than on the meal-plan
+# todo.* entity itself, so a suggestion is never mistaken for a real
+# planned meal by anything that reads that entity (the calendar grid, the
+# daily digest, the Grocy grocery-list push, meal templates...).
+#
+# Deliberately its OWN Store, NOT folded into SUGGESTIONS_STORAGE_KEY_PREFIX
+# above: that one is the flat, day-less "recipe ideas wishlist" behind the
+# Recipe Box's Suggested filter, with a completely different shape (no
+# date/block, no suggester identity, no apply step) and a completely
+# different lifecycle. Same reasoning as TODO_CARD_CONFIG's own separate
+# store just above - one store per feature, so no feature's full-replace
+# save can ever clobber another's keys.
+MENU_SUGGESTIONS_STORAGE_KEY_PREFIX = "family_hub_menu_suggestions"
+MENU_SUGGESTIONS_STORAGE_VERSION = 1
 
 # First-time setup wizard (config_flow.py's async_step_calendars/grocy/
 # todo_lists/finish): everything it collects - which calendars to monitor,
@@ -678,6 +731,14 @@ ROUTINES_STORAGE_VERSION = 1
 GOALS_STORAGE_KEY_PREFIX = "family_hub_goals"
 GOALS_STORAGE_VERSION = 1
 
+# Pantry "extras" store (see pantry_engine.py's module docstring) - the
+# household's own free-text list of things they're tracking that aren't
+# real Grocy products (e.g. "half a bag of flour", "borrowed casserole
+# dish"). Mirrors the Goals store above exactly; the main Pantry stock
+# list itself is never stored here since it's just Grocy's own numbers.
+PANTRY_EXTRAS_STORAGE_KEY_PREFIX = "family_hub_pantry_extras"
+PANTRY_EXTRAS_STORAGE_VERSION = 1
+
 # Same three-stage shape as CHORE_STATUS_* above, reused deliberately (same
 # meaning: "still being worked toward" -> "hit the target, waiting on a
 # parent to confirm it's real" -> "confirmed, reward paid out") rather than
@@ -686,7 +747,14 @@ GOALS_STORAGE_VERSION = 1
 GOAL_STATUS_OPEN = "open"
 GOAL_STATUS_PENDING_VERIFICATION = "pending_verification"
 GOAL_STATUS_APPROVED = "approved"
-GOAL_STATUSES = (GOAL_STATUS_OPEN, GOAL_STATUS_PENDING_VERIFICATION, GOAL_STATUS_APPROVED)
+# v144.13+: a fourth, terminal stage - "approved" used to be the end of the
+# line forever (see goal_engine.archive_goal's own docstring for the
+# household report this fixes: approved goals just piled up at the bottom
+# of My Goals with no way to tidy them away). No reward side effects here -
+# approve_goal already disbursed the reward the moment it happened; this is
+# purely "I've seen it, get it out of my active list."
+GOAL_STATUS_ARCHIVED = "archived"
+GOAL_STATUSES = (GOAL_STATUS_OPEN, GOAL_STATUS_PENDING_VERIFICATION, GOAL_STATUS_APPROVED, GOAL_STATUS_ARCHIVED)
 
 # What approving a goal actually pays out - see goal_engine.approve_goal.
 # "stars": credits star_value to the assignee's balance, same
@@ -818,6 +886,25 @@ CHORE_KEY_REMINDERS_FIRED = "reminders_fired"
 CHORE_KEY_REJECTED_BY = "rejected_by"
 CHORE_KEY_REJECTED_AT = "rejected_at"
 CHORE_KEY_REJECT_REASON = "reject_reason"
+# Set from the Add/Edit Chore modal's "Doesn't require approval" checkbox.
+# When true, complete_chore skips the pending_verification stop for THIS
+# chore specifically, regardless of who completes it or what their own
+# PERMISSION_AUTO_APPROVE grant says - see
+# chore_engine.chore_skips_verification for how the two combine.
+CHORE_KEY_NO_APPROVAL_REQUIRED = "no_approval_required"
+
+# Quantity-based chores - "3 loads of laundry," "2 dishwasher loads," etc.
+# CHORE_KEY_QUANTITY_TOTAL is how many units the chore was created with;
+# None/0 means this is an ordinary (non-quantity) chore and nothing below
+# changes behavior at all - this is purely opt-in, matching every other
+# feature added this way in this file. CHORE_KEY_QUANTITY_REMAINING tracks
+# how many units are still left THIS cycle: complete_chore decrements it by
+# one per tap instead of immediately entering pending_verification, and
+# only runs the normal completion flow once it reaches 0 - see
+# chore_engine.complete_chore. reset_recurring_chore refills it back to
+# quantity_total for a recurring chore's next occurrence.
+CHORE_KEY_QUANTITY_TOTAL = "quantity_total"
+CHORE_KEY_QUANTITY_REMAINING = "quantity_remaining"
 
 # Plain-schedule recurrence - a SECOND, independent way (alongside the
 # sensor-driven auto_create_trigger above) for an approved chore to cycle
@@ -893,7 +980,75 @@ PERMISSION_COMPLETE_ANY = "can_complete_any"
 # the same "either of two permissions" shape ws_complete_chore already uses
 # for PERMISSION_VERIFY/PERMISSION_COMPLETE_ANY.
 PERMISSION_REWARD_ADD = "can_add_rewards"
-CHORE_PERMISSIONS = (PERMISSION_ASSIGN, PERMISSION_VERIFY, PERMISSION_REWARD_OVERRIDE, PERMISSION_COMPLETE_ANY, PERMISSION_REWARD_ADD)
+# Lets an admin exempt a specific person from the verification gate
+# entirely: every chore THEY complete goes straight from open to approved
+# (stars disbursed immediately) with no pending_verification stop, exactly
+# as if every one of their chores had CHORE_KEY_NO_APPROVAL_REQUIRED set.
+# Distinct from CHORE_KEY_NO_APPROVAL_REQUIRED below, which is the same
+# exemption applied per-CHORE instead of per-person (e.g. a chore trivial
+# enough nobody needs to double-check it, regardless of who does it) - see
+# chore_engine.chore_skips_verification, which checks both and needs only
+# one to be true. Reuses the exact same string as that key: they live in
+# separate dicts (this one keyed by user_id in the Permissions store,
+# that one a field on the chore record itself) so there's no collision.
+PERMISSION_AUTO_APPROVE = "no_approval_required"
+# v144.4+: split out of PERMISSION_ASSIGN on request, same precedent as
+# PERMISSION_COMPLETE_ANY/PERMISSION_REWARD_ADD splitting out of their own
+# broader permissions above - a household wanted to grant someone (e.g. an
+# older kid) the ability to CREATE and assign new chores without that same
+# grant also letting them go edit the star_value/due_date/etc. on any
+# EXISTING open chore (the household's own worry: "prevents a kid from
+# adding stars to an open chore"). Before this existed, ws_update_chore
+# reused PERMISSION_ASSIGN for both, so there was no way to grant one
+# without the other. ws_create_chore is UNCHANGED (still PERMISSION_ASSIGN
+# only) - this only gates ws_update_chore (and the chores card's own Edit
+# button/modal, which mirrors the same gate client-side as a UI
+# convenience, same as PERMISSION_ASSIGN's own comment there already
+# explains).
+PERMISSION_EDIT_CHORE = "can_edit_chore"
+# v144.4+: gates the one specific field on chore create/update that's
+# actually dangerous to hand out loosely - CHORE_KEY_NO_APPROVAL_REQUIRED
+# (see chore_engine.chore_skips_verification). Without PERMISSION_ASSIGN/
+# PERMISSION_EDIT_CHORE a kid can't create or edit a chore at all; but
+# someone who DOES have one of those (to legitimately create/assign/edit
+# ordinary chores) could otherwise also set no_approval_required=True on a
+# chore assigned to themselves and collect its stars the instant they tap
+# Done, with nobody ever getting a chance to catch an absurd star_value or
+# even notice - "prevents a kid from making random chores that dont need
+# approval and getting stars," the household's own words. So this is
+# required IN ADDITION to the base create/edit permission specifically
+# when a request's own no_approval_required field is truthy; turning it
+# OFF (or a request that omits the field, or one that explicitly sets it
+# False) never needs this - only turning the exemption ON does. Distinct
+# from PERMISSION_AUTO_APPROVE just above, which exempts a specific PERSON
+# from verification for everything they complete (an admin's own grant to
+# someone they trust); this instead controls who's allowed to author a
+# CHORE that skips verification for whoever completes it.
+PERMISSION_STAR_OVERRIDE = "can_star_override"
+# v146.6+: gates editing the weekly meal plan ("the menu") on the calendar
+# card - "need a permission to edit menu, prevents kids from messing with
+# the menu, anyone can suggest but only ones with edit menu permission can
+# edit." A household member without this (and without real HA admin) can
+# still open a day/meal editor and look at it, but its Save/Delete/Move
+# controls are replaced with a "Suggest" action instead (see
+# family-week-calendar-card.js's _canEditMenu/_openEditor, and the new
+# family_hub/menu_suggestions store/websocket commands in __init__.py) -
+# same shape as PERMISSION_REWARD_ADD's own "without this, their
+# suggestions need approval" precedent just above, rather than a hard
+# block. Standalone, not split out of anything - the menu has never had
+# ANY permission gating before this.
+PERMISSION_EDIT_MENU = "can_edit_menu"
+CHORE_PERMISSIONS = (
+    PERMISSION_ASSIGN,
+    PERMISSION_VERIFY,
+    PERMISSION_REWARD_OVERRIDE,
+    PERMISSION_COMPLETE_ANY,
+    PERMISSION_REWARD_ADD,
+    PERMISSION_AUTO_APPROVE,
+    PERMISSION_EDIT_CHORE,
+    PERMISSION_STAR_OVERRIDE,
+    PERMISSION_EDIT_MENU,
+)
 
 # v128+: a catalog item's redeem_mode - see reward_engine.py's own module
 # docstring for the full picture. Every reward has exactly one:
@@ -930,6 +1085,23 @@ MY_CHORES_CARD_JS_URL = "/family_hub_my_chores_card/family-hub-my-chores-card.js
 REWARDS_CARD_JS_URL = "/family_hub_rewards_card/family-hub-rewards-card.js"
 # v133+ - see goal_engine.py's own module docstring for what Goals is.
 GOALS_CARD_JS_URL = "/family_hub_goals_card/family-hub-goals-card.js"
+# v140+ - the My Pantry card (see pantry_engine.py's own module docstring).
+# Added here in v144.3 after discovering the card was shipped in v140-v142/
+# 1.107.0 with working code and passing tests, but was NEVER actually wired
+# into async_setup_entry's static-path/dashboard-resource registration below
+# - so Home Assistant had never once served its JS or registered it as a
+# Lovelace resource, and it could never appear in the Add Card picker no
+# matter what the user searched for. See async_setup_entry's own comment
+# at the fix site for the fuller story.
+PANTRY_CARD_JS_URL = "/family_hub_pantry_card/family-hub-pantry-card.js"
+# v146+ - the To-Do Lists card (see family-hub-todo-card.js's own module
+# docstring): a themed board over whichever native todo.* entities the
+# household points it at. No backend storage of its own (everything reads/
+# writes straight through the native `todo` domain's services), so this is
+# the only wiring this feature needs on the Python side - same four-step
+# static-path/hash/resource pattern as every other card here, just with no
+# new websocket commands to register alongside it.
+TODO_CARD_JS_URL = "/family_hub_todo_card/family-hub-todo-card.js"
 
 # The native todo.family_hub_chores entity (todo.py) - a single shared
 # to-do list mirroring every open/pending chore, so Assist/Alexa/Google and

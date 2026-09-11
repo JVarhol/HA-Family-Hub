@@ -37,6 +37,7 @@ if (!window.__familyHubScreenSaver) {
     let overlayEl = null;
     let activityBound = false;
     let boundActivity = null;
+    let settingsSnapshot = null;
 
     function defaultSettings() {
       return { screenSaver: { sourceType: "video", videoUrl: "", cameraEntity: "", idleSeconds: 180, usersEnabled: {} } };
@@ -70,6 +71,28 @@ if (!window.__familyHubScreenSaver) {
       } catch (e) {
         if (!settingsCache) settingsCache = defaultSettings();
       }
+      maybeResetIdleTimer();
+    }
+    // v144.12+: this used to call resetIdleTimer() unconditionally on every
+    // single poll tick (startPolling, every 60s), whether or not anything
+    // about the screenSaver settings had actually changed. That meant any
+    // household with idleSeconds set above 60 (the poll interval - and the
+    // DEFAULT idle time, 180s, is already well above it) could never
+    // actually see the screensaver on a card that shares this controller
+    // (Chores/Rewards/My Chores): a genuinely idle card's countdown kept
+    // getting clobbered and restarted from zero every 60 seconds by the
+    // poll itself, so it never survived long enough to reach
+    // showScreenSaver(). This wrapper only calls the real reset when the
+    // screenSaver settings sub-object has changed since the last time this
+    // ran (or on the very first call) - a poll tick that finds nothing new
+    // leaves a real in-progress countdown alone. A genuine change (new idle
+    // time, source, or a login toggled on/off) still re-arms immediately
+    // with the fresh value, same as before. Mirrors the calendar card's own
+    // separate _maybeResetScreenSaverIdleTimer fix for its own idle timer.
+    function maybeResetIdleTimer() {
+      const key = JSON.stringify(getSettings().screenSaver || null);
+      if (key === settingsSnapshot) return;
+      settingsSnapshot = key;
       resetIdleTimer();
     }
     function applicable() {
@@ -357,10 +380,31 @@ class FamilyHubMyChoresCard extends HTMLElement {
   _getSettings() {
     return this._settingsCache || this._defaultSettings();
   }
+  // v144.6+: "This device's theme" - a device-local override of the shared
+  // Settings > Appearance theme choice, same key/mechanism
+  // family-week-calendar-card.js's own _getDeviceThemeOverride uses (see
+  // its own comment) and configured from that card's Settings modal (this
+  // card has none of its own - see the top-of-file comment on why Settings
+  // lives only on the calendar card). "" = follow the household setting
+  // (nothing changes for anyone who hasn't touched this); "__default__" =
+  // force this device's own plain/local look regardless of what the
+  // household picked; anything else is a specific theme id this device
+  // wants instead.
+  _getDeviceThemeOverride() {
+    let raw = "";
+    try {
+      raw = localStorage.getItem("familyHubDeviceThemeOverrideLocal") || "";
+    } catch (e) {
+    }
+    return raw;
+  }
   _resolveTheme(settings) {
+    const override = this._getDeviceThemeOverride();
+    const useGlobalTheme = override ? override !== "__default__" : settings.useGlobalTheme;
+    const globalThemeId = override ? (override === "__default__" ? "" : override) : settings.globalThemeId;
     const local = settings.theme || this._defaultTheme();
-    if (!settings.useGlobalTheme || !settings.globalThemeId) return local;
-    const g = (this._globalThemes || []).find((t) => t && t.id === settings.globalThemeId);
+    if (!useGlobalTheme || !globalThemeId) return local;
+    const g = (this._globalThemes || []).find((t) => t && t.id === globalThemeId);
     if (!g) return local;
     const defaultTheme = this._defaultTheme();
     const colors = {};
@@ -368,12 +412,37 @@ class FamilyHubMyChoresCard extends HTMLElement {
       const v = g.colors && g.colors[k];
       colors[k] = typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v) ? v : defaultTheme.colors[k];
     });
-    return { colors };
+    // v144.5+: cardOpacity/glassBlur (the "liquid glass" look - see the
+    // Liquid Glass/Liquid Glass Dark built-in presets) aren't part of
+    // defaultTheme (a local/custom theme with neither set just means
+    // "fully opaque, no blur"), so they're read straight off the global
+    // theme rather than validated against a default-theme shape like
+    // colors above - same fix family-week-calendar-card.js's own
+    // _resolveTheme already applies for its own global-theme branch.
+    const cardOpacity = typeof g.cardOpacity === "number" ? g.cardOpacity : 100;
+    const glassBlur = typeof g.glassBlur === "number" ? g.glassBlur : 0;
+    return { colors, cardOpacity, glassBlur };
+  }
+  _hexToRgba(hex, alpha) {
+    const h = (hex || "#000000").replace("#", "");
+    if (h.length !== 6) return "rgba(0,0,0,0)";
+    const r = parseInt(h.substr(0, 2), 16);
+    const g = parseInt(h.substr(2, 2), 16);
+    const b = parseInt(h.substr(4, 2), 16);
+    const a = Math.max(0, Math.min(1, typeof alpha === "number" ? alpha : 1));
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
   _applyThemeVars() {
     const theme = this._resolveTheme(this._getSettings());
+    // v144.5+: same "liquid glass" support family-week-calendar-card.js has
+    // - a theme's cardOpacity/glassBlur (100/0 defaults, both no-ops) turn
+    // the card/surface backgrounds translucent and blur whatever shows
+    // through them, so picking a Liquid Glass theme actually looks glassy
+    // on this card too, not just the calendar.
+    const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
+    const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
     this.style.setProperty("--fc-bg", theme.colors.bg);
-    this.style.setProperty("--fc-card", theme.colors.card);
+    this.style.setProperty("--fc-card", this._hexToRgba(theme.colors.card, cardOpacity / 100));
     this.style.setProperty("--fc-border", theme.colors.border);
     this.style.setProperty("--fc-text", theme.colors.text);
     this.style.setProperty("--fc-text-secondary", theme.colors.textSecondary);
@@ -381,8 +450,9 @@ class FamilyHubMyChoresCard extends HTMLElement {
     this.style.setProperty("--fc-accent-text", theme.colors.accentText);
     this.style.setProperty("--fc-accent2", theme.colors.accent2);
     this.style.setProperty("--fc-accent3", theme.colors.accent3);
-    this.style.setProperty("--fc-surface-alt", theme.colors.surfaceAlt);
-    this.style.setProperty("--fc-surface2", theme.colors.surface2);
+    this.style.setProperty("--fc-surface-alt", this._hexToRgba(theme.colors.surfaceAlt, cardOpacity / 100));
+    this.style.setProperty("--fc-surface2", this._hexToRgba(theme.colors.surface2, cardOpacity / 100));
+    this.style.setProperty("--fc-glass-blur", `${glassBlur}px`);
     // Same shared --fs-header-title custom property family-today-card.js
     // and family-week-calendar-card.js both set from the household's one
     // Theme Builder "Header title" font-size field (settings.theme.fonts.
@@ -400,8 +470,14 @@ class FamilyHubMyChoresCard extends HTMLElement {
       const n = fonts && Number(fonts.headerTitle);
       return Number.isFinite(n) && n >= 6 && n <= 72 ? n : fallback;
     };
-    if (settings.useGlobalTheme && settings.globalThemeId) {
-      const g = (this._globalThemes || []).find((t) => t && t.id === settings.globalThemeId);
+    // v144.6+: same device-theme-override precedence _resolveTheme uses,
+    // so the header font size always matches whichever theme (household's
+    // or this device's own override) actually ends up applied.
+    const override = this._getDeviceThemeOverride();
+    const useGlobalTheme = override ? override !== "__default__" : settings.useGlobalTheme;
+    const globalThemeId = override ? (override === "__default__" ? "" : override) : settings.globalThemeId;
+    if (useGlobalTheme && globalThemeId) {
+      const g = (this._globalThemes || []).find((t) => t && t.id === globalThemeId);
       if (g) return fromFonts(g.fonts);
     }
     return fromFonts(settings.theme && settings.theme.fonts);
@@ -551,6 +627,15 @@ class FamilyHubMyChoresCard extends HTMLElement {
       .section { margin-top: 12px; }
       .section-title { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; color: var(--fc-text-secondary); margin-bottom: 6px; }
       .chore-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; background: var(--fc-card); border-radius: 10px; padding: 8px 10px; margin-bottom: 6px; box-shadow: var(--fc-shadow, 0 2px 5px rgba(0,0,0,0.08)); }
+      /* v144.5+: "Liquid glass" support, same convention as
+         family-week-calendar-card.js - see that file's own comment on its
+         backdrop-filter rule for the full reasoning. Zero-cost for every
+         existing theme (blur(0px) is a no-op); -webkit- prefix needed for
+         Safari/iOS webviews. */
+      .chore-row {
+        backdrop-filter: blur(var(--fc-glass-blur, 0px));
+        -webkit-backdrop-filter: blur(var(--fc-glass-blur, 0px));
+      }
       .chore-row-main { display: flex; flex-direction: column; gap: 2px; }
       .chore-title { font-weight: 700; font-size: 14px; }
       .chore-stars, .chore-due { font-size: 11px; color: var(--fc-text-secondary); }

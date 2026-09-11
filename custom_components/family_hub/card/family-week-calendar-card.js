@@ -1,3 +1,23 @@
+// Family Hub - Family Week Calendar card.
+//
+// v1.109.6: menu permissions. A new granular permission, can_edit_menu
+// (PERMISSION_EDIT_MENU in const.py, granted from this card's own
+// Settings > Permissions tab), now gates editing the weekly meal plan.
+// Without it the meal editor's Save/Clear/Delete/Move/repeat/leftovers
+// controls are replaced by a single "Suggest" action, and a pending
+// suggestion strip inside the editor lets whoever CAN edit the menu put
+// it on with one tap - see _canEditMenu, _applyMenuEditPermissionUi,
+// _suggestMealFromEditor and _renderMenuSuggestions, plus the backend's
+// family_hub/{get,add,apply,remove}_menu_suggestion commands. Applying a
+// suggestion is genuinely backend-permission-checked; the rest of the
+// menu gating is UI-only (read __init__.py's design note above
+// _encode_dish_description before relying on it).
+//
+// v1.109.6 also compacts the Settings > Permissions tab: the per-member
+// permission checkboxes are now generated from one _permissionDefs()
+// array, grouped by feature area (Chores / Rewards / Menu) and laid out
+// as a wrapping grid of short labels with tooltips, instead of 8+
+// hardcoded full-sentence rows per person.
 (function () {
 if (window.__familyCalendarApplyScrollLock) return;
 function applyScrollLock(locked) {
@@ -108,6 +128,13 @@ this._recipeBoxSort = "default";
 this._recipeBoxSelectMode = false;
 this._recipeBoxSelectedUids = new Set();
 this._mealPlan = {};
+// v142+: "additional recipes" - side/dessert/sauce recipes attached to
+// whatever meal slot is currently open in the day/menu editor, alongside
+// (not replacing) that slot's one main recipe - see _openEditorForDate,
+// _renderAdditionalRecipesList, and _saveEditor. Scratch editor state,
+// same lifecycle as _currentGrocyRecipeId/_currentColor/etc: populated
+// fresh each time the editor opens, read back out on save.
+this._editingAdditionalRecipes = [];
 this._recurringMeals = [];
 this._mealTemplates = [];
 this._suggestions = [];
@@ -154,6 +181,15 @@ if (this._eventInfoOpenId === undefined) this._eventInfoOpenId = null;
 if (this._eventInfoRemindDirty === undefined) this._eventInfoRemindDirty = false;
 if (this._eventInfoPeopleDirty === undefined) this._eventInfoPeopleDirty = false;
 if (this._firstLoadPromise === undefined) this._firstLoadPromise = null;
+// v1.109.6+: the CALLER's own effective permissions, as resolved by
+// family_hub/permissions/get_mine - see _fetchMyPermissions/_hasPermission.
+// This card had no permission-fetching code at all before now; it's
+// introduced here for can_edit_menu, mirroring the convention
+// family-hub-chores-card.js already established.
+if (this._myPermissions === undefined) this._myPermissions = {};
+// Pending menu suggestions (all days/blocks; the editor filters to the
+// slot it's showing) - see _fetchMenuSuggestions.
+if (this._menuSuggestions === undefined) this._menuSuggestions = [];
 if (this._addEventActiveTab === undefined) this._addEventActiveTab = "calendar";
 if (this._eventTypeFilter === undefined) this._eventTypeFilter = [];
 if (!this._built) this._build();
@@ -177,6 +213,7 @@ this._fetchRecipes();
 this._fetchMealPlan();
 this._fetchMealTemplates();
 this._fetchSuggestions();
+this._fetchMenuSuggestions();
 this._fetchWeather();
 this._fetchCountdown();
 this._fetchGlobalThemes();
@@ -205,9 +242,18 @@ await this._fetchSettings();
 // own render (see its own docstring), so without this the first
 // _fetchEvents()-driven render would run before this ever resolved.
 await this._fetchEventPeopleOverrides();
+// v1.109.6+: awaited before the first render so the very first meal
+// editor opened in a session already knows whether this person can edit
+// the menu - otherwise a kid would briefly see (and could tap) the real
+// Save button before the answer arrived. _hasPermission's own admin
+// short-circuit means an admin never has to wait on this at all.
+await this._fetchMyPermissions();
 if (!this._viewMode) {
 const s = this._getSettings();
-this._viewMode = s.defaultView === "month" || s.defaultView === "planner" ? s.defaultView : "week";
+// v144+ task #28: the shared setting only picks the family (week vs
+// month) - which variant within that family renders is this device's
+// own choice, same as _getShowTimeline etc.
+this._viewMode = s.defaultView === "month" ? this._getMonthViewVariant() : this._getWeekViewVariant();
 }
 this._refreshAllData();
 this._startPolling();
@@ -262,6 +308,27 @@ requestAnimationFrame(this._boundSyncHeight);
 setTimeout(this._boundSyncHeight, 300);
 setTimeout(this._boundSyncHeight, 1200);
 this._applyScrollLock();
+// v142+: Planner's mobile-friendly stacked layout (see _renderPlannerGrid)
+// is decided by matchMedia at render time, not pure CSS, so unlike Week/
+// Portrait's collapse (which just reflows on its own) it needs an actual
+// re-render when the breakpoint is crossed - e.g. rotating a tablet/phone,
+// or resizing a browser window, while Planner is already open.
+if (window.matchMedia) {
+if (!this._plannerMobileMQ) this._plannerMobileMQ = window.matchMedia("(max-width: 700px)");
+if (!this._boundPlannerMQChange) {
+this._boundPlannerMQChange = () => {
+if (this._viewMode === "planner") this._renderGrid();
+};
+}
+if (this._plannerMobileMQ.addEventListener) {
+this._plannerMobileMQ.addEventListener("change", this._boundPlannerMQChange);
+} else if (this._plannerMobileMQ.addListener) {
+// Older WebView/engine fallback (addEventListener on MediaQueryList is
+// fairly recent) - some tablet dashboard browsers embedded in kiosk
+// apps still only support the deprecated addListener form.
+this._plannerMobileMQ.addListener(this._boundPlannerMQChange);
+}
+}
 }
 disconnectedCallback() {
 if (this._interval) clearInterval(this._interval);
@@ -276,6 +343,13 @@ window.removeEventListener("orientationchange", this._boundSyncHeight);
 if (window.visualViewport) {
 window.visualViewport.removeEventListener("resize", this._boundSyncHeight);
 window.visualViewport.removeEventListener("scroll", this._boundSyncHeight);
+}
+}
+if (this._plannerMobileMQ && this._boundPlannerMQChange) {
+if (this._plannerMobileMQ.removeEventListener) {
+this._plannerMobileMQ.removeEventListener("change", this._boundPlannerMQChange);
+} else if (this._plannerMobileMQ.removeListener) {
+this._plannerMobileMQ.removeListener(this._boundPlannerMQChange);
 }
 }
 if (this._boundHandleModalPopState) {
@@ -391,16 +465,20 @@ this._updateNavLabel();
 _updateNavLabel() {
 if (!this._root) return;
 this._root.querySelectorAll(".view-btn").forEach((btn) => {
-btn.classList.toggle("active", btn.dataset.view === this._viewMode);
+btn.classList.toggle("active", btn.dataset.view === this._viewFamily(this._viewMode));
 });
-// Rearranging meals is a Week-view-only concept (it drags menu banners
-// between day columns) - Month has no banners to drag, and Planner
-// deliberately shows only calendar events (see _renderPlannerGrid), so
-// this button would just be dead weight on either of those.
+// Rearranging meals works off Week's day-columns - Portrait reuses those
+// exact same columns (just split 4-and-3 across two rows, see
+// _renderPortraitGrid), so it gets the button too. Month has no banners
+// to drag, and Planner deliberately shows only calendar events (see
+// _renderPlannerGrid), so this button would just be dead weight there.
 const editBtn = this._root.querySelector(".edit-meals-btn");
-if (editBtn) editBtn.style.display = this._viewMode === "week" ? "" : "none";
+if (editBtn) {
+editBtn.style.display =
+(this._viewMode === "week" || this._viewMode === "portrait") && this._getBlocks().length ? "" : "none";
+}
 const shortcuts = this._root.querySelector(".week-shortcuts");
-if (this._viewMode === "month") {
+if (this._viewFamily(this._viewMode) === "month") {
 if (shortcuts) shortcuts.style.display = "none";
 this._closeWeekShortcuts();
 const anchor = this._monthAnchor();
@@ -437,6 +515,46 @@ local = localStorage.getItem("familyCalendarShowTimelineLocal");
 if (local === "on") return true;
 if (local === "off") return false;
 return !!this._getSettings().showTimeline;
+}
+// v144+ task #28: "Week" is a family of view-btn, not a single view -
+// this device's own choice of which variant actually renders when the
+// Week button is pressed (or it's the startup default). Same
+// this-device-only localStorage pattern as _getShowTimeline above, kept
+// deliberately separate from the shared/household defaultView setting
+// so the UI stays a simple two-button Week/Month switcher even as more
+// week-family variants get added later.
+_getWeekViewVariant() {
+let local = null;
+try {
+local = localStorage.getItem("familyCalendarWeekViewVariantLocal");
+} catch (e) {
+}
+return ["week", "planner", "portrait"].includes(local) ? local : "week";
+}
+// v144+ task #28: same idea as _getWeekViewVariant, for the Month
+// family. Originally only "month" existed - the getter/localStorage key
+// were put in place ahead of time so a future month variant could slot
+// in without touching any of its call sites (_renderGrid, the click
+// handler, _initFirstLoad). v145+ adds "split" (see _renderMonthSplitGrid):
+// classic month grid on one side, the selected day's full event list on
+// the other, with a button to jump to that week.
+_getMonthViewVariant() {
+let local = null;
+try {
+local = localStorage.getItem("familyCalendarMonthViewVariantLocal");
+} catch (e) {
+}
+return ["month", "split"].includes(local) ? local : "month";
+}
+// v144+ task #28: which button (Week vs Month) should show as active,
+// and which family a given rendered variant belongs to. v145+: "split"
+// joins "month" in the Month family - every call site above that used
+// to compare `this._viewMode === "month"` directly now goes through
+// this helper instead, so month-family logic (date-range fetching, nav
+// arrows/swipe, the month/year label) treats "split" exactly like
+// "month" without needing its own copy of each of those checks.
+_viewFamily(mode) {
+return mode === "month" || mode === "split" ? "month" : "week";
 }
 _defaultTheme() {
 return {
@@ -514,6 +632,12 @@ routinesEnabled: false,
 // family-hub-rewards-card.js's _goalsInRewardsEnabled.
 goalsShowInChores: false,
 goalsShowInRewards: false,
+// v140+: the Chores board's own card-level "Due ..." label defaults to
+// date-only (matches the original behavior everyone's used to) - the
+// chore detail popup (_openChoreDetailModal in family-hub-chores-card.js)
+// always shows both regardless of this, so nothing is ever hidden, just
+// the compact card label.
+choreDueShowTime: false,
 // Optional relative path (e.g. "/lovelace-family/0") opened when someone
 // taps a reminder/event/Daily Digest push notification on their phone -
 // synced to the backend (family_hub/set_notification_click_path) since
@@ -540,9 +664,18 @@ userProfiles: {},
 // install. Mirrors the backend's SETTINGS_KEY_MEMBER_USER_IDS in
 // const.py exactly - keep the two in sync.
 memberUserIds: [],
+// v144+ task #29: nobody has kiosk PIN login enabled by default - see
+// const.py's own default for the backend twin of this field.
+kioskLoginEnabledUserIds: [],
 people: [],
 weekendBreakfast: false,
 showMealsInMonth: false,
+// v141+ - purely a visual "where am I in the day" aid: greys out an
+// event/reminder that's already passed on TODAY's column, still fully
+// interactable (see _buildDayColumnHtml's own comment) - never applied
+// to other days, since "past" only means something relative to today.
+// Off by default, opt-in like every other display toggle here.
+greyOutPastEvents: false,
 scrollLocked: false,
 theme: this._defaultTheme(),
 useGlobalTheme: false,
@@ -742,7 +875,7 @@ _normalizeSettings(parsed) {
 const defaults = this._defaultSettings();
 if (!parsed || typeof parsed !== "object") return defaults;
 const blocks =
-Array.isArray(parsed.blocks) && parsed.blocks.length >= 1
+Array.isArray(parsed.blocks) && parsed.blocks.length >= 0
 ? parsed.blocks.slice(0, 3).map((b, i) => (b && String(b).trim()) || defaults.blocks[i] || `Block ${i + 1}`)
 : defaults.blocks;
 const fontSize = ["small", "medium", "large"].includes(parsed.fontSize) ? parsed.fontSize : defaults.fontSize;
@@ -753,7 +886,15 @@ let timelineEndHour = Number.isInteger(parsed.timelineEndHour) ? parsed.timeline
 timelineStartHour = Math.min(23, Math.max(0, timelineStartHour));
 timelineEndHour = Math.min(24, Math.max(0, timelineEndHour));
 if (timelineEndHour <= timelineStartHour) timelineEndHour = Math.min(24, timelineStartHour + 1);
-const defaultView = parsed.defaultView === "month" || parsed.defaultView === "planner" ? parsed.defaultView : "week";
+// v144+ task #28: the shared "Default view" setting only ever chooses
+// between the two view FAMILIES now (Week vs Month) - which specific
+// variant within a family (Week/Planner/Portrait, and any future Month
+// variants) is a per-device choice, see _getWeekViewVariant/
+// _getMonthViewVariant. A household upgrading from before this change
+// may still have "planner" or "portrait" saved here from the old 4-way
+// picker - those both belong to the Week family, so they fold into
+// "week" rather than being lost.
+const defaultView = parsed.defaultView === "month" ? "month" : "week";
 const countdownEnabled = typeof parsed.countdownEnabled === "boolean" ? parsed.countdownEnabled : defaults.countdownEnabled;
 const countdownLabel = typeof parsed.countdownLabel === "string" ? parsed.countdownLabel : defaults.countdownLabel;
 const countdownDate = typeof parsed.countdownDate === "string" ? parsed.countdownDate : defaults.countdownDate;
@@ -780,6 +921,7 @@ const grocyLowStockEnabled = typeof parsed.grocyLowStockEnabled === "boolean" ? 
 const routinesEnabled = typeof parsed.routinesEnabled === "boolean" ? parsed.routinesEnabled : defaults.routinesEnabled;
 const goalsShowInChores = typeof parsed.goalsShowInChores === "boolean" ? parsed.goalsShowInChores : defaults.goalsShowInChores;
 const goalsShowInRewards = typeof parsed.goalsShowInRewards === "boolean" ? parsed.goalsShowInRewards : defaults.goalsShowInRewards;
+const choreDueShowTime = typeof parsed.choreDueShowTime === "boolean" ? parsed.choreDueShowTime : defaults.choreDueShowTime;
 const notificationClickPath = typeof parsed.notificationClickPath === "string" ? parsed.notificationClickPath.trim() : defaults.notificationClickPath;
 let people =
 Array.isArray(parsed.people) && parsed.people.length
@@ -804,6 +946,7 @@ people = this._config.people.map((p) => ({ ...p, countdown: p.entity === this._c
 }
 const weekendBreakfast = typeof parsed.weekendBreakfast === "boolean" ? parsed.weekendBreakfast : defaults.weekendBreakfast;
 const showMealsInMonth = typeof parsed.showMealsInMonth === "boolean" ? parsed.showMealsInMonth : defaults.showMealsInMonth;
+const greyOutPastEvents = typeof parsed.greyOutPastEvents === "boolean" ? parsed.greyOutPastEvents : defaults.greyOutPastEvents;
 const scrollLocked = typeof parsed.scrollLocked === "boolean" ? parsed.scrollLocked : defaults.scrollLocked;
 const defaultTheme = defaults.theme;
 const parsedTheme = parsed.theme && typeof parsed.theme === "object" ? parsed.theme : {};
@@ -858,6 +1001,15 @@ disableWhileRecipeOpen: screenSaverDisableWhileRecipeOpen,
 };
 const userProfiles = this._normalizeUserProfiles(parsed.userProfiles);
 const memberUserIds = this._normalizeMemberUserIds(parsed.memberUserIds);
+// v144+ task #29: same "a malformed/missing value degrades to a safe
+// empty default" treatment as memberUserIds right above - only actually
+// meaningful for ids that are ALSO in memberUserIds, but deliberately not
+// filtered down to that intersection here (kept as whatever was saved) so
+// a member temporarily removed from Family Hub doesn't silently lose
+// their kiosk-login enrollment along with it.
+const kioskLoginEnabledUserIds = Array.isArray(parsed.kioskLoginEnabledUserIds)
+? parsed.kioskLoginEnabledUserIds.filter((id) => typeof id === "string" && id)
+: [];
 return {
 blocks,
 fontSize,
@@ -878,10 +1030,12 @@ grocyLowStockEnabled,
 routinesEnabled,
 goalsShowInChores,
 goalsShowInRewards,
+choreDueShowTime,
 notificationClickPath,
 people,
 weekendBreakfast,
 showMealsInMonth,
+greyOutPastEvents,
 scrollLocked,
 theme,
 useGlobalTheme,
@@ -889,6 +1043,7 @@ globalThemeId,
 screenSaver,
 userProfiles,
 memberUserIds,
+kioskLoginEnabledUserIds,
 };
 }
 // Defensive, field-by-field normalization of settings.userProfiles - same
@@ -1050,6 +1205,7 @@ return this._getSettings().blocks;
 _getBlocksForDay(dayIndex) {
 const settings = this._getSettings();
 const blocks = settings.blocks.slice();
+if (!blocks.length) return blocks;
 const isWeekend = dayIndex === 0 || dayIndex === 6;
 if (settings.weekendBreakfast && isWeekend && !blocks.some((b) => /breakfast/i.test(b))) {
 blocks.unshift("Breakfast");
@@ -1090,7 +1246,7 @@ badges: Array.isArray(p.badges) ? p.badges : [],
 // v130+: that person's own individual Reminders to-do list entity
 // (separate from the shared family list) - carried through here so
 // both the Calendars editor's "Reminders list" field and the
-// Notifications tab's per-list subscription picker
+// Users tab's per-list subscription picker
 // (_renderNotifyProfileRemindersLists) see it after a fresh
 // Settings-modal open, not just right after editing it in the same
 // session.
@@ -1316,11 +1472,37 @@ large: { minHeight: "56px", padding: "9px 24px" },
 const b = blockMap[settings.blockSize] || blockMap.medium;
 return { minHeight: b.minHeight, padding: b.padding };
 }
+// v144.6+: "theme should be per device" - this device may override the
+// household's shared Settings > Appearance theme choice entirely, the same
+// this-device-only localStorage pattern _getShowTimeline/_getWeekViewVariant
+// already use for other per-device preferences. "" (nothing saved, the
+// overwhelmingly common case) means "follow the household setting" -
+// _resolveTheme falls through to settings.useGlobalTheme/globalThemeId
+// unchanged, so nothing about existing behavior changes for anyone who's
+// never touched this. "__default__" means "force this device's own plain/
+// local look regardless of what the household picked". Anything else is a
+// specific theme id (Theme Builder custom OR native HA, same _globalThemes
+// list the shared picker already offers) this device wants instead. Every
+// other Family Hub card (chores/rewards/goals/pantry/my-chores) reads this
+// exact same key with an identical helper, so picking a theme for "this
+// device" here also applies to those cards' next render on the same
+// browser/tablet - not just the calendar.
+_getDeviceThemeOverride() {
+let raw = "";
+try {
+raw = localStorage.getItem("familyHubDeviceThemeOverrideLocal") || "";
+} catch (e) {
+}
+return raw;
+}
 _resolveTheme(settings) {
+const override = this._getDeviceThemeOverride();
+const useGlobalTheme = override ? override !== "__default__" : settings.useGlobalTheme;
+const globalThemeId = override ? (override === "__default__" ? "" : override) : settings.globalThemeId;
 const local = settings.theme || this._defaultTheme();
-if (!settings.useGlobalTheme || !settings.globalThemeId) return local;
+if (!useGlobalTheme || !globalThemeId) return local;
 const list = Array.isArray(this._globalThemes) ? this._globalThemes : [];
-const g = list.find((t) => t && t.id === settings.globalThemeId);
+const g = list.find((t) => t && t.id === globalThemeId);
 if (!g) return local;
 const defaultTheme = this._defaultTheme();
 const colors = {};
@@ -1334,7 +1516,14 @@ const raw = g.fonts && g.fonts[k];
 const n = typeof raw === "number" ? raw : parseInt(raw, 10);
 fonts[k] = Number.isFinite(n) && n >= 6 && n <= 72 ? n : defaultTheme.fonts[k];
 });
-return { colors, fonts, effects: g.effects || null, background: g.background || null };
+// cardOpacity/glassBlur aren't part of defaultTheme (a local/custom theme
+// with neither set just means "fully opaque, no blur" - see their 100/0
+// fallbacks in _applySizeVars), so they're read straight off the global
+// theme rather than validated against a default-theme shape like colors/
+// fonts above.
+const cardOpacity = typeof g.cardOpacity === "number" ? g.cardOpacity : 100;
+const glassBlur = typeof g.glassBlur === "number" ? g.glassBlur : 0;
+return { colors, fonts, effects: g.effects || null, background: g.background || null, cardOpacity, glassBlur };
 }
 _hexToRgba(hex, alpha) {
 const h = (hex || "#000000").replace("#", "");
@@ -1374,6 +1563,7 @@ this._globalThemesError = true;
 this._applySizeVars();
 if (this._root && this._root.querySelector(".settings-overlay.open")) {
 this._populateGlobalThemeSelect();
+this._populateDeviceThemeOverrideSelect();
 }
 }
 // Reverse of __init__.py's _theme_to_ha_vars: given a raw dict of Home
@@ -1494,7 +1684,7 @@ return entries;
 }
 // Fetches the same Home Assistant user list the Screen Saver picker uses
 // (family_hub/list_users - no backend change needed to reuse it here) to
-// populate the Notifications tab's "Manage notifications by person" list.
+// populate the Users tab's "Manage notifications by person" list.
 // A fresh fetch every time Settings opens (not cached indefinitely), same
 // reasoning as _fetchScreenSaverUsers: a newly-created HA user should show
 // up without needing a full page reload.
@@ -1512,7 +1702,7 @@ this._notifyProfileUsersError = true;
 }
 this._renderNotifyProfilesList();
 }
-// One row per Home Assistant user in the Notifications tab, each showing
+// One row per Home Assistant user in the Users tab, each showing
 // a plain-language summary of their profile and an Edit button that opens
 // _openNotifyProfileModal for that user id. Reads live draft state
 // (_settingsUserProfilesDraft), same as every other Settings summary
@@ -1690,6 +1880,36 @@ this._renderPermissionsList();
 // rather than waiting for a Save, so adding/removing someone in the Users
 // tab is reflected here immediately within the same Settings session,
 // even though Permissions itself still saves each checkbox independently.
+//
+// v1.109.6+: the grantable permissions, as DATA rather than eight-plus
+// hardcoded full-sentence <label> rows per person - "we need to make the
+// permissions cleaner, and more compact the UI is quite long." Every row
+// below used to be its own literal line of markup repeated inside the
+// per-member template, which meant (a) the tab grew a whole screen taller
+// every time a permission was added, and (b) adding one meant editing
+// markup in two places. Now each permission is declared exactly once here
+// and rendered by looping, grouped by the feature area it belongs to.
+//
+// label is deliberately SHORT now - the group header ("Chores", "Rewards",
+// "Menu") supplies the context the old full-sentence labels had to carry
+// on their own - with the long explanation moved to a title= tooltip so
+// nothing is actually lost, just folded away. Order within a group is the
+// old tab's order, so muscle memory survives. key must match const.py's
+// CHORE_PERMISSIONS exactly; _savePermissionCheck reads it back off
+// data-key, which is why every checkbox below still carries one.
+_permissionDefs() {
+return [
+{ key: "can_assign", group: "Chores", label: "Assign to others", hint: "Can assign chores to other people, not just pick up their own." },
+{ key: "can_edit_chore", group: "Chores", label: "Edit open chores", hint: "Can edit existing open chores (star value, due date, etc.)." },
+{ key: "can_star_override", group: "Chores", label: "Skip-approval chores", hint: "Can create/edit a chore that skips approval, so its stars are paid out instantly." },
+{ key: "can_verify", group: "Chores", label: "Approve completed", hint: "Can approve/verify chores other people have marked done." },
+{ key: "can_complete_any", group: "Chores", label: "Complete anyone's", hint: "Can mark any chore done, not just their own." },
+{ key: "no_approval_required", group: "Chores", label: "No approval needed", hint: "Their own completed chores are approved (and stars paid out) instantly, skipping verification." },
+{ key: "can_override_rewards", group: "Rewards", label: "Override star costs", hint: "Can override what a reward costs in stars." },
+{ key: "can_add_rewards", group: "Rewards", label: "Add to catalog", hint: "Can add rewards to the catalog with a star cost. Without this, what they add is a suggestion that needs approval." },
+{ key: "can_edit_menu", group: "Menu", label: "Edit the menu", hint: "Can edit the weekly meal plan. Without this they can still suggest a meal for any day - someone with this permission decides whether it goes on the menu." },
+];
+}
 _renderPermissionsList() {
 const root = this._root;
 if (!root) return;
@@ -1712,17 +1932,33 @@ return;
 }
 if (emptyEl) emptyEl.style.display = "none";
 const perms = this._permissionsDraft || {};
+// One ordered list of group names, derived from the defs themselves so a
+// new permission only ever has to be declared in one place (and a whole
+// new group appears just by naming one).
+const defs = this._permissionDefs();
+const groups = [];
+defs.forEach((d) => {
+if (!groups.includes(d.group)) groups.push(d.group);
+});
 listEl.innerHTML = members
 .map((u) => {
 const entry = perms[u.id] || {};
+const groupsHtml = groups
+.map((group) => {
+const opts = defs
+.filter((d) => d.group === group)
+.map(
+(d) =>
+`<label class="perm-opt" title="${d.hint}"><input type="checkbox" class="perm-check" data-user="${u.id}" data-key="${d.key}" ${entry[d.key] ? "checked" : ""} /><span>${d.label}</span></label>`
+)
+.join("");
+return `<div class="perm-group"><div class="perm-group-name">${group}</div><div class="perm-group-opts">${opts}</div></div>`;
+})
+.join("");
 return `
 <div class="perm-row" data-user-id="${u.id}">
 <div class="perm-name">${u.name}</div>
-<label class="remind-check-opt"><input type="checkbox" class="perm-check" data-user="${u.id}" data-key="can_assign" ${entry.can_assign ? "checked" : ""} /> Can assign chores to others</label>
-<label class="remind-check-opt"><input type="checkbox" class="perm-check" data-user="${u.id}" data-key="can_verify" ${entry.can_verify ? "checked" : ""} /> Can approve/verify completed chores</label>
-<label class="remind-check-opt"><input type="checkbox" class="perm-check" data-user="${u.id}" data-key="can_complete_any" ${entry.can_complete_any ? "checked" : ""} /> Can mark any chore done (not just their own)</label>
-<label class="remind-check-opt"><input type="checkbox" class="perm-check" data-user="${u.id}" data-key="can_override_rewards" ${entry.can_override_rewards ? "checked" : ""} /> Can override reward star costs</label>
-<label class="remind-check-opt"><input type="checkbox" class="perm-check" data-user="${u.id}" data-key="can_add_rewards" ${entry.can_add_rewards ? "checked" : ""} /> Can add rewards to the catalog with a star cost (without this, their suggestions need approval)</label>
+${groupsHtml}
 </div>
 `;
 })
@@ -1789,6 +2025,35 @@ select.innerHTML = list.map(optionHtml).join("");
 const hasCurrent = list.some((t) => t.id === settings.globalThemeId);
 select.value = hasCurrent ? settings.globalThemeId : list[0].id;
 }
+// v144.6+: "This device's theme" (see _getDeviceThemeOverride's own
+// comment) - a separate select from .global-theme-select above, always
+// visible regardless of whether the household has a global theme turned
+// on at all, since a device can override to a specific theme (or force
+// its own plain local look) independent of the shared setting either way.
+_populateDeviceThemeOverrideSelect() {
+const root = this._root;
+const select = root.querySelector(".device-theme-override-select");
+if (!select) return;
+const list = Array.isArray(this._globalThemes) ? this._globalThemes : [];
+const optionHtml = (t) => `<option value="${t.id}">${(t.name || t.id || "").toString()}</option>`;
+const custom = list.filter((t) => !t.native);
+const native = list.filter((t) => t.native);
+let themeOptionsHtml;
+if (custom.length && native.length) {
+themeOptionsHtml =
+  `<optgroup label="Theme Builder">${custom.map(optionHtml).join("")}</optgroup>` +
+  `<optgroup label="Home Assistant">${native.map(optionHtml).join("")}</optgroup>`;
+} else {
+themeOptionsHtml = list.map(optionHtml).join("");
+}
+select.innerHTML =
+  `<option value="">Match household setting</option>` +
+  `<option value="__default__">This device's own plain look (ignore household theme)</option>` +
+  themeOptionsHtml;
+const current = this._getDeviceThemeOverride();
+const hasCurrent = current === "" || current === "__default__" || list.some((t) => t.id === current);
+select.value = hasCurrent ? current : "";
+}
 _updateGlobalThemeVisibility(isOn) {
 const root = this._root;
 const select = root.querySelector(".global-theme-select");
@@ -1824,8 +2089,19 @@ const v = this._sizeVars(settings);
 this.style.setProperty("--menu-block-min-height", v.minHeight);
 this.style.setProperty("--menu-block-padding", v.padding);
 const theme = this._resolveTheme(settings);
+// "Card / chip transparency" (Theme Builder's cardOpacity slider) and the
+// new "glass blur" field only ever existed as Theme Builder preview-only
+// concepts before this - _resolveTheme/_defaultTheme never carried them
+// this far, so the live calendar card silently ignored both regardless of
+// what a theme had saved. Defaulting to 100/0 here (both no-ops - 100%
+// opacity is a plain hex-to-rgba(...,1) round-trip, and blur(0px) is
+// invisible) means every existing theme renders byte-for-byte the same as
+// before; only a theme that actually lowers cardOpacity or raises
+// glassBlur (see the Liquid Glass presets) changes anything.
+const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
+const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
 this.style.setProperty("--fc-bg", theme.colors.bg);
-this.style.setProperty("--fc-card", theme.colors.card);
+this.style.setProperty("--fc-card", this._hexToRgba(theme.colors.card, cardOpacity / 100));
 this.style.setProperty("--fc-border", theme.colors.border);
 this.style.setProperty("--fc-text", theme.colors.text);
 this.style.setProperty("--fc-text-secondary", theme.colors.textSecondary);
@@ -1833,8 +2109,9 @@ this.style.setProperty("--fc-accent", theme.colors.accent);
 this.style.setProperty("--fc-accent-text", theme.colors.accentText);
 this.style.setProperty("--fc-accent2", theme.colors.accent2);
 this.style.setProperty("--fc-accent3", theme.colors.accent3);
-this.style.setProperty("--fc-surface-alt", theme.colors.surfaceAlt);
-this.style.setProperty("--fc-surface2", theme.colors.surface2);
+this.style.setProperty("--fc-surface-alt", this._hexToRgba(theme.colors.surfaceAlt, cardOpacity / 100));
+this.style.setProperty("--fc-surface2", this._hexToRgba(theme.colors.surface2, cardOpacity / 100));
+this.style.setProperty("--fc-glass-blur", `${glassBlur}px`);
 this.style.setProperty("--fs-day-name", `${theme.fonts.dayName}px`);
 this.style.setProperty("--fs-day-number", `${theme.fonts.dayNumber}px`);
 this.style.setProperty("--fs-wx-temp", `${theme.fonts.wxTemp}px`);
@@ -1878,7 +2155,7 @@ async _fetchEvents() {
 if (!this._hass) return;
 const fetchId = ++this._eventsFetchSeq;
 let start, end;
-if (this._viewMode === "month") {
+if (this._viewFamily(this._viewMode) === "month") {
 const range = this._monthGridRange();
 start = range.gridStart;
 end = range.gridEnd;
@@ -2077,7 +2354,7 @@ exceptional: "\u{26A0}\u{FE0F}",
 return map[condition] || "\u{1F321}\u{FE0F}";
 }
 _parseDishDescription(raw) {
-if (!raw) return { description: "", link: "", rating: null, color: null, block: 0, recur: null, grocyRecipeId: null, servings: null, category: "", image: "" };
+if (!raw) return { description: "", link: "", rating: null, color: null, block: 0, recur: null, grocyRecipeId: null, servings: null, category: "", image: "", additionalRecipes: [], leftoverDates: [] };
 try {
 const parsed = JSON.parse(raw);
 return {
@@ -2108,9 +2385,39 @@ grocyRecipeId: parsed.grocyRecipeId || null,
 // for how this becomes a real (persistent) edit to the recipe in
 // Grocy at push time.
 servings: typeof parsed.servings === "number" ? parsed.servings : null,
+// v141+: leftovers - how many EXTRA days (beyond the day it's actually
+// entered on) this same meal should keep showing for, same block, on
+// the immediately following days. 1 (the default) means "just this one
+// day," identical to every meal entered before this existed. v144.10+:
+// superseded by leftoverDates below for anything saved from here on
+// (an explicit, non-contiguous day picker instead of "the next N days
+// in a row") - spanDays is kept ONLY so pre-v144.10 data (which never
+// had leftoverDates) still projects the same contiguous run it always
+// did; see _fetchMealPlan for the actual fallback logic, since a single
+// number here can no longer represent an arbitrary day selection.
+spanDays: typeof parsed.spanDays === "number" && parsed.spanDays > 1 ? parsed.spanDays : 1,
+// v144.10+: "leftovers should let you choose what days you have the
+// leftovers on" - an explicit list of "YYYY-MM-DD" date keys this same
+// meal should ALSO show on (same block), replacing spanDays' "next N
+// days in a row" assumption with an arbitrary pick of any day(s), not
+// necessarily contiguous with each other or with the day it was cooked.
+// Malformed/non-string entries are dropped defensively, same reasoning
+// as additionalRecipes just below.
+leftoverDates: Array.isArray(parsed.leftoverDates) ? parsed.leftoverDates.filter((d) => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d)) : [],
+// v142+: "additional recipes" - any number of side/dessert/sauce
+// recipes attached alongside this one main recipe (see _upsertMealPlan
+// and the day/menu editor's Additional Recipes field). Each entry is
+// {name, link, grocyRecipeId} - name-less/malformed entries are
+// dropped defensively since this is user-editable JSON going back
+// years before this field existed.
+additionalRecipes: Array.isArray(parsed.additionalRecipes)
+? parsed.additionalRecipes
+.filter((r) => r && typeof r.name === "string" && r.name.trim())
+.map((r) => ({ name: r.name, link: r.link || "", grocyRecipeId: r.grocyRecipeId || null }))
+: [],
 };
 } catch (e) {
-return { description: raw, link: "", rating: null, color: null, block: 0, recur: null, grocyRecipeId: null, servings: null, category: "", image: "" };
+return { description: raw, link: "", rating: null, color: null, block: 0, recur: null, grocyRecipeId: null, servings: null, category: "", image: "", spanDays: 1, additionalRecipes: [], leftoverDates: [] };
 }
 }
 async _getItems(entityId) {
@@ -2217,7 +2524,7 @@ this._renderLegend();
 // one configured) and every other list they're subscribed to at EITHER
 // tier (remindersSubscriptions - "any subscriber can add to it too" was
 // the explicit choice for this feature, not just the alert tier; see the
-// hint text in the Notifications tab's subscription picker). This is
+// hint text in the Users tab's subscription picker). This is
 // deliberately the same "which lists am I allowed to see" set _fetchReminders
 // computes for the current user - add-rights and visibility are the same
 // list of lists, just described from a different angle.
@@ -2465,12 +2772,146 @@ if (!uid) return;
 this._suggestions = this._suggestions.filter((s) => s.uid !== uid);
 await this._persistSuggestions();
 }
+// -------------------------------------------------------------------------
+// Permissions (v1.109.6+) - "need a permission to edit menu, prevents kids
+// from messing with the menu, anyone can suggest but only ones with edit
+// menu permission can edit."
+//
+// Mirrors family-hub-chores-card.js's own convention exactly
+// (_isAdmin/_myUserId/_hasPermission/_fetchMyPermissions + per-feature
+// convenience wrappers) so there's one shape to learn across every card,
+// and carries the same caveat that file documents: THIS IS UX ONLY. What
+// these methods decide is which controls are shown, never what the server
+// allows. For the menu specifically, the one action that genuinely matters
+// - committing a suggestion into the real meal plan - is re-checked
+// server-side in __init__.py's _ws_apply_menu_suggestion, which makes the
+// todo.* write itself rather than letting the browser do it. Ordinary
+// edit/move/delete of an already-placed meal is frontend-gated ONLY, on
+// purpose - see that file's long design note above _encode_dish_description
+// for why, and what that does and doesn't buy.
+_isAdmin() {
+return !!(this._hass && this._hass.user && this._hass.user.is_admin);
+}
+_myUserId() {
+return this._hass && this._hass.user ? this._hass.user.id : null;
+}
+_hasPermission(key) {
+// Admin first, so this answers correctly on the very first paint,
+// before _fetchMyPermissions has resolved - an admin's own admin-ness
+// needs no round trip to know.
+if (this._isAdmin()) return true;
+return !!(this._myPermissions && this._myPermissions[key]);
+}
+_canEditMenu() {
+return this._hasPermission("can_edit_menu");
+}
+async _fetchMyPermissions() {
+if (!this._hass) return;
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/permissions/get_mine" });
+this._myPermissions = (result && result.permissions) || {};
+} catch (e) {
+// An older backend (or a transient failure) means "no extra grants" -
+// never "everything allowed". An admin still passes via _isAdmin().
+this._myPermissions = {};
+}
+}
+// -------------------------------------------------------------------------
+// Menu suggestions (v1.109.6+) - the "anyone can suggest" half. Backed by
+// its own Store-and-websocket-commands pair on the backend
+// (family_hub/get_menu_suggestions + add/apply/remove_menu_suggestion),
+// NOT by the flat recipe-idea wishlist _fetchSuggestions above handles:
+// these are day- and block-specific proposals ("taco night on Tuesday"),
+// with a suggester's identity attached and an explicit apply step, none of
+// which that list has any room for.
+async _fetchMenuSuggestions() {
+if (!this._hass) return;
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/get_menu_suggestions" });
+this._menuSuggestions = (result && result.suggestions) || [];
+} catch (e) {
+this._menuSuggestions = [];
+}
+// Only ever visible inside an open meal editor, so there's nothing to
+// re-render when it's closed.
+if (this._root && this._root.querySelector(".edit-overlay.open")) this._renderMenuSuggestions();
+}
+// Every pending suggestion aimed at the slot the editor is currently on.
+_menuSuggestionsForCurrentSlot() {
+const dateKey = this._editingDateKey;
+const blockIndex = this._editingBlockIndex || 0;
+if (!dateKey) return [];
+return (this._menuSuggestions || []).filter(
+(s) => s && s.date_key === dateKey && (s.block_index || 0) === blockIndex
+);
+}
+// The non-editor's action: propose whatever's typed into the editor for
+// this day/block instead of writing it to the meal plan. Deliberately
+// carries only name/description/link/Grocy recipe + servings - a
+// suggestion can't propose a recurring meal, leftovers or additional
+// recipes, since those are menu-shaping calls for whoever can edit the
+// menu (and they can add them in one tap once the suggestion is applied).
+async _suggestMealFromEditor() {
+const root = this._root;
+if (!root || !this._hass) return;
+const name = root.querySelector(".input-name").value.trim();
+if (!name) {
+window.alert("Give the meal a name first, then tap Suggest.");
+return;
+}
+const servingsRaw = root.querySelector(".input-servings").value.trim();
+const btn = root.querySelector(".btn-suggest-meal");
+if (btn) btn.disabled = true;
+try {
+await this._hass.connection.sendMessagePromise({
+type: "family_hub/add_menu_suggestion",
+date_key: this._editingDateKey,
+block_index: this._editingBlockIndex || 0,
+name,
+description: root.querySelector(".input-description").value.trim(),
+link: root.querySelector(".input-link").value.trim(),
+grocy_recipe_id: this._currentGrocyRecipeId || null,
+servings: this._currentGrocyRecipeId && servingsRaw ? parseInt(servingsRaw, 10) || null : null,
+});
+await this._fetchMenuSuggestions();
+this._closeEditor();
+} catch (e) {
+window.alert("Couldn't send that suggestion - please try again.");
+}
+if (btn) btn.disabled = false;
+}
+// Commit a pending suggestion into the real meal plan. The permission is
+// re-checked server-side (and the todo.* write is made THERE, not here) -
+// this is only about not offering a button that would just fail.
+async _applyMenuSuggestion(uid) {
+if (!uid || !this._hass) return;
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/apply_menu_suggestion", uid });
+} catch (e) {
+window.alert("Couldn't put that on the menu - you may not have permission to edit the menu.");
+}
+await this._fetchMenuSuggestions();
+this._fetchMealPlan();
+this._closeEditor();
+}
+// Dismiss someone else's suggestion (needs can_edit_menu) or retract your
+// own (always allowed) - the backend enforces which of those applies.
+async _removeMenuSuggestion(uid) {
+if (!uid || !this._hass) return;
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/remove_menu_suggestion", uid });
+} catch (e) {
+window.alert("Couldn't remove that suggestion.");
+}
+await this._fetchMenuSuggestions();
+}
 async _fetchMealPlan() {
 if (!this._hass) return;
 try {
 const items = await this._getItems(this._config.meal_plan_entity);
 const map = {};
 const recurring = [];
+const leftovers = [];
 for (const it of items) {
 const dateKey = (it.due || "").slice(0, 10);
 if (!dateKey) continue;
@@ -2486,7 +2927,41 @@ color: parsed.color,
 recur: parsed.recur,
 grocyRecipeId: parsed.grocyRecipeId,
 servings: parsed.servings,
+spanDays: parsed.spanDays,
+leftoverDates: parsed.leftoverDates,
+additionalRecipes: parsed.additionalRecipes,
 };
+// v144.10+: an explicit leftoverDates list (any day(s), not necessarily
+// contiguous with the cooked day or each other) takes over from the
+// legacy spanDays "next N days in a row" behavior. Pre-v144.10 data
+// never has leftoverDates, so it keeps projecting the same contiguous
+// run it always did via the spanDays fallback - see _getMealForDay for
+// how "dates" (below) actually gets consumed, unchanged either way.
+let leftoverDateKeys = parsed.leftoverDates;
+if (!leftoverDateKeys.length && parsed.spanDays > 1) {
+leftoverDateKeys = [];
+const start = new Date(`${dateKey}T00:00:00`);
+for (let d = 1; d < parsed.spanDays; d++) {
+const day = new Date(start);
+day.setDate(day.getDate() + d);
+leftoverDateKeys.push(this._dateKey(day));
+}
+}
+if (leftoverDateKeys.length) {
+leftovers.push({
+uid: it.uid,
+startDateKey: dateKey,
+dates: leftoverDateKeys,
+blockIndex,
+name: it.summary,
+description: parsed.description,
+link: parsed.link,
+color: parsed.color,
+grocyRecipeId: parsed.grocyRecipeId,
+servings: parsed.servings,
+additionalRecipes: parsed.additionalRecipes,
+});
+}
 if (parsed.recur === "weekly") {
 // The anchor's own weekday (parsed from its due date, not "today")
 // is what every future week's projection is matched against - see
@@ -2503,14 +2978,17 @@ color: parsed.color,
 anchorDateKey: dateKey,
 grocyRecipeId: parsed.grocyRecipeId,
 servings: parsed.servings,
+additionalRecipes: parsed.additionalRecipes,
 });
 }
 }
 this._mealPlan = map;
 this._recurringMeals = recurring;
+this._leftoverMeals = leftovers;
 } catch (e) {
 this._mealPlan = {};
 this._recurringMeals = [];
+this._leftoverMeals = [];
 }
 this._renderGrid();
 }
@@ -2525,6 +3003,35 @@ this._renderGrid();
 _getMealForDay(dateKey, dayDate, blockIndex) {
 const explicit = this._mealPlan[dateKey] && this._mealPlan[dateKey][blockIndex];
 if (explicit) return explicit;
+// Leftovers (v141+, day-picker since v144.10) - a meal entered on some
+// earlier date keeps showing, unchanged, on whichever day(s) its own
+// "dates" list covers (an explicit, arbitrary pick - not necessarily
+// contiguous with the cooked day or each other; see _fetchMealPlan for
+// how pre-v144.10 spanDays data still gets projected the same
+// contiguous way it always did), same block - UNLESS this date already
+// has its own explicit entry (checked above, which always wins).
+for (const lo of this._leftoverMeals || []) {
+if (lo.blockIndex !== blockIndex) continue;
+if (!Array.isArray(lo.dates) || !lo.dates.includes(dateKey)) continue;
+return {
+uid: lo.uid,
+name: lo.name,
+description: lo.description,
+link: lo.link,
+color: lo.color,
+grocyRecipeId: lo.grocyRecipeId,
+servings: lo.servings,
+leftoverDates: lo.dates,
+additionalRecipes: lo.additionalRecipes || [],
+// Distinguishes "this is a leftovers projection from an earlier
+// day" from the day it was actually cooked - the meal pill/banner
+// renderers use this for the recycling-arrows icon, and the day
+// editor treats a leftover projection as "set" (has a name) but not
+// independently editable in place, same general shape as recurring.
+leftover: true,
+sourceDateKey: lo.startDateKey,
+};
+}
 const weekday = dayDate.getDay();
 let best = null;
 for (const t of this._recurringMeals || []) {
@@ -2542,6 +3049,7 @@ color: best.color,
 recur: "weekly",
 grocyRecipeId: best.grocyRecipeId,
 servings: best.servings,
+additionalRecipes: best.additionalRecipes || [],
 // Distinguishes "this is a projection of an anchor set on some earlier
 // date" from an explicit entry (which may itself be the anchor) - the
 // day editor uses this to decide whether saving a change should ask
@@ -2607,8 +3115,8 @@ await this._persistRecipes();
 this._renderLoved();
 this._renderGrid();
 }
-async _upsertMealPlan(dateKey, blockIndex, name, description, link, color, recur, grocyRecipeId, servings) {
-const payload = JSON.stringify({ description, link, color, block: blockIndex, recur: recur || null, grocyRecipeId: grocyRecipeId || null, servings: typeof servings === "number" ? servings : null });
+async _upsertMealPlan(dateKey, blockIndex, name, description, link, color, recur, grocyRecipeId, servings, spanDays, additionalRecipes, leftoverDates) {
+const payload = JSON.stringify({ description, link, color, block: blockIndex, recur: recur || null, grocyRecipeId: grocyRecipeId || null, servings: typeof servings === "number" ? servings : null, spanDays: typeof spanDays === "number" && spanDays > 1 ? spanDays : 1, additionalRecipes: Array.isArray(additionalRecipes) ? additionalRecipes : [], leftoverDates: Array.isArray(leftoverDates) ? leftoverDates : [] });
 // Deliberately keyed off the EXPLICIT entry for this exact date, not
 // _getMealForDay's projection - if this date only has a projected
 // "repeat weekly" meal showing (no concrete item due here yet), this
@@ -2639,9 +3147,9 @@ this._fetchMealPlan();
 // due_date - used to edit a "repeat weekly" meal's anchor item itself (so
 // the change applies to every future week it projects onto) as opposed to
 // _upsertMealPlan, which always targets one specific date.
-async _upsertMealPlanByUid(uid, blockIndex, name, description, link, color, recur, grocyRecipeId, servings) {
+async _upsertMealPlanByUid(uid, blockIndex, name, description, link, color, recur, grocyRecipeId, servings, additionalRecipes) {
 if (!uid) return;
-const payload = JSON.stringify({ description, link, color, block: blockIndex, recur: recur || null, grocyRecipeId: grocyRecipeId || null, servings: typeof servings === "number" ? servings : null });
+const payload = JSON.stringify({ description, link, color, block: blockIndex, recur: recur || null, grocyRecipeId: grocyRecipeId || null, servings: typeof servings === "number" ? servings : null, additionalRecipes: Array.isArray(additionalRecipes) ? additionalRecipes : [] });
 try {
 await this._hass.callService("todo", "update_item", {
 item: uid,
@@ -2697,6 +3205,7 @@ link: m.link || "",
 color: m.color || "",
 grocyRecipeId: m.grocyRecipeId || null,
 servings: typeof m.servings === "number" ? m.servings : null,
+additionalRecipes: m.additionalRecipes || [],
 });
 });
 }
@@ -2721,7 +3230,7 @@ for (const b of template.blocks) {
 const dayDate = new Date(start);
 dayDate.setDate(start.getDate() + b.dayIndex);
 const dateKey = this._dateKey(dayDate);
-await this._upsertMealPlan(dateKey, b.blockIndex, b.name, b.description || "", b.link || "", b.color || "", null, b.grocyRecipeId || null, typeof b.servings === "number" ? b.servings : null);
+await this._upsertMealPlan(dateKey, b.blockIndex, b.name, b.description || "", b.link || "", b.color || "", null, b.grocyRecipeId || null, typeof b.servings === "number" ? b.servings : null, 1, b.additionalRecipes || []);
 }
 }
 async _deleteMealTemplate(uid) {
@@ -2751,7 +3260,13 @@ const source = this._mealPlan[fromDateKey] && this._mealPlan[fromDateKey][fromBl
 if (!source) return;
 const dest = this._mealPlan[toDateKey] && this._mealPlan[toDateKey][toBlockIndex];
 try {
-const sourcePayload = JSON.stringify({ description: source.description, link: source.link, color: source.color, block: toBlockIndex, recur: source.recur || null, grocyRecipeId: source.grocyRecipeId || null, servings: typeof source.servings === "number" ? source.servings : null });
+// spanDays/leftoverDates (v141+/v144.10+, "leftovers") have to be carried
+// over here same as every other field - dropping them would silently
+// reset a moved leftovers entry back to a plain 1-day meal, since
+// _parseDishDescription treats a missing spanDays as 1 and a missing
+// leftoverDates as []. Falls back to 1/[] for pre-leftovers data that
+// never had the fields, same as _parseDishDescription's own defaults.
+const sourcePayload = JSON.stringify({ description: source.description, link: source.link, color: source.color, block: toBlockIndex, recur: source.recur || null, grocyRecipeId: source.grocyRecipeId || null, servings: typeof source.servings === "number" ? source.servings : null, spanDays: typeof source.spanDays === "number" ? source.spanDays : 1, additionalRecipes: source.additionalRecipes || [], leftoverDates: Array.isArray(source.leftoverDates) ? source.leftoverDates : [] });
 await this._hass.callService("todo", "update_item", {
 item: source.uid,
 rename: source.name,
@@ -2759,7 +3274,7 @@ description: sourcePayload,
 due_date: toDateKey,
 }, { entity_id: this._config.meal_plan_entity });
 if (dest) {
-const destPayload = JSON.stringify({ description: dest.description, link: dest.link, color: dest.color, block: fromBlockIndex, recur: dest.recur || null, grocyRecipeId: dest.grocyRecipeId || null, servings: typeof dest.servings === "number" ? dest.servings : null });
+const destPayload = JSON.stringify({ description: dest.description, link: dest.link, color: dest.color, block: fromBlockIndex, recur: dest.recur || null, grocyRecipeId: dest.grocyRecipeId || null, servings: typeof dest.servings === "number" ? dest.servings : null, spanDays: typeof dest.spanDays === "number" ? dest.spanDays : 1, additionalRecipes: dest.additionalRecipes || [], leftoverDates: Array.isArray(dest.leftoverDates) ? dest.leftoverDates : [] });
 await this._hass.callService("todo", "update_item", {
 item: dest.uid,
 rename: dest.name,
@@ -2771,6 +3286,25 @@ due_date: fromDateKey,
 }
 this._fetchMealPlan();
 }
+// "Move to another week" (v141+) - the day/menu editor's own entry point
+// into the same _moveMealPlan primitive the in-week drag-and-drop already
+// uses (see _dragMoveMeal). That function works by date key, not by a
+// week-relative day index, so it already generalizes to an arbitrary
+// destination date with no changes needed - this just gives it a UI that
+// isn't constrained to the currently visible week's grid cells. Reuses
+// the same "swap if the destination slot is occupied, otherwise just
+// move" behavior as dragging, for the same reason: silently overwriting
+// whatever was already planned there would be surprising.
+async _moveMealToDate() {
+const root = this._root;
+const dateStr = root.querySelector(".input-move-date").value;
+if (!dateStr) return;
+const fromDateKey = this._editingDateKey;
+const blockIndex = this._editingBlockIndex || 0;
+if (dateStr === fromDateKey) return;
+await this._moveMealPlan(fromDateKey, blockIndex, dateStr, blockIndex);
+this._closeEditor();
+}
 _toDate(part) {
 if (!part) return null;
 if (part.dateTime) return new Date(part.dateTime);
@@ -2778,8 +3312,8 @@ if (part.date) return new Date(part.date + "T00:00:00");
 return null;
 }
 // Opens a separate, minimal print window containing just the currently
-// visible grid (week or month, whichever mode is active) - not the whole
-// dashboard page, since that would print every other card too. Theme
+// visible grid (week, month, or portrait, whichever mode is active) - not
+// the whole dashboard page, since that would print every other card too. Theme
 // colors are carried over by copying this card's own inline custom
 // properties (set via this.style.setProperty in _applyTheme) onto the new
 // document's body, and the card's own <style> rules are reused as-is so
@@ -2791,7 +3325,8 @@ if (!this._root) return;
 const gridEl = this._root.querySelector(".grid");
 if (!gridEl) return;
 const isMonth = gridEl.classList.contains("mode-month");
-const title = isMonth ? "Month view" : "Week view";
+const isPortrait = gridEl.classList.contains("mode-portrait");
+const title = isMonth ? "Month view" : isPortrait ? "Portrait view" : "Week view";
 let printWindow;
 try {
 printWindow = window.open("", "_blank");
@@ -2813,7 +3348,7 @@ doc.write(
 body { margin: 0; padding: 16px; background: var(--fc-bg, #fff); }
 .add-event-fab, .week-nav-side, .week-shortcuts, .nav-arrow { display: none !important; }
 .grid { max-height: none !important; overflow: visible !important; }
-</style></head><body style="${hostStyle}"><div class="grid ${isMonth ? "mode-month" : "mode-week"}">${gridEl.innerHTML}</div></body></html>`
+</style></head><body style="${hostStyle}"><div class="grid ${isMonth ? "mode-month" : isPortrait ? "mode-portrait" : "mode-week"}">${gridEl.innerHTML}</div></body></html>`
 );
 doc.close();
 printWindow.onload = () => {
@@ -2866,6 +3401,7 @@ font-family: "Arial Rounded MT Std", "Arial Rounded MT", "Varela Round", -apple-
 --fc-bg-position: center;
 --fc-bg-blur: 0px;
 --fc-bg-image-opacity: 1;
+--fc-glass-blur: 0px;
 }
 ha-card {
 height: 100%;
@@ -2906,6 +3442,22 @@ background-repeat: no-repeat, no-repeat;
 filter: blur(var(--fc-bg-blur, 0px));
 opacity: var(--fc-bg-image-opacity, 1);
 pointer-events: none;
+}
+/* "Liquid glass" support: any theme may set --fc-glass-blur (px, default
+   0 - see the Liquid Glass presets' glassBlur field, edited via Theme
+   Builder's "Glass blur" slider next to its Card/chip transparency
+   slider) - applies backdrop-filter to every surface painted with the
+   --fc-card/--fc-surface-alt/--fc-surface2 backgrounds, so a translucent
+   theme's cards genuinely blur whatever shows through them (a background
+   image, the page behind an open modal) instead of just going see-
+   through with nothing softened behind it. Zero-cost for every existing
+   theme - blur(0px) is a no-op, and Safari/iOS webviews need the
+   -webkit- prefix for backdrop-filter to apply at all. */
+.day-col, .month-cell, .planner-grid, .planner-header-cell, .planner-day-cell,
+.menu-banner, .modal-box, .settings-btn, .view-btn, .edit-meals-btn, .nav-arrow,
+.week-shortcut, .more-menu-btn, .add-fab-item, .shopping-tab-btn, .chip {
+backdrop-filter: blur(var(--fc-glass-blur, 0px));
+-webkit-backdrop-filter: blur(var(--fc-glass-blur, 0px));
 }
 .loved-btn, .suggestions-btn, .templates-btn, .print-btn { border: none; border-radius: 16px; padding: 8px 14px; font-size: 13px; font-weight: 700; background: #f2ddd4; color: #7a4436; cursor: pointer; white-space: nowrap; box-shadow: var(--fc-shadow); }
 .suggestions-btn { background: #f2ecc4; color: #7a6a2f; }
@@ -3098,6 +3650,18 @@ pointer-events: none;
    above, the grid itself scrolls (both directions) rather than the page,
    since a household with a lot of people can end up wider than the card. */
 .grid.mode-planner { display: block; overflow: auto; }
+/* Portrait 4+3: two stacked flex rows (not a second grid-template-
+   columns count) so a 3-day bottom row still spans the full width
+   instead of leaving a dead column-4 gap the way a plain 4-column CSS
+   grid would - see _renderPortraitGrid's own docstring for why this
+   reuses Week's day-column content unchanged. */
+/* v144.10+: the gap BETWEEN the top (4-day) and bottom (3-day) rows needs
+   to read as a clear, deliberate break, not the same tight spacing used
+   between day columns within a row - hence its own larger value here
+   instead of reusing .portrait-row's 8px column gap below. */
+.grid.mode-portrait { display: flex; flex-direction: column; gap: 24px; }
+.portrait-row { display: flex; gap: 8px; flex: 1 1 0; min-height: 0; }
+.portrait-row .day-col { flex: 1 1 0; }
 .planner-grid { display: grid; min-width: 100%; border: 1px solid var(--fc-border); border-radius: 10px; overflow: hidden; background: var(--fc-card); box-shadow: var(--fc-shadow); }
 .planner-header-cell { position: sticky; top: 0; z-index: 1; background: var(--fc-surface-alt); padding: 8px 6px; text-align: center; font-size: 12px; font-weight: 800; color: var(--fc-text); border-bottom: 3px solid var(--fc-border); border-left: 1px solid var(--fc-border); display: flex; align-items: center; justify-content: center; gap: 6px; }
 .planner-header-cell.planner-corner-cell { border-left: none; background: var(--fc-card); }
@@ -3112,6 +3676,26 @@ pointer-events: none;
 .planner-event { padding: 5px 7px; gap: 1px; box-shadow: none; border: 1px solid rgba(0,0,0,0.08); }
 .planner-event .summary { font-size: 12px; }
 .planner-event .time { font-size: 10px; font-weight: 700; opacity: 0.8; }
+/* v142+ "more mobile-friendly Planner view" - below 700px, _renderPlannerGrid
+   swaps its wide sideways-scrolling person-columns grid for this stacked
+   "day, then each person's events underneath" layout instead (see its own
+   comment for why). One card per day, full-width, no horizontal scrolling
+   at all - a person with nothing planned that day is left out of their
+   card entirely rather than shown as dead empty space. */
+.planner-mobile-list { display: flex; flex-direction: column; gap: 10px; }
+.planner-mobile-day { border: 1px solid var(--fc-border); border-radius: 10px; overflow: hidden; background: var(--fc-card); box-shadow: var(--fc-shadow); }
+.planner-mobile-day-header { display: flex; align-items: baseline; gap: 8px; padding: 8px 12px; background: var(--fc-surface-alt); border-bottom: 1px solid var(--fc-border); }
+.planner-mobile-day-header .planner-day-name { font-size: 11px; text-transform: uppercase; font-weight: 700; color: var(--fc-text-secondary); }
+.planner-mobile-day-header .planner-day-number { font-size: 16px; font-weight: 800; color: var(--fc-text); }
+.planner-mobile-day.today .planner-mobile-day-header { background: var(--fc-accent); }
+.planner-mobile-day.today .planner-mobile-day-header .planner-day-name,
+.planner-mobile-day.today .planner-mobile-day-header .planner-day-number { color: var(--fc-accent-text); }
+.planner-mobile-persons { display: flex; flex-direction: column; }
+.planner-mobile-person { padding: 8px 12px; border-top: 1px solid var(--fc-border); }
+.planner-mobile-person:first-child { border-top: none; }
+.planner-mobile-person-name { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--fc-text); margin-bottom: 6px; }
+.planner-mobile-person-events { display: flex; flex-direction: column; gap: 4px; }
+.planner-mobile-empty { padding: 10px 12px; font-size: 12px; color: var(--fc-text-secondary); font-style: italic; }
 .month-weekday-row { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; flex: 0 0 auto; }
 .mwd { text-align: center; font-size: 11px; font-weight: 700; color: var(--fc-text-secondary); text-transform: uppercase; }
 .month-cells { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-template-rows: repeat(6, minmax(0, 1fr)); gap: 4px; flex: 1 1 auto; min-height: 0; overflow: hidden; }
@@ -3123,6 +3707,35 @@ pointer-events: none;
 .mc-pill { font-size: 10px; border-radius: 3px; padding: 1px 4px; color: #3a352c; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mc-meal-pill { cursor: pointer; font-weight: 700; }
 .mc-more { font-size: 9px; color: var(--fc-text-secondary); }
+/* v145+ task: the "split" Month variant - month calendar on one side,
+   selected day's events on the other. Landscape/tablet default: the two
+   panes sit side by side, calendar first (left) then detail (right) -
+   this is a plain flex row so either pane's width can be tuned later
+   without touching the other. Portrait flips to a column, calendar ON
+   TOP and detail pane BELOW it, per the household's explicit ask - see
+   the @media (orientation: portrait) block further down. Not to be
+   confused with the unrelated manually-selected "portrait" WEEK variant
+   (.grid.mode-portrait, elsewhere in this file), which stacks week
+   day-columns - this stacks the split Month view's two panes. */
+.grid.mode-month-split { display: flex; flex-direction: row; gap: 10px; min-height: 0; }
+.month-split-cal { flex: 1 1 55%; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.month-split-detail { flex: 1 1 45%; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--fc-card); border: 1px solid var(--fc-border); border-radius: 10px; box-shadow: var(--fc-shadow); overflow: hidden; }
+.month-cell.selected { border: 2px solid var(--fc-accent); box-shadow: 0 0 0 2px var(--fc-accent) inset; }
+.msd-header { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--fc-border); }
+.msd-date { font-size: 14px; font-weight: 700; color: var(--fc-text); }
+.msd-today-tag { font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--fc-accent-text); background: var(--fc-accent); border-radius: 6px; padding: 1px 6px; margin-left: 4px; }
+.msd-goto-week-btn { border: none; border-radius: 12px; padding: 6px 10px; font-size: 11px; font-weight: 700; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; box-shadow: var(--fc-shadow); flex: 0 0 auto; white-space: nowrap; }
+.msd-items { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 6px; }
+.msd-item { border-radius: 8px; padding: 6px 8px; color: #3a352c; cursor: pointer; display: flex; align-items: baseline; gap: 8px; }
+.msd-item.mc-meal-pill { font-weight: 700; }
+.msd-item-time { font-size: 10px; font-weight: 700; opacity: 0.8; flex: 0 0 auto; }
+.msd-item-summary { font-size: 12px; overflow-wrap: anywhere; }
+.msd-empty { font-size: 12px; color: var(--fc-text-secondary); font-style: italic; padding: 4px 0; }
+@media (orientation: portrait) {
+.grid.mode-month-split { flex-direction: column; }
+.month-split-cal { flex: 1 1 auto; }
+.month-split-detail { flex: 1 1 auto; max-height: 45%; }
+}
 .day-col { background: var(--fc-card); border: 1px solid var(--fc-border); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; min-height: 0; min-width: 0; height: 100%; overflow: hidden; box-shadow: var(--fc-shadow); }
 .day-col.today { border: 2px solid var(--fc-accent); }
 .day-header { text-align: center; margin-bottom: 4px; flex: 0 0 auto; }
@@ -3162,7 +3775,104 @@ pointer-events: none;
 .tl-event .tl-time { display: block; font-weight: 700; opacity: 0.85; font-size: 9px; line-height: 1.2; }
 .tl-event .tl-summary { font-weight: 700; white-space: normal; overflow-wrap: break-word; word-break: break-word; line-height: 1.2; }
 .tl-event.reminder-event, .event.reminder-event { border: 2px dashed rgba(0,0,0,0.35); }
+/* v141+ - "grey out already-passed events/reminders" setting (opt-in - see
+   _buildDayColumnHtml's isPastEvent). Today's column greys out event by
+   event as each one ends; v144.9+, any earlier day greys out entirely.
+   Purely visual: opacity only, cursor/pointer-events untouched, so a
+   greyed-out pill is still fully tappable/interactable, same as before
+   this existed. */
+.event.past, .tl-event.past, .all-day-chip.past { opacity: 0.45; }
 .mc-pill.mc-reminder-pill { border: 2px dashed rgba(0,0,0,0.35); }
+/* v144.16+: small-tablet header declutter tier (household report: a 7"
+   kiosk panel like a Lenovo Smart Display is well wider than a phone, so
+   none of the phone-width decluttering below ever applied to it - yet a
+   7"/5" panel is exactly where Settings/Week/Month/Edit + the nav arrows/
+   week label + Suggestions/Recipe Box/More all crammed into one header
+   row reads as genuinely cluttered, well before that row would actually
+   start wrapping). This tier only touches the HEADER - the week grid
+   itself keeps its normal multi-column layout down to 700px (see the
+   phone-width query below), since a landscape 7" panel usually still has
+   room to show the week grid fine; it's the chrome on top of it that was
+   the actual complaint. Reuses the exact same fold-into-the-+-button/
+   fold-into-More/collapse-behind-a-toggle moves the phone tier already
+   uses for these same elements - this tier is a strict superset of that
+   narrower one, so those specific rules were moved up here rather than
+   left duplicated in both places. 960px is a deliberately generous cutoff
+   (comfortably above a 7" panel's usual ~1024px-or-less landscape width)
+   rather than a number reverse-engineered from one exact device - a wider
+   tablet or the dashboard's own browser window getting this same
+   decluttered header is a harmless side effect, not a regression. */
+@media (max-width: 960px) {
+.week-label-wrap { min-width: 0; }
+.week-nav { grid-template-columns: 1fr; row-gap: 6px; }
+.week-nav-side.left, .week-nav-side.right { justify-self: center; justify-content: center; }
+.week-nav-center { justify-content: center; }
+/* Adding/browsing Meal Suggestions now also lives behind the + button
+   (see .add-menu-overlay) - dropping this from an already-tight header
+   row declutters it without losing the feature, since the same
+   Suggestions overlay opens either way. */
+.suggestions-btn { display: none; }
+/* Loved Dishes folds into the More menu (see .loved-menu-item) instead of
+   sitting as its own pill, saving a slot in an already-tight row. */
+.loved-btn { display: none; }
+.loved-menu-item { display: block; }
+/* Rearrange-meals keeps its icon but drops its text label at this width -
+   see the .edit-meals-label span in the markup, and _render()'s existing
+   show/hide logic for the button itself (unaffected - this only trims
+   its own label, not whether the button shows at all). */
+.edit-meals-label { display: none; }
+/* This Week/Next Week/In 2 Weeks used to always be their own row (see
+   .week-shortcuts); at this width it folds away behind the little toggle
+   under the week label instead, matching the accordion chevron treatment
+   used elsewhere in the card. Tapping a shortcut (see its click handler)
+   or picking a different one closes it again. */
+.week-shortcuts-toggle { display: block; border: none; background: none; color: var(--fc-text-secondary); font-size: 10px; cursor: pointer; padding: 2px 10px; margin-top: 1px; transition: transform 0.15s ease; }
+.week-shortcuts-toggle.open { transform: rotate(180deg); }
+.week-shortcuts { display: none; }
+.week-shortcuts.open { display: flex; }
+}
+/* v144.19+: household follow-up, again, on the 960px tier above - v144.18
+   put the date range on its own top row with Settings/Week/Month/Edit and
+   More sharing a second row under it (two rows total), but what was
+   actually wanted is everything back on ONE row, same shape as the
+   unscoped/desktop layout: Settings/Week/Month/Edit on the left, the date
+   range/nav arrows in the center, More on the right - it's the 960px
+   block just above (hiding Suggestions/Recipe Box, dropping the Edit
+   label, folding the week-shortcuts row behind its toggle) that already
+   trimmed this row down enough to fit on one line at this width; this
+   tier just needed to stop re-stacking it into multiple rows on top of
+   that. grid-template-columns: auto 1fr auto (rather than the base
+   rule's 1fr auto 1fr) lets the left/right groups hug their own content
+   - the left group (4 buttons) and right group (1 button) are no longer
+   the same width the way they roughly are on a full desktop layout, so
+   forcing them into equal-width columns would leave a lopsided gap next
+   to More; the center column instead soaks up whatever space is left and
+   keeps the date range visually centered in it.
+   Deliberately scoped to (min-width: 701px) so it does NOT reach the
+   700px-and-below phone tier just below this rule - a phone keeps the
+   plain three-rows-in-source-order stacking from the 960px block above,
+   per the household's own "don't touch the phone layout" ask; only this
+   960/700 in-between range (a 7"/5" kiosk panel's usual width) gets the
+   single-row treatment. */
+@media (min-width: 701px) and (max-width: 960px) {
+/* v144.20+: household follow-up, again - the date range needs to be
+   centered on the screen, not just centered in whatever space happens to
+   be left between the two button groups. auto 1fr auto (this tier's
+   original v144.19 attempt) sized the outer columns to their own content,
+   and since the left group (4 buttons) is much wider than the right
+   group (just More), the leftover center column - even with its own
+   content centered inside it - ends up visibly off-center, shifted
+   toward the narrower right side. Restoring the SAME 1fr auto 1fr the
+   unscoped/desktop rule above already uses (rather than leaving this
+   property unset, which would fall back to the 960px block's own
+   grid-template-columns: 1fr single-column stacking) makes the two outer
+   columns equal width regardless of how much they're actually holding,
+   which is what actually centers the middle column on the full row. */
+.week-nav { grid-template-columns: 1fr auto 1fr; }
+.week-nav-side.left { justify-self: start; justify-content: flex-start; }
+.week-nav-side.right { justify-self: end; justify-content: flex-end; }
+.week-nav-center { justify-content: center; }
+}
 @media (max-width: 700px) {
 :host { height: auto !important; min-height: 100vh; min-height: 100dvh; overflow: hidden; }
 ha-card { height: auto; min-height: 100%; overflow: hidden; }
@@ -3173,12 +3883,22 @@ ha-card { height: auto; min-height: 100%; overflow: hidden; }
    mobile media query, which meant the tablet dashboard (anything wider
    than 700px) never got it and could still show the same clipped-modal
    bug this comment used to describe. */
-/* Adding/browsing Meal Suggestions now also lives behind the + button
-   (see .add-menu-overlay) - dropping this from the header's already-tight
-   phone-width row declutters it without losing the feature, since the
-   same Suggestions overlay opens either way. */
-.suggestions-btn { display: none; }
 .grid.mode-week { grid-template-columns: 1fr; grid-template-rows: none; gap: 10px; overflow-y: auto; }
+/* Below phone width, Portrait collapses the same way Week does above -
+   two 3-4-wide flex rows would be too narrow to read at that size, so
+   just stack all 7 day-cols in one scrolling column instead (the two
+   row-groups become invisible, which is fine - a genuinely
+   portrait-shaped *tablet* is comfortably wider than this breakpoint;
+   this only matters for someone opening Portrait on an actual phone).
+   The generic .day-col { min-height: unset; height: auto; } override
+   right below already applies to both views' day-cols unscoped. */
+/* gap reset to match .portrait-row's own 10px below - this width stacks
+   every day in one continuous column (the two row-groups become
+   invisible, per the comment above), so the wider 24px row-to-row gap
+   from the unscoped .grid.mode-portrait rule would read as an odd, out
+   of place break between two of the otherwise-evenly-spaced day-cols. */
+.grid.mode-portrait { flex-direction: column; overflow-y: auto; gap: 10px; }
+.portrait-row { flex-direction: column; flex: 0 0 auto; gap: 10px; }
 .day-col { min-height: unset; height: auto; }
 /* Unlike Week's single-column phone stacking above, Planner keeps its
    day-rows/person-columns shape at any width - collapsing it would lose
@@ -3190,23 +3910,6 @@ ha-card { height: auto; min-height: 100%; overflow: hidden; }
 .planner-grid { min-width: max-content; }
 .day-header { display: flex; align-items: baseline; justify-content: center; gap: 8px; }
 .events { max-height: 220px; }
-.week-label-wrap { min-width: 0; }
-.week-nav { grid-template-columns: 1fr; row-gap: 6px; }
-.week-nav-side.left, .week-nav-side.right { justify-self: center; justify-content: center; }
-.week-nav-center { justify-content: center; }
-/* Loved Dishes folds into the More menu (see .loved-menu-item) instead of
-   sitting as its own pill, saving a slot in an already-tight row. */
-.loved-btn { display: none; }
-.loved-menu-item { display: block; }
-/* This Week/Next Week/In 2 Weeks used to always be their own row (see
-   .week-shortcuts); on phone-width screens it now folds away behind the
-   little toggle under the week label instead, matching the accordion
-   chevron treatment used elsewhere in the card. Tapping a shortcut (see
-   its click handler) or picking a different one closes it again. */
-.week-shortcuts-toggle { display: block; border: none; background: none; color: var(--fc-text-secondary); font-size: 10px; cursor: pointer; padding: 2px 10px; margin-top: 1px; transition: transform 0.15s ease; }
-.week-shortcuts-toggle.open { transform: rotate(180deg); }
-.week-shortcuts { display: none; }
-.week-shortcuts.open { display: flex; }
 }
 .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(40,34,20,0.45); z-index: 1000; align-items: center; justify-content: center; }
 .modal-overlay.open { display: flex; }
@@ -3359,6 +4062,10 @@ comes later in paint order. */
 .meal-view-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
 .meal-view-title { font-size: 1.15em; font-weight: 800; color: var(--fc-text); line-height: 1.25; }
 .meal-view-edit-btn { flex: none; border: none; border-radius: 50%; width: 34px; height: 34px; background: var(--fc-surface-alt); color: var(--fc-text); font-size: 15px; cursor: pointer; box-shadow: var(--fc-shadow); }
+.meal-view-description { font-size: 13px; color: var(--fc-text); line-height: 1.4; margin: 6px 0 10px; white-space: pre-wrap; }
+.meal-view-additional-recipes { font-size: 13px; color: var(--fc-text-secondary); margin: 0 0 10px; }
+.meal-view-additional-recipes .mvar-label { font-weight: 700; margin-right: 4px; }
+.meal-view-additional-recipes .mvar-link { color: var(--fc-accent); cursor: pointer; text-decoration: underline; }
 .meal-view-facts { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--fc-text-secondary); margin-bottom: 12px; }
 .meal-view-recipe-btn { display: block; width: 100%; box-sizing: border-box; border: none; border-radius: 10px; padding: 12px; font-size: 15px; font-weight: 700; background: var(--fc-accent); color: var(--fc-accent-text); cursor: pointer; box-shadow: var(--fc-shadow); }
 .debug-box { width: min(94vw, 560px); font-family: monospace; }
@@ -3375,6 +4082,8 @@ comes later in paint order. */
 .settings-tabs::-webkit-scrollbar { display: none; }
 .settings-tab-btn { flex: 0 0 auto; min-height: 40px; padding: 8px 16px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); white-space: nowrap; }
 .settings-tab-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
+.danger-btn { border-color: #c0392b !important; color: #c0392b !important; }
+.danger-btn:hover { background: #c0392b !important; color: #fff !important; }
 .settings-tab-panel { display: flex; flex-direction: column; }
 .notify-profiles-list { display: flex; flex-direction: column; gap: 8px; }
 .notify-profile-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-radius: 10px; background: var(--fc-surface-alt); box-shadow: var(--fc-shadow); }
@@ -3387,9 +4096,34 @@ comes later in paint order. */
 .member-add-select { flex: 1 1 0; min-width: 0; }
 .member-add-btn { flex: 0 0 auto; min-height: 40px; padding: 6px 14px; border-radius: 10px; border: none; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
 .member-add-btn:disabled { opacity: 0.4; cursor: default; }
+/* Permissions tab (compacted v1.109.6 - "make the permissions cleaner, and
+   more compact the UI is quite long"). Each person is one card; inside it
+   the permissions are grouped by feature area, and within a group they lay
+   out as a wrapping two-column grid rather than one full-width sentence per
+   line, which is what made the tab several screens tall. auto-fit/minmax
+   keeps two columns in a tablet-width Settings modal and collapses to one
+   on a phone with no media query needed. */
+/* Menu suggestions strip inside the meal editor (v1.109.6+) - a compact
+   name + "suggested by" + Add/dismiss row, styled off the same surface/
+   shadow tokens the rest of the editor's fields use. */
+.menu-suggestions-list { display: flex; flex-direction: column; gap: 6px; }
+.menu-suggestion-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 10px; background: var(--fc-surface-alt); box-shadow: var(--fc-shadow); }
+.menu-suggestion-text { flex: 1 1 auto; min-width: 0; }
+.menu-suggestion-name { font-size: 13px; font-weight: 700; color: var(--fc-text); overflow-wrap: anywhere; }
+.menu-suggestion-by { font-size: 11px; color: var(--fc-text-secondary); }
+.menu-suggestion-apply { flex: none; border: none; border-radius: 8px; padding: 6px 10px; font-size: 12px; font-weight: 700; background: var(--fc-accent); color: var(--fc-accent-text); cursor: pointer; box-shadow: var(--fc-shadow); }
+.menu-suggestion-remove { flex: none; width: 28px; height: 28px; border: none; border-radius: 8px; background: var(--fc-card); color: #b5583c; font-size: 13px; cursor: pointer; box-shadow: var(--fc-shadow); }
+.btn-suggest-meal { border: none; border-radius: 10px; padding: 8px 14px; font-size: 13px; font-weight: 700; background: var(--fc-accent); color: var(--fc-accent-text); cursor: pointer; box-shadow: var(--fc-shadow); }
+.btn-suggest-meal:disabled { opacity: 0.5; cursor: default; }
 .perm-rows-list { display: flex; flex-direction: column; gap: 10px; }
-.perm-row { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 10px; background: var(--fc-surface-alt); box-shadow: var(--fc-shadow); }
+.perm-row { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 10px; background: var(--fc-surface-alt); box-shadow: var(--fc-shadow); }
 .perm-name { font-weight: 700; color: var(--fc-text); }
+.perm-group { display: flex; flex-direction: column; gap: 4px; }
+.perm-group-name { font-size: 10px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fc-text-secondary); }
+.perm-group-opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 4px 8px; }
+.perm-opt { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 3px 2px; font-size: 12px; font-weight: 600; color: var(--fc-text); cursor: pointer; user-select: none; }
+.perm-opt span { min-width: 0; overflow-wrap: anywhere; }
+.perm-opt input { flex: none; margin: 0; }
 .notify-profile-box { width: min(92vw, 440px); }
 .notify-profile-targets-btn { display: block; width: 100%; box-sizing: border-box; border: none; border-radius: 10px; padding: 10px; font-size: 14px; font-weight: 700; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; box-shadow: var(--fc-shadow); }
 .notify-profile-send-digest-btn { display: block; width: 100%; box-sizing: border-box; border: 2px solid var(--fc-border); border-radius: 10px; padding: 10px; font-size: 14px; font-weight: 700; background: var(--fc-card); color: var(--fc-text); cursor: pointer; }
@@ -3435,6 +4169,29 @@ comes later in paint order. */
 .pick-recipe-btn { border: none; border-radius: 14px; padding: 8px 10px; font-size: 12px; font-weight: 700; background: #f2ddd4; color: #7a4436; cursor: pointer; white-space: nowrap; box-shadow: var(--fc-shadow); width: 100%; }
 .field input, .field textarea { width: 100%; box-sizing: border-box; font-size: 16px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-family: inherit; }
 .field textarea { resize: vertical; min-height: 60px; }
+/* "Move to another week" (v141+) - a plain date input plus its own Move
+   button, rather than the usual full-width .field input, since the
+   button needs to sit right next to the date picker on the same row. */
+.move-meal-row { display: flex; gap: 8px; align-items: center; }
+.move-meal-row .input-move-date { flex: 1; }
+.btn-move-meal { flex: none; border: none; border-radius: 8px; padding: 10px 14px; font-size: 14px; font-weight: 700; background: var(--fc-accent); color: var(--fc-accent-text); cursor: pointer; }
+/* "Additional recipes" (v142+) - a day/menu editor field holding any number
+   of side/dessert/sauce recipes alongside the one main recipe the card
+   itself summarizes (name/description/prep-cook-serves/color all still come
+   from the main recipe only) - see _editingAdditionalRecipes and
+   _renderAdditionalRecipesList. Each row is just a name plus a small link-
+   out icon (opens the Grocy recipe viewer if it has a grocyRecipeId,
+   otherwise the plain link) and a remove button - no separate detail view,
+   since these are meant to be quick "also make X" notes, not full second
+   recipes to manage. */
+.additional-recipes-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.additional-recipe-row { display: flex; align-items: center; gap: 8px; background: var(--fc-card); border: 1px solid var(--fc-border); border-radius: 8px; padding: 6px 10px; }
+.additional-recipe-name { flex: 1; font-size: 14px; font-weight: 600; color: var(--fc-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.additional-recipe-name:not(.has-link) { cursor: default; }
+.additional-recipe-remove { flex: none; border: none; background: none; cursor: pointer; font-size: 16px; color: var(--fc-text-secondary); padding: 2px 4px; }
+.additional-recipe-add-row { display: flex; gap: 8px; }
+.additional-recipe-add-row button { flex: 1; border: none; border-radius: 10px; padding: 8px 10px; font-size: 12px; font-weight: 700; background: #f2ddd4; color: #7a4436; cursor: pointer; box-shadow: var(--fc-shadow); }
+.additional-recipes-empty-hint { font-size: 12px; color: var(--fc-text-secondary); }
 .size-btn-row { display: flex; gap: 8px; }
 .size-btn { flex: 1 1 auto; min-height: 44px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
 .size-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
@@ -3615,6 +4372,7 @@ instead of the usual stacked field layout. */
 .people-hint { font-size: 11px; color: var(--fc-text-secondary); margin: -4px 0 8px; }
 .remind-hint { font-size: 11px; color: var(--fc-text-secondary); margin: 5px 0 0; font-style: italic; }
 .add-event-error { font-size: 12px; color: #b91c1c; background: rgba(185,28,28,0.1); border: 1px solid rgba(185,28,28,0.3); border-radius: 8px; padding: 8px 10px; margin: 4px 0 0; line-height: 1.4; }
+.kiosk-pin-error { font-size: 12px; color: #b91c1c; background: rgba(185,28,28,0.1); border: 1px solid rgba(185,28,28,0.3); border-radius: 8px; padding: 8px 10px; margin: 4px 0 0; line-height: 1.4; }
 .add-event-warn { font-size: 11px; color: #b45309; margin: 5px 0 0; font-style: italic; }
 .notify-profile-color-row { display: flex; align-items: center; gap: 8px; }
 /* No author background/padding here on purpose - matches the
@@ -3630,6 +4388,12 @@ instead of the usual stacked field layout. */
 .remind-check-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .remind-check-opt { display: flex; align-items: center; gap: 4px; padding: 5px 9px; border-radius: 12px; background: var(--fc-surface-alt); color: var(--fc-text); font-size: 12px; font-weight: 600; cursor: pointer; user-select: none; }
 .remind-check-opt input { margin: 0; }
+/* v144.10+: leftovers day-picker (replaces the old single "next N days"
+   number input) - same pill-checkbox look as .remind-check-row/-opt just
+   above, reused here rather than inventing a second checkbox style. */
+.leftover-days-picker { display: flex; flex-wrap: wrap; gap: 6px; }
+.leftover-day-opt { display: flex; align-items: center; gap: 4px; padding: 5px 9px; border-radius: 12px; background: var(--fc-surface-alt); color: var(--fc-text); font-size: 12px; font-weight: 600; cursor: pointer; user-select: none; }
+.leftover-day-opt input { margin: 0; }
 .event-info-remind-row { align-items: flex-start; }
 .event-info-remind-content { display: flex; flex-direction: column; gap: 4px; }
 .event-info-remind-status { font-size: 11px; color: var(--fc-text-secondary); min-height: 14px; }
@@ -3697,8 +4461,7 @@ instead of the usual stacked field layout. */
 <button class="settings-btn" title="Settings">&#9881;&#65039;</button>
 <button class="view-btn" data-view="week" title="Week view">Week</button>
 <button class="view-btn" data-view="month" title="Month view">Month</button>
-<button class="view-btn" data-view="planner" title="Planner view - days down the side, one column per person">Planner</button>
-<button class="edit-meals-btn" title="Rearrange meals">&#9999;&#65039; Edit</button>
+<button class="edit-meals-btn" title="Rearrange meals">&#9999;&#65039;<span class="edit-meals-label"> Edit</span></button>
 </div>
 <div class="week-nav-center">
 <button class="nav-arrow nav-prev" aria-label="Previous">&#9664;</button>
@@ -3742,6 +4505,8 @@ instead of the usual stacked field layout. */
 <div class="meal-view-title"></div>
 <button type="button" class="meal-view-edit-btn" title="Edit recipe details">&#9999;&#65039;</button>
 </div>
+<div class="meal-view-description" style="display:none;"></div>
+<div class="meal-view-additional-recipes" style="display:none;"></div>
 <div class="meal-view-facts">
 <span class="meal-view-fact meal-view-prep" style="display:none;">&#9200; Prep: <span class="meal-view-prep-value"></span></span>
 <span class="meal-view-fact meal-view-cook" style="display:none;">&#128293; Cook: <span class="meal-view-cook-value"></span></span>
@@ -3805,20 +4570,46 @@ instead of the usual stacked field layout. */
 <input type="color" class="input-color-custom" title="Custom color" value="#f0e6c4" />
 </div>
 </div>
-<div class="field dish-hide-field">
+<div class="field dish-hide-field menu-edit-only-field">
 <label class="remind-check-opt"><input type="checkbox" class="input-recur-weekly" />&#128257; Repeat weekly (until turned off or overridden for one week)</label>
 </div>
+<div class="field dish-hide-field menu-edit-only-field">
+<label>&#9851;&#65039; Leftovers - also show this meal on:</label>
+<div class="leftover-days-picker"></div>
+<div class="remind-hint">Pick any day(s) - they don't need to be in a row.</div>
+</div>
+<div class="field dish-hide-field menu-edit-only-field move-meal-field" style="display:none;">
+<label>&#128197; Move to another week</label>
+<div class="move-meal-row">
+<input type="date" class="input-move-date" />
+<button type="button" class="btn-move-meal">Move</button>
 </div>
 </div>
+<div class="field dish-hide-field">
+<label>&#127858; Additional recipes <small>(sides, sauces, desserts...)</small></label>
+<div class="additional-recipes-list"></div>
+<div class="additional-recipe-add-row">
+<button type="button" class="btn-add-additional-recipe-box">+ From Recipe Box</button>
+<button type="button" class="btn-add-additional-recipe-link">+ From a link</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="field menu-suggestions-field" style="display:none;">
+<label>&#128161; Suggested for this meal</label>
+<div class="menu-suggestions-list"></div>
 </div>
 <div class="rating-row">
 <button class="rating-btn btn-heart" title="Love it">&#10084;&#65039;</button>
 <button class="rating-btn btn-thumbsdown" title="Not a fan">&#128078;</button>
 </div>
+<div class="remind-hint menu-suggest-hint" style="display:none;">You can suggest a meal for this day - someone who can edit the menu decides whether it goes on.</div>
 <div class="modal-actions">
 <button class="btn-clear">Clear</button>
 <button class="btn-delete-dish btn-clear" style="display:none;">Delete</button>
 <button class="btn-cancel">Cancel</button>
+<button class="btn-suggest-meal" style="display:none;">&#128161; Suggest</button>
 <button class="btn-save">Save</button>
 </div>
 </div>
@@ -4074,7 +4865,7 @@ instead of the usual stacked field layout. */
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="calendars-body">
-<div class="people-hint">Tap &#9203; on a calendar to include its events in the countdown banner. Use &#10133; Add badge to show a small bubble (like "N", in that calendar's color) on days with events matching a keyword, and optionally hide events matching another keyword. Who gets notified about a calendar's events/reminders is set per-person under the Notifications tab, not here.</div>
+<div class="people-hint">Tap &#9203; on a calendar to include its events in the countdown banner. Use &#10133; Add badge to show a small bubble (like "N", in that calendar's color) on days with events matching a keyword, and optionally hide events matching another keyword. Who gets notified about a calendar's events/reminders is set per-person under the Users tab, not here.</div>
 <div class="people-list"></div>
 <button type="button" class="add-person-btn">+ Add calendar</button>
 <div class="field">
@@ -4082,7 +4873,21 @@ instead of the usual stacked field layout. */
 <div class="size-btn-row">
 <button type="button" class="size-btn default-view-btn" data-value="week">Week</button>
 <button type="button" class="size-btn default-view-btn" data-value="month">Month</button>
-<button type="button" class="size-btn default-view-btn" data-value="planner">Planner</button>
+</div>
+</div>
+<div class="field">
+<label>Week button shows — this device only</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn week-variant-btn" data-value="week">Week</button>
+<button type="button" class="size-btn week-variant-btn" data-value="planner">Planner</button>
+<button type="button" class="size-btn week-variant-btn" data-value="portrait">Portrait</button>
+</div>
+</div>
+<div class="field">
+<label>Month button shows — this device only</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn month-variant-btn" data-value="month">Month</button>
+<button type="button" class="size-btn month-variant-btn" data-value="split">Month + Day</button>
 </div>
 </div>
 <div class="field">
@@ -4100,6 +4905,14 @@ instead of the usual stacked field layout. */
 <select class="hour-select timeline-end-select">${endHourOptionsHtml}</select>
 </div>
 </div>
+<div class="field">
+<label>Grey out events/reminders that have already passed</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn grey-out-past-btn" data-value="off">Off</button>
+<button type="button" class="size-btn grey-out-past-btn" data-value="on">On</button>
+</div>
+<div class="remind-hint">Today's events grey out one by one as they end; any earlier day is greyed out entirely, since the whole day is already over.</div>
+</div>
 </div>
 </div>
 <div class="field">
@@ -4108,7 +4921,7 @@ instead of the usual stacked field layout. */
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="reminders-body">
-<div class="people-hint">Reminders (from the &#128276; tab of the Add Event modal) are saved as Home Assistant to-do items in <code class="reminders-entity-label"></code> - not events on your calendar. Mark them done, edit them, or reschedule them anytime from Home Assistant's own To-do UI (or the &#9989; Mark done button in the event-info popup), independent of Google Calendar or whatever your other calendars are backed by. Who gets notified about them is set per-person under the Notifications tab.</div>
+<div class="people-hint">Reminders (from the &#128276; tab of the Add Event modal) are saved as Home Assistant to-do items in <code class="reminders-entity-label"></code> - not events on your calendar. Mark them done, edit them, or reschedule them anytime from Home Assistant's own To-do UI (or the &#9989; Mark done button in the event-info popup), independent of Google Calendar or whatever your other calendars are backed by. Who gets notified about them is set per-person under the Users tab.</div>
 <div class="add-event-warn reminders-entity-missing-warn" style="display:none"></div>
 </div>
 </div>
@@ -4128,6 +4941,7 @@ instead of the usual stacked field layout. */
 <div class="field">
 <label>Menu blocks per day</label>
 <div class="size-btn-row">
+<button type="button" class="size-btn block-count-btn" data-count="0">None</button>
 <button type="button" class="size-btn block-count-btn" data-count="1">1</button>
 <button type="button" class="size-btn block-count-btn" data-count="2">2</button>
 <button type="button" class="size-btn block-count-btn" data-count="3">3</button>
@@ -4199,6 +5013,22 @@ instead of the usual stacked field layout. */
 </div>
 <div class="remind-hint">Adds a Goals section to the Rewards page alongside the star catalog.</div>
 </div>
+<div class="field">
+<label>Chore due dates on the board show</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn chore-due-time-btn" data-value="off">Date only</button>
+<button type="button" class="size-btn chore-due-time-btn" data-value="on">Date &amp; time</button>
+</div>
+<div class="remind-hint">The chore detail popup always shows both - this only controls the short "Due ..." label on each card in the Chores board columns.</div>
+</div>
+<div class="field chores-danger-zone" style="display:none">
+<label>Danger Zone (admin only)</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn danger-btn clear-all-chores-btn">Clear all chores</button>
+<button type="button" class="size-btn danger-btn clear-all-goals-btn">Clear all goals</button>
+</div>
+<div class="remind-hint">Permanently deletes every chore (or goal) regardless of status - open, awaiting approval, or already done. There's no undo. Only visible to real Home Assistant admin accounts.</div>
+</div>
 </div>
 </div>
 <div class="field">
@@ -4235,7 +5065,7 @@ instead of the usual stacked field layout. */
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="digest-body">
-<div class="remind-hint">Sends one notification each morning summarizing today's events, meals, and due reminders — independent of anyone having the dashboard open. Who gets a digest, and what's in theirs, is set per-person under the Notifications tab; this just turns the feature on and picks the household's send time.</div>
+<div class="remind-hint">Sends one notification each morning summarizing today's events, meals, and due reminders — independent of anyone having the dashboard open. Who gets a digest, and what's in theirs, is set per-person under the Users tab; this just turns the feature on and picks the household's send time.</div>
 <div class="field">
 <label>Send daily digest</label>
 <div class="size-btn-row">
@@ -4262,7 +5092,7 @@ instead of the usual stacked field layout. */
 <button type="button" class="size-btn grocy-expiring-enabled-btn" data-value="off">Off</button>
 <button type="button" class="size-btn grocy-expiring-enabled-btn" data-value="on">On</button>
 </div>
-<div class="remind-hint">Adds an "Expiring Soon" list under the More menu. Whether it's also offered in anyone's Daily Digest is set under the Notifications tab once this is on.</div>
+<div class="remind-hint">Adds an "Expiring Soon" list under the More menu. Whether it's also offered in anyone's Daily Digest is set under the Users tab once this is on.</div>
 </div>
 <div class="field">
 <label>Track low stock</label>
@@ -4270,7 +5100,7 @@ instead of the usual stacked field layout. */
 <button type="button" class="size-btn grocy-low-stock-enabled-btn" data-value="off">Off</button>
 <button type="button" class="size-btn grocy-low-stock-enabled-btn" data-value="on">On</button>
 </div>
-<div class="remind-hint">Adds a "Low Stock" list under the More menu (products below their own minimum stock amount, with a one-tap button to add them all to the shopping list). Whether it's also offered in anyone's Daily Digest is set under the Notifications tab once this is on.</div>
+<div class="remind-hint">Adds a "Low Stock" list under the More menu (products below their own minimum stock amount, with a one-tap button to add them all to the shopping list). Whether it's also offered in anyone's Daily Digest is set under the Users tab once this is on.</div>
 </div>
 </div>
 </div>
@@ -4328,6 +5158,11 @@ instead of the usual stacked field layout. */
 </div>
 <select class="global-theme-select" style="display:none;margin-top:8px;width:100%;box-sizing:border-box;font-size:16px;padding:10px 12px;border-radius:8px;border:1px solid var(--fc-border);background:var(--fc-card);color:var(--fc-text);font-family:inherit;"></select>
 <div class="global-theme-status" style="display:none;font-size:12px;color:var(--fc-text-secondary);font-style:italic;margin-top:6px;"></div>
+</div>
+<div class="field">
+<label>This device's theme</label>
+<select class="device-theme-override-select" style="width:100%;box-sizing:border-box;font-size:16px;padding:10px 12px;border-radius:8px;border:1px solid var(--fc-border);background:var(--fc-card);color:var(--fc-text);font-family:inherit;"></select>
+<div class="remind-hint">Overrides the shared theme above for just this device/tablet - every other Family Hub card here (Chores, Rewards, Goals, My Pantry, My Chores) picks it up too, but no other device is affected. Takes effect immediately, with no Save needed.</div>
 </div>
 <div class="field theme-local-fields">
 <button type="button" class="accordion-toggle" data-target="theme-colors-body">
@@ -4485,8 +5320,27 @@ instead of the usual stacked field layout. */
 <div class="remind-hint">Sends what's currently checked above (even if not Saved yet) to this person's notify targets, right now - handy for checking a device actually gets it and previewing today's content.</div>
 <div class="notify-profile-send-digest-status"></div>
 </div>
+<div class="field">
+<label>Kiosk PIN login</label>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-kiosk-login-check" /> Enable logging in as this person on a shared kiosk display</label>
+<div class="remind-hint">Once enabled, a &#128274; Login button appears on the Chores and Rewards boards - typing this person's PIN there runs those boards as them for a bit (auto logs out after 45 seconds idle) to claim their own rewards, mark their own chores done, or (if they have approval permission) approve/reject others'.</div>
+<button type="button" class="notify-profile-kiosk-set-pin-btn admin-only-btn" style="display:none">&#128272; Set / change PIN&hellip;</button>
+<div class="notify-profile-kiosk-pin-status"></div>
+</div>
 <div class="modal-actions">
 <button class="btn-save notify-profile-done">Done</button>
+</div>
+</div>
+</div>
+<div class="modal-overlay kiosk-pin-modal">
+<div class="modal-box kiosk-pin-box">
+<h3 class="kiosk-pin-title">Set kiosk PIN</h3>
+<div class="remind-hint">4-8 digits. Leave blank and save to clear this person's PIN instead.</div>
+<label>PIN<input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" class="kiosk-pin-input" placeholder="e.g. 4821"></label>
+<div class="kiosk-pin-error" style="display:none"></div>
+<div class="modal-actions">
+<button class="btn-cancel kiosk-pin-cancel-btn">Cancel</button>
+<button class="btn-save kiosk-pin-save-btn">Save PIN</button>
 </div>
 </div>
 </div>
@@ -4545,6 +5399,13 @@ instead of the usual stacked field layout. */
 <button type="button" class="add-event-date-btn" title="Pick a date">&#128197;</button>
 </div>
 </div>
+<div class="field add-event-enddate-field">
+<label>End date (optional - for multi-day events)</label>
+<div class="date-picker-row">
+<input type="date" class="add-event-end-date" />
+<button type="button" class="add-event-end-date-btn" title="Pick a date">&#128197;</button>
+</div>
+</div>
 <div class="field add-event-time-field">
 <label>Start / End time</label>
 <div class="size-btn-row">
@@ -4569,6 +5430,10 @@ instead of the usual stacked field layout. */
 <label class="remind-check-opt"><input type="checkbox" class="remind-check" value="1440" />1d</label>
 </div>
 <div class="remind-hint">Needs the Family Hub integration installed to actually notify.</div>
+</div>
+<div class="field add-event-people-field">
+<label>Also for</label>
+<div class="add-event-people-content"></div>
 </div>
 </div>
 <div class="add-event-tab-panel" data-tab-panel="reminder" style="display:none">
@@ -4633,6 +5498,14 @@ this._modalOpenObserver.observe(el, { attributes: true, attributeFilter: ["class
 this._setupScreenSaverActivityListeners();
 this._applySizeVars();
 root.querySelector(".grid").addEventListener("click", (e) => {
+// v145+ task: the split Month variant's "Go to this week" button, in
+// its detail pane - reuses the same _goToWeekFromDate the plain Month
+// view's cell-click already used.
+const gotoWeekBtn = e.target.closest(".msd-goto-week-btn");
+if (gotoWeekBtn && gotoWeekBtn.dataset.date) {
+this._goToWeekFromDate(new Date(gotoWeekBtn.dataset.date + "T00:00:00"));
+return;
+}
 const mealPill = e.target.closest(".mc-meal-pill");
 if (mealPill && mealPill.dataset.date) {
 this._openEditorForDate(new Date(mealPill.dataset.date + "T00:00:00"), parseInt(mealPill.dataset.blockIndex || "0", 10));
@@ -4640,6 +5513,17 @@ return;
 }
 const cell = e.target.closest(".month-cell");
 if (cell && cell.dataset.date) {
+// v145+ task: in the split Month variant, clicking a day selects it
+// (re-rendering just updates which cell is highlighted and what the
+// detail pane shows) instead of jumping straight into the week - the
+// whole point of split is to preview a day's events without leaving
+// Month. The plain Month view keeps its original jump-to-week-on-click
+// behavior unchanged.
+if (this._viewMode === "split") {
+this._monthSplitSelectedDate = cell.dataset.date;
+this._renderGrid();
+return;
+}
 this._goToWeekFromDate(new Date(cell.dataset.date + "T00:00:00"));
 return;
 }
@@ -4683,10 +5567,10 @@ const absDx = Math.abs(dx);
 const absDy = Math.abs(dy);
 if (absDx > 60 && absDx > absDy * 1.5 && dt < 800) {
 if (dx < 0) {
-if (this._viewMode === "month") this._setMonthOffset((this._monthOffset || 0) + 1);
+if (this._viewFamily(this._viewMode) === "month") this._setMonthOffset((this._monthOffset || 0) + 1);
 else this._setWeekOffset((this._weekOffset || 0) + 1);
 } else {
-if (this._viewMode === "month") this._setMonthOffset((this._monthOffset || 0) - 1);
+if (this._viewFamily(this._viewMode) === "month") this._setMonthOffset((this._monthOffset || 0) - 1);
 else this._setWeekOffset((this._weekOffset || 0) - 1);
 }
 }
@@ -4694,15 +5578,15 @@ else this._setWeekOffset((this._weekOffset || 0) - 1);
 { passive: true }
 );
 root.querySelector(".nav-prev").addEventListener("click", () => {
-if (this._viewMode === "month") this._setMonthOffset((this._monthOffset || 0) - 1);
+if (this._viewFamily(this._viewMode) === "month") this._setMonthOffset((this._monthOffset || 0) - 1);
 else this._setWeekOffset((this._weekOffset || 0) - 1);
 });
 root.querySelector(".nav-next").addEventListener("click", () => {
-if (this._viewMode === "month") this._setMonthOffset((this._monthOffset || 0) + 1);
+if (this._viewFamily(this._viewMode) === "month") this._setMonthOffset((this._monthOffset || 0) + 1);
 else this._setWeekOffset((this._weekOffset || 0) + 1);
 });
 root.querySelector(".week-label").addEventListener("click", () => {
-if (this._viewMode === "month") this._setMonthOffset(0);
+if (this._viewFamily(this._viewMode) === "month") this._setMonthOffset(0);
 else this._setWeekOffset(0);
 });
 root.querySelector(".week-shortcuts-toggle").addEventListener("click", (e) => {
@@ -4717,7 +5601,10 @@ this._closeWeekShortcuts();
 });
 root.querySelectorAll(".view-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
-const mode = btn.dataset.view;
+// v144+ task #28: the button only picks the family - which variant
+// within it actually renders is this device's own choice.
+const family = btn.dataset.view;
+const mode = family === "month" ? this._getMonthViewVariant() : this._getWeekViewVariant();
 if (mode === this._viewMode) return;
 this._viewMode = mode;
 if (mode !== "week" && this._mealEditMode) {
@@ -4742,6 +5629,9 @@ this._renderGrid();
 root.querySelector(".edit-overlay .modal-close").addEventListener("click", () => this._closeEditor());
 root.querySelector(".btn-cancel:not(.settings-cancel)").addEventListener("click", () => this._closeEditor());
 root.querySelector(".btn-save:not(.settings-save)").addEventListener("click", () => this._saveEditor());
+// v1.109.6+: the can_edit_menu-less alternative to Save (see
+// _applyMenuEditPermissionUi) - only ever visible when Save isn't.
+root.querySelector(".btn-suggest-meal").addEventListener("click", () => this._suggestMealFromEditor());
 root.querySelector(".btn-clear").addEventListener("click", () => {
 root.querySelector(".input-name").value = "";
 root.querySelector(".input-description").value = "";
@@ -4795,7 +5685,42 @@ preview.style.display = "none";
 });
 root.querySelector(".menu-link-open-btn").addEventListener("click", () => this._openCurrentMenuLink());
 root.querySelector(".meal-view-recipe-btn").addEventListener("click", () => this._openCurrentMenuLink());
+root.querySelector(".meal-view-additional-recipes").addEventListener("click", (e) => {
+const el = e.target.closest(".mvar-link");
+if (!el) return;
+const idx = parseInt(el.dataset.idx, 10);
+const entry = ((this._editingExistingMeal && this._editingExistingMeal.additionalRecipes) || [])[idx];
+if (!entry) return;
+if (entry.grocyRecipeId) {
+this._openGrocyRecipeViewer(entry.grocyRecipeId, entry.name, entry.link, true);
+} else if (entry.link) {
+window.open(entry.link, "_blank", "noopener");
+}
+});
 root.querySelector(".meal-view-edit-btn").addEventListener("click", () => this._setMealEditorViewMode(false));
+root.querySelector(".btn-move-meal").addEventListener("click", () => this._moveMealToDate());
+root.querySelector(".btn-add-additional-recipe-box").addEventListener("click", () => this._openLoved("additional"));
+root.querySelector(".btn-add-additional-recipe-link").addEventListener("click", () => this._addAdditionalRecipeFromLink());
+root.querySelector(".additional-recipes-list").addEventListener("click", (e) => {
+const removeBtn = e.target.closest(".additional-recipe-remove");
+if (removeBtn) {
+const idx = parseInt(removeBtn.dataset.idx, 10);
+this._removeAdditionalRecipe(idx);
+return;
+}
+const nameEl = e.target.closest(".additional-recipe-name.has-link");
+if (nameEl) {
+const idx = parseInt(nameEl.dataset.idx, 10);
+const entry = (this._editingAdditionalRecipes || [])[idx];
+if (entry) {
+if (entry.grocyRecipeId) {
+this._openGrocyRecipeViewer(entry.grocyRecipeId, entry.name, entry.link, true);
+} else if (entry.link) {
+window.open(entry.link, "_blank", "noopener");
+}
+}
+}
+});
 root.querySelector(".btn-heart").addEventListener("click", () => {
 this._currentRating = this._currentRating === "up" ? null : "up";
 this._updateRatingButtons();
@@ -4980,6 +5905,18 @@ input.focus();
 input.focus();
 }
 });
+root.querySelector(".add-event-end-date-btn").addEventListener("click", () => {
+const input = root.querySelector(".add-event-end-date");
+if (input.showPicker) {
+try {
+input.showPicker();
+} catch (e) {
+input.focus();
+}
+} else {
+input.focus();
+}
+});
 root.querySelector(".add-event-reminder-date-btn").addEventListener("click", () => {
 const input = root.querySelector(".add-event-reminder-date");
 if (input.showPicker) {
@@ -5002,6 +5939,15 @@ if (remListSelectEl) {
 // missing-entity warning in sync rather than only checking it once when
 // the tab was first opened.
 remListSelectEl.addEventListener("change", () => this._refreshAddReminderMissingWarn());
+}
+const addEventCalendarSelectEl = root.querySelector(".add-event-calendar-select");
+if (addEventCalendarSelectEl) {
+// Whoever's calendar is picked can't also be tagged as "someone else
+// this is also for" (see _openEventInfo's identical others-filter) -
+// rebuild the checkbox list whenever that changes, same "keep it
+// current rather than only right when the modal opened" reasoning as
+// the Reminders-list missing-warning refresh just above.
+addEventCalendarSelectEl.addEventListener("change", () => this._renderAddEventPeopleField());
 }
 root.querySelectorAll(".add-event-allday-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
@@ -5101,6 +6047,22 @@ const userId = this._notifyProfileEditingUserId;
 if (userId === undefined || userId === null) return;
 this._settingsUserProfilesDraft[userId].notifyChoreDue = e.target.checked;
 });
+// v144+ task #29: toggles kiosk PIN login enrollment - see
+// _settingsKioskLoginUserIdsDraft's own docstring above.
+root.querySelector(".notify-profile-kiosk-login-check").addEventListener("change", (e) => {
+const userId = this._notifyProfileEditingUserId;
+if (userId === undefined || userId === null) return;
+if (!Array.isArray(this._settingsKioskLoginUserIdsDraft)) this._settingsKioskLoginUserIdsDraft = [];
+const idx = this._settingsKioskLoginUserIdsDraft.indexOf(userId);
+if (e.target.checked && idx === -1) this._settingsKioskLoginUserIdsDraft.push(userId);
+else if (!e.target.checked && idx !== -1) this._settingsKioskLoginUserIdsDraft.splice(idx, 1);
+});
+root.querySelector(".notify-profile-kiosk-set-pin-btn").addEventListener("click", () => this._openKioskSetPinModal());
+root.querySelector(".kiosk-pin-cancel-btn").addEventListener("click", () => this._closeKioskSetPinModal());
+root.querySelector(".kiosk-pin-save-btn").addEventListener("click", () => this._submitKioskSetPin());
+root.querySelector(".kiosk-pin-input").addEventListener("keydown", (e) => {
+if (e.key === "Enter") this._submitKioskSetPin();
+});
 root.querySelector(".settings-cancel").addEventListener("click", () => this._closeSettings());
 root.querySelector(".settings-save").addEventListener("click", () => this._saveSettings());
 root.querySelector(".settings-debug-btn").addEventListener("click", () => {
@@ -5138,6 +6100,36 @@ root.querySelectorAll(".weekend-breakfast-btn").forEach((b) => b.classList.remov
 btn.classList.add("active");
 });
 });
+const clearAllChoresBtn = root.querySelector(".clear-all-chores-btn");
+if (clearAllChoresBtn) {
+clearAllChoresBtn.addEventListener("click", async () => {
+if (!window.confirm("Delete EVERY chore - open, awaiting approval, and already done? This can't be undone.")) return;
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/chores/clear_all" });
+window.alert("All chores cleared.");
+} catch (e) {
+window.alert((e && e.message) || "Couldn't clear chores.");
+}
+});
+}
+const clearAllGoalsBtn = root.querySelector(".clear-all-goals-btn");
+if (clearAllGoalsBtn) {
+clearAllGoalsBtn.addEventListener("click", async () => {
+if (!window.confirm("Delete EVERY goal - active and completed? This can't be undone.")) return;
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/goals/clear_all" });
+window.alert("All goals cleared.");
+} catch (e) {
+window.alert((e && e.message) || "Couldn't clear goals.");
+}
+});
+}
+root.querySelectorAll(".chore-due-time-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".chore-due-time-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+});
+});
 root.querySelectorAll(".screensaver-recipe-disable-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
 root.querySelectorAll(".screensaver-recipe-disable-btn").forEach((b) => b.classList.remove("active"));
@@ -5151,9 +6143,31 @@ btn.classList.add("active");
 this._updateGlobalThemeVisibility(btn.dataset.value === "on");
 });
 });
+// v144.6+: "This device's theme" override (see _getDeviceThemeOverride's
+// own comment) - unlike every other Settings field, this one is
+// device-local (localStorage, not the shared Settings blob) and takes
+// effect immediately on change rather than waiting for the modal's Save
+// button, same "no Save needed" convention the per-user Permissions tab
+// checkboxes already use for their own instant-save behavior.
+const deviceThemeSelect = root.querySelector(".device-theme-override-select");
+if (deviceThemeSelect) {
+deviceThemeSelect.addEventListener("change", () => {
+try {
+localStorage.setItem("familyHubDeviceThemeOverrideLocal", deviceThemeSelect.value || "");
+} catch (e) {
+}
+this._applySizeVars();
+});
+}
 root.querySelectorAll(".meals-in-month-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
 root.querySelectorAll(".meals-in-month-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+});
+});
+root.querySelectorAll(".grey-out-past-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".grey-out-past-btn").forEach((b) => b.classList.remove("active"));
 btn.classList.add("active");
 });
 });
@@ -5166,6 +6180,18 @@ btn.classList.add("active");
 root.querySelectorAll(".default-view-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
 root.querySelectorAll(".default-view-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+});
+});
+root.querySelectorAll(".week-variant-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".week-variant-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+});
+});
+root.querySelectorAll(".month-variant-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".month-variant-btn").forEach((b) => b.classList.remove("active"));
 btn.classList.add("active");
 });
 });
@@ -5202,7 +6228,7 @@ btn.addEventListener("click", () => {
 root.querySelectorAll(".grocy-expiring-enabled-btn").forEach((b) => b.classList.remove("active"));
 btn.classList.add("active");
 // Show/hide the matching household "Include in Daily Digest" toggle
-// (Notifications tab) and any open profile's Grocy checkbox live,
+// (Users tab) and any open profile's Grocy checkbox live,
 // rather than only after Save + reopen - see _syncGrocyNotifyVisibility.
 this._syncGrocyNotifyVisibility();
 });
@@ -5396,7 +6422,7 @@ return Object.keys(services)
 // notify target list (_settingsUserProfilesDraft[userId].notifyTargets) -
 // it used to be shared between per-calendar rows, Reminders, and Daily
 // Digest under three different target shapes, all replaced by per-user
-// profiles (see the Notifications tab / _openNotifyProfileModal).
+// profiles (see the Users tab / _openNotifyProfileModal).
 _notifyDraftListFor(userId) {
 if (!this._settingsUserProfilesDraft) this._settingsUserProfilesDraft = {};
 if (!this._settingsUserProfilesDraft[userId]) this._settingsUserProfilesDraft[userId] = this._defaultUserProfile();
@@ -5526,7 +6552,7 @@ btn.textContent = "\u{1F50D} Couldn't auto-detect - add one below";
 }
 // Keeps the profile modal's "Notify targets (N)" button in sync while
 // the (nested) notify-devices modal is open editing the same person's
-// target list, and refreshes that person's row in the Notifications tab
+// target list, and refreshes that person's row in the Users tab
 // list behind both of them.
 _syncNotifyProfileTargetsCount() {
 const root = this._root;
@@ -5553,7 +6579,7 @@ root.querySelectorAll(".settings-tab-panel").forEach((panel) => {
 panel.style.display = panel.dataset.settingsTabPanel === this._settingsActiveTab ? "" : "none";
 });
 }
-// --- Per-user notification profile editor (Notifications tab > Edit) ---
+// --- Per-user notification profile editor (Users tab > Edit) ---
 _openNotifyProfileModal(userId) {
 if (!this._settingsUserProfilesDraft) this._settingsUserProfilesDraft = {};
 if (!this._settingsUserProfilesDraft[userId]) this._settingsUserProfilesDraft[userId] = this._defaultUserProfile();
@@ -5587,6 +6613,21 @@ const choreRejectedCheck = root.querySelector(".notify-profile-chore-rejected-ch
 if (choreRejectedCheck) choreRejectedCheck.checked = !!profile.notifyChoreRejected;
 const choreDueCheck = root.querySelector(".notify-profile-chore-due-check");
 if (choreDueCheck) choreDueCheck.checked = !!profile.notifyChoreDue;
+// v144+ task #29: kiosk PIN login enrollment - see
+// _settingsKioskLoginUserIdsDraft's own docstring for why this reads/
+// writes that separate draft rather than the profile object above.
+const kioskLoginCheck = root.querySelector(".notify-profile-kiosk-login-check");
+if (kioskLoginCheck) {
+kioskLoginCheck.checked = Array.isArray(this._settingsKioskLoginUserIdsDraft) && this._settingsKioskLoginUserIdsDraft.includes(userId);
+}
+const isAdminForPin = !!(this._hass && this._hass.user && this._hass.user.is_admin);
+const setPinBtn = root.querySelector(".notify-profile-kiosk-set-pin-btn");
+if (setPinBtn) setPinBtn.style.display = isAdminForPin ? "" : "none";
+const pinStatusEl = root.querySelector(".notify-profile-kiosk-pin-status");
+if (pinStatusEl) {
+pinStatusEl.textContent = "";
+pinStatusEl.classList.remove("is-error");
+}
 // Grocy's two digest sections only make sense to show once the matching
 // household-wide feature is actually on - otherwise it's a checkbox for
 // a section that can never appear in anyone's digest. Reads the LIVE
@@ -5605,7 +6646,62 @@ sendStatusEl.classList.remove("is-error");
 }
 this._openModal(root.querySelector(".notify-profile-overlay"));
 }
-// "Send test digest now" (Notifications tab -> a person's profile) - fires
+// v144+ task #29: sets/changes/clears this person's kiosk PIN - always
+// admin-only server-side too (see chores_websocket_api.py's
+// ws_kiosk_set_pin), this button is just the UI's own reflection of that
+// (see setPinBtn.style.display above). v144.7+: was a plain window.prompt
+// (same convention as family-hub-rewards-card.js's own OLD _giftStars,
+// before that one also became a modal in the same release); now a real
+// .modal-overlay, this file's own .modal-box/.btn-cancel/.btn-save
+// convention plus a dedicated .kiosk-pin-error slot (this file's own
+// per-feature -error class convention, e.g. .add-event-error, rather than
+// the rewards-card's .form-error/hidden pattern), so a blank/invalid PIN
+// shows an inline error in the modal instead of a browser alert().
+// Independent of Settings Save (see this field's own
+// docstring in the modal markup) - takes effect immediately.
+_openKioskSetPinModal() {
+const userId = this._notifyProfileEditingUserId;
+if (userId === undefined || userId === null || !this._hass) return;
+const overlay = this._root.querySelector(".kiosk-pin-modal");
+const box = overlay.querySelector(".modal-box");
+const input = box.querySelector(".kiosk-pin-input");
+const errEl = box.querySelector(".kiosk-pin-error");
+input.value = "";
+errEl.style.display = "none";
+errEl.textContent = "";
+this._openModal(overlay);
+input.focus();
+}
+_closeKioskSetPinModal() {
+const overlay = this._root.querySelector(".kiosk-pin-modal");
+if (overlay) overlay.classList.remove("open");
+}
+async _submitKioskSetPin() {
+const userId = this._notifyProfileEditingUserId;
+if (userId === undefined || userId === null || !this._hass) return;
+const overlay = this._root.querySelector(".kiosk-pin-modal");
+const box = overlay.querySelector(".modal-box");
+const errEl = box.querySelector(".kiosk-pin-error");
+const statusEl = this._root.querySelector(".notify-profile-kiosk-pin-status");
+const pin = box.querySelector(".kiosk-pin-input").value.trim();
+if (pin && (!/^\d+$/.test(pin) || pin.length < 4 || pin.length > 8)) {
+errEl.textContent = "PIN must be 4-8 digits.";
+errEl.style.display = "";
+return;
+}
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/kiosk/set_pin", user_id: userId, pin });
+if (statusEl) {
+statusEl.textContent = result && result.has_pin ? "PIN set." : "PIN cleared.";
+statusEl.classList.remove("is-error");
+}
+this._closeKioskSetPinModal();
+} catch (e) {
+errEl.textContent = (e && e.message) || "Couldn't save the PIN.";
+errEl.style.display = "";
+}
+}
+// "Send test digest now" (Users tab -> a person's profile) - fires
 // their Daily Digest immediately, using exactly what's currently checked
 // in this modal (notify targets + section checkboxes), even if Settings
 // hasn't been Saved yet. Independent of the household's once-a-day
@@ -5871,11 +6967,20 @@ btn.classList.toggle("active", btn.dataset.value === (settings.weekendBreakfast 
 root.querySelectorAll(".meals-in-month-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.showMealsInMonth ? "on" : "off"));
 });
+root.querySelectorAll(".grey-out-past-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (settings.greyOutPastEvents ? "on" : "off"));
+});
 root.querySelectorAll(".scroll-lock-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.scrollLocked ? "on" : "off"));
 });
 root.querySelectorAll(".default-view-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === settings.defaultView);
+});
+root.querySelectorAll(".week-variant-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === this._getWeekViewVariant());
+});
+root.querySelectorAll(".month-variant-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === this._getMonthViewVariant());
 });
 root.querySelectorAll(".countdown-enabled-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.countdownEnabled ? "on" : "off"));
@@ -5907,6 +7012,18 @@ btn.classList.toggle("active", btn.dataset.value === (settings.goalsShowInChores
 root.querySelectorAll(".goals-in-rewards-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.goalsShowInRewards ? "on" : "off"));
 });
+root.querySelectorAll(".chore-due-time-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (settings.choreDueShowTime ? "on" : "off"));
+});
+// Household's own "admin only setting" request - only a real Home
+// Assistant admin (not just someone granted chore-assignment/verify
+// permission) ever even sees the Clear All buttons exist, matching the
+// same is_admin gate the backend's ws_clear_all_chores/ws_clear_all_goals
+// enforce - this is belt-and-suspenders (the backend never trusts the
+// client's own admin check), just keeping a destructive, no-undo action
+// out of the way of anyone it was never meant for.
+const dangerZone = root.querySelector(".chores-danger-zone");
+if (dangerZone) dangerZone.style.display = this._hass && this._hass.user && this._hass.user.is_admin ? "" : "none";
 // Now that the Track toggle buttons above reflect the saved settings,
 // show/hide the household "Include in Daily Digest" toggles (Notifications
 // tab) to match - see _syncGrocyNotifyVisibility.
@@ -5930,9 +7047,17 @@ root.querySelectorAll(".global-theme-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (isGlobalOn ? "on" : "off"));
 });
 this._updateGlobalThemeVisibility(isGlobalOn);
+// "This device's theme" - always populated on open regardless of the
+// shared toggle above, since a device can override independent of it
+// either way (see _getDeviceThemeOverride's own comment).
+if (!Array.isArray(this._globalThemes) && !this._globalThemesError) {
+this._fetchGlobalThemes().then(() => this._populateDeviceThemeOverrideSelect());
+} else {
+this._populateDeviceThemeOverrideSelect();
+}
 this._settingsPeopleDraft = JSON.parse(JSON.stringify(this._getPeople()));
 // A fresh deep copy of the saved profiles every time Settings opens - the
-// Notifications tab (and the notify-targets/profile-editor modals nested
+// Users tab (and the notify-targets/profile-editor modals nested
 // under it) all read/write this one draft object, merged back into the
 // big settings blob on Save.
 this._settingsUserProfilesDraft = JSON.parse(JSON.stringify(settings.userProfiles || {}));
@@ -5941,6 +7066,16 @@ this._settingsUserProfilesDraft = JSON.parse(JSON.stringify(settings.userProfile
 // and the Permissions tab's filtering (see _renderPermissionsList) both
 // read this live draft, not settings.memberUserIds directly.
 this._settingsMemberIdsDraft = Array.isArray(settings.memberUserIds) ? settings.memberUserIds.slice() : [];
+// v144+ task #29: same fresh-copy-on-open, merged-back-on-Save draft
+// pattern as _settingsMemberIdsDraft right above - who has kiosk PIN
+// login ENABLED is ordinary (non-secret) settings data, edited in each
+// person's own notify-profile modal (see _openNotifyProfileModal's
+// kiosk-login checkbox) and saved through the normal Settings Save flow.
+// The PIN itself is never part of this draft or this blob at all - see
+// _openKioskSetPinModal, which calls its own dedicated, always-admin-
+// gated family_hub/kiosk/set_pin command immediately, independent of
+// Settings Save.
+this._settingsKioskLoginUserIdsDraft = Array.isArray(settings.kioskLoginEnabledUserIds) ? settings.kioskLoginEnabledUserIds.slice() : [];
 this._notifyProfileEditingUserId = null;
 this._notifyDevicesEditIdx = null;
 this._setSettingsTab("general");
@@ -6468,7 +7603,7 @@ hideMatch: (b.hideMatch || "").trim(),
 remindersEntity: (p.remindersEntity || "").trim(),
 }));
 // Per-user notification profiles - edited live in _settingsUserProfilesDraft
-// by the Notifications tab and its nested modals, carried through to the
+// by the Users tab and its nested modals, carried through to the
 // saved settings blob unchanged here (this form has no fields of its own
 // for it, unlike everything else in this function).
 const userProfiles = this._settingsUserProfilesDraft || {};
@@ -6476,6 +7611,11 @@ const userProfiles = this._settingsUserProfilesDraft || {};
 // Users tab's Add/Remove controls, carried through unchanged here exactly
 // like userProfiles above.
 const memberUserIds = Array.isArray(this._settingsMemberIdsDraft) ? this._settingsMemberIdsDraft.slice() : [];
+// v144+ task #29: which members have kiosk PIN login enabled - edited
+// live in _settingsKioskLoginUserIdsDraft by each person's own notify-
+// profile modal checkbox, carried through unchanged here exactly like
+// memberUserIds above. The PIN itself never goes through this payload.
+const kioskLoginEnabledUserIds = Array.isArray(this._settingsKioskLoginUserIdsDraft) ? this._settingsKioskLoginUserIdsDraft.slice() : [];
 const activeCountBtn = root.querySelector(".block-count-btn.active");
 const count = activeCountBtn ? parseInt(activeCountBtn.dataset.count, 10) : 3;
 const activeBlockSizeBtn = root.querySelector(".block-size-btn.active");
@@ -6491,8 +7631,22 @@ const activeWeekendBreakfastBtn = root.querySelector(".weekend-breakfast-btn.act
 const weekendBreakfast = activeWeekendBreakfastBtn ? activeWeekendBreakfastBtn.dataset.value === "on" : false;
 const activeMealsInMonthBtn = root.querySelector(".meals-in-month-btn.active");
 const showMealsInMonth = activeMealsInMonthBtn ? activeMealsInMonthBtn.dataset.value === "on" : false;
+const activeGreyOutPastBtn = root.querySelector(".grey-out-past-btn.active");
+const greyOutPastEvents = activeGreyOutPastBtn ? activeGreyOutPastBtn.dataset.value === "on" : false;
 try {
 localStorage.setItem("familyCalendarShowTimelineLocal", showTimeline ? "on" : "off");
+} catch (e) {
+}
+const activeWeekVariantBtn = root.querySelector(".week-variant-btn.active");
+const weekViewVariant = activeWeekVariantBtn ? activeWeekVariantBtn.dataset.value : "week";
+try {
+localStorage.setItem("familyCalendarWeekViewVariantLocal", weekViewVariant);
+} catch (e) {
+}
+const activeMonthVariantBtn = root.querySelector(".month-variant-btn.active");
+const monthViewVariant = activeMonthVariantBtn ? activeMonthVariantBtn.dataset.value : "month";
+try {
+localStorage.setItem("familyCalendarMonthViewVariantLocal", monthViewVariant);
 } catch (e) {
 }
 const activeScrollLockBtn = root.querySelector(".scroll-lock-btn.active");
@@ -6522,6 +7676,8 @@ const activeGoalsInChoresBtn = root.querySelector(".goals-in-chores-btn.active")
 const goalsShowInChores = activeGoalsInChoresBtn ? activeGoalsInChoresBtn.dataset.value === "on" : false;
 const activeGoalsInRewardsBtn = root.querySelector(".goals-in-rewards-btn.active");
 const goalsShowInRewards = activeGoalsInRewardsBtn ? activeGoalsInRewardsBtn.dataset.value === "on" : false;
+const activeChoreDueTimeBtn = root.querySelector(".chore-due-time-btn.active");
+const choreDueShowTime = activeChoreDueTimeBtn ? activeChoreDueTimeBtn.dataset.value === "on" : false;
 const notifyClickPathInput = root.querySelector(".notify-click-path-input");
 const notificationClickPath = notifyClickPathInput ? notifyClickPathInput.value.trim() : "";
 const defaults = ["Breakfast", "Lunch", "Dinner"];
@@ -6603,10 +7759,12 @@ grocyLowStockEnabled,
 routinesEnabled,
 goalsShowInChores,
 goalsShowInRewards,
+choreDueShowTime,
 notificationClickPath,
 people,
 weekendBreakfast,
 showMealsInMonth,
+greyOutPastEvents,
 scrollLocked,
 theme,
 useGlobalTheme,
@@ -6614,6 +7772,7 @@ globalThemeId,
 screenSaver,
 userProfiles,
 memberUserIds,
+kioskLoginEnabledUserIds,
 };
 const payload = JSON.stringify(settingsObj);
 const statusEl = root.querySelector(".settings-save-status");
@@ -6682,7 +7841,7 @@ end.setDate(start.getDate() + 7);
 const lines = [];
 lines.push(`hass connected: ${!!this._hass}`);
 lines.push(`Logged in user: ${this._hass && this._hass.user ? this._hass.user.name + (this._hass.user.is_admin ? " (admin)" : " (non-admin)") : "unknown"}`);
-lines.push(`View mode: ${this._viewMode} ${this._viewMode === "month" ? `(month offset ${this._monthOffset || 0})` : `(week offset ${this._weekOffset || 0})`}`);
+lines.push(`View mode: ${this._viewMode} ${this._viewFamily(this._viewMode) === "month" ? `(month offset ${this._monthOffset || 0})` : `(week offset ${this._weekOffset || 0})`}`);
 lines.push(`Query window: ${start.toISOString()} -> ${end.toISOString()}`);
 lines.push(`Browser local time now: ${new Date().toString()}`);
 lines.push(`Weather entity: ${this._config.weather_entity} (${Object.keys(this._forecast || {}).length} forecast days loaded)`);
@@ -7315,6 +8474,10 @@ root.querySelector(".meal-edit-fields").style.display = showView ? "none" : "";
 // the moment Edit is tapped.
 const saveBtn = root.querySelector(".btn-save");
 if (saveBtn) saveBtn.style.display = showView ? "none" : "";
+// v1.109.6+: this just handed .btn-save's display back unconditionally -
+// re-apply the can_edit_menu gate on top so tapping the pencil Edit
+// button can't surface a Save button for someone who can only suggest.
+this._applyMenuEditPermissionUi();
 }
 // Populates the view card from whatever's known right now - this._editingExistingMeal
 // (set once, at open time, in _openEditorForDate) for the name/servings-override/
@@ -7331,6 +8494,40 @@ const existing = this._editingExistingMeal;
 const recipe = this._currentMenuRecipeDetail;
 const titleEl = root.querySelector(".meal-view-title");
 if (titleEl) titleEl.textContent = (existing && existing.name) || "";
+// v141+ - this view card previously showed prep/cook/serves facts and a
+// recipe link, but never the meal's own description/notes at all - the
+// only way to see what was actually typed there was to tap Edit first.
+// Same "hide the row when there's nothing to show" pattern every other
+// fact here already uses.
+const descEl = root.querySelector(".meal-view-description");
+const description = (existing && existing.description) || "";
+if (descEl) {
+descEl.textContent = description;
+descEl.style.display = description.trim() ? "" : "none";
+}
+// v142+ - "additional recipes" attached to this main recipe (sides,
+// sauces, desserts...) - shown read-only here as a plain comma list of
+// names, same "hide when empty" pattern as description/prep/cook/serves.
+// A name is only clickable when it has somewhere to go (a link or a
+// Grocy recipe id) - see the delegated click handler wired alongside
+// this element.
+const additionalEl = root.querySelector(".meal-view-additional-recipes");
+const additionalRecipes = (existing && existing.additionalRecipes) || [];
+if (additionalEl) {
+if (additionalRecipes.length) {
+const namesHtml = additionalRecipes
+.map((r, idx) => {
+const hasLink = !!(r.grocyRecipeId || (r.link && r.link.trim()));
+return `<span class="${hasLink ? "mvar-link" : ""}" data-idx="${idx}">${r.name}</span>`;
+})
+.join(", ");
+additionalEl.innerHTML = `<span class="mvar-label">Also:</span>${namesHtml}`;
+additionalEl.style.display = "";
+} else {
+additionalEl.innerHTML = "";
+additionalEl.style.display = "none";
+}
+}
 const prepEl = root.querySelector(".meal-view-prep");
 const cookEl = root.querySelector(".meal-view-cook");
 const servesEl = root.querySelector(".meal-view-serves");
@@ -7363,11 +8560,179 @@ servesEl.style.display = "none";
 const hasLink = !!(existing && existing.link && existing.link.trim());
 root.querySelector(".meal-view-recipe-btn").style.display = hasLink ? "" : "none";
 }
+// v142+: renders the day/menu editor's "Additional recipes" list from
+// this._editingAdditionalRecipes (pure scratch state - see its own
+// comment) - safe to call any time the editor's DOM exists, including
+// before it's ever been populated. Each row's name is clickable when the
+// entry has a link/Grocy recipe (opens the Grocy viewer if grocyRecipeId
+// is set, since that gives live prep/cook/ingredient data the same way
+// the main recipe's View Recipe button does, otherwise just the plain
+// link) - see the .additional-recipes-list delegated click handler.
+_renderAdditionalRecipesList() {
+const root = this._root;
+if (!root) return;
+const list = root.querySelector(".additional-recipes-list");
+if (!list) return;
+const entries = this._editingAdditionalRecipes || [];
+if (!entries.length) {
+list.innerHTML = `<div class="additional-recipes-empty-hint">No additional recipes added yet.</div>`;
+return;
+}
+list.innerHTML = entries
+.map((r, idx) => {
+const hasLink = !!(r.grocyRecipeId || (r.link && r.link.trim()));
+return `<div class="additional-recipe-row">
+<span class="additional-recipe-name${hasLink ? " has-link" : ""}" data-idx="${idx}" title="${hasLink ? "Open recipe" : ""}">${r.name}</span>
+<button type="button" class="additional-recipe-remove" data-idx="${idx}" title="Remove" aria-label="Remove ${r.name}">&#10005;</button>
+</div>`;
+})
+.join("");
+}
+_removeAdditionalRecipe(idx) {
+if (!Number.isInteger(idx)) return;
+this._editingAdditionalRecipes = (this._editingAdditionalRecipes || []).filter((_, i) => i !== idx);
+this._renderAdditionalRecipesList();
+}
+// Entry point for the "+ From Recipe Box" button - opens the same
+// searchable/filterable Recipe Box browse surface the main recipe's "Pick
+// a Recipe" button uses (see _openLoved), just in a third picker mode
+// ("additional") that appends to the list instead of overwriting the
+// slot's main name/description/link/color.
+_addAdditionalRecipeFromLoved(recipe) {
+if (!recipe || !recipe.name) return;
+this._editingAdditionalRecipes = this._editingAdditionalRecipes || [];
+this._editingAdditionalRecipes.push({ name: recipe.name, link: recipe.link || "", grocyRecipeId: recipe.grocyRecipeId || null });
+this._closeLoved();
+this._renderAdditionalRecipesList();
+}
+// Entry point for the "+ From a link" button - a plain name + URL, for a
+// side/dessert/sauce recipe that isn't (and doesn't need to be) in the
+// Recipe Box at all. Two short prompts rather than a whole extra modal,
+// matching this card's existing "quick add" pattern elsewhere (e.g. the
+// Pantry card's remove-stock prompt).
+_addAdditionalRecipeFromLink() {
+const name = (window.prompt("Recipe name:") || "").trim();
+if (!name) return;
+const link = (window.prompt("Recipe link (optional):") || "").trim();
+this._editingAdditionalRecipes = this._editingAdditionalRecipes || [];
+this._editingAdditionalRecipes.push({ name, link, grocyRecipeId: null });
+this._renderAdditionalRecipesList();
+}
 _openEditor(dayIndex, blockIndex) {
 const start = this._weekStart();
 const dayDate = new Date(start);
 dayDate.setDate(start.getDate() + dayIndex);
 this._openEditorForDate(dayDate, blockIndex);
+}
+// v144.10+: "leftovers should let you choose what days you have the
+// leftovers on" - replaces the old single "next N days" number input
+// with a checkbox per day, so any day(s) can be picked, not necessarily
+// a contiguous run starting the day after cooking. Builds checkboxes for
+// the 13 days following cookedDayDate (matching the old input's max=13
+// range) - each one's own checked state seeded from checkedDateKeys.
+_renderLeftoverDaysPicker(cookedDayDate, checkedDateKeys) {
+const container = this._root.querySelector(".leftover-days-picker");
+if (!container) return;
+const checked = new Set(Array.isArray(checkedDateKeys) ? checkedDateKeys : []);
+const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+let html = "";
+for (let i = 1; i <= 13; i++) {
+const d = new Date(cookedDayDate);
+d.setDate(d.getDate() + i);
+const key = this._dateKey(d);
+const label = `${dayNames[d.getDay()]} ${d.getMonth() + 1}/${d.getDate()}`;
+html += `<label class="leftover-day-opt"><input type="checkbox" class="leftover-day-check" value="${key}"${checked.has(key) ? " checked" : ""}> ${label}</label>`;
+}
+container.innerHTML = html;
+}
+// Reads back whichever day checkboxes are currently checked in the
+// picker _renderLeftoverDaysPicker just built, as a plain array of
+// "YYYY-MM-DD" date keys - what _saveEditor passes straight through to
+// _upsertMealPlan's leftoverDates.
+_readLeftoverDaysPicker() {
+return Array.from(this._root.querySelectorAll(".leftover-day-check:checked")).map((cb) => cb.value);
+}
+// v1.109.6+: the meal editor's two faces. With can_edit_menu (or real HA
+// admin) it's exactly the editor it has always been. Without it, the
+// controls that WRITE to the meal plan - Save, Clear, Delete, Move to
+// another week, plus the repeat-weekly/leftovers options, which only make
+// sense to someone shaping the menu - are hidden and replaced by a single
+// "Suggest" action. The fields themselves stay editable so a kid can
+// actually compose what they're proposing (and still pick from the Recipe
+// Box/Grocy to fill them in).
+//
+// UX only - see _canEditMenu's own comment. Called at the end of
+// _openEditorForDate and again from _setMealEditorViewMode, since that
+// toggles .btn-save's own display and would otherwise hand Save back.
+_applyMenuEditPermissionUi() {
+const root = this._root;
+if (!root) return;
+// The Recipe Box's own dish editor shares this modal but is not the
+// menu - it has always been open to everyone and stays that way.
+const canEdit = this._dishEditorMode || this._canEditMenu();
+const setShown = (sel, shown) => {
+root.querySelectorAll(sel).forEach((el) => {
+el.style.display = shown ? "" : "none";
+});
+};
+// .btn-save and .menu-edit-only-field are both re-shown by other code on
+// every open (_setMealEditorViewMode / the dish-hide-field bulk toggle),
+// so this only ever has to take them away. Clear has no such owner, so
+// it's set both ways or it would stay hidden forever once the Recipe
+// Box's own dish editor (which is not the menu, and is open to everyone)
+// is opened afterwards in the same session.
+if (!canEdit) {
+setShown(".btn-save:not(.settings-save)", false);
+setShown(".menu-edit-only-field", false);
+}
+setShown(".btn-clear:not(.btn-delete-dish)", canEdit);
+const suggestBtn = root.querySelector(".btn-suggest-meal");
+if (suggestBtn) suggestBtn.style.display = canEdit ? "none" : "";
+const hint = root.querySelector(".menu-suggest-hint");
+if (hint) hint.style.display = canEdit ? "none" : "";
+}
+// The pending-suggestions strip inside the meal editor: what other people
+// (usually the kids) have proposed for this exact day + meal block.
+// Apply is only offered to someone who can edit the menu; the small x is
+// offered to them too, and to the suggestion's own author so they can
+// retract their own idea - matching exactly what the backend's
+// remove_menu_suggestion will actually allow.
+_renderMenuSuggestions() {
+const root = this._root;
+if (!root) return;
+const field = root.querySelector(".menu-suggestions-field");
+const listEl = root.querySelector(".menu-suggestions-list");
+if (!field || !listEl) return;
+const pending = this._dishEditorMode ? [] : this._menuSuggestionsForCurrentSlot();
+if (!pending.length) {
+field.style.display = "none";
+listEl.innerHTML = "";
+return;
+}
+field.style.display = "";
+const canEdit = this._canEditMenu();
+const myId = this._myUserId();
+listEl.innerHTML = pending
+.map((s) => {
+const who = s.suggested_by_name || "Someone";
+const canRemove = canEdit || (s.suggested_by && s.suggested_by === myId);
+return `
+<div class="menu-suggestion-row" data-uid="${s.uid}">
+<div class="menu-suggestion-text">
+<div class="menu-suggestion-name">${s.name}</div>
+<div class="menu-suggestion-by">suggested by ${who}</div>
+</div>
+${canEdit ? `<button type="button" class="menu-suggestion-apply">Add to menu</button>` : ""}
+${canRemove ? `<button type="button" class="menu-suggestion-remove" title="Remove this suggestion">&#10005;</button>` : ""}
+</div>`;
+})
+.join("");
+listEl.querySelectorAll(".menu-suggestion-apply").forEach((btn) => {
+btn.addEventListener("click", () => this._applyMenuSuggestion(btn.closest(".menu-suggestion-row").dataset.uid));
+});
+listEl.querySelectorAll(".menu-suggestion-remove").forEach((btn) => {
+btn.addEventListener("click", () => this._removeMenuSuggestion(btn.closest(".menu-suggestion-row").dataset.uid));
+});
 }
 _openEditorForDate(dayDate, blockIndex) {
 const dateKey = this._dateKey(dayDate);
@@ -7393,9 +8758,30 @@ root.querySelector(".modal-day-title").textContent = `Edit ${blockName} — ${da
 // _saveEditor uses to decide whether to ask "just this day, or every
 // future week?" instead of just overwriting.
 const existing = this._getMealForDay(dateKey, dayDate, this._editingBlockIndex);
+// v144.10+: "clicking a leftover card opens the original 'primary' card
+// to edit" - a leftovers PROJECTION (existing.leftover) has nothing of
+// its own here to edit; it's just showing the meal actually entered on
+// existing.sourceDateKey. Redirect straight to that day's editor instead
+// of opening one scoped to this (leftover) day, which used to let typing
+// a new name here create a same-day "Skipped"-style override rather than
+// editing the shared source - see _saveEditor's wasLeftoverProjection
+// branch, now unreachable through this normal open path (still handled
+// there defensively in case anything else calls _openEditorForDate
+// directly with a leftover day).
+
+if (existing && existing.leftover && existing.sourceDateKey) {
+this._openEditorForDate(new Date(`${existing.sourceDateKey}T00:00:00`), this._editingBlockIndex);
+return;
+}
 this._editingMealRecurring = !!(existing && existing.recurring);
 this._editingMealAnchorUid = existing ? existing.uid : null;
 this._editingExistingMeal = existing;
+// v142+: "additional recipes" - starts from whatever this slot's main
+// entry already has (cloned, not the live array, so removing one here
+// before Save/Cancel never mutates this._mealPlan directly), empty for
+// a brand-new/empty slot.
+this._editingAdditionalRecipes = existing && Array.isArray(existing.additionalRecipes) ? existing.additionalRecipes.map((r) => Object.assign({}, r)) : [];
+this._renderAdditionalRecipesList();
 root.querySelector(".input-name").value = existing ? existing.name : "";
 root.querySelector(".input-description").value = existing ? existing.description : "";
 root.querySelector(".input-link").value = existing ? existing.link : "";
@@ -7405,6 +8791,25 @@ existing && typeof existing.servings === "number" ? String(existing.servings) : 
 this._updateMenuLinkOpenBtn();
 const recurCheck = root.querySelector(".input-recur-weekly");
 if (recurCheck) recurCheck.checked = !!(existing && existing.recur === "weekly");
+// This path is only ever reached for a CONCRETE slot now (a leftovers
+// PROJECTION redirects to its source day above, before getting here) -
+// the day-picker always describes the meal actually entered on this
+// exact date, seeded from whatever it already has picked.
+this._renderLeftoverDaysPicker(dayDate, existing ? existing.leftoverDates : []);
+// "Move to another week" (v141+) only makes sense for a meal that's
+// actually stored on this exact date - not a "repeat weekly" or
+// leftovers PROJECTION (existing.recurring / existing.leftover), which
+// have nothing of their own here to relocate; moving those would need
+// to first decide whether that means moving the recurring/leftovers
+// anchor itself, which is a different feature. Editing/saving from a
+// concrete entry like this already works today (see the plain `else`
+// branch in _saveEditor), so the same concreteness check applies here.
+this._editingMealConcrete = !!(existing && existing.name && !existing.recurring && !existing.leftover);
+const moveField = root.querySelector(".move-meal-field");
+if (moveField) {
+moveField.style.display = this._editingMealConcrete ? "" : "none";
+root.querySelector(".input-move-date").value = "";
+}
 const recipe = existing ? this._recipes.find((r) => r.name.toLowerCase() === existing.name.trim().toLowerCase()) : null;
 this._currentRating = recipe ? recipe.rating : null;
 this._updateRatingButtons();
@@ -7423,6 +8828,11 @@ this._editingMealIsSet = isSet;
 root.querySelector(".pick-btn-group").style.display = isSet ? "none" : "";
 this._renderMealViewCard();
 this._setMealEditorViewMode(isSet);
+// v1.109.6+: after every other field has been laid out, decide whether
+// this person gets the real editor or the Suggest flow, and show whatever
+// anyone else has already proposed for this slot.
+this._renderMenuSuggestions();
+this._applyMenuEditPermissionUi();
 this._openModal(root.querySelector(".edit-overlay"));
 }
 _closeEditor() {
@@ -7456,7 +8866,20 @@ this._updateMenuLinkOpenBtn();
 this._setDishImage(recipe ? recipe.image || "" : "");
 const recurCheck = root.querySelector(".input-recur-weekly");
 if (recurCheck) recurCheck.checked = false;
-this._currentRating = recipe ? recipe.rating || "up" : "up";
+// The Recipe Box editor is a reusable template, not a dated meal slot -
+// leftovers only ever apply to an actual planned day, so this field (kept
+// hidden here anyway via .dish-hide-field) has nothing to seed.
+const leftoverPickerEl = root.querySelector(".leftover-days-picker");
+if (leftoverPickerEl) leftoverPickerEl.innerHTML = "";
+// v143+ bug fix: this used to default to "up" (hearted) for BOTH a
+// brand-new recipe (recipe is null) and an existing recipe that simply
+// has no rating yet - so every recipe added via this editor arrived
+// pre-loved, and even just opening Edit on an unrated recipe silently
+// hearted it, with no way to actually get back to "no rating" since
+// _saveDishEditor below used to re-force "up" on save too. null is
+// already a fully supported "neither heart nor thumbsdown" state (see
+// _updateRatingButtons/_upsertDish), so there's no reason to coerce it.
+this._currentRating = recipe ? recipe.rating || null : null;
 this._updateRatingButtons();
 this._currentColor = "#f0e6c4";
 root.querySelector(".input-color-custom").value = this._currentColor;
@@ -7466,6 +8889,8 @@ this._updateColorSwatches();
 // never the calendar-slot view card (there's no "already planned" state
 // to summarize here).
 this._editingExistingMeal = null;
+this._editingAdditionalRecipes = [];
+this._renderAdditionalRecipesList();
 this._setMealEditorViewMode(false);
 this._openModal(root.querySelector(".edit-overlay"));
 }
@@ -7499,6 +8924,17 @@ if (this._dishEditorMode) {
 this._saveDishEditor();
 return;
 }
+// v1.109.6+: belt-and-braces. _applyMenuEditPermissionUi already hides
+// Save for someone without can_edit_menu, so this should be unreachable
+// through the UI - but Save is also reachable from keyboard/Enter
+// handling and from _setMealEditorViewMode's own toggling, and silently
+// writing to the meal plan here would defeat the whole point. Degrades
+// to the Suggest action rather than doing nothing, so the tap still
+// accomplishes what the person meant.
+if (!this._canEditMenu()) {
+this._suggestMealFromEditor();
+return;
+}
 const dateKey = this._editingDateKey;
 const blockIndex = this._editingBlockIndex || 0;
 const root = this._root;
@@ -7511,6 +8947,18 @@ const recur = root.querySelector(".input-recur-weekly").checked ? "weekly" : nul
 // rather than a specific override for this planned meal.
 const servingsRaw = root.querySelector(".input-servings").value.trim();
 const servings = this._currentGrocyRecipeId && servingsRaw ? parseInt(servingsRaw, 10) || null : null;
+// Leftovers (v141+, day-picker since v144.10) - whichever day checkboxes
+// are checked become this meal's leftoverDates, verbatim (an explicit,
+// arbitrary pick of any day(s), not necessarily contiguous). spanDays is
+// left at its default (1) for anything saved from here on - it only
+// still matters for reading pre-v144.10 data, never for a new write; see
+// _fetchMealPlan/_parseDishDescription. Opening the editor on a leftovers
+// PROJECTION now redirects to its source day before this point is ever
+// reached (see _openEditorForDate), so wasLeftoverProjection below stays
+// defensive dead code through the normal UI, not something this save
+// path still needs to actively produce.
+const leftoverDates = this._readLeftoverDaysPicker();
+const wasLeftoverProjection = !!(this._editingExistingMeal && this._editingExistingMeal.leftover);
 if (name) {
 if (this._editingMealRecurring && this._editingMealAnchorUid) {
 // What's showing here is a projection of a "repeat weekly" meal set
@@ -7526,12 +8974,12 @@ const applyToAll = window.confirm(
 `Cancel - only change this one occurrence`
 );
 if (applyToAll) {
-this._upsertMealPlanByUid(this._editingMealAnchorUid, blockIndex, name, description, link, this._currentColor, recur, this._currentGrocyRecipeId, servings);
+this._upsertMealPlanByUid(this._editingMealAnchorUid, blockIndex, name, description, link, this._currentColor, recur, this._currentGrocyRecipeId, servings, this._editingAdditionalRecipes);
 } else {
-this._upsertMealPlan(dateKey, blockIndex, name, description, link, this._currentColor, null, this._currentGrocyRecipeId, servings);
+this._upsertMealPlan(dateKey, blockIndex, name, description, link, this._currentColor, null, this._currentGrocyRecipeId, servings, 1, this._editingAdditionalRecipes, leftoverDates);
 }
 } else {
-this._upsertMealPlan(dateKey, blockIndex, name, description, link, this._currentColor, recur, this._currentGrocyRecipeId, servings);
+this._upsertMealPlan(dateKey, blockIndex, name, description, link, this._currentColor, recur, this._currentGrocyRecipeId, servings, 1, this._editingAdditionalRecipes, leftoverDates);
 }
 this._upsertDish(name, description, link, this._currentRating, null, this._currentGrocyRecipeId);
 } else if (this._editingMealRecurring && this._editingMealAnchorUid) {
@@ -7539,6 +8987,12 @@ this._upsertDish(name, description, link, this._currentRating, null, this._curre
 // week" - an explicit "Skipped" entry for this date overrides the
 // projection without touching the recurring anchor, so it keeps
 // projecting normally onto every other week.
+this._upsertMealPlan(dateKey, blockIndex, "Skipped", "", "", this._currentColor, null);
+} else if (wasLeftoverProjection) {
+// Same "skip just this one occurrence" idea, applied to a leftovers
+// projection instead of a weekly one - an explicit "Skipped" entry
+// overrides just this date without touching the leftovers source day,
+// which keeps covering every OTHER day in its own span normally.
 this._upsertMealPlan(dateKey, blockIndex, "Skipped", "", "", this._currentColor, null);
 } else {
 this._removeMealPlan(dateKey, blockIndex);
@@ -7559,7 +9013,12 @@ if (name) {
 // this IS the deliberate "add/edit a Recipe Box entry" action - a
 // near-duplicate nudge is the point, not an interruption. See
 // _upsertDish's own comment for why the two calls differ.
-this._upsertDish(name, description, link, this._currentRating || "up", this._editingDishUid, this._currentGrocyRecipeId, category, image, true);
+// v143+ bug fix: previously forced "up" whenever _currentRating was
+// falsy, which re-hearted every unrated recipe on save even after the
+// _openDishEditor default above was fixed to leave it null - see that
+// comment. Save now just persists whatever the heart/thumbsdown buttons
+// actually reflect, null included.
+this._upsertDish(name, description, link, this._currentRating, this._editingDishUid, this._currentGrocyRecipeId, category, image, true);
 // "Also add to Meal Suggestions" - the other half of "search for a
 // recipe and tap 💡, or add one and check this box" (see
 // _suggestDish and the now-removed Suggestions box free-text add).
@@ -7611,7 +9070,15 @@ new Set((this._recipes || []).map((r) => (r.category || "").trim()).filter(Boole
 datalist.innerHTML = categories.map((c) => `<option value="${c.replace(/"/g, "&quot;")}"></option>`).join("");
 }
 _openLoved(pickerMode) {
-this._pickerMode = !!pickerMode;
+// v142+: pickerMode is now also allowed to be the string "additional"
+// (the day/menu editor's "+ From Recipe Box" additional-recipe button -
+// see _addAdditionalRecipeFromLoved), on top of the existing true/false.
+// Both true and "additional" are equally "picker mode" for every
+// existing truthy check below (hides bulk-select, shows the hint, tap-
+// to-close instead of opening dish detail) - only the exact click
+// behavior and title text differ, handled where _pickerMode is compared
+// with === rather than just used as a boolean.
+this._pickerMode = pickerMode === "additional" ? "additional" : !!pickerMode;
 this._lovedSearchTerm = "";
 this._recipeBoxCategory = "All";
 this._recipeBoxSort = "default";
@@ -7627,7 +9094,10 @@ this._fetchRecipes();
 // fills in the editor and closes on tap instead of opening dish detail
 // (see _renderLoved's click wiring), and hides the bulk-select/delete
 // entry point since that's not a task that belongs mid-picking.
-this._root.querySelector(".loved-title").textContent = this._pickerMode
+this._root.querySelector(".loved-title").textContent =
+this._pickerMode === "additional"
+? "\u{1F37D}\u{FE0F} Add Additional Recipe"
+: this._pickerMode
 ? "\u{1F37D}\u{FE0F} Pick a Recipe"
 : "\u{1F37D}\u{FE0F} Recipe Box";
 this._root.querySelector(".loved-hint").style.display = this._pickerMode ? "block" : "none";
@@ -7658,7 +9128,11 @@ root.querySelector(".input-link").value = recipe.link || "";
 this._currentGrocyRecipeId = recipe.grocyRecipeId || null;
 root.querySelector(".input-servings").value = "";
 this._updateMenuLinkOpenBtn();
-this._currentRating = recipe.rating || "up";
+// v143+ bug fix: same "up" defaulting bug as _openDishEditor (see its
+// comment) - picking an unrated recipe here used to silently mirror it
+// back into the Recipe Box as loved (via _saveEditor's _upsertDish call)
+// just from picking it for a meal.
+this._currentRating = recipe.rating || null;
 this._updateRatingButtons();
 this._closeLoved();
 }
@@ -7772,6 +9246,8 @@ const idx = parseInt(el.dataset.idx, 10);
 const recipe = recipes[idx];
 if (selectMode) {
 this._toggleRecipeBoxSelected(recipe.uid);
+} else if (this._pickerMode === "additional") {
+this._addAdditionalRecipeFromLoved(recipe);
 } else if (this._pickerMode) {
 this._selectLovedDish(recipe);
 } else {
@@ -10707,6 +12183,10 @@ cb.checked = cb.value === "10" || cb.value === "30";
 });
 const now = new Date();
 root.querySelector(".add-event-date").value = this._dateKey(now);
+// Blank by default - the same "one day, exactly as before this field
+// existed" behavior _saveAddEvent falls back to whenever it's left empty
+// (see its own comment there).
+root.querySelector(".add-event-end-date").value = "";
 root.querySelector(".add-event-reminder-date").value = this._dateKey(now);
 const nextHour = new Date(now);
 nextHour.setMinutes(0, 0, 0);
@@ -10719,11 +12199,40 @@ root.querySelector(".add-event-end-time").value = fmtTimeInput(afterHour);
 root.querySelector(".add-event-reminder-time").value = fmtTimeInput(nextHour);
 root.querySelectorAll(".add-event-allday-btn").forEach((b) => b.classList.toggle("active", b.dataset.value === "off"));
 this._updateAddEventFieldVisibility(false);
+this._renderAddEventPeopleField();
 // Which tab was last used isn't meaningful context to carry over to the
 // next, unrelated event/reminder - default to Calendar unless the + menu
 // specifically picked "Reminder" (see the add-fab-reminder handler).
 this._setAddEventTab(tab === "reminder" ? "reminder" : "calendar");
 this._openModal(root.querySelector(".add-event-overlay"));
+}
+// v141+: "Also for" on the Add Event modal itself, not just after the
+// fact via the event-info popup's own identical checkbox row
+// (_renderEventInfoPeopleSection/_saveEventPeopleOverride) - lets someone
+// tag a new event for multiple people right when they create it instead
+// of having to reopen it afterward. Rebuilt on open and whenever the
+// Calendar select changes (see its own change listener), since whichever
+// calendar is currently picked has to be excluded from "someone else"
+// exactly like the event-info popup already excludes the event's owner.
+_renderAddEventPeopleField() {
+const root = this._root;
+const content = root.querySelector(".add-event-people-content");
+if (!content) return;
+const ownEntity = root.querySelector(".add-event-calendar-select").value;
+const people = this._getPeople();
+const others = people.filter((p) => p.entity !== ownEntity);
+if (!others.length) {
+content.innerHTML = `<div class="event-info-people-none">No one else in Family Hub to tag yet.</div>`;
+return;
+}
+const colorMap = this._colorByName(people);
+const checkboxesHtml = others
+.map((p) => {
+const color = this._colorFor(p, colorMap);
+return `<label class="remind-check-opt event-info-person-opt"><input type="checkbox" class="add-event-people-check" value="${p.entity}" /><span class="event-info-person-dot" style="background:${color}"></span>${p.name}</label>`;
+})
+.join("");
+content.innerHTML = `<div class="remind-check-row">${checkboxesHtml}</div>`;
 }
 _setAddEventTab(tab) {
 const root = this._root;
@@ -10890,32 +12399,74 @@ if (remindMinutesList.length) {
 const marker = `<!--reminder:${remindMinutesList.join(",")}-->`;
 description = description ? `${description}\n\n${marker}` : marker;
 }
+// v141+: multi-day events - an optional End date field (blank by
+// default, see _openAddEvent) alongside the existing Date field. Left
+// blank (or picked earlier than Date, which would be nonsensical),
+// end date just falls back to the start date - the exact same single-day
+// event this modal always created before this field existed.
+const endDateInputVal = root.querySelector(".add-event-end-date").value;
+const endDateVal = endDateInputVal && endDateInputVal >= dateVal ? endDateInputVal : dateVal;
 const data = { summary: title };
 if (location) data.location = location;
 if (description) data.description = description;
 if (allDay) {
-const start = new Date(dateVal + "T00:00:00");
-const end = new Date(start);
+const end = new Date(endDateVal + "T00:00:00");
 end.setDate(end.getDate() + 1);
 data.start_date = dateVal;
 data.end_date = this._dateKey(end);
 } else {
 const startTime = root.querySelector(".add-event-start-time").value || "09:00";
 let endTime = root.querySelector(".add-event-end-time").value || "10:00";
-if (endTime <= startTime) {
+// The "end time at or before start time means the next hour, not
+// tomorrow" fallback only makes sense for a same-day event - once an
+// explicit later End date is picked, an end clock-time earlier than the
+// start clock-time is completely normal (e.g. Fri 8pm to Sun 2pm) and
+// must NOT get silently bumped.
+if (endDateVal === dateVal && endTime <= startTime) {
 const [h, m] = startTime.split(":").map((n) => parseInt(n, 10));
 const endDate = new Date();
 endDate.setHours(h + 1, m, 0, 0);
 endTime = `${String(endDate.getHours()).padStart(2, "0")}:${String(endDate.getMinutes()).padStart(2, "0")}`;
 }
 data.start_date_time = `${dateVal} ${startTime}:00`;
-data.end_date_time = `${dateVal} ${endTime}:00`;
+data.end_date_time = `${endDateVal} ${endTime}:00`;
 }
 try {
 await this._hass.callService("calendar", "create_event", data, { entity_id: entity });
 } catch (e) {
 this._setAddEventError(`⚠️ Couldn't save this event: ${e && e.message ? e.message : e}`);
 return;
+}
+// "Also for" (v141+, see _renderAddEventPeopleField): tag the just-
+// created event for anyone else checked, using the exact same
+// (calendar, start, summary) composite key the event-info popup's own
+// checkbox row saves under (_eventOverrideKey/_saveEventPeopleOverride) -
+// computed here from the very Date this event was just created with
+// rather than waiting for a re-fetch to hand one back, since Home
+// Assistant's calendar integrations echo the wall-clock time verbatim
+// (this is the same assumption the popup's own key already relies on for
+// an existing event). Best-effort: a failure here still leaves the event
+// itself created, just not yet tagged - the user can always add people
+// afterward from the event-info popup like before this existed.
+const peopleEntities = Array.from(root.querySelectorAll(".add-event-people-check:checked")).map((c) => c.value);
+if (peopleEntities.length) {
+const startDate = allDay ? new Date(dateVal + "T00:00:00") : new Date(data.start_date_time.replace(" ", "T"));
+try {
+const startTs = Math.floor(startDate.getTime() / 1000);
+const result = await this._hass.connection.sendMessagePromise({
+type: "family_hub/set_event_people_override",
+calendar_entity: entity,
+start: startTs,
+summary: title,
+people: peopleEntities,
+});
+const key = (result && result.key) || `${entity}|${startTs}|${title}`;
+const savedPeople = (result && result.people) || peopleEntities;
+if (!this._eventPeopleOverrides) this._eventPeopleOverrides = {};
+if (savedPeople.length) this._eventPeopleOverrides[key] = savedPeople;
+} catch (e) {
+/* best-effort - see comment above */
+}
 }
 this._closeAddEvent();
 this._fetchEvents();
@@ -11048,8 +12599,12 @@ this._applySizeVars();
 this._eventDetails = {};
 if (this._viewMode === "month") {
 this._renderMonthGrid();
+} else if (this._viewMode === "split") {
+this._renderMonthSplitGrid();
 } else if (this._viewMode === "planner") {
 this._renderPlannerGrid();
+} else if (this._viewMode === "portrait") {
+this._renderPortraitGrid();
 } else {
 this._renderWeekGrid();
 }
@@ -11057,6 +12612,17 @@ this._renderWeekGrid();
 _renderMonthGrid() {
 const gridEl = this._root.querySelector(".grid");
 gridEl.className = "grid mode-month";
+const { dayNames, cellsHtml } = this._buildMonthCellsHtml(null);
+gridEl.innerHTML = `<div class="month-weekday-row">${dayNames.map((d) => `<div class="mwd">${d}</div>`).join("")}</div><div class="month-cells">${cellsHtml}</div>`;
+}
+// v145+: split out of the old _renderMonthGrid so the classic Month view
+// and the new "split" variant's own calendar pane (see
+// _renderMonthSplitGrid) can share this exact cell-building logic instead
+// of drifting apart as two copies. selectedDateKey (null for the classic
+// Month view, which has no concept of a "selected" day) adds the
+// .selected class to whichever cell's data-date matches it, so the split
+// view's calendar pane can highlight the day its detail pane is showing.
+_buildMonthCellsHtml(selectedDateKey) {
 const { gridStart, anchor } = this._monthGridRange();
 const today = new Date();
 today.setHours(0, 0, 0, 0);
@@ -11171,30 +12737,221 @@ shown
 `<div class="mc-pill${e.isReminder ? " mc-reminder-pill" : ""}" style="${e.bg || `background:${e.color}`}">${e.isReminder ? "&#128276; " : ""}${e.summary}</div>`
 )
 .join("") + (more > 0 ? `<div class="mc-more">+${more} more</div>` : "");
+// v141+ - meals render BEFORE (above) events/reminders in each cell,
+// not after - a household glancing at Month view is usually checking
+// "what's for dinner" alongside the day's schedule, and meals used to
+// get pushed to the bottom of a busy cell where they were easy to miss.
+let mealsHtml = "";
 if (settings.showMealsInMonth) {
 const dayBlocks = this._getBlocksForDay(cellDate.getDay());
-pillsHtml += dayBlocks
+mealsHtml = dayBlocks
 .map((blockName, bi) => {
 const m = this._getMealForDay(dateKey, cellDate, bi);
 if (!m || !m.name || !m.name.trim()) return "";
 const repeatIcon = m.recur === "weekly" ? "\u{1F501} " : "";
-return `<div class="mc-pill mc-meal-pill" style="background:${m.color || "#f0e6c4"}" data-date="${dateKey}" data-block-index="${bi}">\u{1F37D}\u{FE0F} ${repeatIcon}${m.name}</div>`;
+const leftoverIcon = m.leftover ? "\u{267B}\u{FE0F} " : "";
+return `<div class="mc-pill mc-meal-pill" style="background:${m.color || "#f0e6c4"}" data-date="${dateKey}" data-block-index="${bi}">\u{1F37D}\u{FE0F} ${repeatIcon}${leftoverIcon}${m.name}</div>`;
 })
 .join("");
 }
+pillsHtml = mealsHtml + pillsHtml;
 const badgesHtml = badges
 .map((b) => `<span class="custody-badge" style="background:${b.color};color:${this._textColorFor(b.color)}">${b.text}</span>`)
 .join("");
-cellsHtml += `<div class="month-cell ${isToday ? "today" : ""} ${outside ? "outside" : ""}" data-date="${dateKey}">
+cellsHtml += `<div class="month-cell ${isToday ? "today" : ""} ${outside ? "outside" : ""} ${selectedDateKey && dateKey === selectedDateKey ? "selected" : ""}" data-date="${dateKey}">
 <div class="mc-date">${cellDate.getDate()}${hasBirthday ? " \u{1F382}" : ""}${badgesHtml}</div>
 <div class="mc-events">${pillsHtml}</div>
 </div>`;
 }
-gridEl.innerHTML = `<div class="month-weekday-row">${dayNames.map((d) => `<div class="mwd">${d}</div>`).join("")}</div><div class="month-cells">${cellsHtml}</div>`;
+return { dayNames, cellsHtml };
+}
+// v145+ task: the "split" Month variant - classic month grid on one side
+// (built via the shared _buildMonthCellsHtml, same as the plain Month
+// view), the selected day's full event list on the other, plus a button
+// to jump straight to that day's week. See CSS for .mode-month-split for
+// how the two panes lay out side-by-side (landscape) vs. stacked
+// calendar-on-top (portrait, via @media (orientation: portrait) - not to
+// be confused with the unrelated manually-selected "portrait" WEEK
+// variant, which stacks week day-columns instead).
+_renderMonthSplitGrid() {
+const gridEl = this._root.querySelector(".grid");
+gridEl.className = "grid mode-month-split";
+const { anchor } = this._monthGridRange();
+const today = new Date();
+today.setHours(0, 0, 0, 0);
+const anchorKey = this._dateKey(anchor);
+// Reset the selected day to a sensible default (today, when today falls
+// within the displayed month, otherwise the 1st of that month) whenever
+// the displayed month actually changes out from under it - i.e. the
+// household navigated to a different month via the nav arrows/swipe/
+// Today, not the very first render, so a selection set before this ever
+// ran once (as a caller may reasonably do) isn't immediately clobbered.
+// Without distinguishing "first render" from "month changed," comparing
+// only against the anchor key can't tell "never set" apart from "already
+// set to something in this exact month" on that very first call, since
+// _monthSplitAnchorKey starts out undefined either way.
+const isFirstRender = this._monthSplitAnchorKey === undefined;
+if ((isFirstRender && !this._monthSplitSelectedDate) || (!isFirstRender && this._monthSplitAnchorKey !== anchorKey)) {
+const todayInThisMonth = today.getFullYear() === anchor.getFullYear() && today.getMonth() === anchor.getMonth();
+this._monthSplitSelectedDate = this._dateKey(todayInThisMonth ? today : anchor);
+}
+this._monthSplitAnchorKey = anchorKey;
+const { dayNames, cellsHtml } = this._buildMonthCellsHtml(this._monthSplitSelectedDate);
+const calHtml = `<div class="month-weekday-row">${dayNames.map((d) => `<div class="mwd">${d}</div>`).join("")}</div><div class="month-cells">${cellsHtml}</div>`;
+const detailHtml = this._buildMonthSplitDetailHtml(this._monthSplitSelectedDate);
+gridEl.innerHTML = `<div class="month-split-cal">${calHtml}</div><div class="month-split-detail">${detailHtml}</div>`;
+}
+// v145+ task: the split view's right/bottom pane - every event, reminder
+// and meal for the selected day, uncapped (unlike a month-cell's own
+// capped-at-3 pills), each wired into this._eventDetails the same way
+// _buildDayColumnHtml does for the Week view so clicking one opens the
+// normal event-info popup, plus a "Go to this week" button that reuses
+// the existing _goToWeekFromDate helper.
+_buildMonthSplitDetailHtml(dateKey) {
+const cellDate = new Date(`${dateKey}T00:00:00`);
+const dayStart = new Date(cellDate);
+const dayEnd = new Date(cellDate);
+dayEnd.setDate(dayStart.getDate() + 1);
+const today = new Date();
+today.setHours(0, 0, 0, 0);
+const isToday = cellDate.getTime() === today.getTime();
+const settings = this._getSettings();
+const people = this._getPeople();
+const colorMap = this._colorByName(people);
+const filterKeys = this._legendFilterKeys || [];
+const eventPeople = filterKeys.length ? people.filter((p) => filterKeys.includes((p.name || p.entity || "").trim().toLowerCase())) : people;
+const filterEntitySet = filterKeys.length ? new Set(eventPeople.map((p) => p.entity)) : null;
+const typeFilter = this._eventTypeFilter || [];
+let items = [];
+for (const person of people) {
+const evs = this._events[person.entity] || [];
+const personIsBirthdays = person.entity === this._config.birthdays_entity;
+const personBadges = person.badges || [];
+const personColor = this._colorFor(person, colorMap);
+for (const ev of evs) {
+const evStart = this._toDate(ev.start);
+const evEnd = this._toDate(ev.end) || evStart;
+if (!evStart) continue;
+if (evEnd > dayStart && evStart < dayEnd) {
+const summaryLower = (ev.summary || "").toLowerCase();
+const hideMatched = personBadges.some((b) => {
+const hideMatch = (b.hideMatch || "").trim().toLowerCase();
+return hideMatch && summaryLower.includes(hideMatch);
+});
+if (hideMatched) continue;
+let matchedBadge = false;
+for (const b of personBadges) {
+const badgeMatch = (b.match || "").trim().toLowerCase();
+if (badgeMatch && summaryLower.includes(badgeMatch)) matchedBadge = true;
+}
+if (matchedBadge) continue;
+const reminderInfo = this._parseReminderMarker(ev.description);
+if (typeFilter.length && !typeFilter.includes(reminderInfo.isReminder ? "reminder" : "event")) continue;
+const peopleEntities = this._eventPeopleEntities(person.entity, evStart, ev.summary, people);
+if (filterEntitySet && !peopleEntities.some((e) => filterEntitySet.has(e))) continue;
+const eventId = `msd-${dateKey}-${items.length}-${person.entity}`;
+const evBg = this._eventCollageStyle(peopleEntities, people, colorMap);
+const allDay = this._isAllDay(ev);
+this._eventDetails[eventId] = {
+summary: ev.summary || "(untitled)",
+start: evStart,
+end: evEnd,
+allDay,
+color: personColor,
+personName: person.name,
+calendarEntity: person.entity,
+description: reminderInfo.clean,
+reminderMinutesList: reminderInfo.minutesList,
+isReminder: reminderInfo.isReminder,
+location: ev.location || "",
+};
+items.push({
+id: eventId,
+summary: ev.summary || "(untitled)",
+start: evStart,
+allDay,
+bg: evBg,
+color: personColor,
+isReminder: reminderInfo.isReminder,
+isBirthday: personIsBirthdays,
+});
+}
+}
+}
+if (!typeFilter.length || typeFilter.includes("reminder")) {
+for (const r of this._reminders || []) {
+if (r.due >= dayStart && r.due < dayEnd) {
+const remColor = r.color || REMINDER_COLOR;
+const reminderId = `msd-rem-${dateKey}-${items.length}-${r.uid}`;
+this._eventDetails[reminderId] = {
+summary: r.summary,
+start: r.due,
+end: new Date(r.due.getTime() + 60000),
+allDay: false,
+color: remColor,
+personName: r.personName || "Reminder",
+calendarEntity: r.listEntity || this._config.reminders_entity,
+description: r.description || "",
+reminderMinutesList: [],
+isReminder: true,
+todoUid: r.uid,
+};
+items.push({ id: reminderId, summary: r.summary, start: r.due, allDay: false, bg: `background:${remColor}`, color: remColor, isReminder: true });
+}
+}
+}
+items.sort((a, b) => (a.allDay === b.allDay ? a.start - b.start : a.allDay ? -1 : 1));
+const fmtTime = (d) => d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+const itemsHtml = items.length
+? items
+.map(
+(it) =>
+`<div class="msd-item event" data-event-id="${it.id}" style="${it.bg || `background:${it.color}`}">
+<span class="msd-item-time">${it.allDay ? "All day" : fmtTime(it.start)}</span>
+<span class="msd-item-summary">${it.isReminder ? "&#128276; " : ""}${it.isBirthday ? "\u{1F382} " : ""}${it.summary}</span>
+</div>`
+)
+.join("")
+: `<div class="msd-empty">Nothing scheduled</div>`;
+let mealsHtml = "";
+if (settings.showMealsInMonth) {
+const dayBlocks = this._getBlocksForDay(cellDate.getDay());
+mealsHtml = dayBlocks
+.map((blockName, bi) => {
+const m = this._getMealForDay(dateKey, cellDate, bi);
+if (!m || !m.name || !m.name.trim()) return "";
+const repeatIcon = m.recur === "weekly" ? "\u{1F501} " : "";
+const leftoverIcon = m.leftover ? "\u{267B}\u{FE0F} " : "";
+return `<div class="msd-item mc-meal-pill" style="background:${m.color || "#f0e6c4"}" data-date="${dateKey}" data-block-index="${bi}">\u{1F37D}\u{FE0F} ${repeatIcon}${leftoverIcon}${m.name}</div>`;
+})
+.join("");
+}
+const dateLabel = cellDate.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+return `<div class="msd-header">
+<div class="msd-date">${dateLabel}${isToday ? ' <span class="msd-today-tag">Today</span>' : ""}</div>
+<button type="button" class="msd-goto-week-btn" data-date="${dateKey}">Go to this week &#8594;</button>
+</div>
+<div class="msd-items">${mealsHtml}${itemsHtml}</div>`;
 }
 _renderWeekGrid() {
 const gridEl = this._root.querySelector(".grid");
 gridEl.className = "grid mode-week";
+const ctx = this._buildWeekLikeContext();
+let html = "";
+for (let i = 0; i < 7; i++) {
+html += this._buildDayColumnHtml(i, ctx);
+}
+gridEl.innerHTML = html;
+this._afterRenderDayColumns(ctx);
+}
+
+// Shared setup for any view that lays out the current week as 7
+// day-columns (Week itself, and Portraits 4-then-3 split of the same 7
+// columns - see _renderPortraitGrid) - computed once per render and
+// threaded through as a single ctx object rather than a long positional
+// argument list, so _buildDayColumnHtml/_afterRenderDayColumns stay easy
+// to call from either place.
+_buildWeekLikeContext() {
 const start = this._weekStart();
 const today = new Date();
 today.setHours(0, 0, 0, 0);
@@ -11215,8 +12972,18 @@ const rangeStart = settings.timelineStartHour;
 const rangeEnd = settings.timelineEndHour;
 const rangeStartMin = rangeStart * 60;
 const rangeEndMin = rangeEnd >= 24 ? 1440 : (rangeEnd + 1) * 60;
-let html = "";
-for (let i = 0; i < 7; i++) {
+return { start, today, dayNames, settings, people, colorMap, filterKeys, eventPeople, filterEntitySet, PX_PER_HOUR, rangeStart, rangeEnd, rangeStartMin, rangeEndMin };
+}
+
+// Builds one day-columns full HTML (header/weather, meal banners,
+// events-or-timeline) for day index i (0 = the ctx weeks Sunday) - the
+// exact fragment Week renders 7-across in one row; Portrait renders the
+// same 7 fragments split 4-then-3 across two rows instead (see
+// _renderPortraitGrid). Pulled out of _renderWeekGrid so a fix or feature
+// in one views day-column content never needs a second, separate edit to
+// keep the other view in sync.
+_buildDayColumnHtml(i, ctx) {
+const { start, today, dayNames, settings, people, colorMap, filterEntitySet, rangeStart, rangeEnd, rangeStartMin, rangeEndMin, PX_PER_HOUR } = ctx;
 const dayStart = new Date(start);
 dayStart.setDate(start.getDate() + i);
 const dayEnd = new Date(dayStart);
@@ -11244,11 +13011,13 @@ const bannerStyle = bannerColor ? ` style="background:${bannerColor};color:${ban
 const editClass = this._mealEditMode ? " edit-mode" : "";
 const recurClass = plan && plan.recur === "weekly" ? " recurring-meal" : "";
 const recurIcon = plan && plan.recur === "weekly" ? "\u{1F501} " : "";
+const leftoverClass = plan && plan.leftover ? " leftover-meal" : "";
+const leftoverIcon = plan && plan.leftover ? "\u{267B}\u{FE0F} " : "";
 bannersHtml += `
-<div class="menu-banner ${hasName ? "" : "empty"}${editClass}${recurClass}" data-day-index="${i}" data-block-index="${blockIndex}"${bannerStyle}>
+<div class="menu-banner ${hasName ? "" : "empty"}${editClass}${recurClass}${leftoverClass}" data-day-index="${i}" data-block-index="${blockIndex}"${bannerStyle}>
 ${flagChar ? `<span class="rating-flag">${flagChar}</span>` : ""}
 <span class="block-label">${blockName}</span>
-<span class="menu-text">${hasName ? `${recurIcon}${plan.name}` : `Tap to add ${blockName.toLowerCase()}`}</span>
+<span class="menu-text">${hasName ? `${recurIcon}${leftoverIcon}${plan.name}` : `Tap to add ${blockName.toLowerCase()}`}</span>
 </div>
 `;
 });
@@ -11385,13 +13154,33 @@ isReminder: true,
 }
 }
 dayEvents.sort((a, b) => (a.allDay === b.allDay ? a.start - b.start : a.allDay ? -1 : 1));
+// v141+ - "grey out already-passed events/reminders" setting: purely a
+// visual "where am I in the day" aid, so it never disables clicking/
+// interacting with the greyed-out pill - see the .past CSS rule, which
+// only touches opacity. A future day's events are never greyed (nothing
+// there is "past" yet). v144.9+: an EARLIER day's events/reminders are
+// now ALSO greyed, and entirely so - once the whole day is over, there's
+// no meaningful "still in progress" for anything on it, unlike today's
+// column, which greys out event by event as each one individually ends.
+// A reminder on today counts as past once its own due moment has
+// arrived; a real event on today counts as past only once it's fully
+// OVER (its end time), not merely started, so something currently in
+// progress still reads as "now," not "done."
+const isBeforeToday = dayStart.getTime() < today.getTime();
+const greyOutPast = settings.greyOutPastEvents && (isToday || isBeforeToday);
+const nowMs = Date.now();
+const isPastEvent = (ev) => {
+if (!greyOutPast) return false;
+if (isBeforeToday) return true;
+return ev.isReminder ? ev.start.getTime() <= nowMs : ev.end.getTime() <= nowMs;
+};
 let eventsHtml;
 if (this._getShowTimeline()) {
 const allDay = dayEvents.filter((e) => e.allDay);
 const timed = dayEvents.filter((e) => !e.allDay);
 const allDayHtml = allDay.length
 ? `<div class="all-day-row">${allDay
-.map((ev) => `<span class="all-day-chip" style="${ev.bg || `background:${ev.color}`}" data-event-id="${ev.id}">${ev.summary}</span>`)
+.map((ev) => `<span class="all-day-chip${isPastEvent(ev) ? " past" : ""}" style="${ev.bg || `background:${ev.color}`}" data-event-id="${ev.id}">${ev.summary}</span>`)
 .join("")}</div>`
 : "";
 let hourRowsHtml = "";
@@ -11414,7 +13203,7 @@ const height = Math.max(16, ((endMinutes - startMinutes) / 60) * PX_PER_HOUR);
 const timeLabel = ev.start.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 const left = `calc(32px + (100% - 34px) * ${col} / ${totalCols})`;
 const width = `calc((100% - 34px) / ${totalCols} - 2px)`;
-return `<div class="tl-event${ev.isReminder ? " reminder-event" : ""}" style="top:${top}px;height:${height}px;left:${left};width:${width};${ev.bg || `background:${ev.color}`}" data-event-id="${ev.id}">
+return `<div class="tl-event${ev.isReminder ? " reminder-event" : ""}${isPastEvent(ev) ? " past" : ""}" style="top:${top}px;height:${height}px;left:${left};width:${width};${ev.bg || `background:${ev.color}`}" data-event-id="${ev.id}">
 <span class="tl-time">${timeLabel}</span>
 <span class="tl-summary">${ev.isReminder ? "&#128276; " : ""}${ev.summary}</span>
 </div>`;
@@ -11427,7 +13216,7 @@ eventsHtml = dayEvents
 const timeLabel = ev.allDay
 ? "All day"
 : ev.start.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-return `<div class="event${ev.isReminder ? " reminder-event" : ""}" style="${ev.bg || `background:${ev.color}`}" data-event-id="${ev.id}">
+return `<div class="event${ev.isReminder ? " reminder-event" : ""}${isPastEvent(ev) ? " past" : ""}" style="${ev.bg || `background:${ev.color}`}" data-event-id="${ev.id}">
 <div class="event-top">
 <span class="avatar" style="background:rgba(0,0,0,0.3)">${ev.isReminder ? "&#128276;" : ev.initial}</span>
 <span class="time">${timeLabel}</span>
@@ -11437,7 +13226,7 @@ return `<div class="event${ev.isReminder ? " reminder-event" : ""}" style="${ev.
 })
 .join("");
 }
-html += `
+return `
 <div class="day-col ${isToday ? "today" : ""}">
 <div class="day-header">
 <div class="name-row"><div class="name">${dayNames[i]}</div>${wxIconHtml}</div>
@@ -11450,7 +13239,13 @@ html += `
 </div>
 `;
 }
-gridEl.innerHTML = html;
+
+// Post-render side effects shared by Week and Portrait, once their
+// day-columns actually exist in the DOM: scrolls each timeline to a
+// sensible starting hour, and (re)attaches meal-drag handlers if Edit
+// Meals is active.
+_afterRenderDayColumns(ctx) {
+const { rangeStart, rangeEnd, PX_PER_HOUR } = ctx;
 if (this._getShowTimeline()) {
 const now = new Date();
 this._root.querySelectorAll(".day-col").forEach((col) => {
@@ -11465,6 +13260,34 @@ evEl.scrollTop = (targetHour - rangeStart) * PX_PER_HOUR;
 if (this._mealEditMode) {
 this._attachMealDragHandlers();
 }
+}
+
+// Portrait 4+3: identical per-day content to Week (meal banners, events or
+// timeline, custody badges, weather) via the same _buildDayColumnHtml -
+// the only difference is how the weeks 7 day-columns are arranged, so
+// this reuses that fragment rather than duplicating ~250 lines of
+// event/timeline-building logic a second time. Two flex rows (not a
+// single CSS grid template) so a 3-day bottom row still spans the full
+// width instead of leaving a dead 4th-column gap the way a plain
+// 4-column CSS grid would - see the .grid.mode-portrait/.portrait-row
+// CSS. Always splits 4-then-3, never calendar-aware (e.g. not "the rest
+// of this week"), since the week always starts Sunday in this project
+// (see _weekStart) - a simple, predictable split a household can learn
+// at a glance, matching how the feature was requested: 4 days on top, 3
+// on the bottom, for a portrait-oriented display where Weeks 7-across
+// layout squeezes each day too narrow to read.
+_renderPortraitGrid() {
+const gridEl = this._root.querySelector(".grid");
+gridEl.className = "grid mode-portrait";
+const ctx = this._buildWeekLikeContext();
+const cols = [];
+for (let i = 0; i < 7; i++) {
+cols.push(this._buildDayColumnHtml(i, ctx));
+}
+const topRow = cols.slice(0, 4).join("");
+const bottomRow = cols.slice(4, 7).join("");
+gridEl.innerHTML = `<div class="portrait-row">${topRow}</div><div class="portrait-row">${bottomRow}</div>`;
+this._afterRenderDayColumns(ctx);
 }
 // A planner-style layout - days running down the side (one row each,
 // current week only), one column per person - modeled directly on the
@@ -11491,6 +13314,18 @@ const colorMap = this._colorByName(people);
 const filterKeys = this._legendFilterKeys || [];
 const eventPeople = filterKeys.length ? people.filter((p) => filterKeys.includes((p.name || p.entity || "").trim().toLowerCase())) : people;
 const columns = eventPeople.length ? eventPeople : [null];
+// v142+: "more mobile-friendly Planner view" - below the same 700px
+// breakpoint every other view already collapses at, the wide sideways-
+// scrolling person-columns grid (fine on a tablet, unusable on a phone -
+// tiny 90px columns, constant horizontal scrolling to see anyone but the
+// first column or two) is swapped for a stacked "one day, then each
+// person's events underneath" layout instead - same underlying per-day/
+// per-person event data (dayPool/dayEvents below), just assembled into
+// planner-mobile-* markup (see the CSS) rather than planner-grid's fixed
+// columns. Re-checked on every render rather than cached, so rotating a
+// phone or resizing (see the matchMedia listener wired in
+// connectedCallback) picks it up without needing anything special.
+const isMobile = !!(window.matchMedia && window.matchMedia("(max-width: 700px)").matches);
 
 let headerHtml = `<div class="planner-header-cell planner-corner-cell"></div>`;
 headerHtml += columns
@@ -11502,13 +13337,49 @@ return `<div class="planner-header-cell" style="border-bottom-color:${color}"><s
 .join("");
 
 let rowsHtml = "";
+let mobileHtml = "";
 for (let i = 0; i < 7; i++) {
 const dayStart = new Date(start);
 dayStart.setDate(start.getDate() + i);
 const dayEnd = new Date(dayStart);
 dayEnd.setDate(dayStart.getDate() + 1);
 const isToday = dayStart.getTime() === today.getTime();
-rowsHtml += `<div class="planner-day-cell${isToday ? " today" : ""}"><span class="planner-day-name">${dayNames[dayStart.getDay()]}</span><span class="planner-day-number">${dayStart.getDate()}</span></div>`;
+// v142+: Planner view previously had no badge support at all, unlike
+// Week/Month - same per-day custody-badge matching (person.badges'
+// match/hideMatch substring rules against that day's events on the
+// person's own calendar) as those two views, rendered into the day-name
+// column's number the same way (right after the date number).
+let dayBadges = [];
+for (const person of people) {
+const personBadges = person.badges || [];
+if (!personBadges.length) continue;
+const evs = this._events[person.entity] || [];
+const personColor = this._colorFor(person, colorMap);
+for (const ev of evs) {
+const evStart = this._toDate(ev.start);
+const evEnd = this._toDate(ev.end) || evStart;
+if (!evStart) continue;
+if (evEnd > dayStart && evStart < dayEnd) {
+const summaryLower = (ev.summary || "").toLowerCase();
+const hideMatched = personBadges.some((b) => {
+const hideMatch = (b.hideMatch || "").trim().toLowerCase();
+return hideMatch && summaryLower.includes(hideMatch);
+});
+if (hideMatched) continue;
+for (const b of personBadges) {
+const badgeMatch = (b.match || "").trim().toLowerCase();
+if (badgeMatch && summaryLower.includes(badgeMatch) && b.text) {
+dayBadges.push({ text: b.text, color: personColor });
+}
+}
+}
+}
+}
+const dayBadgesHtml = dayBadges
+.map((b) => `<span class="custody-badge" style="background:${b.color};color:${this._textColorFor(b.color)}">${b.text}</span>`)
+.join("");
+rowsHtml += `<div class="planner-day-cell${isToday ? " today" : ""}"><span class="planner-day-name">${dayNames[dayStart.getDay()]}</span><span class="planner-day-number">${dayStart.getDate()}${dayBadgesHtml}</span></div>`;
+let dayMobileSections = "";
 // v129+: Planner view genuinely has one column per person (unlike Week/
 // Month, which merge everyone into one shared per-day list) - this is
 // the view the household's "show it in every involved person's own
@@ -11533,6 +13404,23 @@ const hideMatch = (b.hideMatch || "").trim().toLowerCase();
 return hideMatch && summaryLower.includes(hideMatch);
 });
 if (hideMatched) continue;
+// v144.2+ (task #32): same suppression Week/Portrait's own dayPool
+// build already has (see _buildDayColumnHtml above) - an event that
+// matched a badge's `match` rule is dropped from the event list
+// entirely, not just de-duped. Badges themselves are computed
+// separately above (dayBadges) so the badge still renders even
+// though the underlying event no longer does.
+// v144.2+ (task #32): same suppression Week/Portrait's own dayPool
+// build already has (see _buildDayColumnHtml above) - an event that
+// matched a badge's `match` rule is dropped from the event list
+// entirely, not just de-duped. Badges themselves are computed
+// separately above (dayBadges) so the badge still renders even
+// though the underlying event no longer does.
+const matchedBadge = personBadges.some((b) => {
+const badgeMatch = (b.match || "").trim().toLowerCase();
+return badgeMatch && summaryLower.includes(badgeMatch);
+});
+if (matchedBadge) continue;
 const reminderInfo = this._parseReminderMarker(ev.description);
 const peopleEntities = this._eventPeopleEntities(person.entity, evStart, ev.summary, people);
 dayPool.push({
@@ -11575,9 +13463,24 @@ return `<div class="event planner-event${ev.isReminder ? " reminder-event" : ""}
 })
 .join("");
 rowsHtml += `<div class="planner-person-cell">${cellHtml}</div>`;
+// Mobile view skips a person entirely for this day when they have
+// nothing planned - unlike the desktop grid's fixed columns (which
+// always show every person's cell, empty or not, since the grid shape
+// itself is the point), a stacked mobile list is meant to be compact,
+// so an empty section would just be dead space to scroll past.
+if (isMobile && dayEvents.length) {
+const dotColor = this._colorFor(person, colorMap);
+dayMobileSections += `<div class="planner-mobile-person"><div class="planner-mobile-person-name"><span class="planner-person-dot" style="background:${dotColor}"></span>${person.name}</div><div class="planner-mobile-person-events">${cellHtml}</div></div>`;
 }
 }
-gridEl.innerHTML = `<div class="planner-grid" style="grid-template-columns: 64px repeat(${columns.length}, minmax(90px, 1fr))">${headerHtml}${rowsHtml}</div>`;
+if (isMobile) {
+const dayBody = dayMobileSections || `<div class="planner-mobile-empty">Nothing planned</div>`;
+mobileHtml += `<div class="planner-mobile-day${isToday ? " today" : ""}"><div class="planner-mobile-day-header"><span class="planner-day-name">${dayNames[dayStart.getDay()]}</span><span class="planner-day-number">${dayStart.getDate()}${dayBadgesHtml}</span></div><div class="planner-mobile-persons">${dayBody}</div></div>`;
+}
+}
+gridEl.innerHTML = isMobile
+? `<div class="planner-mobile-list">${mobileHtml}</div>`
+: `<div class="planner-grid" style="grid-template-columns: 64px repeat(${columns.length}, minmax(90px, 1fr))">${headerHtml}${rowsHtml}</div>`;
 }
 _attachMealDragHandlers() {
 const root = this._root;

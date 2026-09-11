@@ -39,7 +39,10 @@ _require_permission below.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+import secrets
+import time
 from typing import Any, Optional
 
 import voluptuous as vol
@@ -54,8 +57,11 @@ from .const import (
     DOMAIN,
     PERMISSION_ASSIGN,
     PERMISSION_COMPLETE_ANY,
+    PERMISSION_EDIT_CHORE,
     PERMISSION_REWARD_ADD,
     PERMISSION_REWARD_OVERRIDE,
+    PERMISSION_AUTO_APPROVE,
+    PERMISSION_STAR_OVERRIDE,
     PERMISSION_VERIFY,
     ROUTINE_CATEGORIES,
 )
@@ -178,6 +184,90 @@ def _can_add_rewards(entry_data: dict[str, Any], connection: websocket_api.Activ
     checks elsewhere in this file."""
     return _has_permission(entry_data, connection, PERMISSION_REWARD_OVERRIDE) or _has_permission(
         entry_data, connection, PERMISSION_REWARD_ADD
+    )
+
+
+# Task #29: "log in as a specific user at a kiosk display." A shared kiosk
+# HA account (see const.py's SETTINGS_KEY_MEMBER_USER_IDS docstring for the
+# existing "one shared Tablet login" pattern this builds on) can act, for a
+# short window, AS whichever household member just typed their own PIN -
+# elevations are minted by ws_kiosk_elevate below and consumed by
+# _effective_actor. Deliberately an in-memory dict on entry_data, never a
+# Store - every permission decision in this file is re-derived fresh from
+# server-controlled data on every call (see this module's own docstring),
+# so a restart safely forgetting every outstanding elevation is exactly
+# the right failure mode, not a bug to work around.
+KIOSK_ELEVATION_TTL_SECONDS = 90
+
+
+def _kiosk_elevations(entry_data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return entry_data.setdefault("kiosk_elevations", {})
+
+
+def _prune_kiosk_elevations(entry_data: dict[str, Any]) -> None:
+    elevations = _kiosk_elevations(entry_data)
+    now = time.time()
+    for token in [tok for tok, rec in elevations.items() if rec["expires_at"] <= now]:
+        elevations.pop(token, None)
+
+
+def _hash_pin(pin: str, salt: str) -> str:
+    return hashlib.sha256(f"{salt}:{pin}".encode("utf-8")).hexdigest()
+
+
+async def _ha_user_is_admin(hass: HomeAssistant, user_id: Optional[str]) -> bool:
+    if not user_id:
+        return False
+    try:
+        ha_user = await hass.auth.async_get_user(user_id)
+    except Exception:  # noqa: BLE001 - a lookup failure must never crash the caller
+        return False
+    return bool(ha_user and ha_user.is_admin)
+
+
+async def _effective_actor(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, entry_data: dict[str, Any], msg: dict
+) -> tuple[Optional[str], bool]:
+    """Resolves who is actually performing this action: by default the real
+    HA login on the connection (same as the old bare _actor_id/_is_admin),
+    or - if msg carries a still-valid elevation_token from ws_kiosk_elevate
+    - whichever household member is currently "logged in" on this kiosk.
+    A missing/unknown/expired token silently falls back to the real
+    connection identity rather than erroring the whole call; the elevated
+    UI is only ever a frontend convenience, ANY permission decision made
+    from the (user_id, is_admin) this returns is still fully re-derived
+    server-side by the caller right after (see _has_permission_ctx) -
+    nothing here is trusted from the client beyond "which token to look
+    up."""
+    token = msg.get("elevation_token")
+    if token:
+        _prune_kiosk_elevations(entry_data)
+        rec = _kiosk_elevations(entry_data).get(token)
+        if rec:
+            user_id = rec["user_id"]
+            return user_id, await _ha_user_is_admin(hass, user_id)
+    return _actor_id(connection), _is_admin(connection)
+
+
+def _has_permission_ctx(entry_data: dict[str, Any], user_id: Optional[str], is_admin: bool, permission: str) -> bool:
+    """Same rule _has_permission enforces, but against an already-resolved
+    (user_id, is_admin) pair instead of a live connection - lets the kiosk-
+    aware handlers below share this one permission rule with every other
+    handler in the file, whether the actor came from _effective_actor
+    (elevation-aware) or plain _actor_id/_is_admin."""
+    if is_admin:
+        return True
+    if not user_id:
+        return False
+    permissions = (entry_data.get("permissions") or {}).get(user_id, {})
+    return bool(permissions.get(permission))
+
+
+def _can_add_rewards_ctx(entry_data: dict[str, Any], user_id: Optional[str], is_admin: bool) -> bool:
+    """Elevation-aware twin of _can_add_rewards, same OR-of-two-permissions
+    shape."""
+    return _has_permission_ctx(entry_data, user_id, is_admin, PERMISSION_REWARD_OVERRIDE) or _has_permission_ctx(
+        entry_data, user_id, is_admin, PERMISSION_REWARD_ADD
     )
 
 
@@ -323,6 +413,8 @@ async def ws_list_chores(hass: HomeAssistant, connection: websocket_api.ActiveCo
         vol.Optional("recur_type"): vol.Any(str, None),
         vol.Optional("recur_interval_days"): int,
         vol.Optional("recur_weekdays"): [int],
+        vol.Optional("no_approval_required"): bool,
+        vol.Optional("quantity_total"): vol.Any(int, None),
     }
 )
 @websocket_api.async_response
@@ -332,6 +424,15 @@ async def ws_create_chore(hass: HomeAssistant, connection: websocket_api.ActiveC
         return
     if not _has_permission(entry_data, connection, PERMISSION_ASSIGN):
         connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted chore-assignment permission) can create chores.")
+        return
+    # v144.4+: creating a chore with no_approval_required=True is the one
+    # specific way someone with plain PERMISSION_ASSIGN could otherwise
+    # collect stars with zero oversight - author a chore assigned to
+    # themselves, skip verification entirely, done. Turning it OFF (or
+    # simply not sending the field, the vast majority of chores) never
+    # needs this - see PERMISSION_STAR_OVERRIDE's own docstring in const.py.
+    if msg.get("no_approval_required") and not _has_permission(entry_data, connection, PERMISSION_STAR_OVERRIDE):
+        connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted star-override permission) can create a chore that doesn't require approval.")
         return
     try:
         chore = chore_engine.create_chore(entry_data["chores"], hass, msg, await _make_is_chores_eligible(entry_data))
@@ -359,15 +460,43 @@ async def ws_create_chore(hass: HomeAssistant, connection: websocket_api.ActiveC
         vol.Optional("recur_type"): vol.Any(str, None),
         vol.Optional("recur_interval_days"): int,
         vol.Optional("recur_weekdays"): [int],
+        vol.Optional("no_approval_required"): bool,
+        vol.Optional("quantity_total"): vol.Any(int, None),
     }
 )
 @websocket_api.async_response
 async def ws_update_chore(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """v144.4+: gated on PERMISSION_EDIT_CHORE, NOT PERMISSION_ASSIGN - see
+    that permission's own docstring in const.py for why this was split out
+    (the household's own worry: someone granted plain "assign chores"
+    could otherwise also go bump the star_value on any existing open
+    chore). Someone with PERMISSION_ASSIGN alone (no PERMISSION_EDIT_CHORE)
+    can still create/assign brand new chores, just can't come back and
+    edit an existing one afterward - a household that wants both grants
+    both."""
     entry_data = _entry_data_or_error(hass, connection, msg["id"])
     if entry_data is None:
         return
-    if not _has_permission(entry_data, connection, PERMISSION_ASSIGN):
-        connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted chore-assignment permission) can edit chores.")
+    if not _has_permission(entry_data, connection, PERMISSION_EDIT_CHORE):
+        connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted chore-editing permission) can edit chores.")
+        return
+    # Same star-override gate ws_create_chore enforces - see its own
+    # comment and PERMISSION_STAR_OVERRIDE's docstring in const.py. Editing
+    # any OTHER field never needs this, only flipping no_approval_required
+    # ON. Compared against the chore's CURRENT stored value (not just
+    # truthiness of the incoming field) so that re-saving an unrelated edit
+    # on a chore an admin already marked no_approval_required=True doesn't
+    # itself get blocked for someone who only has PERMISSION_EDIT_CHORE -
+    # the chores card's edit form always resends whatever the checkbox
+    # currently shows, changed or not (see family-hub-chores-card.js's
+    # _submitEdit), so a same-value resend must not require this permission.
+    existing_chore = entry_data["chores"].get(msg["chore_id"]) or {}
+    if (
+        msg.get("no_approval_required")
+        and not existing_chore.get("no_approval_required")
+        and not _has_permission(entry_data, connection, PERMISSION_STAR_OVERRIDE)
+    ):
+        connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted star-override permission) can mark a chore as not requiring approval.")
         return
     fields = {k: v for k, v in msg.items() if k not in ("type", "id", "chore_id")}
     try:
@@ -395,6 +524,30 @@ async def ws_delete_chore(hass: HomeAssistant, connection: websocket_api.ActiveC
         return
     await _save_chores(hass, entry_data)
     connection.send_result(msg["id"], {"success": True})
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/chores/clear_all"})
+@websocket_api.async_response
+async def ws_clear_all_chores(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """The household's own "developer option to clear all chores" request -
+    a full wipe of every chore regardless of status, for starting over
+    (testing, a botched import, whatever). Deliberately gated on a real
+    hass.user.is_admin rather than PERMISSION_ASSIGN like every other
+    chores/* command above - this is destructive and irreversible (no
+    confirmation/undo server-side; the card itself is expected to confirm
+    before ever sending this), so it's never delegated to a granted
+    non-admin permission the way assigning/deleting one chore at a time
+    is."""
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+    if not _is_admin(connection):
+        connection.send_error(msg["id"], "forbidden", "Only a Home Assistant admin account can clear all chores.")
+        return
+    count = len(entry_data["chores"])
+    entry_data["chores"].clear()
+    await _save_chores(hass, entry_data)
+    connection.send_result(msg["id"], {"cleared": count})
 
 
 @websocket_api.websocket_command(
@@ -443,7 +596,13 @@ async def ws_claim_chore(hass: HomeAssistant, connection: websocket_api.ActiveCo
     connection.send_result(msg["id"], {"chore": chore})
 
 
-@websocket_api.websocket_command({vol.Required("type"): "family_hub/chores/complete", vol.Required("chore_id"): str})
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/chores/complete",
+        vol.Required("chore_id"): str,
+        vol.Optional("elevation_token"): str,
+    }
+)
 @websocket_api.async_response
 async def ws_complete_chore(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
     """The assignee can mark their own chore done; so can anyone with
@@ -457,34 +616,54 @@ async def ws_complete_chore(hass: HomeAssistant, connection: websocket_api.Activ
     if entry_data is None:
         return
     chore = entry_data["chores"].get(msg["chore_id"])
-    user_id = _actor_id(connection)
+    # Task #29: resolves to whichever household member is "logged in" on
+    # this kiosk (see _effective_actor's own docstring) when msg carries a
+    # valid elevation_token, else the real connection identity as before.
+    user_id, is_admin = await _effective_actor(hass, connection, entry_data, msg)
     is_assignee = chore is not None and chore.get("assigned_to") == user_id
-    can_complete_for_others = _has_permission(entry_data, connection, PERMISSION_VERIFY) or _has_permission(
-        entry_data, connection, PERMISSION_COMPLETE_ANY
+    can_complete_for_others = _has_permission_ctx(entry_data, user_id, is_admin, PERMISSION_VERIFY) or _has_permission_ctx(
+        entry_data, user_id, is_admin, PERMISSION_COMPLETE_ANY
     )
     if not is_assignee and not can_complete_for_others:
         connection.send_error(msg["id"], "forbidden", "Only the person this chore is assigned to (or an admin/verifier/can_complete_any grant) can mark it complete.")
         return
     try:
-        chore = chore_engine.complete_chore(entry_data["chores"], hass, msg["chore_id"], user_id)
+        chore = chore_engine.complete_chore(
+            entry_data["chores"], entry_data["rewards"], hass, msg["chore_id"], user_id,
+            permissions=entry_data.get("permissions"),
+        )
     except chore_engine.ChoreError as err:
         connection.send_error(msg["id"], err.code, str(err))
         return
     await _save_chores(hass, entry_data)
+    if chore.get("status") == chore_engine.CHORE_STATUS_APPROVED:
+        # Auto-approved on completion (chore_skips_verification) - same
+        # side effects ws_approve_chore performs after a manual approval:
+        # persist the star payout and send the assignee their notification,
+        # since approve_chore's own code path never ran for this one.
+        await _save_rewards(hass, entry_data)
+        await _notify_chore_approved(hass, entry_data, chore)
     connection.send_result(msg["id"], {"chore": chore})
 
 
-@websocket_api.websocket_command({vol.Required("type"): "family_hub/chores/approve", vol.Required("chore_id"): str})
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/chores/approve",
+        vol.Required("chore_id"): str,
+        vol.Optional("elevation_token"): str,
+    }
+)
 @websocket_api.async_response
 async def ws_approve_chore(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
     entry_data = _entry_data_or_error(hass, connection, msg["id"])
     if entry_data is None:
         return
-    if not _has_permission(entry_data, connection, PERMISSION_VERIFY):
+    user_id, is_admin = await _effective_actor(hass, connection, entry_data, msg)
+    if not _has_permission_ctx(entry_data, user_id, is_admin, PERMISSION_VERIFY):
         connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted chore-verification permission) can approve chores.")
         return
     try:
-        chore = chore_engine.approve_chore(entry_data["chores"], entry_data["rewards"], hass, msg["chore_id"], _actor_id(connection))
+        chore = chore_engine.approve_chore(entry_data["chores"], entry_data["rewards"], hass, msg["chore_id"], user_id)
     except chore_engine.ChoreError as err:
         connection.send_error(msg["id"], err.code, str(err))
         return
@@ -520,7 +699,12 @@ async def _notify_chore_approved(hass: HomeAssistant, entry_data: dict[str, Any]
 
 
 @websocket_api.websocket_command(
-    {vol.Required("type"): "family_hub/chores/reject", vol.Required("chore_id"): str, vol.Optional("reason"): str}
+    {
+        vol.Required("type"): "family_hub/chores/reject",
+        vol.Required("chore_id"): str,
+        vol.Optional("reason"): str,
+        vol.Optional("elevation_token"): str,
+    }
 )
 @websocket_api.async_response
 async def ws_reject_chore(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
@@ -531,11 +715,12 @@ async def ws_reject_chore(hass: HomeAssistant, connection: websocket_api.ActiveC
     entry_data = _entry_data_or_error(hass, connection, msg["id"])
     if entry_data is None:
         return
-    if not _has_permission(entry_data, connection, PERMISSION_VERIFY):
+    user_id, is_admin = await _effective_actor(hass, connection, entry_data, msg)
+    if not _has_permission_ctx(entry_data, user_id, is_admin, PERMISSION_VERIFY):
         connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted chore-verification permission) can reject chores.")
         return
     try:
-        chore = chore_engine.reject_chore(entry_data["chores"], hass, msg["chore_id"], _actor_id(connection), msg.get("reason"))
+        chore = chore_engine.reject_chore(entry_data["chores"], hass, msg["chore_id"], user_id, msg.get("reason"))
     except chore_engine.ChoreError as err:
         connection.send_error(msg["id"], err.code, str(err))
         return
@@ -725,24 +910,32 @@ async def ws_delete_catalog_item(hass: HomeAssistant, connection: websocket_api.
 
 
 @websocket_api.websocket_command(
-    {vol.Required("type"): "family_hub/rewards/redeem", vol.Required("item_id"): str, vol.Optional("user_id"): str}
+    {
+        vol.Required("type"): "family_hub/rewards/redeem",
+        vol.Required("item_id"): str,
+        vol.Optional("user_id"): str,
+        vol.Optional("elevation_token"): str,
+    }
 )
 @websocket_api.async_response
 async def ws_redeem_reward(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
     """Instant self-serve claim - redeems for the caller's own id by
-    default. Redeeming on someone ELSE's behalf (an admin claiming
-    something for a login-less child) requires reward-override
+    default (task #29: "the caller" includes whoever is elevated via a
+    kiosk PIN login, so a kid can claim their own reward from a shared
+    kiosk without needing any override permission at all - see
+    _effective_actor). Redeeming on someone ELSE's behalf (an admin
+    claiming something for a login-less child) requires reward-override
     permission - see the "Reward redemption" project decision: claims are
     instant, but claiming for someone else is still an administrative act."""
     entry_data = _entry_data_or_error(hass, connection, msg["id"])
     if entry_data is None:
         return
-    actor_id = _actor_id(connection)
+    actor_id, is_admin = await _effective_actor(hass, connection, entry_data, msg)
     target_user_id = msg.get("user_id") or actor_id
     if not target_user_id:
         connection.send_error(msg["id"], "no_user", "Not logged in.")
         return
-    if target_user_id != actor_id and not _has_permission(entry_data, connection, PERMISSION_REWARD_OVERRIDE):
+    if target_user_id != actor_id and not _has_permission_ctx(entry_data, actor_id, is_admin, PERMISSION_REWARD_OVERRIDE):
         connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted reward-override permission) can redeem on someone else's behalf.")
         return
     try:
@@ -942,6 +1135,54 @@ async def ws_get_ledger(hass: HomeAssistant, connection: websocket_api.ActiveCon
 
 @websocket_api.websocket_command(
     {
+        vol.Required("type"): "family_hub/rewards/gift_stars",
+        vol.Required("to_user_id"): str,
+        vol.Required("amount"): int,
+        vol.Optional("elevation_token"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_gift_stars(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Task #31: gift some of the caller's OWN stars to another household
+    member - self-serve and instant, same "no admin approval needed" shape
+    ws_redeem_reward already has (see reward_engine.gift_stars' own
+    docstring). Elevation-aware the same way ws_redeem_reward is (task #29
+    - a kid logged in at a shared kiosk can gift their own stars without
+    needing any override permission), via _effective_actor. Unlike
+    ws_redeem_reward there is no "on someone else's behalf" mode at all -
+    a gift only ever moves stars OUT of the actual caller's own balance,
+    so there's nothing for a reward-override permission to unlock here."""
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+    actor_id, _is_admin_actor = await _effective_actor(hass, connection, entry_data, msg)
+    if not actor_id:
+        connection.send_error(msg["id"], "no_user", "Not logged in.")
+        return
+    to_user_id = msg["to_user_id"]
+    from_name = await _user_display_name(hass, actor_id)
+    to_name = await _user_display_name(hass, to_user_id)
+    try:
+        new_from_balance, new_to_balance = reward_engine.gift_stars(
+            entry_data["rewards"],
+            actor_id,
+            to_user_id,
+            msg["amount"],
+            from_reason=f"Gift to {to_name}",
+            to_reason=f"Gift from {from_name}",
+        )
+    except reward_engine.RewardError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    await _save_rewards(hass, entry_data)
+    connection.send_result(
+        msg["id"],
+        {"from_balance": new_from_balance, "to_balance": new_to_balance, "to_user_id": to_user_id, "amount": int(msg["amount"])},
+    )
+
+
+@websocket_api.websocket_command(
+    {
         vol.Required("type"): "family_hub/rewards/add_suggestion",
         vol.Required("title"): str,
         vol.Optional("icon"): str,
@@ -980,6 +1221,7 @@ async def ws_add_suggestion(hass: HomeAssistant, connection: websocket_api.Activ
         vol.Required("cost_stars"): int,
         vol.Optional("icon"): str,
         vol.Optional("color"): str,
+        vol.Optional("elevation_token"): str,
     }
 )
 @websocket_api.async_response
@@ -987,7 +1229,8 @@ async def ws_approve_suggestion(hass: HomeAssistant, connection: websocket_api.A
     entry_data = _entry_data_or_error(hass, connection, msg["id"])
     if entry_data is None:
         return
-    if not _can_add_rewards(entry_data, connection):
+    user_id, is_admin = await _effective_actor(hass, connection, entry_data, msg)
+    if not _can_add_rewards_ctx(entry_data, user_id, is_admin):
         connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted reward-add/reward-override permission) can approve a suggested reward.")
         return
     try:
@@ -1001,13 +1244,20 @@ async def ws_approve_suggestion(hass: HomeAssistant, connection: websocket_api.A
     connection.send_result(msg["id"], {"item": item})
 
 
-@websocket_api.websocket_command({vol.Required("type"): "family_hub/rewards/reject_suggestion", vol.Required("suggestion_id"): str})
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/rewards/reject_suggestion",
+        vol.Required("suggestion_id"): str,
+        vol.Optional("elevation_token"): str,
+    }
+)
 @websocket_api.async_response
 async def ws_reject_suggestion(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
     entry_data = _entry_data_or_error(hass, connection, msg["id"])
     if entry_data is None:
         return
-    if not _can_add_rewards(entry_data, connection):
+    user_id, is_admin = await _effective_actor(hass, connection, entry_data, msg)
+    if not _can_add_rewards_ctx(entry_data, user_id, is_admin):
         connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted reward-add/reward-override permission) can reject a suggested reward.")
         return
     try:
@@ -1078,6 +1328,10 @@ async def ws_get_my_permissions(hass: HomeAssistant, connection: websocket_api.A
         vol.Optional("can_override_rewards"): bool,
         vol.Optional("can_complete_any"): bool,
         vol.Optional("can_add_rewards"): bool,
+        vol.Optional("no_approval_required"): bool,
+        vol.Optional("can_edit_chore"): bool,
+        vol.Optional("can_star_override"): bool,
+        vol.Optional("can_edit_menu"): bool,
     }
 )
 @websocket_api.async_response
@@ -1096,6 +1350,171 @@ async def ws_set_permissions(hass: HomeAssistant, connection: websocket_api.Acti
     permissions[msg["user_id"]] = entry
     await _save_permissions(hass, entry_data)
     connection.send_result(msg["id"], {"permissions": dict(permissions)})
+
+
+# ---------------------------------------------------------------------------
+# Kiosk PIN login (task #29) - "Need a way to be able to log in as a
+# specific user at a kiosk display... click a button at the top of chores
+# or rewards and be asked for a pin code that would then allow you to run
+# in an elevated permission state of whatever users code was entered."
+#
+# Builds on the existing "shared Tablet login" pattern (see const.py's
+# SETTINGS_KEY_MEMBER_USER_IDS docstring) rather than replacing it: the
+# kiosk's own HA account is still the one real websocket connection, but
+# once a household member's PIN is verified here, every kiosk-aware
+# handler above (ws_complete_chore, ws_approve_chore, ws_reject_chore,
+# ws_redeem_reward, ws_approve_suggestion, ws_reject_suggestion,
+# ws_approve_goal, ws_reject_goal) resolves the acting user through
+# _effective_actor instead of the raw connection - see its own docstring
+# for exactly how a msg["elevation_token"] is turned into a (user_id,
+# is_admin) pair, and note the permission decision is always re-derived
+# server-side from that pair, never trusted from the client.
+#
+# PIN storage/verification is deliberately NOT routed through the general
+# family_hub/get_settings / family_hub/set_settings pair - that pair does
+# an ungated full blob replace (see __init__.py's own _ws_set_settings
+# docstring), so nothing would stop any authenticated connection from
+# overwriting someone else's PIN hash through it. ws_kiosk_set_pin below
+# is the one and only place a PIN hash is ever written, and it is always
+# admin-gated - "once set only an admin can reset a code or change it,"
+# per the spec, applies even to a not-yet-set PIN (no separate self-
+# service first-time-set path, so there's never a window where anyone
+# could plant their own PIN on an un-PINned profile). WHICH members have
+# kiosk login enabled at all (settings["kioskLoginEnabledUserIds"]) is
+# not secret, so that toggle lives in the ordinary Settings blob like
+# memberUserIds/permissions already do - only the PIN hash itself gets
+# this extra protection.
+# ---------------------------------------------------------------------------
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "family_hub/kiosk/list_login_users"}
+)
+@websocket_api.async_response
+async def ws_kiosk_list_login_users(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Open to any authenticated connection - a kiosk's own shared login
+    needs this to show its PIN-login picker. Returns only id/name/has_pin,
+    never a hash or salt."""
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+    settings = await _load_settings(entry_data)
+    enabled_ids = settings.get("kioskLoginEnabledUserIds") or []
+    profiles = settings.get("userProfiles") or {}
+    try:
+        ha_users = await hass.auth.async_get_users()
+    except Exception:  # noqa: BLE001
+        ha_users = []
+    names = {u.id: (u.name or u.id) for u in ha_users}
+    users = [
+        {"id": uid, "name": names.get(uid, uid), "has_pin": bool((profiles.get(uid) or {}).get("pinHash"))}
+        for uid in enabled_ids
+        if uid in names
+    ]
+    connection.send_result(msg["id"], {"users": users})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "family_hub/kiosk/set_pin", vol.Required("user_id"): str, vol.Optional("pin"): str}
+)
+@websocket_api.async_response
+async def ws_kiosk_set_pin(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Sets a household member's kiosk PIN (4-8 digits), or clears it when
+    pin is omitted/blank. Always admin-only - see this section's own
+    docstring above for why there's no self-service first-time-set path."""
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+    if not _is_admin(connection):
+        connection.send_error(msg["id"], "forbidden", "Only a Home Assistant admin account can set or change a kiosk PIN.")
+        return
+    pin = (msg.get("pin") or "").strip()
+    if pin and (not pin.isdigit() or not (4 <= len(pin) <= 8)):
+        connection.send_error(msg["id"], "invalid_pin", "PIN must be 4-8 digits.")
+        return
+    store = entry_data.get("settings_store")
+    if store is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    settings = await store.async_load() or {}
+    profiles = settings.setdefault("userProfiles", {})
+    profile = dict(profiles.get(msg["user_id"]) or {})
+    if pin:
+        salt = secrets.token_hex(16)
+        profile["pinSalt"] = salt
+        profile["pinHash"] = _hash_pin(pin, salt)
+    else:
+        profile.pop("pinSalt", None)
+        profile.pop("pinHash", None)
+    profiles[msg["user_id"]] = profile
+    await store.async_save(settings)
+    connection.send_result(msg["id"], {"has_pin": bool(pin)})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "family_hub/kiosk/elevate", vol.Required("user_id"): str, vol.Required("pin"): str}
+)
+@websocket_api.async_response
+async def ws_kiosk_elevate(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Verifies a household member's own PIN and, on success, mints a
+    short-lived server-side elevation token - see _effective_actor's own
+    docstring for how every kiosk-aware handler consumes it. Deliberately
+    the same "incorrect_pin" error for a wrong PIN, an unset PIN, or a
+    user_id kiosk login isn't enabled for - never confirms/denies which of
+    those it was, so a kiosk display can't be used to fish for who has a
+    PIN set."""
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+    settings = await _load_settings(entry_data)
+    enabled_ids = settings.get("kioskLoginEnabledUserIds") or []
+    profile = (settings.get("userProfiles") or {}).get(msg["user_id"]) or {}
+    salt = profile.get("pinSalt")
+    stored_hash = profile.get("pinHash")
+    if (
+        msg["user_id"] not in enabled_ids
+        or not salt
+        or not stored_hash
+        or _hash_pin(msg["pin"], salt) != stored_hash
+    ):
+        connection.send_error(msg["id"], "incorrect_pin", "Incorrect PIN.")
+        return
+    _prune_kiosk_elevations(entry_data)
+    token = secrets.token_hex(16)
+    _kiosk_elevations(entry_data)[token] = {
+        "user_id": msg["user_id"],
+        "expires_at": time.time() + KIOSK_ELEVATION_TTL_SECONDS,
+    }
+    is_admin = await _ha_user_is_admin(hass, msg["user_id"])
+    name = await _user_display_name(hass, msg["user_id"])
+    connection.send_result(
+        msg["id"],
+        {
+            "token": token,
+            "user_id": msg["user_id"],
+            "name": name,
+            "is_admin": is_admin,
+            "permissions": {
+                key: _has_permission_ctx(entry_data, msg["user_id"], is_admin, key) for key in CHORE_PERMISSIONS
+            },
+            "expires_in": KIOSK_ELEVATION_TTL_SECONDS,
+        },
+    )
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/kiosk/deelevate", vol.Required("token"): str})
+@websocket_api.async_response
+async def ws_kiosk_deelevate(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Explicit logout - called on the 45-second inactivity timeout and on
+    a manual "Log out" tap, so a token doesn't sit valid for the rest of
+    its KIOSK_ELEVATION_TTL_SECONDS backstop once the UI has already
+    hidden the elevated state. Never errors on an already-gone/unknown
+    token - logging out twice is a no-op, not a failure."""
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+    _kiosk_elevations(entry_data).pop(msg.get("token"), None)
+    connection.send_result(msg["id"], {})
 
 
 # ---------------------------------------------------------------------------
@@ -1129,6 +1548,8 @@ async def ws_list_routines(hass: HomeAssistant, connection: websocket_api.Active
         # of weekday numbers).
         vol.Optional("due_time"): vol.Any(str, None),
         vol.Optional("days_of_week"): [int],
+        vol.Optional("star_value"): int,
+        vol.Optional("no_approval_required"): bool,
     }
 )
 @websocket_api.async_response
@@ -1148,6 +1569,8 @@ async def ws_create_routine_item(hass: HomeAssistant, connection: websocket_api.
             await _make_is_user_enabled(entry_data),
             due_time=msg.get("due_time"),
             days_of_week=msg.get("days_of_week"),
+            star_value=msg.get("star_value") or 0,
+            no_approval_required=bool(msg.get("no_approval_required")),
         )
     except routine_engine.RoutineError as err:
         connection.send_error(msg["id"], err.code, str(err))
@@ -1163,6 +1586,8 @@ async def ws_create_routine_item(hass: HomeAssistant, connection: websocket_api.
         vol.Required("title"): str,
         vol.Optional("due_time"): vol.Any(str, None),
         vol.Optional("days_of_week"): [int],
+        vol.Optional("star_value"): int,
+        vol.Optional("no_approval_required"): bool,
     }
 )
 @websocket_api.async_response
@@ -1186,6 +1611,8 @@ async def ws_update_routine_item(hass: HomeAssistant, connection: websocket_api.
             msg["title"],
             due_time=msg.get("due_time"),
             days_of_week=msg.get("days_of_week"),
+            star_value=msg.get("star_value") or 0,
+            no_approval_required=bool(msg.get("no_approval_required")),
         )
     except routine_engine.RoutineError as err:
         connection.send_error(msg["id"], err.code, str(err))
@@ -1203,16 +1630,50 @@ async def ws_toggle_routine_item(hass: HomeAssistant, connection: websocket_api.
     permission gate, same low-stakes self-serve principle as
     ws_claim_chore. This is a personal daily checklist on a shared kitchen
     tablet, not a reward-bearing chore; see routine_engine.toggle_item's
-    own docstring for the full reasoning."""
+    own docstring for the full reasoning (star_value/no_approval_required,
+    v141+, are this handler's one addition over the original zero-stakes
+    version - still no permission gate on the checkbox itself, since
+    toggle_item only ever immediately pays out when the item's OWN
+    no_approval_required says to; otherwise it just flips on
+    pending_approval for ws_approve_routine_item, which IS gated, to
+    resolve)."""
     entry_data = _entry_data_or_error(hass, connection, msg["id"])
     if entry_data is None:
         return
     try:
-        item = routine_engine.toggle_item(entry_data["routines"], msg["item_id"], msg["done"])
+        item = routine_engine.toggle_item(
+            entry_data["routines"], entry_data["rewards"], msg["item_id"], msg["done"], _actor_id(connection),
+        )
     except routine_engine.RoutineError as err:
         connection.send_error(msg["id"], err.code, str(err))
         return
     await _save_routines(hass, entry_data)
+    if item.get("stars_disbursed_today"):
+        await _save_rewards(hass, entry_data)
+    connection.send_result(msg["id"], {"item": item})
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/routines/approve_item", vol.Required("item_id"): str})
+@websocket_api.async_response
+async def ws_approve_routine_item(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """The manual half of a routine item's star payout (routine_engine.
+    approve_item) - gated on PERMISSION_VERIFY, the exact same tier that
+    approves a chore's completion, since this is the same kind of decision
+    (a kid says they're done, a parent confirms before stars move) just on
+    a routine item instead of a chore."""
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+    if not _has_permission(entry_data, connection, PERMISSION_VERIFY):
+        connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted verify permission) can approve a routine item's stars.")
+        return
+    try:
+        item = routine_engine.approve_item(entry_data["routines"], entry_data["rewards"], msg["item_id"], _actor_id(connection))
+    except routine_engine.RoutineError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    await _save_routines(hass, entry_data)
+    await _save_rewards(hass, entry_data)
     connection.send_result(msg["id"], {"item": item})
 
 
@@ -1334,6 +1795,23 @@ async def ws_delete_goal(hass: HomeAssistant, connection: websocket_api.ActiveCo
     connection.send_result(msg["id"], {"success": True})
 
 
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/goals/clear_all"})
+@websocket_api.async_response
+async def ws_clear_all_goals(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Goals' own counterpart to ws_clear_all_chores above - same
+    admin-only, destructive, no-confirmation-server-side reasoning."""
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+    if not _is_admin(connection):
+        connection.send_error(msg["id"], "forbidden", "Only a Home Assistant admin account can clear all goals.")
+        return
+    count = len(entry_data["goals"])
+    entry_data["goals"].clear()
+    await _save_goals(hass, entry_data)
+    connection.send_result(msg["id"], {"cleared": count})
+
+
 @websocket_api.websocket_command({vol.Required("type"): "family_hub/goals/log_progress", vol.Required("goal_id"): str})
 @websocket_api.async_response
 async def ws_log_goal_progress(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
@@ -1363,17 +1841,24 @@ async def ws_log_goal_progress(hass: HomeAssistant, connection: websocket_api.Ac
     connection.send_result(msg["id"], {"goal": goal})
 
 
-@websocket_api.websocket_command({vol.Required("type"): "family_hub/goals/approve", vol.Required("goal_id"): str})
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/goals/approve",
+        vol.Required("goal_id"): str,
+        vol.Optional("elevation_token"): str,
+    }
+)
 @websocket_api.async_response
 async def ws_approve_goal(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
     entry_data = _entry_data_or_error(hass, connection, msg["id"])
     if entry_data is None:
         return
-    if not _has_permission(entry_data, connection, PERMISSION_VERIFY):
+    user_id, is_admin = await _effective_actor(hass, connection, entry_data, msg)
+    if not _has_permission_ctx(entry_data, user_id, is_admin, PERMISSION_VERIFY):
         connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted chore-verification permission) can approve goals.")
         return
     try:
-        goal = goal_engine.approve_goal(entry_data["goals"], entry_data["rewards"], hass, msg["goal_id"], _actor_id(connection))
+        goal = goal_engine.approve_goal(entry_data["goals"], entry_data["rewards"], hass, msg["goal_id"], user_id)
     except goal_engine.GoalError as err:
         connection.send_error(msg["id"], err.code, str(err))
         return
@@ -1409,18 +1894,59 @@ async def _notify_goal_approved(hass: HomeAssistant, entry_data: dict[str, Any],
 
 
 @websocket_api.websocket_command(
-    {vol.Required("type"): "family_hub/goals/reject", vol.Required("goal_id"): str, vol.Optional("reason"): str}
+    {
+        vol.Required("type"): "family_hub/goals/archive",
+        vol.Required("goal_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_archive_goal(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """The "Complete" button on an achieved goal - tucks it into the My
+    Goals Completed accordion instead of leaving it sitting in the active
+    list forever (see goal_engine.archive_goal's own docstring). Same
+    permission shape as ws_log_goal_progress: the goal's own assignee can
+    archive their own achieved goal, and so can anyone who could otherwise
+    manage goals (PERMISSION_ASSIGN) or a real admin - no separate
+    verification-tier gate needed here since nothing is being disbursed or
+    reversed, just tidied away."""
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+    goal = entry_data["goals"].get(msg["goal_id"])
+    user_id = _actor_id(connection)
+    is_assignee = goal is not None and goal.get("assigned_to") == user_id
+    can_manage = _has_permission(entry_data, connection, PERMISSION_ASSIGN) or _is_admin(connection)
+    if not is_assignee and not can_manage:
+        connection.send_error(msg["id"], "forbidden", "Only the person this goal belongs to (or an admin/goal-manager) can archive it.")
+        return
+    try:
+        goal = goal_engine.archive_goal(entry_data["goals"], hass, msg["goal_id"], user_id)
+    except goal_engine.GoalError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    await _save_goals(hass, entry_data)
+    connection.send_result(msg["id"], {"goal": goal})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/goals/reject",
+        vol.Required("goal_id"): str,
+        vol.Optional("reason"): str,
+        vol.Optional("elevation_token"): str,
+    }
 )
 @websocket_api.async_response
 async def ws_reject_goal(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
     entry_data = _entry_data_or_error(hass, connection, msg["id"])
     if entry_data is None:
         return
-    if not _has_permission(entry_data, connection, PERMISSION_VERIFY):
+    user_id, is_admin = await _effective_actor(hass, connection, entry_data, msg)
+    if not _has_permission_ctx(entry_data, user_id, is_admin, PERMISSION_VERIFY):
         connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted chore-verification permission) can reject goals.")
         return
     try:
-        goal = goal_engine.reject_goal(entry_data["goals"], hass, msg["goal_id"], _actor_id(connection), msg.get("reason"))
+        goal = goal_engine.reject_goal(entry_data["goals"], hass, msg["goal_id"], user_id, msg.get("reason"))
     except goal_engine.GoalError as err:
         connection.send_error(msg["id"], err.code, str(err))
         return
@@ -1455,6 +1981,7 @@ ALL_COMMANDS = (
     ws_create_chore,
     ws_update_chore,
     ws_delete_chore,
+    ws_clear_all_chores,
     ws_assign_chore,
     ws_claim_chore,
     ws_complete_chore,
@@ -1473,23 +2000,31 @@ ALL_COMMANDS = (
     ws_use_bank,
     ws_mark_bank_usage_fulfilled,
     ws_get_ledger,
+    ws_gift_stars,
     ws_add_suggestion,
     ws_approve_suggestion,
     ws_reject_suggestion,
     ws_get_permissions,
     ws_get_my_permissions,
     ws_set_permissions,
+    ws_kiosk_list_login_users,
+    ws_kiosk_set_pin,
+    ws_kiosk_elevate,
+    ws_kiosk_deelevate,
     ws_list_routines,
     ws_create_routine_item,
     ws_update_routine_item,
     ws_toggle_routine_item,
+    ws_approve_routine_item,
     ws_delete_routine_item,
     ws_list_goals,
     ws_create_goal,
     ws_update_goal,
     ws_delete_goal,
+    ws_clear_all_goals,
     ws_log_goal_progress,
     ws_approve_goal,
+    ws_archive_goal,
     ws_reject_goal,
 )
 

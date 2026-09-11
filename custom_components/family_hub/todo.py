@@ -125,9 +125,19 @@ class FamilyHubChoresTodoListEntity(TodoListEntity):
                 _LOGGER.debug("Family Hub: couldn't rename chore %s from to-do item: %s", item.uid, err)
         if item.status == TodoItemStatus.COMPLETED:
             try:
-                chore_engine.complete_chore(chores, self.hass, item.uid, chore.get("assigned_to"))
+                completed = chore_engine.complete_chore(
+                    chores, self._entry_data["rewards"], self.hass, item.uid, chore.get("assigned_to"),
+                    permissions=self._entry_data.get("permissions"),
+                )
             except chore_engine.ChoreError as err:
                 _LOGGER.debug("Family Hub: couldn't complete chore %s from to-do item: %s", item.uid, err)
+            else:
+                if completed.get("status") == CHORE_STATUS_APPROVED:
+                    # Auto-approved on completion (chore_skips_verification) -
+                    # stars were disbursed into self._entry_data["rewards"]
+                    # in memory; persist that too, same as the websocket
+                    # API's ws_complete_chore does for this same case.
+                    await self._entry_data["rewards_store"].async_save(self._entry_data["rewards"])
         await self._save()
         self.async_write_ha_state()
 

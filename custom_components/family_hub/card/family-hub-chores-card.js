@@ -37,6 +37,7 @@ if (!window.__familyHubScreenSaver) {
     let overlayEl = null;
     let activityBound = false;
     let boundActivity = null;
+    let settingsSnapshot = null;
 
     function defaultSettings() {
       return { screenSaver: { sourceType: "video", videoUrl: "", cameraEntity: "", idleSeconds: 180, usersEnabled: {} } };
@@ -70,6 +71,28 @@ if (!window.__familyHubScreenSaver) {
       } catch (e) {
         if (!settingsCache) settingsCache = defaultSettings();
       }
+      maybeResetIdleTimer();
+    }
+    // v144.12+: this used to call resetIdleTimer() unconditionally on every
+    // single poll tick (startPolling, every 60s), whether or not anything
+    // about the screenSaver settings had actually changed. That meant any
+    // household with idleSeconds set above 60 (the poll interval - and the
+    // DEFAULT idle time, 180s, is already well above it) could never
+    // actually see the screensaver on a card that shares this controller
+    // (Chores/Rewards/My Chores): a genuinely idle card's countdown kept
+    // getting clobbered and restarted from zero every 60 seconds by the
+    // poll itself, so it never survived long enough to reach
+    // showScreenSaver(). This wrapper only calls the real reset when the
+    // screenSaver settings sub-object has changed since the last time this
+    // ran (or on the very first call) - a poll tick that finds nothing new
+    // leaves a real in-progress countdown alone. A genuine change (new idle
+    // time, source, or a login toggled on/off) still re-arms immediately
+    // with the fresh value, same as before. Mirrors the calendar card's own
+    // separate _maybeResetScreenSaverIdleTimer fix for its own idle timer.
+    function maybeResetIdleTimer() {
+      const key = JSON.stringify(getSettings().screenSaver || null);
+      if (key === settingsSnapshot) return;
+      settingsSnapshot = key;
       resetIdleTimer();
     }
     function applicable() {
@@ -327,6 +350,12 @@ const ROUTINE_CATEGORY_LABELS = { morning: "Morning Routine", afternoon: "Aftern
 const GOAL_STATUS_OPEN = "open";
 const GOAL_STATUS_PENDING_VERIFICATION = "pending_verification";
 const GOAL_STATUS_APPROVED = "approved";
+// v144.15+: mirrors const.py's GOAL_STATUS_ARCHIVED - see
+// family-hub-goals-card.js's own comment on this same constant for the
+// full "Complete" button reasoning; here it's just used to hide an
+// archived goal from this condensed embedded block entirely (see
+// _goalsBlockHtml).
+const GOAL_STATUS_ARCHIVED = "archived";
 
 class FamilyHubChoresCard extends HTMLElement {
   static getStubConfig() {
@@ -352,6 +381,10 @@ class FamilyHubChoresCard extends HTMLElement {
     // from anything server-side) so it survives the poll-driven re-renders
     // below instead of every accordion snapping shut every 20s.
     if (this._openRoutineSections === undefined) this._openRoutineSections = new Set();
+    // Which per-column "Completed" accordions are expanded, keyed by
+    // column (person) id - same "lives on the instance, survives the
+    // poll-driven re-renders" reasoning as _openRoutineSections above.
+    if (this._openCompletedSections === undefined) this._openCompletedSections = new Set();
     // v134+: Goals, optionally embedded per-person on the Chores board (see
     // _goalsInChoresEnabled/_goalsBlockHtml) - only ever fetched/rendered
     // when the household's own goalsShowInChores Settings toggle is on,
@@ -377,6 +410,14 @@ class FamilyHubChoresCard extends HTMLElement {
     if (this._showRewardsColumn()) await this._fetchRewardsState();
     if (this._routinesEnabled()) await this._fetchRoutines();
     if (this._goalsInChoresEnabled()) await this._fetchGoals();
+    // v144+ task #29: who (if anyone) can kiosk-PIN-login on this board -
+    // decides whether the Login button even shows at all (see
+    // _updateKioskLoginUi). Awaited, same as every other first-load fetch
+    // here - _fetchKioskLoginUsers already fails soft (an empty list) on
+    // any error, so this never blocks a household that's never touched
+    // the feature for more than one quick round trip.
+    await this._fetchKioskLoginUsers();
+    this._updateKioskLoginUi();
     this._startPolling();
     this._registerScreenSaver();
     this._render();
@@ -390,19 +431,49 @@ class FamilyHubChoresCard extends HTMLElement {
   _registerScreenSaver() {
     if (window.__familyHubScreenSaver && this._hass) window.__familyHubScreenSaver.registerClient(this, this._hass);
   }
+  // v144.9+: the actual poll-refresh body, pulled out of _startPolling's
+  // setInterval callback so connectedCallback (below) can also fire it
+  // IMMEDIATELY on reconnect - rather than only via _startPolling(), whose
+  // setInterval doesn't invoke its callback until the first tick 20s
+  // later. Switching between HA dashboard views/tabs disconnects this
+  // custom element from the DOM (disconnectedCallback) and reconnects it
+  // when you switch back (connectedCallback) - "reload when you click
+  // their tab" - so this makes that switch itself the trigger, with the
+  // existing 20s interval remaining as the fallback the rest of the time.
+  _pollTick() {
+    this._fetchChores();
+    if (this._showRewardsColumn()) this._fetchRewardsState();
+    if (this._routinesEnabled()) this._fetchRoutines();
+    if (this._goalsInChoresEnabled()) this._fetchGoals();
+  }
   _startPolling() {
     if (this._interval) return;
-    this._interval = setInterval(() => {
-      this._fetchChores();
-      if (this._showRewardsColumn()) this._fetchRewardsState();
-      if (this._routinesEnabled()) this._fetchRoutines();
-      if (this._goalsInChoresEnabled()) this._fetchGoals();
-    }, 20 * 1000);
+    this._interval = setInterval(() => this._pollTick(), 20 * 1000);
   }
   connectedCallback() {
     if (this._hass && !this._interval) {
-      if (this._firstLoadPromise) this._firstLoadPromise.then(() => this.isConnected && this._startPolling());
-      else this._startPolling();
+      if (this._firstLoadPromise) {
+        // Guard against a disconnect+reconnect happening again while THIS
+        // SAME first-load promise is still pending (a masonry/grid
+        // dashboard view re-parenting card elements while it lays itself
+        // out can do this - see test_initial_load_race.js's own docstring
+        // for the calendar card's version of this exact race) - without
+        // this flag, each reconnect during that window would stack
+        // another .then() and fire _pollTick() an extra time once the
+        // promise finally resolves, duplicating the very first fetch.
+        if (!this._reconnectPollPending) {
+          this._reconnectPollPending = true;
+          this._firstLoadPromise.then(() => {
+            this._reconnectPollPending = false;
+            if (!this.isConnected) return;
+            this._pollTick();
+            this._startPolling();
+          });
+        }
+      } else {
+        this._pollTick();
+        this._startPolling();
+      }
     }
     this._registerScreenSaver();
   }
@@ -417,10 +488,24 @@ class FamilyHubChoresCard extends HTMLElement {
   getGridOptions() {
     return { columns: 12, min_columns: 8, max_columns: 12, min_rows: 8 };
   }
+  // v144+ task #29: while a kiosk PIN elevation is active (this._kioskElevation,
+  // see _submitKioskLogin), _isAdmin/_myUserId/_hasPermission all answer AS
+  // that elevated household member instead of the real (usually shared,
+  // unprivileged) kiosk HA login - which is the whole point: the rest of
+  // this card already keys almost everything (which column is "mine",
+  // which buttons show) off these three methods, so making just these
+  // elevation-aware makes the entire board render and behave as if that
+  // person is genuinely logged in, no other rendering code needs to know
+  // kiosk login exists at all. The actual server-side calls this card
+  // makes still separately carry elevation_token (see _kioskMsg) - the
+  // real permission decision is always re-checked there, this is only
+  // about what the UI shows.
   _isAdmin() {
+    if (this._kioskElevation) return !!this._kioskElevation.is_admin;
     return !!(this._hass && this._hass.user && this._hass.user.is_admin);
   }
   _myUserId() {
+    if (this._kioskElevation) return this._kioskElevation.user_id;
     return this._hass && this._hass.user ? this._hass.user.id : null;
   }
   // v127+: reads this._myPermissions (see _fetchMyPermissions below), the
@@ -432,13 +517,180 @@ class FamilyHubChoresCard extends HTMLElement {
   // own admin-ness needs no round trip to know).
   _hasPermission(key) {
     if (this._isAdmin()) return true;
+    if (this._kioskElevation) return !!(this._kioskElevation.permissions && this._kioskElevation.permissions[key]);
     return !!this._myPermissions[key];
+  }
+  // v144+ task #29: kiosk PIN login. this._kioskElevation is null when
+  // nobody's elevated, else {token, user_id, name, is_admin, permissions,
+  // expires_in} - exactly what family_hub/kiosk/elevate returns (see
+  // chores_websocket_api.py's own ws_kiosk_elevate docstring). Every
+  // server call this card makes for an action a kiosk login should be able
+  // to do (complete/approve/reject a chore, redeem a reward, approve/
+  // reject a goal) is wrapped through _kioskMsg so the backend can
+  // re-derive and re-check the REAL permission itself - this card's own
+  // _isAdmin/_myUserId/_hasPermission overrides above only ever control
+  // what the UI shows, never what the server allows.
+  _kioskMsg(base) {
+    return this._kioskElevation ? Object.assign({}, base, { elevation_token: this._kioskElevation.token }) : base;
+  }
+  async _fetchKioskLoginUsers() {
+    if (!this._hass) return;
+    try {
+      const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/kiosk/list_login_users" });
+      this._kioskLoginUsers = (result && result.users) || [];
+    } catch (e) {
+      this._kioskLoginUsers = [];
+    }
+  }
+  _updateKioskLoginUi() {
+    const root = this._root;
+    if (!root) return;
+    const btn = root.querySelector(".kiosk-login-btn");
+    if (!btn) return;
+    btn.hidden = !this._kioskElevation && !(this._kioskLoginUsers && this._kioskLoginUsers.length);
+    if (this._kioskElevation) {
+      btn.textContent = `\u{1F464} ${this._kioskElevation.name} · Log out`;
+      btn.classList.add("active");
+      btn.title = "Tap to log out of this kiosk session";
+    } else {
+      btn.textContent = "\u{1F512} Login";
+      btn.classList.remove("active");
+      btn.title = "Log in as a specific household member on this kiosk display";
+    }
+  }
+  async _onKioskLoginBtnClick() {
+    if (this._kioskElevation) await this._kioskLogout();
+    else await this._openKioskLoginModal();
+  }
+  async _openKioskLoginModal() {
+    await this._fetchKioskLoginUsers();
+    const root = this._root;
+    if (!root) return;
+    const overlay = root.querySelector(".kiosk-login-overlay");
+    const pickerEl = root.querySelector(".kiosk-login-user-picker");
+    const errEl = root.querySelector(".kiosk-login-error");
+    const pinEl = root.querySelector(".kiosk-login-pin-input");
+    if (errEl) errEl.textContent = "";
+    if (pinEl) pinEl.value = "";
+    this._kioskLoginSelectedUserId = null;
+    if (pickerEl) {
+      pickerEl.textContent = "";
+      if (!this._kioskLoginUsers.length) {
+        const empty = document.createElement("div");
+        empty.className = "kiosk-login-empty";
+        empty.textContent = "No one is set up for kiosk login yet - an admin can enable it under Settings > Users.";
+        pickerEl.appendChild(empty);
+      } else {
+        this._kioskLoginUsers.forEach((u) => {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "kiosk-login-user-btn";
+          btn.dataset.userId = u.id;
+          btn.textContent = u.name;
+          btn.addEventListener("click", () => {
+            pickerEl.querySelectorAll(".kiosk-login-user-btn").forEach((b) => b.classList.remove("active"));
+            btn.classList.add("active");
+            this._kioskLoginSelectedUserId = u.id;
+            if (pinEl) pinEl.focus();
+          });
+          pickerEl.appendChild(btn);
+        });
+      }
+    }
+    if (overlay) overlay.classList.add("open");
+    if (pinEl) pinEl.focus();
+  }
+  _closeKioskLoginModal() {
+    const overlay = this._root && this._root.querySelector(".kiosk-login-overlay");
+    if (overlay) overlay.classList.remove("open");
+  }
+  async _submitKioskLogin() {
+    const root = this._root;
+    if (!root || !this._hass) return;
+    const errEl = root.querySelector(".kiosk-login-error");
+    const pinEl = root.querySelector(".kiosk-login-pin-input");
+    const userId = this._kioskLoginSelectedUserId;
+    const pin = pinEl ? pinEl.value.trim() : "";
+    if (!userId) {
+      if (errEl) errEl.textContent = "Pick who's logging in first.";
+      return;
+    }
+    if (!pin) {
+      if (errEl) errEl.textContent = "Enter a PIN.";
+      return;
+    }
+    try {
+      const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/kiosk/elevate", user_id: userId, pin });
+      this._kioskElevation = result;
+      this._closeKioskLoginModal();
+      this._updateKioskLoginUi();
+      this._resetKioskIdleTimer();
+      // Everything on the board (which column is "mine", which action
+      // buttons show) is derived from _myUserId/_hasPermission, both now
+      // elevation-aware - re-rendering is what actually makes the board
+      // reflect the newly logged-in person.
+      this._render();
+    } catch (e) {
+      if (errEl) errEl.textContent = (e && e.message) || "Incorrect PIN.";
+      if (pinEl) {
+        pinEl.value = "";
+        pinEl.focus();
+      }
+    }
+  }
+  // Auto logout after 45 seconds of inactivity, per the spec - re-armed by
+  // any tap/key/scroll on this card (see _build's own activity listeners)
+  // while elevated; a no-op the rest of the time so this card isn't
+  // running a timer nobody asked for.
+  _resetKioskIdleTimer() {
+    if (this._kioskIdleTimer) {
+      clearTimeout(this._kioskIdleTimer);
+      this._kioskIdleTimer = null;
+    }
+    if (!this._kioskElevation) return;
+    this._kioskIdleTimer = setTimeout(() => this._kioskLogout(), 45000);
+  }
+  async _kioskLogout() {
+    if (this._kioskIdleTimer) {
+      clearTimeout(this._kioskIdleTimer);
+      this._kioskIdleTimer = null;
+    }
+    const elevation = this._kioskElevation;
+    this._kioskElevation = null;
+    this._updateKioskLoginUi();
+    this._render();
+    if (elevation && this._hass) {
+      try {
+        // Best-effort - even if this fails (offline, etc.) the token's own
+        // KIOSK_ELEVATION_TTL_SECONDS backstop on the backend still expires
+        // it; the UI has already logged out locally either way.
+        await this._hass.connection.sendMessagePromise({ type: "family_hub/kiosk/deelevate", token: elevation.token });
+      } catch (e) {
+        /* best-effort */
+      }
+    }
   }
   _canAssign() {
     return this._hasPermission("can_assign");
   }
   _canVerify() {
     return this._hasPermission("can_verify");
+  }
+  // v144.4+: PERMISSION_EDIT_CHORE was split out of PERMISSION_ASSIGN -
+  // can_assign alone is only enough to create/assign brand new chores now;
+  // editing an EXISTING open chore needs this separate grant (or a real
+  // admin, via _hasPermission's own admin bypass). Mirrors
+  // ws_update_chore's own server-side gate in chores_websocket_api.py.
+  _canEditChore() {
+    return this._hasPermission("can_edit_chore");
+  }
+  // v144.4+: PERMISSION_STAR_OVERRIDE - gates the one specific field
+  // (no_approval_required) that lets a chore's stars pay out instantly with
+  // no verification step, on both create and edit. Mirrors the same
+  // no_approval_required gate ws_create_chore/ws_update_chore enforce
+  // server-side.
+  _canStarOverride() {
+    return this._hasPermission("can_star_override");
   }
   // Same PERMISSION_VERIFY-or-PERMISSION_COMPLETE_ANY tier family-hub-
   // goals-card.js's own _canLogForOthers uses - lets a non-assignee log
@@ -467,10 +719,31 @@ class FamilyHubChoresCard extends HTMLElement {
   _getSettings() {
     return this._settingsCache || this._defaultSettings();
   }
+  // v144.6+: "This device's theme" - a device-local override of the shared
+  // Settings > Appearance theme choice, same key/mechanism
+  // family-week-calendar-card.js's own _getDeviceThemeOverride uses (see
+  // its own comment) and configured from that card's Settings modal (this
+  // card has none of its own - see the top-of-file comment on why Settings
+  // lives only on the calendar card). "" = follow the household setting
+  // (nothing changes for anyone who hasn't touched this); "__default__" =
+  // force this device's own plain/local look regardless of what the
+  // household picked; anything else is a specific theme id this device
+  // wants instead.
+  _getDeviceThemeOverride() {
+    let raw = "";
+    try {
+      raw = localStorage.getItem("familyHubDeviceThemeOverrideLocal") || "";
+    } catch (e) {
+    }
+    return raw;
+  }
   _resolveTheme(settings) {
+    const override = this._getDeviceThemeOverride();
+    const useGlobalTheme = override ? override !== "__default__" : settings.useGlobalTheme;
+    const globalThemeId = override ? (override === "__default__" ? "" : override) : settings.globalThemeId;
     const local = settings.theme || this._defaultTheme();
-    if (!settings.useGlobalTheme || !settings.globalThemeId) return local;
-    const g = (this._globalThemes || []).find((t) => t && t.id === settings.globalThemeId);
+    if (!useGlobalTheme || !globalThemeId) return local;
+    const g = (this._globalThemes || []).find((t) => t && t.id === globalThemeId);
     if (!g) return local;
     const defaultTheme = this._defaultTheme();
     const colors = {};
@@ -478,12 +751,37 @@ class FamilyHubChoresCard extends HTMLElement {
       const v = g.colors && g.colors[k];
       colors[k] = typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v) ? v : defaultTheme.colors[k];
     });
-    return { colors };
+    // v144.5+: cardOpacity/glassBlur (the "liquid glass" look - see the
+    // Liquid Glass/Liquid Glass Dark built-in presets) aren't part of
+    // defaultTheme (a local/custom theme with neither set just means
+    // "fully opaque, no blur"), so they're read straight off the global
+    // theme rather than validated against a default-theme shape like
+    // colors above - same fix family-week-calendar-card.js's own
+    // _resolveTheme already applies for its own global-theme branch.
+    const cardOpacity = typeof g.cardOpacity === "number" ? g.cardOpacity : 100;
+    const glassBlur = typeof g.glassBlur === "number" ? g.glassBlur : 0;
+    return { colors, cardOpacity, glassBlur };
+  }
+  _hexToRgba(hex, alpha) {
+    const h = (hex || "#000000").replace("#", "");
+    if (h.length !== 6) return "rgba(0,0,0,0)";
+    const r = parseInt(h.substr(0, 2), 16);
+    const g = parseInt(h.substr(2, 2), 16);
+    const b = parseInt(h.substr(4, 2), 16);
+    const a = Math.max(0, Math.min(1, typeof alpha === "number" ? alpha : 1));
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
   _applyThemeVars() {
     const theme = this._resolveTheme(this._getSettings());
+    // v144.5+: same "liquid glass" support family-week-calendar-card.js has
+    // - a theme's cardOpacity/glassBlur (100/0 defaults, both no-ops) turn
+    // the card/surface backgrounds translucent and blur whatever shows
+    // through them, so picking a Liquid Glass theme actually looks glassy
+    // on this card too, not just the calendar.
+    const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
+    const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
     this.style.setProperty("--fc-bg", theme.colors.bg);
-    this.style.setProperty("--fc-card", theme.colors.card);
+    this.style.setProperty("--fc-card", this._hexToRgba(theme.colors.card, cardOpacity / 100));
     this.style.setProperty("--fc-border", theme.colors.border);
     this.style.setProperty("--fc-text", theme.colors.text);
     this.style.setProperty("--fc-text-secondary", theme.colors.textSecondary);
@@ -491,8 +789,9 @@ class FamilyHubChoresCard extends HTMLElement {
     this.style.setProperty("--fc-accent-text", theme.colors.accentText);
     this.style.setProperty("--fc-accent2", theme.colors.accent2);
     this.style.setProperty("--fc-accent3", theme.colors.accent3);
-    this.style.setProperty("--fc-surface-alt", theme.colors.surfaceAlt);
-    this.style.setProperty("--fc-surface2", theme.colors.surface2);
+    this.style.setProperty("--fc-surface-alt", this._hexToRgba(theme.colors.surfaceAlt, cardOpacity / 100));
+    this.style.setProperty("--fc-surface2", this._hexToRgba(theme.colors.surface2, cardOpacity / 100));
+    this.style.setProperty("--fc-glass-blur", `${glassBlur}px`);
   }
   async _fetchSettings() {
     if (!this._hass) return;
@@ -645,7 +944,7 @@ class FamilyHubChoresCard extends HTMLElement {
   async _claimReward(itemId) {
     const statusEl = this._root.querySelector(`.rewards-catalog-item[data-id="${itemId}"] .rewards-claim-status`);
     try {
-      await this._hass.connection.sendMessagePromise({ type: "family_hub/rewards/redeem", item_id: itemId });
+      await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/rewards/redeem", item_id: itemId }));
       await this._fetchRewardsState();
     } catch (e) {
       if (statusEl) statusEl.textContent = "Not enough stars yet.";
@@ -716,6 +1015,7 @@ class FamilyHubChoresCard extends HTMLElement {
           <div class="actions">
             <button class="waiting-recur-toggle-btn" title="Show Waiting to Recur as a column">&#8635; <span class="waiting-recur-toggle-count"></span></button>
             <button class="rewards-toggle-btn" title="Show/hide the Rewards column" hidden>&#11088;</button>
+            <button class="kiosk-login-btn" title="Log in as a specific household member on this kiosk display" hidden>&#128274; Login</button>
           </div>
         </div>
         <div class="board"></div>
@@ -723,6 +1023,20 @@ class FamilyHubChoresCard extends HTMLElement {
       <div class="modal-overlay create-modal"><div class="modal-box"></div></div>
       <div class="modal-overlay edit-modal"><div class="modal-box"></div></div>
       <div class="modal-overlay detail-modal"><div class="modal-box"></div></div>
+      <div class="modal-overlay reject-modal"><div class="modal-box"></div></div>
+      <div class="modal-overlay kiosk-login-overlay">
+        <div class="modal-box kiosk-login-box">
+          <button type="button" class="detail-close-btn kiosk-login-close" title="Close">&#10005;</button>
+          <h2>&#128274; Kiosk login</h2>
+          <div class="kiosk-login-user-picker"></div>
+          <input type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" class="kiosk-login-pin-input" placeholder="PIN" />
+          <div class="kiosk-login-error"></div>
+          <div class="modal-actions">
+            <button class="cancel-btn kiosk-login-cancel">Cancel</button>
+            <button class="save-btn kiosk-login-submit">Log in</button>
+          </div>
+        </div>
+      </div>
       <button class="add-chore-fab" title="Add a chore" aria-haspopup="true">&#65291;</button>
     `;
     this._root = root;
@@ -746,6 +1060,25 @@ class FamilyHubChoresCard extends HTMLElement {
       });
     });
     root.querySelector(".board").addEventListener("click", (e) => this._onBoardClick(e));
+    // v144+ task #29: kiosk PIN login - see _onKioskLoginBtnClick's own
+    // docstring for the full picture.
+    root.querySelector(".kiosk-login-btn").addEventListener("click", () => this._onKioskLoginBtnClick());
+    root.querySelector(".kiosk-login-close").addEventListener("click", () => this._closeKioskLoginModal());
+    root.querySelector(".kiosk-login-cancel").addEventListener("click", () => this._closeKioskLoginModal());
+    root.querySelector(".kiosk-login-submit").addEventListener("click", () => this._submitKioskLogin());
+    root.querySelector(".kiosk-login-pin-input").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") this._submitKioskLogin();
+    });
+    // Any tap/key/scroll anywhere on the card resets the 45-second idle
+    // clock while elevated - same "any activity, not just the specific
+    // elevated action, counts" idea as family-week-calendar-card.js's own
+    // screensaver idle timer (_setupScreenSaverActivityListeners), just
+    // scoped to this card's own root instead of the whole document since
+    // this card has no reason to care about activity elsewhere on the
+    // dashboard.
+    ["pointerdown", "keydown", "wheel", "touchstart"].forEach((evt) => {
+      root.addEventListener(evt, () => this._resetKioskIdleTimer(), { passive: true });
+    });
   }
 
   _onBoardClick(e) {
@@ -757,15 +1090,19 @@ class FamilyHubChoresCard extends HTMLElement {
     const rewardsClaimBtn = e.target.closest(".rewards-claim-btn");
     const editBtn = e.target.closest(".chore-edit-btn");
     const routineHeader = e.target.closest(".routine-row-header");
+    const completedHeader = e.target.closest(".completed-chores-header");
     const routineEditBtn = e.target.closest(".routine-item-edit");
     const routineDeleteBtn = e.target.closest(".routine-item-delete");
     const routineCheck = e.target.closest(".routine-item-check");
+    const routineApproveBtn = e.target.closest(".routine-item-approve");
     const goalLogBtn = e.target.closest(".goal-log-btn");
     const goalApproveBtn = e.target.closest(".goal-approve-btn");
     const goalRejectBtn = e.target.closest(".goal-reject-btn");
+    const goalCompleteBtn = e.target.closest(".goal-complete-btn");
     if (goalLogBtn) return this._logGoalProgress(goalLogBtn.dataset.id);
     if (goalApproveBtn) return this._approveGoal(goalApproveBtn.dataset.id);
     if (goalRejectBtn) return this._rejectGoal(goalRejectBtn.dataset.id);
+    if (goalCompleteBtn) return this._archiveGoal(goalCompleteBtn.dataset.id);
     if (nudgeBtn) return this._nudge(nudgeBtn.dataset.id);
     if (doneBtn) return this._complete(doneBtn.dataset.id);
     if (approveBtn) return this._approve(approveBtn.dataset.id);
@@ -785,7 +1122,9 @@ class FamilyHubChoresCard extends HTMLElement {
     // never both match the same click, but ordering it first keeps that
     // guarantee explicit rather than incidental.
     if (routineCheck) return this._toggleRoutineItem(routineCheck.dataset.id, routineCheck.checked);
+    if (routineApproveBtn) return this._approveRoutineItem(routineApproveBtn.dataset.id);
     if (routineHeader) return this._toggleRoutineSection(routineHeader.dataset.user, routineHeader.dataset.category);
+    if (completedHeader) return this._toggleCompletedSection(completedHeader.dataset.col);
     // Kanban-style "click the card for details" - falls through to here
     // only when the click landed on the card itself (or plain, non-button
     // content inside it, e.g. the title/meta row) rather than one of the
@@ -805,7 +1144,7 @@ class FamilyHubChoresCard extends HTMLElement {
   }
   async _complete(id) {
     try {
-      await this._hass.connection.sendMessagePromise({ type: "family_hub/chores/complete", chore_id: id });
+      await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/chores/complete", chore_id: id }));
       await this._fetchChores();
     } catch (e) {
       /* server already reports the reason via send_error; nothing actionable client-side beyond refreshing */
@@ -813,25 +1152,57 @@ class FamilyHubChoresCard extends HTMLElement {
   }
   async _approve(id) {
     try {
-      await this._hass.connection.sendMessagePromise({ type: "family_hub/chores/approve", chore_id: id });
+      await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/chores/approve", chore_id: id }));
       await this._fetchChores();
     } catch (e) {
       /* no-op */
     }
   }
-  // v128+: the other way out of the verification gate - an optional,
-  // skippable window.prompt for a short note (see const.py's
-  // CHORE_KEY_REJECT_REASON docstring on why it's worth having: a silent
-  // bounce-back leaves the assignee guessing what was wrong). Cancelling
-  // the prompt (null, not just an empty string) still rejects with no
-  // reason - only an actual Cancel/Esc on the browser's OWN "are you sure"
-  // for the whole action would stop it, and this card doesn't have one of
-  // those (matches _approve right above having none either - Approve/
-  // Reject are both a single tap, no confirm() step).
-  async _reject(id) {
-    const reason = window.prompt("Anything you want to tell them about why? (optional)", "");
+  // v144.13+: was an optional, skippable window.prompt() for a short note
+  // (see const.py's CHORE_KEY_REJECT_REASON docstring on why it's worth
+  // having: a silent bounce-back leaves the assignee guessing what was
+  // wrong) - replaced with a proper modal (household's own "send back
+  // reason should be a modal" request), same _openRejectModal/_submitReject
+  // shape used for _rejectGoal right below and for the standalone
+  // family-hub-goals-card.js's own reject flow. A cancelled modal now
+  // genuinely cancels the whole action - the old window.prompt() sent the
+  // reject through with an empty reason even on Cancel/Esc, since a native
+  // prompt can't tell "Cancel the reason" apart from "Cancel the reject."
+  _reject(id) {
+    this._openRejectModal(id, "chore");
+  }
+  _openRejectModal(id, kind) {
+    const item = kind === "goal" ? this._goals.find((g) => g.id === id) : this._chores.find((c) => c.id === id);
+    if (!item) return;
+    const overlay = this._root.querySelector(".reject-modal");
+    const box = overlay.querySelector(".modal-box");
+    box.innerHTML = `
+      <h3>Send back "${this._esc(item.title)}"</h3>
+      <label>Anything you want to tell them about why? (optional)<textarea class="f-reject-reason" rows="3" placeholder="Not quite - try again"></textarea></label>
+      <div class="modal-actions">
+        <button class="cancel-btn">Cancel</button>
+        <button class="save-btn">Send back</button>
+      </div>
+    `;
+    box.querySelector(".cancel-btn").addEventListener("click", () => overlay.classList.remove("open"));
+    box.querySelector(".save-btn").addEventListener("click", () => this._submitReject(id, kind, overlay, box));
+    overlay.classList.add("open");
+    box.querySelector(".f-reject-reason").focus();
+  }
+  async _submitReject(id, kind, overlay, box) {
+    const reason = box.querySelector(".f-reject-reason").value.trim();
+    overlay.classList.remove("open");
+    if (kind === "goal") {
+      try {
+        await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/goals/reject", goal_id: id, reason }));
+        await this._fetchGoals();
+      } catch (e) {
+        /* no-op */
+      }
+      return;
+    }
     try {
-      await this._hass.connection.sendMessagePromise({ type: "family_hub/chores/reject", chore_id: id, reason: reason || "" });
+      await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/chores/reject", chore_id: id, reason }));
       await this._fetchChores();
     } catch (e) {
       /* no-op */
@@ -886,6 +1257,48 @@ class FamilyHubChoresCard extends HTMLElement {
   // both; either one alone is enough to land a chore here.
   _isWaitingToRecur(chore) {
     return chore.status === "approved" && !!(chore.recur_type || chore.auto_create_trigger);
+  }
+  // A one-off approved chore stays visible (in the per-column Completed
+  // accordion, see _completedChoresAccordionHtml) for 7 days after
+  // approval, then quietly drops off the board entirely - "disappears
+  // from the accordion after 7 days" per the household's own request.
+  // Based on approved_at (when chore_engine.approve_chore actually set the
+  // final status - or complete_chore's own auto-approve shortcut, same
+  // field either way), not completed_at/created_at, since that's the
+  // moment "done" actually became final.
+  _choreApprovedWithinDays(chore, days) {
+    if (!chore.approved_at) return false;
+    const at = new Date(chore.approved_at).getTime();
+    if (Number.isNaN(at)) return false;
+    return Date.now() - at <= days * 24 * 60 * 60 * 1000;
+  }
+  _completedChoresAccordionHtml(colId, completedItems) {
+    if (!completedItems.length) return "";
+    const open = this._openCompletedSections.has(colId);
+    // Most-recently-approved first - the opposite of the main column's
+    // due-date ordering, since there's no "what's next" question here,
+    // just "what did we just finish."
+    const sorted = completedItems
+      .slice()
+      .sort((a, b) => new Date(b.approved_at || 0).getTime() - new Date(a.approved_at || 0).getTime());
+    const body = open
+      ? `<div class="completed-chores-body">${sorted.map((c) => this._choreCardHtml(c)).join("")}</div>`
+      : "";
+    return `
+      <div class="completed-chores-row">
+        <div class="completed-chores-header" data-col="${colId}">
+          <span class="routine-toggle-icon">${open ? "&#9662;" : "&#9656;"}</span>
+          <span class="completed-chores-title">Completed</span>
+          <span class="routine-row-badge">${completedItems.length}</span>
+        </div>
+        ${body}
+      </div>
+    `;
+  }
+  _toggleCompletedSection(colId) {
+    if (this._openCompletedSections.has(colId)) this._openCompletedSections.delete(colId);
+    else this._openCompletedSections.add(colId);
+    this._render();
   }
   _recurDescriptionHtml(chore) {
     const parts = [];
@@ -1098,20 +1511,34 @@ class FamilyHubChoresCard extends HTMLElement {
     const overdue = this._isRoutineItemOverdue(item);
     const dueBadge = item.due_time ? `<span class="routine-item-due ${overdue ? "overdue" : ""}">${overdue ? "&#9888; " : ""}${this._esc(this._formatDueTime(item.due_time))}</span>` : "";
     const daysBadge = item.days_of_week && item.days_of_week.length ? `<span class="routine-item-days">${item.days_of_week.map((d) => WEEKDAY_LABELS[d]).join(" ")}</span>` : "";
-    const meta = dueBadge || daysBadge ? `<div class="routine-item-meta">${dueBadge}${daysBadge}</div>` : "";
+    // v141+: stars for completing a routine item (routine_engine.py's
+    // star_value/no_approval_required) - most items still show nothing
+    // here, same as before this existed. "Awaiting approval" only shows
+    // once it's actually pending (checked, star_value set, and
+    // no_approval_required is false) - see toggle_item's own docstring.
+    const starsBadge = item.star_value
+      ? `<span class="routine-item-stars">&#11088; ${item.star_value}${item.pending_approval ? " - awaiting approval" : ""}</span>`
+      : "";
+    const meta = dueBadge || daysBadge || starsBadge ? `<div class="routine-item-meta">${dueBadge}${daysBadge}${starsBadge}</div>` : "";
     // Editing/removing an item is an admin/assign-permission action
     // (matches the server's own PERMISSION_ASSIGN gate on family_hub/
     // routines/update and /delete); checking it off is not (see
     // _toggleRoutineItem/ws_toggle_routine_item) - same split as the rest
     // of this card's canAssign() gating. Edit jumps straight into the FAB
     // modal's Routine tab, pre-scoped to this exact item (see
-    // _openRoutineManageModal).
+    // _openRoutineManageModal). Approving a pending star, like approving a
+    // chore, needs _canVerify() specifically (PERMISSION_VERIFY or a real
+    // admin) - the same tier that approves chore completions.
+    const approveBtn = item.pending_approval && this._canVerify()
+      ? `<button type="button" class="routine-item-approve" data-id="${item.id}" title="Approve stars">Approve</button>`
+      : "";
     const actions = this._canAssign()
       ? `
+        ${approveBtn}
         <button type="button" class="routine-item-edit" data-id="${item.id}" title="Edit">&#9998;</button>
         <button type="button" class="routine-item-delete" data-id="${item.id}" title="Remove">&times;</button>
       `
-      : "";
+      : approveBtn;
     return `
       <div class="routine-item-card ${item.done ? "done" : ""}" data-id="${item.id}">
         <input type="checkbox" class="routine-item-check" data-id="${item.id}" ${item.done ? "checked" : ""}>
@@ -1169,7 +1596,14 @@ class FamilyHubChoresCard extends HTMLElement {
   // card's own + button - see _openCreateModal's Goal tab).
   _goalsBlockHtml(userId) {
     if (!this._goalsInChoresEnabled()) return "";
-    const goals = this._goals.filter((g) => g.assigned_to === userId);
+    // v144.15+: archived goals (the household hit "Complete" on them, see
+    // _archiveGoal/goal-complete-btn below) are deliberately left out of
+    // this embedded block entirely, same as _myGoals() already does on the
+    // standalone family-hub-goals-card.js - there's no room for a
+    // Completed accordion in this condensed per-person view, so
+    // "Complete" here just means "hide it," matching the household's own
+    // framing of the request.
+    const goals = this._goals.filter((g) => g.assigned_to === userId && g.status !== GOAL_STATUS_ARCHIVED);
     if (!goals.length) return "";
     const sorted = goals.slice().sort((a, b) => {
       const rank = (g) => (g.status === GOAL_STATUS_PENDING_VERIFICATION ? 0 : g.status === GOAL_STATUS_OPEN ? 1 : 2);
@@ -1191,6 +1625,14 @@ class FamilyHubChoresCard extends HTMLElement {
       } else actions += `<span class="goal-pending-label">Awaiting approval</span>`;
     } else if (goal.status === GOAL_STATUS_APPROVED) {
       actions += `<span class="goal-approved-label">&#10003; Achieved</span>`;
+      // v144.15+: household report - achieved goals had no way to
+      // complete/hide them from this embedded block either (only the
+      // standalone Goals card got this in v144.13) - same permission as
+      // there: the assignee themselves, or whoever can otherwise manage
+      // goals (can_assign/admin, via _canAssign()).
+      if (goal.assigned_to === this._myUserId() || this._canAssign()) {
+        actions += `<button type="button" class="goal-complete-btn" data-id="${goal.id}">Complete</button>`;
+      }
     }
     return `
       <div class="goal-item status-${goal.status}" data-id="${goal.id}">
@@ -1213,20 +1655,30 @@ class FamilyHubChoresCard extends HTMLElement {
   }
   async _approveGoal(id) {
     try {
-      await this._hass.connection.sendMessagePromise({ type: "family_hub/goals/approve", goal_id: id });
+      await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/goals/approve", goal_id: id }));
       await this._fetchGoals();
     } catch (e) {
       /* no-op */
     }
   }
-  async _rejectGoal(id) {
-    const reason = window.prompt("Why is this being sent back? (optional)", "");
+  // v144.13+: same window.prompt() -> modal conversion as chore _reject
+  // above - see that method's own comment. Shares the exact same
+  // .reject-modal/_openRejectModal/_submitReject machinery, just routed to
+  // the goals ws commands via kind === "goal".
+  _rejectGoal(id) {
+    this._openRejectModal(id, "goal");
+  }
+  // v144.15+: same family_hub/goals/archive ws command + no-reward-side-
+  // effects contract as family-hub-goals-card.js's own _archive - see that
+  // method's comment. Just re-fetches goals afterward, which drops the
+  // now-archived goal out of _goalsBlockHtml's filter above.
+  async _archiveGoal(id) {
     try {
-      await this._hass.connection.sendMessagePromise({ type: "family_hub/goals/reject", goal_id: id, reason: reason || "" });
-      await this._fetchGoals();
+      await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/goals/archive", goal_id: id }));
     } catch (e) {
       /* no-op */
     }
+    await this._fetchGoals();
   }
   async _toggleRoutineSection(userId, category) {
     const key = `${userId}:${category}`;
@@ -1242,6 +1694,14 @@ class FamilyHubChoresCard extends HTMLElement {
       /* no-op - a failed toggle just leaves the item as the server last had it, next poll corrects the checkbox */
     }
   }
+  async _approveRoutineItem(itemId) {
+    try {
+      await this._hass.connection.sendMessagePromise({ type: "family_hub/routines/approve_item", item_id: itemId });
+      await this._fetchRoutines();
+    } catch (e) {
+      /* server already reports the reason via send_error; next poll/render corrects the board either way */
+    }
+  }
   async _deleteRoutineItem(itemId) {
     try {
       await this._hass.connection.sendMessagePromise({ type: "family_hub/routines/delete", item_id: itemId });
@@ -1254,9 +1714,20 @@ class FamilyHubChoresCard extends HTMLElement {
   _choreCardHtml(chore) {
     const status = chore.status;
     const isBin = chore.assigned_to === CHORE_BIN_SENTINEL;
+    // Quantity-based chores ("3 loads of laundry") - quantity_total is only
+    // ever set on a chore created/edited with a count; quantity_remaining
+    // can briefly be null right after creation is echoed back over an old
+    // cached copy, so it falls back to the full total rather than showing
+    // a stale/blank count. See chore_engine.complete_chore for the actual
+    // decrement-then-only-verify-on-zero logic this button label reflects.
+    const hasQuantity = !!chore.quantity_total;
+    const qtyRemaining = hasQuantity
+      ? (chore.quantity_remaining == null ? chore.quantity_total : chore.quantity_remaining)
+      : null;
     let actions = "";
     if (status === "open" && !isBin) {
-      actions += `<button class="chore-done-btn" data-id="${chore.id}">Done</button>`;
+      const doneLabel = hasQuantity ? `Done (${qtyRemaining} left)` : "Done";
+      actions += `<button class="chore-done-btn" data-id="${chore.id}">${doneLabel}</button>`;
       actions += `<button class="chore-nudge-btn" data-id="${chore.id}" title="Nudge">&#128276;</button>`;
     } else if (status === "open" && isBin && chore.assignment_mode === "first_come_first_served") {
       actions += `<button class="chore-claim-btn" data-id="${chore.id}">Claim</button>`;
@@ -1272,16 +1743,25 @@ class FamilyHubChoresCard extends HTMLElement {
     // is only ever possible for an open chore - chore_engine.update_chore
     // itself refuses anything past that (pending_verification/approved
     // chores get re-opened via reset_recurring_chore or recreated instead,
-    // never edited in place) - and only for whoever can already assign
-    // chores, the exact same PERMISSION_ASSIGN gate family_hub/chores/
-    // update enforces server-side (see ws_update_chore in
-    // chores_websocket_api.py) - this is a UI convenience matching an
-    // existing backend rule, not a new permission of its own.
-    if (status === "open" && this._canAssign()) {
+    // never edited in place) - and only for whoever has PERMISSION_EDIT_CHORE
+    // (v144.4+, split out of PERMISSION_ASSIGN - see _canEditChore's own
+    // comment above), the exact same gate family_hub/chores/update enforces
+    // server-side (see ws_update_chore in chores_websocket_api.py) - this is
+    // a UI convenience matching an existing backend rule, not a new
+    // permission of its own.
+    if (status === "open" && this._canEditChore()) {
       actions += `<button class="chore-edit-btn" data-id="${chore.id}" title="Edit">&#9998;</button>`;
     }
-    const due = chore.due_date ? `<span class="chore-due">Due ${new Date(chore.due_date).toLocaleDateString()}</span>` : "";
+    const showDueTime = !!(this._settingsCache && this._settingsCache.choreDueShowTime);
+    const dueStr = chore.due_date
+      ? showDueTime
+        ? new Date(chore.due_date).toLocaleString()
+        : new Date(chore.due_date).toLocaleDateString()
+      : "";
+    const due = dueStr ? `<span class="chore-due">Due ${dueStr}</span>` : "";
     const streak = chore.streak_count > 0 ? `<span class="chore-streak">&#128293; ${chore.streak_count}</span>` : "";
+    const quantityBadge =
+      hasQuantity && status === "open" ? `<span class="chore-quantity">${qtyRemaining}/${chore.quantity_total}</span>` : "";
     // v128+: a small "sent back" flag while this chore sits open again
     // after chore_engine.reject_chore - rejected_by/rejected_at/reject_reason
     // are only ever set by a reject (see const.py's CHORE_KEY_REJECT_REASON
@@ -1296,6 +1776,7 @@ class FamilyHubChoresCard extends HTMLElement {
           <span class="chore-stars">&#11088; ${chore.star_value || 0}</span>
           ${due}
           ${streak}
+          ${quantityBadge}
         </div>
         ${sentBack}
         <div class="chore-actions">${actions}</div>
@@ -1357,6 +1838,7 @@ class FamilyHubChoresCard extends HTMLElement {
         ${due ? `<span class="detail-stat">&#128197; Due ${this._esc(due)}</span>` : ""}
         ${chore.overdue_penalty ? `<span class="detail-stat">&#9888; -${chore.overdue_penalty} if overdue</span>` : ""}
         ${chore.streak_count > 0 ? `<span class="detail-stat">&#128293; ${chore.streak_count} streak</span>` : ""}
+        ${chore.quantity_total ? `<span class="detail-stat">&#128203; ${chore.quantity_remaining == null ? chore.quantity_total : chore.quantity_remaining}/${chore.quantity_total} left</span>` : ""}
       </div>
       ${recurHtml ? `<div class="detail-recur">&#128260; Recurs: ${recurHtml}</div>` : ""}
       ${deps.length ? `<div class="detail-section-label">Waiting on</div><div class="detail-deps">${deps.join("")}</div>` : ""}
@@ -1373,7 +1855,8 @@ class FamilyHubChoresCard extends HTMLElement {
       <div class="detail-section-label">Notes</div>
       <div class="detail-notes ${notes ? "" : "empty"}">${notes ? this._esc(notes) : "No notes added."}</div>
       <div class="modal-actions">
-        ${chore.status === "open" && this._canAssign() ? `<button type="button" class="detail-edit-btn">Edit</button>` : ""}
+        ${chore.status === "open" && this._canEditChore() ? `<button type="button" class="detail-edit-btn">Edit</button>` : ""}
+        ${this._isAdmin() ? `<button type="button" class="detail-delete-btn">Delete</button>` : ""}
         <button type="button" class="detail-close-btn-2">Close</button>
       </div>
     `;
@@ -1385,6 +1868,28 @@ class FamilyHubChoresCard extends HTMLElement {
       editBtn.addEventListener("click", () => {
         close();
         this._openEditModal(choreId);
+      });
+    }
+    // Admin-only, and deliberately available regardless of status (open,
+    // awaiting approval, or already approved) - unlike Edit, which
+    // chore_engine.update_chore itself refuses past "open." Deleting a
+    // chore stuck pending_verification/approved was previously only
+    // possible by hand via a websocket call in devtools; this is the "a
+    // way somewhere to edit and delete chores... off the hub" household
+    // request - the card never previously offered any way to remove a
+    // chore once it left "open", short of a manual websocket call in devtools.
+    const deleteBtn = box.querySelector(".detail-delete-btn");
+    if (deleteBtn) {
+      deleteBtn.addEventListener("click", async () => {
+        if (!window.confirm(`Delete "${chore.title}"? This can't be undone.`)) return;
+        try {
+          await this._hass.connection.sendMessagePromise({ type: "family_hub/chores/delete", chore_id: choreId });
+        } catch (e) {
+          window.alert((e && e.message) || "Couldn't delete this chore.");
+          return;
+        }
+        close();
+        await this._fetchChores();
       });
     }
     overlay.classList.add("open");
@@ -1421,6 +1926,30 @@ class FamilyHubChoresCard extends HTMLElement {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
+  // Soonest-due-first, same "what needs attention next" ordering whether
+  // you're looking at Mom's column or a kid's - a chore with no due_date
+  // at all can't be placed on that timeline, so those fall to the back of
+  // the due-date group and are instead ordered newest-added-first among
+  // themselves (a freshly assigned chore is usually the one someone's
+  // about to ask "did you see the new one I added?" about, so it's the
+  // one worth surfacing first when nothing's actually overdue/soon).
+  // Deliberately a stable sort of a fresh copy (.slice()) - never mutates
+  // this._chores itself, so nothing else that iterates that array (drag
+  // handlers, other columns, the Waiting to Recur/Rewards columns built
+  // separately) is affected by this column's own display order.
+  _sortChoresForColumn(items) {
+    return items.slice().sort((a, b) => {
+      const aDue = a.due_date ? new Date(a.due_date).getTime() : null;
+      const bDue = b.due_date ? new Date(b.due_date).getTime() : null;
+      if (aDue !== null && bDue !== null) return aDue - bDue;
+      if (aDue !== null) return -1;
+      if (bDue !== null) return 1;
+      const aCreated = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const bCreated = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return bCreated - aCreated;
+    });
+  }
+
   _render() {
     if (!this._root) return;
     this._root.querySelector(".title").textContent = this._config.title;
@@ -1432,7 +1961,17 @@ class FamilyHubChoresCard extends HTMLElement {
         // column (see _isWaitingToRecur) - once a recurring chore is
         // approved it moves there instead of staying visible (faded, easy
         // to miss) in whoever last did it.
-        const items = this._chores.filter((c) => c.assigned_to === col.id && !this._isWaitingToRecur(c));
+        // Split into what's still active (shown in the main scrolling
+        // body) and what's already approved (moved into the collapsed
+        // "Completed" accordion below it instead of cluttering the main
+        // view forever - see _choreApprovedWithinDays/
+        // _completedChoresAccordionHtml). A one-off approved chore older
+        // than the 7-day window is simply excluded from both - it's not
+        // deleted server-side, just no longer shown anywhere on the board
+        // (still reachable via chore history/exports if you ever need it).
+        const allItems = this._chores.filter((c) => c.assigned_to === col.id && !this._isWaitingToRecur(c));
+        const activeItems = this._sortChoresForColumn(allItems.filter((c) => c.status !== "approved"));
+        const completedItems = allItems.filter((c) => c.status === "approved" && this._choreApprovedWithinDays(c, 7));
         // Routines never apply to the shared Chore Bin (it isn't a person),
         // so this is skipped there the same way it's skipped for the
         // Waiting to Recur/Rewards columns (those are built separately,
@@ -1445,14 +1984,15 @@ class FamilyHubChoresCard extends HTMLElement {
             <div class="chore-col-header" style="border-color:${col.color}">
               <span class="chore-col-dot" style="background:${col.color}"></span>
               <span>${this._esc(col.name)}</span>
-              <span class="chore-col-count">${items.length}</span>
+              <span class="chore-col-count">${activeItems.length}</span>
             </div>
             ${routinesHtml}
             ${goalsHtml}
             ${choresLabel}
             <div class="chore-col-body" data-col-id="${col.id}">
-              ${items.length ? items.map((c) => this._choreCardHtml(c)).join("") : `<div class="chore-col-empty">Nothing here</div>`}
+              ${activeItems.length ? activeItems.map((c) => this._choreCardHtml(c)).join("") : `<div class="chore-col-empty">Nothing here</div>`}
             </div>
+            ${this._completedChoresAccordionHtml(col.id, completedItems)}
           </div>
         `;
       })
@@ -1641,6 +2181,8 @@ class FamilyHubChoresCard extends HTMLElement {
         <label>Due date<input type="datetime-local" class="f-due"></label>
         ${this._remindFieldsHtml(null)}
         <label>Overdue penalty (stars)<input type="number" class="f-penalty" min="0" value="0"></label>
+        <label class="remind-check-opt" title="${this._canStarOverride() ? "" : "Only an admin (or someone granted star-override permission) can create a chore that skips verification."}"><input type="checkbox" class="f-no-approval" ${this._canStarOverride() ? "" : "disabled"} /> Doesn't require approval (skips verification - approved and stars paid out the moment it's marked done)</label>
+        <label title="Optional - e.g. 3 for &quot;3 loads of laundry&quot;. Tapping Done counts down one unit at a time; only the last one triggers approval/stars.">Quantity (optional - e.g. 3 loads of laundry)<input type="number" class="f-quantity" min="1" placeholder="Leave blank for a normal chore"></label>
         <label>Notes<textarea class="f-notes" rows="3" placeholder="Any details worth knowing - which bin, where to leave it, etc."></textarea></label>
         <label>Depends on<select class="f-deps" multiple>${depOptions}</select></label>
         ${this._recurFieldsHtml(null)}
@@ -1811,6 +2353,8 @@ class FamilyHubChoresCard extends HTMLElement {
           <input type="time" class="rm-add-time" title="Due time (optional)">
           <div class="rm-days" data-role="add">${dayToggles}</div>
           <div class="rm-hint">Tap the days this applies to - leave them all off for every day.</div>
+          <input type="number" class="rm-add-stars" min="0" placeholder="Stars for completing this (optional)">
+          <label class="rm-no-approval-label"><input type="checkbox" class="rm-add-no-approval"> Doesn't require approval (stars paid the moment it's checked)</label>
           <button type="button" class="rm-add-btn">Add Item</button>
         </div>
         <div class="rm-error"></div>
@@ -1829,6 +2373,8 @@ class FamilyHubChoresCard extends HTMLElement {
             <input type="text" class="rm-edit-title" value="${this._escAttr(item.title)}">
             <input type="time" class="rm-edit-time" value="${item.due_time || ""}">
             <div class="rm-days" data-role="edit">${dayToggles}</div>
+            <input type="number" class="rm-edit-stars" min="0" placeholder="Stars for completing this (optional)" value="${item.star_value || ""}">
+            <label class="rm-no-approval-label"><input type="checkbox" class="rm-edit-no-approval" ${item.no_approval_required ? "checked" : ""}> Doesn't require approval (stars paid the moment it's checked)</label>
             <div class="rm-item-edit-actions">
               <button type="button" class="rm-item-save-btn" data-id="${item.id}">Save</button>
               <button type="button" class="rm-item-cancel-btn" data-id="${item.id}">Cancel</button>
@@ -1839,11 +2385,12 @@ class FamilyHubChoresCard extends HTMLElement {
     }
     const dueBadge = item.due_time ? `<span>${this._esc(this._formatDueTime(item.due_time))}</span>` : "";
     const daysBadge = `<span>${item.days_of_week && item.days_of_week.length ? item.days_of_week.map((d) => WEEKDAY_LABELS[d]).join(" ") : "Every day"}</span>`;
+    const starsBadge = item.star_value ? `<span>&#11088; ${item.star_value}${item.no_approval_required ? "" : " (needs approval)"}</span>` : "";
     return `
       <div class="rm-item-row" data-id="${item.id}">
         <div class="rm-item-body">
           <div class="rm-item-title">${this._esc(item.title)}</div>
-          <div class="rm-item-meta">${dueBadge}${daysBadge}</div>
+          <div class="rm-item-meta">${dueBadge}${daysBadge}${starsBadge}</div>
         </div>
         <div class="rm-item-actions">
           <button type="button" class="rm-item-edit-btn" data-id="${item.id}" title="Edit">&#9998;</button>
@@ -1934,6 +2481,8 @@ class FamilyHubChoresCard extends HTMLElement {
     }
     const dueTime = box.querySelector(".rm-add-time").value || null;
     const daysOfWeek = this._readRoutineDaysFromContainer(box.querySelector('.rm-days[data-role="add"]'));
+    const starValue = parseInt(box.querySelector(".rm-add-stars").value, 10) || 0;
+    const noApprovalRequired = box.querySelector(".rm-add-no-approval").checked;
     try {
       await this._hass.connection.sendMessagePromise({
         type: "family_hub/routines/create",
@@ -1942,6 +2491,8 @@ class FamilyHubChoresCard extends HTMLElement {
         title,
         due_time: dueTime,
         days_of_week: daysOfWeek,
+        star_value: starValue,
+        no_approval_required: noApprovalRequired,
       });
     } catch (e) {
       errEl.textContent = (e && e.message) || "Couldn't add this item.";
@@ -1952,6 +2503,8 @@ class FamilyHubChoresCard extends HTMLElement {
     if (!box2) return;
     box2.querySelector(".rm-add-title").value = "";
     box2.querySelector(".rm-add-time").value = "";
+    box2.querySelector(".rm-add-stars").value = "";
+    box2.querySelector(".rm-add-no-approval").checked = false;
     box2.querySelectorAll('.rm-days[data-role="add"] .rm-day-toggle').forEach((b) => b.classList.remove("active"));
     this._renderRoutineManagePane(box2);
     // v137.x fix: say out loud who/what it was actually added to, since the
@@ -1979,6 +2532,8 @@ class FamilyHubChoresCard extends HTMLElement {
     }
     const dueTime = row.querySelector(".rm-edit-time").value || null;
     const daysOfWeek = this._readRoutineDaysFromContainer(row.querySelector('.rm-days[data-role="edit"]'));
+    const starValue = parseInt(row.querySelector(".rm-edit-stars").value, 10) || 0;
+    const noApprovalRequired = row.querySelector(".rm-edit-no-approval").checked;
     try {
       await this._hass.connection.sendMessagePromise({
         type: "family_hub/routines/update",
@@ -1986,6 +2541,8 @@ class FamilyHubChoresCard extends HTMLElement {
         title,
         due_time: dueTime,
         days_of_week: daysOfWeek,
+        star_value: starValue,
+        no_approval_required: noApprovalRequired,
       });
     } catch (e) {
       errEl.textContent = (e && e.message) || "Couldn't save this item.";
@@ -2103,6 +2660,10 @@ class FamilyHubChoresCard extends HTMLElement {
       overdue_penalty: parseInt(box.querySelector(".f-penalty").value, 10) || 0,
       notes: box.querySelector(".f-notes").value.trim(),
       dependencies: Array.from(box.querySelector(".f-deps").selectedOptions).map((o) => o.value),
+      no_approval_required: box.querySelector(".f-no-approval").checked,
+      // Blank -> null (an ordinary chore) - see chore_engine._normalize_
+      // quantity_total, which treats null/blank/anything under 1 the same.
+      quantity_total: parseInt(box.querySelector(".f-quantity").value, 10) || null,
     };
     this._applyRecurFieldsToPayload(box, payload);
     if (mode === "direct") payload.assigned_to = box.querySelector(".f-assigned").value;
@@ -2184,6 +2745,8 @@ class FamilyHubChoresCard extends HTMLElement {
       <label>Due date<input type="datetime-local" class="f-due" value="${this._isoToLocalDatetimeInputValue(chore.due_date)}"></label>
       ${this._remindFieldsHtml(chore)}
       <label>Overdue penalty (stars)<input type="number" class="f-penalty" min="0" value="${chore.overdue_penalty || 0}"></label>
+      <label class="remind-check-opt" title="${this._canStarOverride() || chore.no_approval_required ? "" : "Only an admin (or someone granted star-override permission) can mark a chore as not requiring approval."}"><input type="checkbox" class="f-no-approval" ${chore.no_approval_required ? "checked" : ""} ${this._canStarOverride() || chore.no_approval_required ? "" : "disabled"} /> Doesn't require approval (skips verification - approved and stars paid out the moment it's marked done)</label>
+      <label title="Optional - e.g. 3 for &quot;3 loads of laundry&quot;. Tapping Done counts down one unit at a time; only the last one triggers approval/stars. Changing this resets the current count.">Quantity (optional - e.g. 3 loads of laundry)<input type="number" class="f-quantity" min="1" placeholder="Leave blank for a normal chore" value="${chore.quantity_total || ""}"></label>
       <label>Notes<textarea class="f-notes" rows="3" placeholder="Any details worth knowing - which bin, where to leave it, etc.">${this._esc(chore.notes || "")}</textarea></label>
       <label>Depends on<select class="f-deps" multiple>${depOptions}</select></label>
       ${this._recurFieldsHtml(chore)}
@@ -2230,6 +2793,7 @@ class FamilyHubChoresCard extends HTMLElement {
       title,
       star_value: parseInt(box.querySelector(".f-stars").value, 10) || 0,
       overdue_penalty: parseInt(box.querySelector(".f-penalty").value, 10) || 0,
+      no_approval_required: box.querySelector(".f-no-approval").checked,
       // Always sent explicitly (even as ""), same reasoning as due_date
       // just below - clearing the Notes box on purpose has to actually
       // clear it server-side, not be silently ignored.
@@ -2240,6 +2804,11 @@ class FamilyHubChoresCard extends HTMLElement {
       // (matches how every other field below works: whatever's in the form
       // on Save replaces what was there).
       dependencies: Array.from(box.querySelector(".f-deps").selectedOptions).map((o) => o.value),
+      // Always sent explicitly, same "blank on purpose still has to clear
+      // it server-side" reasoning as notes/due_date - update_chore resets
+      // quantity_remaining to match whenever this key is present at all
+      // (see its own docstring), including clearing it back to null here.
+      quantity_total: parseInt(box.querySelector(".f-quantity").value, 10) || null,
     };
     const dueVal = box.querySelector(".f-due").value;
     // Unlike Create (which just omits due_date entirely when left blank),
@@ -2308,6 +2877,17 @@ class FamilyHubChoresCard extends HTMLElement {
       .add-chore-fab:active { transform: scale(0.94); }
       .rewards-toggle-btn { border: 1px solid var(--fc-border); border-radius: 14px; padding: 8px 12px; font-weight: 700; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; }
       .rewards-toggle-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
+      /* v144+ task #29: kiosk PIN login button + modal. .active here means
+         "someone is currently logged in", same as the toggle buttons above. */
+      .kiosk-login-btn { border: 1px solid var(--fc-border); border-radius: 14px; padding: 8px 12px; font-weight: 700; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; }
+      .kiosk-login-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
+      .kiosk-login-box { max-width: 360px; }
+      .kiosk-login-user-picker { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+      .kiosk-login-user-btn { border: 2px solid var(--fc-border); border-radius: 12px; padding: 10px 14px; font-weight: 700; background: var(--fc-card); color: var(--fc-text); cursor: pointer; }
+      .kiosk-login-user-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
+      .kiosk-login-empty { color: var(--fc-text-secondary); font-size: 13px; }
+      .kiosk-login-pin-input { width: 100%; box-sizing: border-box; font-size: 22px; letter-spacing: 6px; text-align: center; padding: 10px; border-radius: 10px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); }
+      .kiosk-login-error { color: #b3462c; font-size: 13px; min-height: 18px; margin-top: 6px; }
       /* Not .active until Waiting to Recur is actually collapsed to this
          bar button (see _toggleWaitingToRecurCollapsed) - the reverse of
          .rewards-toggle-btn's own active meaning ("shown"), since here the
@@ -2354,6 +2934,11 @@ class FamilyHubChoresCard extends HTMLElement {
       .routine-item-edit, .routine-item-delete { border: none; background: none; color: var(--fc-text-secondary); cursor: pointer; font-size: 13px; line-height: 1; padding: 2px; }
       .routine-item-delete { font-size: 15px; }
       .routine-row-empty { font-size: 11px; color: var(--fc-text-secondary); padding: 2px 0 4px; }
+      .completed-chores-row { border-top: 1px solid var(--fc-border); flex-shrink: 0; }
+      .completed-chores-header { display: flex; align-items: center; gap: 6px; padding: 8px; font-size: 12px; font-weight: 700; cursor: pointer; color: var(--fc-text-secondary); }
+      .completed-chores-title { flex: 1; }
+      .completed-chores-body { padding: 0 8px 8px; display: flex; flex-direction: column; gap: 8px; max-height: 240px; overflow-y: auto; }
+      .completed-chores-body .chore-card { opacity: .7; }
       /* --- Routine tab (FAB modal) - "manage items" pane, v136+ --- */
       .routine-manage { display: flex; flex-direction: column; gap: 8px; }
       .rm-filters { display: flex; gap: 6px; }
@@ -2391,6 +2976,7 @@ class FamilyHubChoresCard extends HTMLElement {
       .goal-item-actions { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
       .goal-item-actions button { border: none; border-radius: 6px; padding: 3px 7px; font-size: 10px; font-weight: 700; cursor: pointer; background: var(--fc-accent); color: var(--fc-accent-text); }
       .goal-reject-btn { background: var(--fc-surface-alt) !important; color: var(--fc-accent3) !important; }
+      .goal-complete-btn { background: var(--fc-accent2) !important; }
       .goal-pending-label, .goal-approved-label { font-size: 10px; color: var(--fc-text-secondary); white-space: nowrap; }
       .waiting-recur-col-body { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
       .waiting-recur-card { opacity: .8; }
@@ -2425,6 +3011,27 @@ class FamilyHubChoresCard extends HTMLElement {
          pointer everywhere; a draggable card (open + can-assign) still
          drags via native HTML5 drag-and-drop regardless of cursor style. */
       .chore-card { background: var(--fc-card); border-radius: 10px; padding: 8px 10px; box-shadow: var(--fc-shadow, 0 2px 5px rgba(0,0,0,0.1)); cursor: pointer; }
+      /* v144.5+: "Liquid glass" support, same convention as
+         family-week-calendar-card.js - any theme may set --fc-glass-blur
+         (px, default 0, see the Liquid Glass presets) and every surface
+         painted with --fc-card/--fc-surface-alt/--fc-surface2 (now
+         translucent via cardOpacity, see _applyThemeVars above) also
+         gets backdrop-filter so it genuinely blurs what's behind it
+         instead of just going see-through. Zero-cost for every existing
+         theme - blur(0px) is a no-op. -webkit- prefix needed for Safari/
+         iOS webviews. */
+      .chore-card, .chore-column, .chore-col-header, .chore-col-body.drag-over,
+      .cancel-btn, .chore-edit-btn, .chore-nudge-btn, .chore-reject-btn,
+      .chore-rejected-badge, .detail-dep, .detail-notes, .detail-rejected-note,
+      .detail-status-badge, .f-remind-opt, .goal-item, .goal-reject-btn,
+      .kiosk-login-btn, .kiosk-login-pin-input, .kiosk-login-user-btn,
+      .rewards-balance-row, .rewards-catalog-item, .rewards-toggle-btn,
+      .rm-add-form, .rm-day-toggle, .rm-item-row, .routine-item-card,
+      .routine-item-due, .routine-item-days, .routine-row, .routine-row-badge,
+      .waiting-recur-toggle-btn, .weekday-btn {
+        backdrop-filter: blur(var(--fc-glass-blur, 0px));
+        -webkit-backdrop-filter: blur(var(--fc-glass-blur, 0px));
+      }
       .chore-card.status-pending_verification { opacity: .85; }
       .chore-card.status-approved { opacity: .55; }
       .chore-title { font-weight: 700; font-size: 14px; margin-bottom: 4px; }

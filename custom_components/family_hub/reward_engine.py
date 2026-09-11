@@ -110,9 +110,27 @@ LEDGER_SOURCE_CHORE_OVERDUE = "chore_overdue"
 # "catalog_item" instead never touches add_stars at all (see grant_item),
 # so it never produces a ledger entry - only redemptions.
 LEDGER_SOURCE_GOAL_ACHIEVED = "goal_achieved"
+# v141+: a Routine item (see routine_engine.py) with its own optional
+# star_value, paid out by routine_engine.approve_item (manual, when the
+# item's no_approval_required is false - the default) or straight from
+# toggle_item itself (when it's true) - the Routines-feature counterpart of
+# LEDGER_SOURCE_CHORE_APPROVED, minus the rest of the chore state machine
+# (no streaks/recurrence/dependencies - routines reset on their own daily
+# timer, see maybe_reset_daily).
+LEDGER_SOURCE_ROUTINE_APPROVED = "routine_approved"
 LEDGER_SOURCE_REDEEMED = "redeemed"
 LEDGER_SOURCE_REDEMPTION_REVERSED = "redemption_reversed"
 LEDGER_SOURCE_MANUAL_ADJUSTMENT = "manual_adjustment"
+# v144.2+ (task #31): the two halves of a peer-to-peer star gift (see
+# gift_stars below) - always appear in pairs, one LEDGER_SOURCE_GIFT_SENT
+# entry on the giver's own ledger and one LEDGER_SOURCE_GIFT_RECEIVED entry
+# on the recipient's, same instant/no-approval-needed shape as redemption
+# (see this module's own docstring on why redemption itself is never
+# admin-gated - the household's same "spend your own stars, no approval
+# needed" answer applies here too, just spending them ON someone else
+# instead of on a catalog item).
+LEDGER_SOURCE_GIFT_SENT = "gift_sent"
+LEDGER_SOURCE_GIFT_RECEIVED = "gift_received"
 
 
 def add_stars(
@@ -148,6 +166,65 @@ def add_stars(
         "at": dt_util.utcnow().isoformat(),
     })
     return new_balance
+
+
+def gift_stars(
+    rewards: dict[str, Any],
+    from_user_id: str,
+    to_user_id: str,
+    amount: int,
+    *,
+    from_reason: str = "",
+    to_reason: str = "",
+) -> tuple[int, int]:
+    """Task #31: one household member gives some of their OWN stars to
+    another, on top of the existing earn-via-chores/redeem-via-catalog
+    economy - "I don't want this reward, but my sister does, so here's 10
+    of my stars." Self-serve and instant, same "never admin-gated" shape
+    redeem_item already has (see this module's own docstring) - a positive
+    balance is the only authority needed to give some of it away; there's
+    nothing here for an admin to approve, just like there's nothing for an
+    admin to approve when a kid redeems a reward they already have the
+    stars for.
+
+    Deducts `amount` from from_user_id and credits it to to_user_id in one
+    call, each producing its own ledger entry (LEDGER_SOURCE_GIFT_SENT /
+    LEDGER_SOURCE_GIFT_RECEIVED above) via the same add_stars every other
+    balance change in this module goes through - so a gift shows up in
+    both people's Star History exactly like any other transaction, just
+    tagged as a gift instead of a chore/redemption/manual adjustment.
+    `from_reason`/`to_reason` are separate (not one shared string) because
+    the two sides read differently in each person's own history - "Gift to
+    Dad" on the giver's side, "Gift from Mom" on the receiver's -
+    resolving a display name is chores_websocket_api.py's job (it has
+    hass.auth), not this hass-free module's.
+
+    Raises "no_user" if either id is missing, "invalid_recipient" for a
+    self-gift (gifting stars to yourself is a no-op dressed up as a
+    transaction - nothing stops it structurally, but it has no purpose and
+    would just show up as two confusing dueling ledger entries), and
+    "invalid_amount"/"insufficient_balance" the same way redeem_item
+    validates cost against balance. Returns (giver's new balance,
+    recipient's new balance)."""
+    if not from_user_id or not to_user_id:
+        raise RewardError("no_user", "Not logged in.")
+    if from_user_id == to_user_id:
+        raise RewardError("invalid_recipient", "Can't gift stars to yourself.")
+    try:
+        amount = int(amount)
+    except (TypeError, ValueError):
+        amount = 0
+    if amount <= 0:
+        raise RewardError("invalid_amount", "Enter how many stars to gift.")
+    balance = get_balance(rewards, from_user_id)
+    if balance < amount:
+        raise RewardError(
+            "insufficient_balance",
+            f"Not enough stars - gifting {amount} needs a balance of at least {amount}, and the balance is {balance}.",
+        )
+    new_from_balance = add_stars(rewards, from_user_id, -amount, reason=from_reason, source=LEDGER_SOURCE_GIFT_SENT)
+    new_to_balance = add_stars(rewards, to_user_id, amount, reason=to_reason, source=LEDGER_SOURCE_GIFT_RECEIVED)
+    return new_from_balance, new_to_balance
 
 
 def list_ledger(rewards: dict[str, Any], user_id: Optional[str] = None) -> list[dict[str, Any]]:
