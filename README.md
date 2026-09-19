@@ -1,6 +1,6 @@
 # Family Hub
 
-A full Home Assistant custom integration (`family_hub`, currently v1.109.6)
+A full Home Assistant custom integration (`family_hub`, currently v1.132.09)
 that bundles a whole family-tablet dashboard — calendar, chores, rewards,
 goals, and more — into one install/update, instead of a pile of separate
 integrations and cards:
@@ -99,6 +99,13 @@ features described in its own section below.
   editor), and a picker to reuse a loved dish when planning a new meal.
   Dishes can be added, edited, and deleted from the Loved Dishes list and
   each dish's own detail screen.
+- **Recipe Box card** (v1.110.6+): the same Recipe Box as its own dashboard
+  tab/card (`family-hub-recipe-box-card.js`), for anyone who'd rather have it
+  pinned open than pop it up from the calendar. Browse, search, filter by
+  category, heart, suggest, and add/edit/delete dishes right there — it runs
+  on the exact same underlying code as the calendar card's own Recipe Box
+  modal, so a change to one always behaves identically on the other, and
+  both read/write the same household-wide Recipe Box data.
 - **Meal Suggestions** — there's no separate Suggestions box to manage;
   tapping the light-bulb icon on any Recipe Box entry (or checking "Also
   add to Meal Suggestions" while adding/editing one) flags it as a
@@ -310,6 +317,97 @@ a granular per-person permissions system.
   from the Chore Bin, mark their own chore done, check off their own (or
   anyone's) routine items, log their own goal's progress, and suggest a
   new reward.
+
+### Timers
+- **Timers on chores and rewards**: give a chore an optional timer ("clean
+  for 30 minutes") and it gains a **▶ Start** button that counts down and
+  then completes the chore itself — obeying the approval rules you already
+  have, so it either lands in Awaiting Approval or pays out instantly. Give a
+  catalog reward a timer ("2 hours of gaming") and **Use** spends the stars
+  and starts the countdown, with a notification when time's up.
+- **Active Timers card**: every timer running in the house on one board —
+  chore timers, reward timers, and quick household timers — each card tinted
+  with the colour of whoever it's assigned to (the same per-person colour you
+  set on the Users tab), with unassigned ones in neutral grey. Live
+  countdowns, soonest-finishing first, and a ✕ to stop one.
+- **Quick household timers**: **＋ Start Timer** on that card opens a small
+  modal with four one-tap presets (5m / 15m / 30m / 1h), a custom-minutes box
+  for anything else, an optional label ("Oven", "Sam's turn") and an optional
+  person to assign it to. Assign it and that person gets the notification in
+  their colour; leave it unassigned and it's a house timer anyone can stop,
+  which notifies everyone when it finishes.
+- **They keep running with everything closed**: timers live on the Family Hub
+  backend, so one still finishes, completes its chore and sends its
+  notification with every dashboard shut and the tablet asleep — and picks up
+  at the right time remaining after a reload or a Home Assistant restart.
+- **Native Home Assistant timer helpers are created for you automatically.**
+  As of v1.110.3, Family Hub creates and maintains a real `timer.*` helper
+  for every household member — named **"Family Hub \<Name\>"**, entity id
+  `timer.family_hub_<name>` (e.g. `timer.family_hub_emma`) — plus **4
+  shared "Family Hub Family 1"–"Family Hub Family 4"** helpers, always
+  present, for timers nobody in particular is assigned to (the oven, a
+  board game). These appear automatically whenever you save Settings after
+  adding a member, and are backfilled the first time the Active Timers
+  card loads on an upgraded household — nothing to click. A timer is
+  handed to the assigned person's own helper first, then a free shared
+  one, so "Emma's" countdown always lands on `timer.family_hub_emma`
+  itself — genuine `timer.*` entities, visible in Developer Tools,
+  droppable on any dashboard, and usable directly as an automation trigger
+  ("when `timer.family_hub_emma` finishes…"). Removing someone from Family
+  Hub deliberately leaves their helper in place (same as everything else a
+  removed member leaves behind) — delete it yourself from Settings →
+  Devices & Services → Helpers if you don't want it any more. You can still
+  hand-create extra `timer.family_hub*`-named helpers of your own; Family
+  Hub adopts those too once its own are all busy.
+- **Automations: which chore or reward is a timer actually for?** A native
+  `timer.*` entity's own state has no room for that — it's just a
+  countdown. Two things close the gap, so a plain HA automation can answer
+  "what is this timer, and who's it for" without any Family Hub-specific
+  knowledge:
+  - A **`sensor.*` entity per currently-running timer** (state = its kind:
+    `chore` / `reward` / `standalone`) carrying `chore_id`, `reward_item_id`,
+    `title`, `user_id`, `user_name`, `native_timer_entity_id` (the `timer.*`
+    helper it's adopted onto, if any), `started_at`, `duration_minutes` and
+    `finishes_at` as attributes — query it any time from Developer Tools →
+    States or a template.
+  - A custom **`family_hub_timer_finished` event**, fired the instant any
+    timer of any kind completes, carrying the same fields as event data.
+    This is the natural trigger for "when X finishes, do Y" — no attribute
+    lookup needed.
+
+  **Example: lock a kid's computer when their screen-time reward ends.**
+  ```yaml
+  automation:
+    - alias: "Lock Sam's computer when screen time ends"
+      triggers:
+        - trigger: event
+          event_type: family_hub_timer_finished
+      condition: >
+        {{ trigger.event.data.kind == 'reward'
+           and trigger.event.data.user_id == 'YOUR_SAMS_HA_USER_ID'
+           and 'screen' in (trigger.event.data.title | lower) }}
+      actions:
+        - action: lock.lock
+          target:
+            entity_id: lock.sams_computer
+  ```
+  (Swap the `condition` for whatever identifies "this is the screen-time
+  reward" for your household — matching on `reward_item_id` against the
+  catalog item's id is more robust than matching on title text once you
+  know it.) The same information is available as a state trigger instead,
+  if you'd rather watch the sensor:
+  ```yaml
+  automation:
+    - alias: "Lock Sam's computer when screen time ends (sensor variant)"
+      triggers:
+        - trigger: state
+          entity_id: sensor.family_hub_timer_2_hours_of_gaming
+          to: null  # the sensor is removed (fired OR cancelled) once its timer ends
+      actions:
+        - action: lock.lock
+          target:
+            entity_id: lock.sams_computer
+  ```
 
 ### Screen Saver
 - **Idle-triggered overlay**: after a configurable idle timeout (any tap,
@@ -535,37 +633,89 @@ birthdays_entity: calendar.birthdays
 Everything else — which calendars show, their names/colors/badges/notify
 devices, meal block names/count, font sizes, every theme color, the
 timeline hour range, default view, countdown items and ticker, Daily
-Digest, whether meals show in Month view, and scroll lock — is configured
-from the ⚙️ **Settings** button on the card itself, and synced across every
-device automatically by the integration's own backend storage (with the
-exception of the timeline toggle and the per-device Theme Selector pick).
+Digest, whether meals show in Month view, scroll lock, and (v1.110.7+)
+the **+ button position** — is configured from the ⚙️ **Settings** button
+on the card itself, and synced across every device automatically by the
+integration's own backend storage (with the exception of the timeline
+toggle and the per-device Theme Selector pick).
+
+**+ button position** (v1.110.7+, Settings → Calendars, next to "Grey out
+events/reminders that have already passed"): **Dashboard corner**
+(default) pins the + button to the bottom-right of the whole screen, same
+as every version before this one, stacked with any other Family Hub
+card's own + button sharing the dashboard (see
+[Notes](#notes) below on the FAB-stacking coordinator). **This card's own
+corner** instead anchors it to the bottom-right of THIS card's own box -
+useful on a dashboard where this card shares a row/column with other
+cards (a sections/grid layout, or cards placed side-by-side), so the
+button sits under the card it actually belongs to instead of floating off
+in a screen corner that may not even be near it.
 
 ### Chores, Rewards, Goals & My Chores cards
 
 None of these need a `people`/entity list or any `todo`/`calendar`
 entities at all — everything runs over Family Hub's own backend, and
 who's eligible is drawn from the members you've added under the calendar
-card's own Settings → Users tab. The only config option any of them takes
-is an optional `title`:
+card's own Settings → Users tab. `title` is optional on all of them;
+Chores/Rewards/Goals also each take an optional `fab_position` (v1.110.7+,
+see below) for their own "+" button:
 
 ```yaml
 type: custom:family-hub-chores-card
 title: Chores
+fab_position: dashboard # or "card" - see below
 ```
 
 ```yaml
 type: custom:family-hub-rewards-card
 title: Rewards
+fab_position: dashboard # or "card" - see below
 ```
 
 ```yaml
 type: custom:family-hub-goals-card
 title: Goals
+fab_position: dashboard # or "card" - see below
 ```
 
 `family-hub-my-chores-card` is a smaller, single-person companion (handy
 on a kid's own tablet/dashboard) showing just their own chores, goals, and
-routines rather than the full multi-column board.
+routines rather than the full multi-column board. It has no "+" FAB of
+its own, so `fab_position` doesn't apply to it.
+
+**`fab_position`** (`dashboard` default | `card`, v1.110.7+, also
+available from each card's own visual editor as "+ button position"):
+`dashboard` pins the card's "+" button to the bottom-right of the whole
+screen (today's unchanged behavior), stacked with every other Family Hub
+card's own FAB sharing the dashboard via the shared FAB-stacking
+coordinator (see [Notes](#notes) below). `card` instead anchors it to the
+bottom-right of THIS card's own box - useful when this card shares a
+row/column with other cards on a sections/grid dashboard, where a
+screen-corner button would sit disconnected from wherever this
+particular card actually landed. A card-relative FAB opts out of the
+shared stacking slot (it's no longer sharing the screen corner with
+anything), though it stays a member of the same coordinator for Goal-tab
+de-duplication purposes (Chores/Rewards' own embedded Goal tab still
+correctly suppresses the standalone Goals card's FAB either way).
+
+### To-Do Lists card
+
+```yaml
+type: custom:family-hub-todo-card
+title: To-Do Lists
+entities:
+  - todo.groceries
+  - todo.errands
+include_grocy_shopping_lists: false
+fab_position: dashboard # or "card" - see below
+```
+
+| Option | Required | Default | Description |
+|---|---|---|---|
+| `title` | no | `To-Do Lists` | Card title. |
+| `entities` | no | `[]` | `todo.*` entities to show as columns (also pickable/persisted from the card's own Settings → Lists tab, which is the recommended way to manage this day to day — see the note in the changelog on why this card has a custom visual editor). |
+| `include_grocy_shopping_lists` | no | `false` | Also show Grocy's own shopping list(s) as a column (which specific Grocy list(s) is chosen from Settings). |
+| `fab_position` | no | `dashboard` | Same `dashboard`/`card` option as Chores/Rewards/Goals above — see that section's own description. |
 
 ### Screen Saver companion card
 
@@ -581,6 +731,19 @@ title: Screen Saver
 
 `return_dashboard_path` (optional) jumps to a chosen dashboard/view when
 the screen saver is dismissed, instead of staying wherever it fell asleep.
+
+### Recipe Box card
+
+The Recipe Box ("Loved Dishes") as its own dashboard tab/card, for anyone
+who'd rather have it pinned open than pop it up from the calendar card.
+Same household-wide Recipe Box data, same behavior — it runs on the exact
+same shared code as the calendar card's own Recipe Box modal (see that
+card file's own module comment). Only an optional `title`:
+
+```yaml
+type: custom:family-hub-recipe-box-card
+title: Recipe Box
+```
 
 ## Notes
 
@@ -598,82 +761,43 @@ the screen saver is dismissed, instead of staying wherever it fell asleep.
 
 ## Changelog
 
-Recent versions (backend `manifest.json` version in parentheses):
+# Release Notes
+This update focuses on polishing small issues, refining the UI, and delivering a batch of usability improvements.
 
-### 109.6
+---
 
-**Meal Planning**
-- Meals now support leftovers for multi-day use. Select the days where
-  leftovers can be used — days with leftovers show a recycle symbol, and
-  clicking one opens the original day's meal card.
-- **Move Meal to Another Week**: editing a meal's "more options" now
-  includes a place to move it to another week entirely. Rearranging meals
-  within the same week (via the Edit button in the top right of the
-  calendar) was already supported.
-- New "no meal cards" option in Settings for households that don't want
-  the meal planner shown at all.
-- Meal cards now support additional recipes — attach sides, desserts, and
-  more alongside the main dish.
-- Meal cards now show their description.
-- Fixed a bug that prevented meals from being un-favorited.
-- New **Edit Menu** permission — users without it can only add
-  suggestions, not edit the menu directly.
+## Meal Planning
+* **Improved Ingredient Matching:** Refined ingredient matching logic for higher accuracy across recipes.
+* **Multi-Recipe Tab View:** Adding multiple grocery meals to a meal card now generates tabs at the top of the recipe viewer for quick switching.
+* **Bug Fix:** Fixed an issue where clicking the "Do Not Inventory Ingredients" button incorrectly removed the item from the recipe card's ingredient list.
 
-**Chores**
-- Chores can now require being completed multiple times (e.g. "Complete 3
-  Loads of Laundry") — click once per completion until the chore is fully
-  marked done.
-- New per-user permission to skip approval on their own chores; chores
-  also gained a "do not require approval" checkbox at creation time.
-- Chores now move into a collapsible "Completed" accordion once finished.
-- Chores expiring soon are now sorted to the top.
-- New setting to toggle showing just the due date vs. the full due date
-  and time.
-- Chores and Routines now have a login button in the top right. Set a PIN
-  in a user's settings, then use the login button to select that user and
-  enter their PIN — their permissions (claiming rewards, editing chores,
-  approving chores, etc.) apply for the rest of that session until you log
-  out.
+## Rewards
+* **Star Manager Modal:** Added a manager modal to provide reasons when adding or deducting stars.
 
-**Routines**
-- Routine items can now earn stars, with an option at creation time to
-  require approval or not.
+## Calendar
+* **Responsive Layouts & Small Screen Support:** Added settings for 3-, 5-, or 7-day views along with a "Small Screen Mode" that hides top-bar UI elements on compact displays.
 
-**Goals**
-- The Goals card is now **My Goals**, showing only the current user's own
-  goals.
-- Added a way to mark a goal fully complete and hide it.
+## Todo Lists
+* **Wishlist Support:**
+  * Link a specific list as a Wishlist via user settings to enable image attachments and link integration.
+  * Claiming system: Any user can claim items on a Wishlist while the list owner's view remains unrevealed to prevent duplicate purchases.
+  * Wishlist items can be converted into rewards by assigning chore values.
+  * Added a permission setting to control visibility of claimed Wishlist items (ideal for kiosk/shared displays).
+* **Card Instance Decoupling:** Todo lists no longer mirror configurations across all card instances.
+* **Layout Enhancements:** Added improved layout and display options.
 
-**Rewards**
-- Users can now gift stars to another user — click the gift box icon and
-  enter how many stars to transfer.
+## Themes
+* **Per-Card Theme Customization:** Cards can now have individual theme settings for better dashboard customization.
 
-**Calendar**
-- Events can now include other people: choose a primary calendar to add
-  the event to, then select who else is involved. The card shows striped
-  colors indicating every member tagged on the event.
-- New views: **Portrait** (a week view built for vertical monitors) and
-  **Month + Day** (a new month view — click a day to see its events).
-- New setting to grey out past events on the calendar, under the Calendar
-  tab in Settings.
-- Fixed an issue that caused Planner view to not show badges.
-- Settings now lets you choose your default week and month views — this
-  is device-specific.
+## New Cards (Beta)
+* **Menu Box (Beta):** A dedicated card (similar to the calendar's menu box) for browsing menu items and recipes.
+* **Timers (Beta):** Displays all active timers. Chores and rewards can now trigger timers shown in this card. *(Note: Advanced notifications and alarms coming in the next update).*
 
-**Themes**
-- Added "Liquid Glass" themes.
-
-**Other**
-- Optimized the calendar card for smaller displays.
-
-**New cards**
-- **My Pantry** — see and edit your Grocy inventory: tracked items (in
-  Grocy) and untracked items (not counted in Grocy), sortable by Expiring
-  Soon, Expired, Name, Location, and more.
-- **To-Do** — view multiple to-do and grocery shopping lists on one
-  screen, drag and drop cards between lists, open a to-do in a modal, and
-  more. Build a Kanban board, a multi-store shopping list, or whatever
-  else the community comes up with.
+## Other Improvements & Fixes
+* **Persistent Multi-Card Authentication:** Added a login button to the Todo List card and enabled persistent cross-card/cross-dashboard authentication.
+* **Floating Action Button (FAB) Management:** Resolved overlapping FABs when multiple cards are present; choose between placing the FAB in the dashboard corner or within individual cards.
+* **Streamlined User Settings:** Relocated permissions to the bottom of individual user settings pages and improved user list management.
+* General stability improvements and minor UI tweaks.
 
 ## License
 
