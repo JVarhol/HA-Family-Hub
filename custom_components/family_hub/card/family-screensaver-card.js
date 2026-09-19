@@ -14,6 +14,89 @@
 // once per dashboard that should get the screensaver, anywhere in the
 // layout; where on the page it sits doesn't matter since it's invisible in
 // normal (non-edit) view.
+// Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
+// "When you load a card it tends to load the default theme first then it
+// switches over to the theme you set how can we always make it load the
+// set theme first." Root cause: EVERY themed card's first paint happens
+// with no theme CSS vars set at all (falls back to _defaultTheme()'s own
+// hardcoded palette), because resolving the household's actual theme
+// takes two sequential, awaited websocket round trips after `hass` is
+// first set - family_hub/get_settings (_fetchSettings), THEN
+// theme_builder/list (_fetchGlobalThemes, which is what a Global Theme
+// selection actually needs to resolve into real colors) - both happening
+// well after `_build()` has already rendered the card once. There was no
+// way to know the real colors before those round trips finished.
+//
+// Fix: cache the last set of CSS var values this device actually applied
+// (in memory for the rest of this page load, in localStorage across
+// reloads), and apply that cache SYNCHRONOUSLY in `_build()` - before the
+// very first paint, before any fetch has even started - so a reload shows
+// last-known-good colors immediately instead of _defaultTheme()'s
+// hardcoded ones. Once the real fetches resolve, `_applyThemeVars()` runs
+// as it always has and reconciles - a no-op re-application (no visible
+// change) if nothing changed since last time, which is the overwhelmingly
+// common case on an ordinary refresh; a visible switch only when the
+// household's theme has genuinely changed since this device last saw it,
+// which is unavoidable (nothing can know about a change before asking).
+//
+// Same shared-singleton, "only the first card whose script actually runs
+// this block sets it up" pattern as window.__familyHubFabCoordinator/
+// __familyHubKioskSession/__familyHubScreenSaver/__familyHubTimerAlarm
+// above - copy-pasted byte-identically into every themed card file, since
+// these are independently-loaded Lovelace resources rather than ES
+// modules that could import one shared file (same reasoning as those).
+//
+// Cached under a KEY, not one single blob, because different cards (or
+// even the SAME card on a different dashboard placement) can legitimately
+// resolve to different colors at once - a per-card-placement Theme
+// override (`_config.theme_override`) or a per-device override
+// (`_getDeviceThemeOverride()`) both exist specifically so one card can
+// look different from the household's shared theme. Caching under one
+// shared key would "fix" the flash for the common case but introduce a
+// WRONG flash for an overridden card (briefly showing the household's
+// theme before its own override kicks in) - a strictly worse bug than
+// the one being fixed. The key is derived the same way every time
+// (`_familyHubThemeCacheKey`, called identically from `_build()` before
+// first paint and from `_applyThemeVars()` after resolving for real), so
+// a card with no override at all shares one cache entry with every other
+// un-overridden card/placement (the common case this exists for), while
+// an overridden card/placement gets its own.
+if (!window.__familyHubThemeCache) {
+  window.__familyHubThemeCache = (function () {
+    const STORAGE_PREFIX = "familyHubThemeVarsCache::";
+    const memory = new Map(); // key -> {varName: value}
+
+    function get(key) {
+      if (memory.has(key)) return memory.get(key);
+      try {
+        const raw = localStorage.getItem(STORAGE_PREFIX + key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object") {
+            memory.set(key, parsed);
+            return parsed;
+          }
+        }
+      } catch (e) {
+        // Corrupt/blocked localStorage (private browsing, etc.) - just
+        // means no cache to apply this time, same as a first-ever load.
+      }
+      return null;
+    }
+    function set(key, vars) {
+      memory.set(key, vars);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(vars));
+      } catch (e) {
+        // Best-effort only - the in-memory copy above still helps every
+        // OTHER card mounted later in this same page load even if
+        // localStorage itself is unavailable.
+      }
+    }
+    return { get, set };
+  })();
+}
+
 class FamilyScreensaverCard extends HTMLElement {
   static getStubConfig() {
     return { title: "Screen Saver", return_dashboard_path: "" };
@@ -53,6 +136,15 @@ class FamilyScreensaverCard extends HTMLElement {
       },
     };
   }
+  // v1.111.0+: switched to getConfigElement (a real custom element) so the
+  // Theme picker below can list live Theme Builder + native HA themes -
+  // see family-hub-goals-card.js's identical comment for the full reasoning.
+  // getConfigForm above is kept (and still used by the editor below to
+  // build the title/return_dashboard_path portion of its schema) since
+  // nothing about those two fields needs to change.
+  static getConfigElement() {
+    return document.createElement("family-hub-screensaver-card-editor");
+  }
   setConfig(config) {
     config = config || {};
     // v140+: an optional wrapped `card:` (any Lovelace card config, built-in
@@ -75,11 +167,19 @@ class FamilyScreensaverCard extends HTMLElement {
       title: (config.title || "Screen Saver").toString(),
       return_dashboard_path: (config.return_dashboard_path || "").toString().trim(),
       card: hasCard ? config.card : null,
+      // v1.111.0+: per-card Theme override - see family-hub-goals-card.js's
+      // identical field/comment for the full precedence story. This card
+      // never had any theming at all before this (its edit-mode "face" used
+      // hardcoded colors) - _defaultTheme/_resolveTheme/_applyThemeVars
+      // below are new baseline theming built from scratch, matching every
+      // other standalone Family Hub card's own shape.
+      theme_override: (typeof config.theme_override === "string") ? config.theme_override : "",
     };
     if (this._settingsCache === undefined) this._settingsCache = null;
     if (this._screenSaverSettingsSnapshot === undefined) this._screenSaverSettingsSnapshot = null;
     if (this._dashboards === undefined) this._dashboards = null;
     if (this._editModeInternal === undefined) this._editModeInternal = false;
+    if (this._globalThemes === undefined) this._globalThemes = [];
     if (!this._built) this._build();
     if (hasCard) this._ensureWrappedCardElement();
     this._render();
@@ -133,6 +233,10 @@ class FamilyScreensaverCard extends HTMLElement {
   }
   async _initFirstLoad() {
     await this._fetchSettings();
+    // v1.111.0+: always fetch (not just when useGlobalTheme is on) so a
+    // per-card theme_override can resolve even when the household hasn't
+    // turned on Global Theme - same change as every other themed card.
+    await this._fetchGlobalThemes();
     if (this._editModeInternal) await this._fetchDashboards();
     this._setupScreenSaverActivityListeners();
     this._resetScreenSaverIdleTimer();
@@ -274,10 +378,264 @@ class FamilyScreensaverCard extends HTMLElement {
       const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/get_settings" });
       const parsed = result && result.settings && typeof result.settings === "object" ? result.settings : null;
       this._settingsCache = this._normalizeSettings(parsed);
+      // v1.111.0+: _normalizeSettings above only keeps the screenSaver
+      // slice this card actually renders - theme/useGlobalTheme/
+      // globalThemeId live on the SAME shared settings blob but get
+      // stripped out by that normalization, so a separate cache of the raw
+      // response is kept just for _resolveTheme below (same lenient
+      // "ignore what I don't recognize elsewhere" approach, just applied to
+      // a second field this card now also cares about).
+      this._themeSettingsCache = parsed && typeof parsed === "object" ? parsed : null;
     } catch (e) {
       if (!this._settingsCache) this._settingsCache = this._defaultSettings();
     }
     this._maybeResetScreenSaverIdleTimer();
+    this._applyThemeVars();
+  }
+  // --- Baseline theming (new for this card, v1.111.0+) - applies only to
+  // this card's own edit-mode "face" (the dashed-border box - see _build's
+  // .card-root styles below), never to the actual full-screen screensaver
+  // overlay itself (a video/camera feed with no themable surface). Same
+  // shape (colors-only, no fonts) as every other simple standalone Family
+  // Hub card - duplicated (not shared/imported), same "independently
+  // loaded resources duplicate small helpers" convention as everything
+  // else in this project. ---
+  _defaultTheme() {
+    return {
+      colors: {
+        bg: "#fbf7e5", card: "#f5f3f0", border: "#e6ddc4", text: "#423d34", textSecondary: "#96877a",
+        accent: "#8f5a00", accentText: "#fff8ea", accent2: "#305545", accent3: "#b5583c",
+        surfaceAlt: "#efe6cf", surface2: "#f2eede",
+      },
+    };
+  }
+  _defaultThemeSettings() {
+    return { theme: this._defaultTheme(), useGlobalTheme: false, globalThemeId: "" };
+  }
+  // Same this-device-only theme-override key as every other standalone
+  // Family Hub card - see family-hub-pantry-card.js's own
+  // _getDeviceThemeOverride for the full reasoning (Settings lives only on
+  // the calendar card).
+  _getDeviceThemeOverride() {
+    let raw = "";
+    try {
+      raw = localStorage.getItem("familyHubDeviceThemeOverrideLocal") || "";
+    } catch (e) {
+    }
+    return raw;
+  }
+  _themeFromGlobalEntry(g) {
+    const defaultTheme = this._defaultTheme();
+    const colors = {};
+    Object.keys(defaultTheme.colors).forEach((k) => {
+      const v = g.colors && g.colors[k];
+      colors[k] = typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v) ? v : defaultTheme.colors[k];
+    });
+    const cardOpacity = typeof g.cardOpacity === "number" ? g.cardOpacity : 100;
+    const glassBlur = typeof g.glassBlur === "number" ? g.glassBlur : 0;
+    return { colors, cardOpacity, glassBlur };
+  }
+  // Reads settings.theme (the household's Theme Builder default) the same
+  // way every other card's own _resolveTheme does, off the separate raw-
+  // settings cache _fetchSettings keeps just for this (see its own
+  // comment) rather than the screenSaver-shaped _getSettings() above.
+  _resolveTheme() {
+    const raw = this._themeSettingsCache;
+    const settings = raw && typeof raw === "object" ? Object.assign(this._defaultThemeSettings(), raw) : this._defaultThemeSettings();
+    const local = settings.theme || this._defaultTheme();
+    // v1.111.0+: a per-card-placement Theme override (set from this card's
+    // own native "Edit Card" dialog) wins over everything else, including
+    // this device's own override and the household's Global Theme.
+    const cardOverride = this._config && this._config.theme_override;
+    if (cardOverride) {
+      const g = (this._globalThemes || []).find((t) => t && t.id === cardOverride);
+      if (g) return this._themeFromGlobalEntry(g);
+    }
+    const override = this._getDeviceThemeOverride();
+    const useGlobalTheme = override ? override !== "__default__" : settings.useGlobalTheme;
+    const globalThemeId = override ? (override === "__default__" ? "" : override) : settings.globalThemeId;
+    if (!useGlobalTheme || !globalThemeId) return local;
+    const g = (this._globalThemes || []).find((t) => t && t.id === globalThemeId);
+    if (!g) return local;
+    return this._themeFromGlobalEntry(g);
+  }
+  _hexToRgba(hex, alpha) {
+    const h = (hex || "#000000").replace("#", "");
+    if (h.length !== 6) return "rgba(0,0,0,0)";
+    const r = parseInt(h.substr(0, 2), 16);
+    const g = parseInt(h.substr(2, 2), 16);
+    const b = parseInt(h.substr(4, 2), 16);
+    const a = Math.max(0, Math.min(1, typeof alpha === "number" ? alpha : 1));
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
+  }
+  // v1.126.0+ - see window.__familyHubThemeCache's own comment above the
+  // class for the full "why a key, not one shared blob" reasoning. Called
+  // identically from here (after resolving the REAL theme) and from
+  // `_build()` (before the real theme is known yet, to look up whatever
+  // was cached last time) - both call sites MUST derive the same key for
+  // a given card/placement, or the cache lookup in `_build()` would never
+  // find what the theme-applying method just wrote for it.
+  _familyHubThemeCacheKey() {
+    const cardOverride = this._config && this._config.theme_override;
+    if (cardOverride) return `card:${cardOverride}`;
+    const deviceOverride = this._getDeviceThemeOverride();
+    if (deviceOverride) return `device:${deviceOverride}`;
+    return "household";
+  }
+  _applyThemeVars() {
+    const theme = this._resolveTheme();
+    const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
+    this.style.setProperty("--fc-bg", theme.colors.bg);
+    this.style.setProperty("--fc-card", this._hexToRgba(theme.colors.card, cardOpacity / 100));
+    this.style.setProperty("--fc-border", theme.colors.border);
+    this.style.setProperty("--fc-text", theme.colors.text);
+    this.style.setProperty("--fc-text-secondary", theme.colors.textSecondary);
+    this.style.setProperty("--fc-accent", theme.colors.accent);
+    this.style.setProperty("--fc-accent-text", theme.colors.accentText);
+    // v1.126.0+: snapshot exactly what was just set/removed above into the
+    // shared cache under this card/placement's key, so a future _build() can
+    // apply the same values before the real fetches resolve - see
+    // window.__familyHubThemeCache's own comment for the full reasoning. A
+    // var not currently set on the host (e.g. --fc-bg-image when there is no
+    // background image right now) is simply skipped rather than cached as an
+    // empty string, so applying the cache later never clobbers a var that
+    // should stay unset.
+    //
+    // Only caches once `_hass` is actually set - `_build()` calls this
+    // method once synchronously, before `hass` is ever assigned, purely so
+    // a brand-new card with nothing cached yet still shows SOME accent
+    // color instead of nothing at all. At that point _resolveTheme() can't
+    // have resolved a real theme_override yet, so caching THAT premature
+    // fallback would overwrite a perfectly good value left by an earlier
+    // page load with the wrong one, on every single reload - the opposite
+    // of this fix's whole point.
+    if (this._hass && window.__familyHubThemeCache) {
+      const __familyHubCacheVarNames = [
+      "--fc-bg",
+      "--fc-card",
+      "--fc-border",
+      "--fc-text",
+      "--fc-text-secondary",
+      "--fc-accent",
+      "--fc-accent-text",
+      ];
+      const vars = {};
+      __familyHubCacheVarNames.forEach((name) => {
+        const v = this.style.getPropertyValue(name);
+        if (v) vars[name] = v;
+      });
+      window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
+    }
+  }
+  // v1.126.0+: applies whatever theme this device/placement last actually
+  // resolved to, SYNCHRONOUSLY, before the real fetches that would
+  // otherwise be the only way to know it - see window.__familyHubTheme
+  // Cache's own comment above the class. Called once from `_build()`,
+  // before the very first `_render()`/paint. A no-op (does nothing,
+  // leaves `_defaultTheme()`'s plain colors as the first paint exactly
+  // like before this fix) on the very first time ANY card resolves this
+  // particular key - there's nothing to have cached yet.
+  _applyCachedThemeVarsIfAny() {
+    if (!window.__familyHubThemeCache) return;
+    const cached = window.__familyHubThemeCache.get(this._familyHubThemeCacheKey());
+    if (!cached) return;
+    Object.keys(cached).forEach((name) => {
+      if (typeof cached[name] === "string") this.style.setProperty(name, cached[name]);
+    });
+  }
+  async _fetchGlobalThemes() {
+    let custom = [];
+    try {
+      const result = await this._hass.connection.sendMessagePromise({ type: "theme_builder/list" });
+      custom = (result && Array.isArray(result.themes)) ? result.themes : [];
+    } catch (e) {
+      custom = [];
+    }
+    // v1.111.0+: also merge in every installed native Home Assistant theme -
+    // duplicated (not shared/imported) from family-week-calendar-card.js's
+    // own _fetchGlobalThemes/_nativeHaThemeEntries, same "independently
+    // loaded Lovelace resources duplicate small helpers" convention as
+    // every native/websocket pair elsewhere in this project.
+    this._globalThemes = custom.concat(this._nativeHaThemeEntries());
+    this._applyThemeVars();
+  }
+  // --- Native HA theme support (duplicated from family-week-calendar-
+  // card.js's identical methods - see that file's own comments for the
+  // full reasoning on each) ---
+  _haVarsToBuilderColors(vars) {
+    const v = vars || {};
+    const accent = v["primary-color"];
+    return {
+      bg: v["primary-background-color"],
+      card: v["card-background-color"] || v["ha-card-background"],
+      border: v["divider-color"],
+      text: v["primary-text-color"],
+      textSecondary: v["secondary-text-color"],
+      accent: accent,
+      accentText: v["text-primary-color"],
+      accent2: v["accent-color"] || accent,
+      accent3: v["warning-color"],
+      surfaceAlt: v["secondary-background-color"],
+      surface2: v["secondary-background-color"],
+    };
+  }
+  _haThemeCssVars(name) {
+    const themes = (this._hass && this._hass.themes && this._hass.themes.themes) || {};
+    const theme = themes[name];
+    if (!theme) return {};
+    const vars = {};
+    for (const key of Object.keys(theme)) {
+      if (key === "modes") continue;
+      vars[key] = theme[key];
+    }
+    if (theme.modes) {
+      const dark = !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
+      const modeVars = theme.modes[dark ? "dark" : "light"] || {};
+      for (const key of Object.keys(modeVars)) vars[key] = modeVars[key];
+    }
+    return vars;
+  }
+  _haDefaultCssVars() {
+    try {
+      if (typeof getComputedStyle !== "function" || !document || !document.documentElement) return {};
+      const style = getComputedStyle(document.documentElement);
+      const keys = [
+        "primary-color", "text-primary-color", "primary-background-color", "secondary-background-color",
+        "card-background-color", "primary-text-color", "secondary-text-color", "divider-color",
+        "accent-color", "warning-color", "ha-card-background",
+      ];
+      const vars = {};
+      keys.forEach((k) => {
+        const val = style.getPropertyValue(`--${k}`);
+        if (val && val.trim()) vars[k] = val.trim();
+      });
+      return vars;
+    } catch (e) {
+      return {};
+    }
+  }
+  _nativeHaThemeEntries() {
+    const entries = [
+      {
+        id: "ha:__default__",
+        name: "Default (Home Assistant)",
+        colors: this._haVarsToBuilderColors(this._haDefaultCssVars()),
+        native: true,
+      },
+    ];
+    const themes = (this._hass && this._hass.themes && this._hass.themes.themes) || {};
+    Object.keys(themes)
+      .filter((name) => name.indexOf("Theme Builder - ") !== 0)
+      .sort((a, b) => a.localeCompare(b))
+      .forEach((name) => {
+        entries.push({
+          id: "ha:" + name,
+          name: name,
+          colors: this._haVarsToBuilderColors(this._haThemeCssVars(name)),
+          native: true,
+        });
+      });
+    return entries;
   }
   // Populates the on-card dashboard picker (edit mode only) - listed
   // dashboards only cover Home Assistant's own configured
@@ -469,6 +827,11 @@ class FamilyScreensaverCard extends HTMLElement {
   }
   _build() {
     this._built = true;
+    // v1.126.0+: applied BEFORE attachShadow/the first innerHTML paint -
+    // see _applyCachedThemeVarsIfAny's own comment and window.__familyHub
+    // ThemeCache's above the class for why this is what actually fixes
+    // the household's reported "loads the default theme first" flash.
+    this._applyCachedThemeVarsIfAny();
     const root = this.attachShadow ? this.attachShadow({ mode: "open" }) : this;
     this._root = root;
     root.innerHTML = `
@@ -476,6 +839,18 @@ class FamilyScreensaverCard extends HTMLElement {
 :host {
 display: block;
 font-family: "Arial Rounded MT Std", "Arial Rounded MT", "Varela Round", -apple-system, "Segoe UI Rounded", "Segoe UI", Roboto, sans-serif;
+/* v1.111.0+ defaults - same palette every other standalone Family Hub
+   card's own _defaultTheme() returns, overridden by _applyThemeVars
+   (inline style on the host, so it always wins over these) once
+   settings/theme_override resolve. See this card's own _defaultTheme
+   comment for why this card never had any of this before. */
+--fc-bg: #fbf7e5;
+--fc-card: #f5f3f0;
+--fc-border: #e6ddc4;
+--fc-text: #423d34;
+--fc-text-secondary: #96877a;
+--fc-accent: #8f5a00;
+--fc-accent-text: #fff8ea;
 }
 :host(.fh-ss-hidden) {
 height: 0;
@@ -487,17 +862,17 @@ pointer-events: none;
 box-sizing: border-box;
 padding: 14px 16px;
 border-radius: 14px;
-background: #f5f3f0;
-border: 2px dashed #cbb98f;
-color: #423d34;
+background: var(--fc-card);
+border: 2px dashed var(--fc-border);
+color: var(--fc-text);
 }
 .title-row { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 800; margin-bottom: 4px; }
-.badge { display: inline-flex; align-items: center; justify-content: center; padding: 2px 8px; border-radius: 10px; background: #8f5a00; color: #fff8ea; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; }
-.hint { font-size: 12px; color: #96877a; margin-bottom: 10px; line-height: 1.5; }
+.badge { display: inline-flex; align-items: center; justify-content: center; padding: 2px 8px; border-radius: 10px; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; }
+.hint { font-size: 12px; color: var(--fc-text-secondary); margin-bottom: 10px; line-height: 1.5; }
 .field { margin-bottom: 4px; }
 .field label { display: block; font-size: 12px; font-weight: 700; margin-bottom: 4px; }
-.field select { width: 100%; box-sizing: border-box; font-size: 14px; padding: 8px 10px; border-radius: 8px; border: 1px solid #e6ddc4; background: #fff; color: #423d34; font-family: inherit; }
-.status { font-size: 11px; color: #96877a; margin-top: 8px; font-style: italic; }
+.field select { width: 100%; box-sizing: border-box; font-size: 14px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-bg); color: var(--fc-text); font-family: inherit; }
+.status { font-size: 11px; color: var(--fc-text-secondary); margin-top: 8px; font-style: italic; }
 .wrapped-card-host { display: none; }
 .wrapped-card-host.active { display: block; }
 </style>
@@ -527,6 +902,20 @@ color: #423d34;
       this.dispatchEvent(new CustomEvent("config-changed", { bubbles: true, composed: true, detail: { config: this._config } }));
       this._updateStatus();
     });
+    // v1.126.0+: this used to unconditionally call `_applyThemeVars()` here
+    // too, but that ran the REAL theme resolution before `_hass`/
+    // `_globalThemes` could possibly have anything in them yet, so it
+    // always resolved to the plain local default - harmless on its own
+    // (identical to this same class's `:host` CSS defaults, so it was a
+    // visual no-op) until `_applyThemeVars()` also started caching its
+    // result: then this call would immediately overwrite whatever
+    // `_applyCachedThemeVarsIfAny()` just applied at the top of this same
+    // `_build()` with that same premature default, defeating the whole
+    // fix for this card specifically. Removed - `_applyCachedThemeVars
+    // IfAny()` already covers the "show something before hass is set" job
+    // this line used to do, and the real `_applyThemeVars()` still runs
+    // (and re-caches) once `_fetchSettings`/`_fetchGlobalThemes` resolve
+    // for real, same as it always has.
   }
   _render() {
     if (!this._root) return;
@@ -598,6 +987,93 @@ color: #423d34;
 if (!customElements.get("family-hub-screensaver-card")) {
   customElements.define("family-hub-screensaver-card", FamilyScreensaverCard);
 }
+
+// v1.111.0+: dedicated editor element for getConfigElement above - same
+// pattern as family-hub-goals-card.js's own editor (see that file's
+// comments for the full reasoning on each duplicated helper). Reuses
+// getConfigForm's own title/return_dashboard_path schema/labels/helpers
+// for those two fields, only adding the new theme_override field on top.
+class FamilyScreensaverCardEditor extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._render();
+  }
+  set hass(hass) {
+    this._hass = hass;
+    if (this._form) this._form.hass = hass;
+    if (!this._themeOptions) this._fetchThemeOptions();
+  }
+  async _fetchThemeOptions() {
+    this._themeOptions = [{ value: "", label: "Use device settings (default)" }];
+    if (!this._hass) {
+      this._render();
+      return;
+    }
+    try {
+      const result = await this._hass.connection.sendMessagePromise({ type: "theme_builder/list" });
+      const custom = (result && Array.isArray(result.themes)) ? result.themes : [];
+      custom.forEach((t) => {
+        if (t && t.id) this._themeOptions.push({ value: t.id, label: "Theme Builder: " + (t.name || t.id) });
+      });
+    } catch (e) {
+    }
+    this._themeOptions.push({ value: "ha:__default__", label: "Home Assistant: Default" });
+    const themes = (this._hass && this._hass.themes && this._hass.themes.themes) || {};
+    Object.keys(themes)
+      .filter((name) => name.indexOf("Theme Builder - ") !== 0)
+      .sort((a, b) => a.localeCompare(b))
+      .forEach((name) => this._themeOptions.push({ value: "ha:" + name, label: "Home Assistant: " + name }));
+    this._render();
+  }
+  _formData() {
+    return {
+      title: this._config.title,
+      return_dashboard_path: this._config.return_dashboard_path,
+      theme_override: (typeof this._config.theme_override === "string") ? this._config.theme_override : "",
+    };
+  }
+  _schema() {
+    const base = FamilyScreensaverCard.getConfigForm().schema;
+    return base.concat([
+      {
+        name: "theme_override",
+        selector: { select: { mode: "dropdown", options: this._themeOptions || [{ value: "", label: "Use device settings (default)" }] } },
+      },
+    ]);
+  }
+  _render() {
+    const { computeLabel, computeHelper } = FamilyScreensaverCard.getConfigForm();
+    if (this._built) {
+      this._form.schema = this._schema();
+      this._form.data = this._formData();
+      return;
+    }
+    this._built = true;
+    this.innerHTML = "";
+    const form = document.createElement("ha-form");
+    form.schema = this._schema();
+    form.computeLabel = (s) => (s.name === "theme_override" ? "Theme" : computeLabel(s));
+    form.computeHelper = (s) => (
+      s.name === "theme_override"
+        ? "Pin this one card to a specific theme, or leave on \"Use device settings\" to follow whatever this device/household normally shows."
+        : computeHelper(s)
+    );
+    form.data = this._formData();
+    if (this._hass) form.hass = this._hass;
+    form.addEventListener("value-changed", (e) => {
+      e.stopPropagation();
+      const merged = Object.assign({}, this._config, e.detail.value);
+      this._config = merged;
+      this.dispatchEvent(new CustomEvent("config-changed", { detail: { config: merged }, bubbles: true, composed: true }));
+    });
+    this._form = form;
+    this.appendChild(form);
+  }
+}
+if (!customElements.get("family-hub-screensaver-card-editor")) {
+  customElements.define("family-hub-screensaver-card-editor", FamilyScreensaverCardEditor);
+}
+
 window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === "family-hub-screensaver-card")) {
   window.customCards.push({

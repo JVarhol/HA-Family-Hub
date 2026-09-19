@@ -6,14 +6,30 @@ can also be reached later via Configure (Settings > Devices & Services >
 Family Hub). What used to happen is a new install sat there with reminders
 silently off and no Grocy connection until someone thought to go look for
 Configure; the first-time setup wizard below (async_step_user through
-async_step_finish) just front-loads those same three optional decisions -
-which calendars to watch for reminders, whether to connect Grocy, and
-getting a to-do list wired up for Meal Plan/Reminders - into the moment the
-integration is added, since that's when a household is already thinking
-about setup. Every step can be left blank/skipped and revisited in
+async_step_finish) just front-loads those same optional decisions - which
+calendars to watch for reminders and whether to connect Grocy - into the
+moment the integration is added, since that's when a household is already
+thinking about setup. Every step can be left blank/skipped and revisited in
 Configure afterward. That same Configure dialog is also where updates get
 installed - see async_step_update below - since that's where an admin would
 look for it, not a sidebar panel.
+
+v1.132.8+: this wizard USED to also have a "Meal Plan & Reminders lists"
+step (async_step_todo_lists) between Grocy and Notifications, letting you
+pick/auto-create the todo.* entities those two features are backed by.
+Removed - household ask, verbatim: "drop todo lists" - since it was never
+actually load-bearing: the calendar card's own meal_plan_entity/
+reminders_entity Lovelace config fields (defaulting to todo.meal_plan/
+todo.family_reminders if never overridden - see the card's own YAML
+options in README.md) are the real source of truth for which entity each
+feature reads, and the card ALREADY self-syncs whichever entity it's
+actually configured with into these same backend options every session
+(_ws_set_reminders_entity/_ws_set_daily_digest in __init__.py) with zero
+user action needed - so this step only ever saved someone the trouble of
+either accepting the card's own defaults or setting the field once on the
+card. CONF_MEAL_PLAN_ENTITY/CONF_REMINDERS_ENTITY themselves are unchanged
+and still very much live options, just no longer settable from THIS
+wizard.
 """
 from __future__ import annotations
 
@@ -25,9 +41,7 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import selector
-from homeassistant.util import slugify
 
 from . import (
     _build_upcoming_summary,
@@ -37,7 +51,6 @@ from . import (
     updater,
 )
 from .const import (
-    CONF_AUTO_CREATE_TODO_LISTS,
     CONF_CALENDARS,
     CONF_DAILY_DIGEST_ENABLED,
     CONF_DAILY_DIGEST_TIME,
@@ -56,9 +69,7 @@ from .const import (
     CONF_UPDATE_FILE,
     DAILY_DIGEST_NOTIFY_KEY,
     DEFAULT_DAILY_DIGEST_TIME,
-    DEFAULT_MEAL_PLAN_LIST_NAME,
     DEFAULT_POLL_MINUTES,
-    DEFAULT_REMINDERS_LIST_NAME,
     DOMAIN,
 )
 
@@ -126,15 +137,19 @@ def _build_grocy_schema(defaults: dict[str, Any]) -> vol.Schema:
 # step routing and is never persisted anywhere.
 _FEATURE_CHORES = "chores"
 _FEATURE_GROCY = "grocy"
-_FEATURE_REMINDERS = "reminders"
 _FEATURE_DIGEST = "digest"
-_ALL_FEATURES = (_FEATURE_CHORES, _FEATURE_GROCY, _FEATURE_REMINDERS, _FEATURE_DIGEST)
+# v1.132.8+: _FEATURE_REMINDERS ("Reminders & Meal Plan to-do lists") is
+# gone - it only ever gated async_step_todo_lists, which is gone too (see
+# this module's own docstring). Calendar reminders themselves aren't
+# gated behind a feature choice here at all (see async_step_features'
+# docstring below) - only the now-removed to-do list picker/auto-create
+# step was.
+_ALL_FEATURES = (_FEATURE_CHORES, _FEATURE_GROCY, _FEATURE_DIGEST)
 _FEATURES_FIELD = "setup_features"
 
 _FEATURE_LABELS = {
     _FEATURE_CHORES: "Chores, Rewards, Routines & Goals",
     _FEATURE_GROCY: "Grocy",
-    _FEATURE_REMINDERS: "Reminders & Meal Plan to-do lists",
     _FEATURE_DIGEST: "Daily Digest",
 }
 
@@ -259,50 +274,17 @@ def _build_calendars_schema(defaults: dict[str, Any]) -> vol.Schema:
     )
 
 
-def _build_todo_lists_schema(defaults: dict[str, Any]) -> vol.Schema:
-    # Both entity fields are optional (leave blank + "Create missing lists
-    # for me" to have Family Hub make one) - EntitySelector's own validator
-    # is homeassistant.helpers.config_validation.entity_id_or_uuid, which
-    # rejects "" with "Entity is neither a valid entity ID nor a valid
-    # UUID". The default of "" from a never-configured install would
-    # therefore fail validation the moment the form was submitted as-is, so
-    # each field accepts a bare "" alongside a real entity selection.
-    return vol.Schema(
-        {
-            vol.Optional(
-                CONF_MEAL_PLAN_ENTITY, default=defaults.get(CONF_MEAL_PLAN_ENTITY, "")
-            ): vol.Any(
-                "", selector.EntitySelector(selector.EntitySelectorConfig(domain="todo"))
-            ),
-            vol.Optional(
-                CONF_REMINDERS_ENTITY, default=defaults.get(CONF_REMINDERS_ENTITY, "")
-            ): vol.Any(
-                "", selector.EntitySelector(selector.EntitySelectorConfig(domain="todo"))
-            ),
-            vol.Optional(
-                CONF_AUTO_CREATE_TODO_LISTS, default=True
-            ): selector.BooleanSelector(),
-        }
-    )
-
-
-# Transient wizard-only field name for async_step_notifications - the
-# reminders notify target list isn't its own config entry option, it gets
-# folded into CONF_OVERRIDES_TEXT (keyed by whichever reminders to-do
-# entity the previous step resolved), same as every other notify picker in
-# this project.
-_REMINDERS_NOTIFY_FIELD = "reminders_notify_targets"
-
-
+# v1.132.8+: _build_todo_lists_schema/_REMINDERS_NOTIFY_FIELD (the
+# now-removed "Meal Plan & Reminders lists" step's own schema, and the
+# Notifications step's reminders-notify-target picker that only ever made
+# sense keyed by that step's CONF_REMINDERS_ENTITY output) are both gone -
+# see this module's own docstring for why the step itself was dropped.
 def _build_notifications_schema(hass, defaults: dict[str, Any]) -> vol.Schema:
     return vol.Schema(
         {
             vol.Optional(
                 CONF_DEFAULT_NOTIFY, default=defaults.get(CONF_DEFAULT_NOTIFY, "")
             ): _notify_target_selector(hass),
-            vol.Optional(_REMINDERS_NOTIFY_FIELD, default=[]): _notify_target_selector(
-                hass, multiple=True
-            ),
         }
     )
 
@@ -327,76 +309,6 @@ def _build_digest_schema(hass, defaults: dict[str, Any]) -> vol.Schema:
             ),
         }
     )
-
-
-# Deliberately the literal string rather than
-# `homeassistant.components.local_todo.const.CONF_TODO_LIST_NAME` - local_todo
-# is a whole separate integration, and importing straight from its innards
-# would mean Family Hub's own setup breaks (ImportError, not just a missing
-# feature) on any Home Assistant build where local_todo has moved or isn't
-# loaded yet. The string itself ("todo_list_name") is part of local_todo's
-# config flow's data schema and about as unlikely to change as a domain name.
-_LOCAL_TODO_DOMAIN = "local_todo"
-_LOCAL_TODO_LIST_NAME_FIELD = "todo_list_name"
-
-
-async def _create_local_todo_list(hass: HomeAssistant, name: str) -> str | None:
-    """Create a new to-do list via the built-in Local To-do integration and
-    return the entity_id it ends up with, e.g. "todo.family_meal_plan".
-
-    Used by async_step_todo_lists's "create the lists I don't have yet"
-    checkbox - Meal Plan and Reminders both need a real todo.* entity to
-    work at all, and going to find that out by hand (Settings > Devices &
-    Services > Add Integration > Local To-do, then back to Family Hub's own
-    Configure to type the resulting entity id in) is exactly the kind of
-    first-run friction this wizard exists to remove.
-
-    Home Assistant's own async_init for a config flow is fully awaited end
-    to end - by the time it returns a create_entry result, local_todo's
-    async_setup_entry (and the todo.* entity it registers) has already run,
-    not just been scheduled - so the entity registry is looked up directly
-    rather than guessed at. This used to just predict the entity_id as
-    f"todo.{slugify(name)}" and stop there; that prediction is *usually*
-    right (local_todo does slugify the name for its own storage key) but
-    isn't guaranteed - Home Assistant silently appends _2/_3 to the object_id
-    on a collision with any *other* integration's existing todo.* entity
-    (local_todo's own create_entry only guards against colliding with
-    another local_todo list, not a global entity_id collision), which used
-    to mean this could hand back an entity_id that doesn't actually exist,
-    silently pointing Meal Plan/Reminders at nothing. Now the registry is
-    the source of truth - local_todo's entity sets its unique_id to the new
-    config entry's entry_id, so async_get_entity_id("todo", "local_todo",
-    entry_id) resolves the *real* entity_id every time. The slugify
-    prediction is kept only as a last-resort fallback for the unlikely case
-    the registry lookup itself comes back empty.
-
-    Best-effort like everything else this wizard does: if the flow doesn't
-    come back as a fresh create_entry for any reason (local_todo isn't
-    available, a list with that name already exists, a future Home
-    Assistant release changes its config flow shape), this returns None and
-    the caller falls back to leaving that entity unset, same as if the
-    checkbox had been off - never blocks the rest of setup on it.
-    """
-    try:
-        result = await hass.config_entries.flow.async_init(
-            _LOCAL_TODO_DOMAIN,
-            context={"source": "user"},
-            data={_LOCAL_TODO_LIST_NAME_FIELD: name},
-        )
-    except Exception:  # noqa: BLE001 - local_todo missing/unavailable is not fatal here
-        return None
-    if not isinstance(result, dict) or result.get("type") != "create_entry":
-        return None
-    entry_id = getattr(result.get("result"), "entry_id", None)
-    if entry_id:
-        try:
-            registry = er.async_get(hass)
-            entity_id = registry.async_get_entity_id("todo", _LOCAL_TODO_DOMAIN, entry_id)
-        except Exception:  # noqa: BLE001 - the registry lookup is a nice-to-have, not required
-            entity_id = None
-        if entity_id:
-            return entity_id
-    return f"todo.{slugify(name)}"
 
 
 # Transient wizard-only field/defaults for async_step_dashboard - not config
@@ -551,14 +463,12 @@ class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         checked, so clicking straight through without touching anything
         behaves exactly like the wizard always did before this step
         existed - this only exists to let a household SKIP whole sections
-        (Chores/Rewards/Routines/Goals setup, Grocy, Reminders & Meal Plan,
-        Daily Digest) up front rather than clicking through screens for
-        features they don't want and leaving every field blank. Calendars,
-        Notifications, and the Dashboard offer are NOT gated behind a
-        feature choice here - they're cheap, universally-relevant screens
-        (or in Notifications' case, still relevant even with Chores/
-        Reminders off, since it also covers calendar event reminders) that
-        every household still sees."""
+        (Chores/Rewards/Routines/Goals setup, Grocy, Daily Digest) up front
+        rather than clicking through screens for features they don't want
+        and leaving every field blank. Calendars, Notifications, and the
+        Dashboard offer are NOT gated behind a feature choice here - they're
+        cheap, universally-relevant screens that every household still
+        sees."""
         if user_input is not None:
             self._selected_features = set(user_input.get(_FEATURES_FIELD) or [])
             if self._feature_selected(_FEATURE_CHORES):
@@ -672,7 +582,7 @@ class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         entirely (never even shown) when "Grocy" was unchecked on the
         Features step - reachable afterward via Configure either way."""
         if not self._feature_selected(_FEATURE_GROCY):
-            return await self.async_step_todo_lists()
+            return await self.async_step_notifications()
 
         if user_input is not None:
             url = (user_input.get(CONF_GROCY_URL) or "").strip().rstrip("/")
@@ -681,77 +591,31 @@ class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._collected_options[CONF_GROCY_URL] = url
             if api_key:
                 self._collected_options[CONF_GROCY_API_KEY] = api_key
-            return await self.async_step_todo_lists()
+            return await self.async_step_notifications()
 
         return self.async_show_form(
             step_id="grocy",
             data_schema=_build_grocy_schema(self._collected_options),
         )
 
-    async def async_step_todo_lists(self, user_input: dict[str, Any] | None = None):
-        """Get Meal Plan and Reminders each pointed at a real todo.* entity.
-        Pick an existing list for either field, or leave it blank and (with
-        the checkbox on, the default) Family Hub creates a fresh Local
-        To-do list for it via _create_local_todo_list. Note that this seeds
-        the *backend's* meal_plan_todo_entity/reminders_todo_entity option
-        so the reminders/digest poller has something to read immediately -
-        the calendar card itself still needs its own meal_plan_entity /
-        reminders_entity config fields pointed at the same entity id (shown
-        back on the next screen) the first time it's added to a dashboard,
-        since the card's config lives in Lovelace, not here. Skipped
-        entirely when "Reminders & Meal Plan to-do lists" was unchecked on
-        the Features step."""
-        if not self._feature_selected(_FEATURE_REMINDERS):
-            return await self.async_step_notifications()
-
-        if user_input is not None:
-            meal_plan_entity = (user_input.get(CONF_MEAL_PLAN_ENTITY) or "").strip()
-            reminders_entity = (user_input.get(CONF_REMINDERS_ENTITY) or "").strip()
-            auto_create = user_input.get(CONF_AUTO_CREATE_TODO_LISTS, True)
-
-            if not meal_plan_entity and auto_create:
-                created = await _create_local_todo_list(self.hass, DEFAULT_MEAL_PLAN_LIST_NAME)
-                if created:
-                    meal_plan_entity = created
-            if not reminders_entity and auto_create:
-                created = await _create_local_todo_list(self.hass, DEFAULT_REMINDERS_LIST_NAME)
-                if created:
-                    reminders_entity = created
-
-            if meal_plan_entity:
-                self._collected_options[CONF_MEAL_PLAN_ENTITY] = meal_plan_entity
-            if reminders_entity:
-                self._collected_options[CONF_REMINDERS_ENTITY] = reminders_entity
-            return await self.async_step_notifications()
-
-        return self.async_show_form(
-            step_id="todo_lists",
-            data_schema=_build_todo_lists_schema(self._collected_options),
-        )
+    # v1.132.8+: async_step_todo_lists ("Meal Plan & Reminders lists") is
+    # gone - household ask, verbatim: "drop todo lists." See this module's
+    # own docstring for why it was safe to drop entirely: the calendar
+    # card's own meal_plan_entity/reminders_entity config fields already
+    # self-sync into these same backend options every session with no user
+    # action needed, so this step only ever saved someone from accepting
+    # the card's own defaults or setting the field once on the card itself.
 
     async def async_step_notifications(self, user_input: dict[str, Any] | None = None):
-        """Who should actually get notified - a default target for calendar
-        event reminders (the calendar card's "Remind me" field falls back
-        to this when a calendar has no override of its own), and
-        separately which device(s) should get standalone Reminders (the
-        Add Event modal's Reminder tab / to-do-backed reminders). These are
-        two different audiences that have always shared the same
-        per-target overrides map, just keyed differently - a calendar.*
-        entity for the first, the Reminders to-do entity (resolved in the
-        previous step) for the second. Leaving either blank is fine; both
-        are also editable later via Configure > Calendar reminders or the
-        card's own Settings > Calendars/Reminders notify pickers."""
+        """Who should get a default notification for calendar event
+        reminders - the calendar card's "Remind me" field falls back to
+        this when a calendar has no override of its own. Leaving it blank
+        is fine; it's also editable later via Configure > Calendar
+        reminders or the card's own Settings > Calendars notify pickers."""
         if user_input is not None:
             default_notify = (user_input.get(CONF_DEFAULT_NOTIFY) or "").strip()
             if default_notify:
                 self._collected_options[CONF_DEFAULT_NOTIFY] = default_notify
-
-            reminders_targets = [t for t in (user_input.get(_REMINDERS_NOTIFY_FIELD) or []) if t]
-            reminders_entity = self._collected_options.get(CONF_REMINDERS_ENTITY)
-            if reminders_targets and reminders_entity:
-                overrides = _parse_overrides(self._collected_options.get(CONF_OVERRIDES_TEXT, ""))
-                overrides[reminders_entity] = reminders_targets
-                self._collected_options[CONF_OVERRIDES_TEXT] = _overrides_to_text(overrides)
             return await self.async_step_digest()
 
         return self.async_show_form(
@@ -827,11 +691,13 @@ class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_finish(self, user_input: dict[str, Any] | None = None):
         """Read-only summary before creating the entry - mainly so the
-        entity ids of any to-do list just auto-created (and the dashboard
-        YAML, if requested) are visible somewhere, since both still need to
-        be copied into place by hand: the to-do entities into the calendar
-        card's own meal_plan_entity/reminders_entity config fields, and the
-        dashboard YAML into a new dashboard via Settings > Dashboards."""
+        dashboard YAML (if requested) is visible somewhere, since it still
+        needs to be copied into place by hand via Settings > Dashboards.
+        v1.132.8+: no longer mentions meal_plan_entity/reminders_entity -
+        those aren't collected by this wizard any more (see this module's
+        own docstring on why the "Meal Plan & Reminders lists" step was
+        dropped); the calendar card's own config fields for those, or its
+        Settings, are where to set them now."""
         if user_input is not None:
             return self.async_create_entry(
                 title="Family Hub",
@@ -848,10 +714,6 @@ class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="finish",
             data_schema=vol.Schema({}),
             description_placeholders={
-                "meal_plan_entity": self._collected_options.get(CONF_MEAL_PLAN_ENTITY)
-                or "not set - add a meal_plan_entity later from the card's Settings or Configure",
-                "reminders_entity": self._collected_options.get(CONF_REMINDERS_ENTITY)
-                or "not set - add a reminders_entity later from the card's Settings or Configure",
                 "default_notify": self._collected_options.get(CONF_DEFAULT_NOTIFY)
                 or "not set - calendar event reminders won't fire until one is added via Configure",
                 "daily_digest": digest_summary,

@@ -187,6 +187,93 @@ SUGGESTIONS_STORAGE_VERSION = 1
 TODO_CARD_CONFIG_STORAGE_KEY_PREFIX = "family_hub_todo_card_config"
 TODO_CARD_CONFIG_STORAGE_VERSION = 1
 
+# Wish Lists (v1.122.0+) - the household's own ask: "home assistant has
+# native list functionality and we use it a lot in family Hub but it's not
+# super robust. I want to use the native list functionality to be able to
+# do wish lists link name image description that kind of thing but all
+# built on top of the native list functionality... we will need a way to
+# make a list a wish list and display it as such in the list card." A
+# household flags any existing todo.* entity as a "wish list" here; the
+# To-Do Lists card then renders that list's items as gift-registry cards
+# (image/link/description, claim button) instead of a plain checklist -
+# see family-hub-todo-card.js's _isWishlistList/_parseWishlistDescription/
+# _buildWishlistDescription. The link/image/claim data itself is NOT
+# stored here - by design it's embedded straight into each native todo
+# item's own `description` field (readable note text, then a JSON tail -
+# see _buildWishlistDescription's own comment), so the wish list stays a
+# completely ordinary todo.* list to Home Assistant, Grocy-style voice
+# assistants, phone widgets, or anyone opening it in HA's own built-in
+# Todo UI - this store only ever holds the flag + which HA user flagged it
+# (see _ws_set_wishlist_flag).
+#
+# Deliberately its OWN small Store, separate from SETTINGS_STORAGE_KEY_
+# PREFIX and from TODO_CARD_CONFIG_STORAGE_KEY_PREFIX above, for the exact
+# same reason as that one (see its own comment just above) - a different
+# owner/lifecycle (this is a per-ENTITY flag, not a per-CARD-INSTANCE
+# selection, and every To-Do Lists card instance in the household must see
+# the same flag for the same entity - "Global, per todo entity" was the
+# household's own explicit choice when asked whether this should instead
+# be per-card-placement) that a full-replace save of either of those two
+# stores has no idea exists.
+#
+# Shape: `{"<todo entity_id>": {"ownerUserId": "<HA user id>"}}` - only
+# flagged entities appear as keys at all (an absent key means "not a wish
+# list," same "absent key = default" convention as userProfiles[<user>].
+# remindersSubscriptions elsewhere in this file). `ownerUserId` is the HA
+# user who was signed in at the moment the flag was switched ON (the
+# websocket connection's own `connection.user.id`, never something the
+# frontend supplies itself) - it drives the claiming feature's "hidden
+# from the wish list's own owner" behavior (see _isWishlistOwner): Family
+# Hub's own UI simply never shows claim status to whichever signed-in user
+# matches this id, while everyone else sees it normally. This is a
+# Family-Hub-side hide only, not real access control - the owner could
+# still see raw claim data by opening this same list in HA's own built-in
+# Todo UI outside Family Hub, since it's a genuinely native HA list; the
+# household explicitly accepted that trade-off in exchange for not having
+# to build (and maintain) a parallel storage system just for wish-list items.
+TODO_WISHLIST_CONFIG_STORAGE_KEY_PREFIX = "family_hub_todo_wishlist_config"
+TODO_WISHLIST_CONFIG_STORAGE_VERSION = 1
+
+# v1.110.5+: the store above used to hold exactly ONE record - fine when a
+# household only ever had a single To-Do Lists card, but a real bug once
+# people added a second instance (e.g. a grocery-focused card on the
+# kitchen tablet plus a personal to-do card on a kid's dashboard): both
+# instances read/wrote the SAME record, keyed only by entry_id, so whichever
+# one saved last silently overwrote the other's list selection. Fixed by
+# giving each card instance a stable `card_id` (a uuid4, generated once by
+# the card itself in setConfig and persisted into its own Lovelace card
+# config the same way getConfigElement already preserves other fields - see
+# family-hub-todo-card.js) and reshaping the store to
+# `{"cards": {<card_id>: {entities, grocy_list_ids, rows}}}` - a dict-of-
+# records inside the ONE existing Store rather than one Store file per card
+# instance, so the file count doesn't grow unbounded as people add/remove
+# cards.
+#
+# MIGRATION: a store saved before this version has no "cards" key at all,
+# just the old flat {entities, grocy_list_ids, rows} shape directly at the
+# top level. The FIRST card instance to call family_hub/get_todo_card_config
+# (or set_todo_card_config) after upgrading with a card_id of its own
+# inherits that flat record verbatim into cards[<its card_id>], and the flat
+# top-level fields are dropped from the store on that same save, so the
+# migration only ever happens once. Any card instance that shows up with a
+# DIFFERENT card_id (including a second, brand-new card added post-upgrade)
+# gets its own empty record - never the migrated one - since by definition
+# it never held that data before.
+
+# v1.109.9+: the most stacked rows the To-Do Lists card's board will spread
+# its list columns across - "add rows columns, etc so you can have your
+# lists shown how you want a line of lists, 2 stacks, 3 stacks etc." The
+# chosen count is stored as a `rows` field in the TODO_CARD_CONFIG store
+# above (so it persists through a plain reload exactly like the list
+# selection does - see that store's own comment for why Lovelace config
+# could never be trusted for this), and both the get and set websocket
+# commands clamp to 1..this so neither a stale client nor a hand-edited
+# .storage file can hand the card a nonsense layout. 4 is a deliberate
+# ceiling rather than an arbitrary one: past four stacks each column is
+# shorter than a single item card on any realistic dashboard height, so
+# more rows stops being a layout and starts being a bug report.
+TODO_CARD_MAX_BOARD_ROWS = 4
+
 # Menu suggestions (v1.109.6+; family_hub/get_menu_suggestions,
 # add_menu_suggestion, apply_menu_suggestion and remove_menu_suggestion in
 # __init__.py) - the "anyone can suggest, only someone with
@@ -209,6 +296,261 @@ TODO_CARD_CONFIG_STORAGE_VERSION = 1
 # save can ever clobber another's keys.
 MENU_SUGGESTIONS_STORAGE_KEY_PREFIX = "family_hub_menu_suggestions"
 MENU_SUGGESTIONS_STORAGE_VERSION = 1
+
+# Chore/reward timers (v1.110.0+; timer_engine.py, the family_hub/timers/*
+# websocket commands in chores_websocket_api.py, and the dedicated sweep
+# registered in __init__.py's async_setup_entry) - "We need to be able to
+# make chores and rewards have timer associated to them... 2 hours of
+# gaming, when you click use reward a timer would start and then a timer
+# would go off at the end of the 2 hours. Or if you have a chore thats like
+# clean for 30 minutes, at the end of 30 minutes it would set off a timer,
+# and either go to approval mode or complete the award."
+#
+# Each record is one RUNNING timer:
+#   {uid, kind: "chore"|"reward", chore_id?/item_id?, title, user_id,
+#    started_at (ISO, UTC), duration_minutes, notify_targets}
+# and it is deleted the moment it fires or is cancelled - this store only
+# ever holds what is currently counting down, never history (a fired chore
+# timer's outcome is already recorded on the chore itself; a fired reward
+# timer's is already in the redemption log).
+#
+# Deliberately backend-stored rather than a browser setTimeout: a timer has
+# to keep running and still fire when no dashboard is open and the tablet
+# is asleep, which is the entire point of "a timer would go off at the end."
+# The frontend computes the VISIBLE countdown from started_at +
+# duration_minutes so the number on screen is smooth and accurate between
+# polls, but it is never what decides that a timer is done.
+TIMERS_STORAGE_KEY_PREFIX = "family_hub_timers"
+TIMERS_STORAGE_VERSION = 1
+
+# ---------------------------------------------------------------------------
+# v1.110.2+: native Home Assistant `timer.*` integration - "this should use
+# the home assistant native timer.*"
+#
+# RESEARCH FINDING, recorded here because it is the whole reason this is
+# shaped the way it is, and because the obvious-looking approach is
+# genuinely impossible rather than merely awkward:
+#
+#   Home Assistant's `timer` domain is a HELPER domain, not an entity
+#   PLATFORM. It is in the same family as input_boolean / input_number /
+#   counter / schedule. Concretely, in HA core:
+#     - `homeassistant/generated/entity_platforms.py` - the canonical list
+#       of domains an integration may provide entities for - contains
+#       "todo" (which is why family_hub/todo.py works) but does NOT
+#       contain "timer". So `async_forward_entry_setups(entry, ["timer"])`
+#       has nothing to forward to.
+#     - `components/timer/__init__.py` has no `async_setup_entry`, no
+#       PLATFORM_SCHEMA, and never calls `component.async_setup(config)` -
+#       all three of which `components/todo/__init__.py` does have. Its
+#       entities come only from YAML (`timer:` in configuration.yaml) or
+#       from the Helpers UI, via a `TimerStorageCollection` that is a LOCAL
+#       VARIABLE in async_setup and is never published to hass.data, so
+#       there is no handle on it from another integration either.
+#   The only remaining route would be reaching into the private
+#   hass.data["entity_components"]["timer"] EntityComponent and adding a
+#   hand-rolled subclass of HA's private Timer class, bypassing
+#   sync_entity_lifecycle. That is unsupported, invisible to the Helpers
+#   UI, and exactly the kind of private-internals coupling that breaks
+#   silently on an HA refactor - so it is deliberately NOT done.
+#
+# WHAT IS DONE INSTEAD. Family Hub does not fabricate timer entities; it
+# DRIVES real ones. Any native timer helper the household creates whose
+# entity_id starts with TIMER_ENTITY_PREFIX is treated as an adoptable
+# "pool" entity. When a Family Hub timer starts and a free pool entity is
+# available, the countdown genuinely runs on that native entity
+# (timer.start), and completion is EVENT-DRIVEN off HA's own
+# `timer.finished` / `timer.cancelled` bus events rather than polled.
+# Such a timer is a first-class HA entity: visible in Developer Tools,
+# placeable on any dashboard, and usable as an automation trigger.
+#
+# When no pool entity is free - including the zero-setup case where the
+# household has never created one, which is most households - the timer
+# still runs exactly as it did in v1.110.0/v1.110.1, off the store plus
+# the TIMER_SWEEP_SECONDS safety net below. Identical user-facing
+# behavior either way; native entities are a strict upgrade layered on
+# top, never a requirement. The sweep also stays as the backstop for a
+# missed event (e.g. HA restarted mid-countdown on a non-restoring
+# helper), so a timer can never get stuck running forever.
+#
+# The prefix is a naming convention rather than a Settings picker on
+# purpose: it needs no UI, no migration and no per-timer configuration -
+# a household that wants native entities creates
+# timer.family_hub_timer_1, _2, ... in Settings > Devices & Services >
+# Helpers and Family Hub starts using them on its own.
+TIMER_ENTITY_PREFIX = "timer.family_hub"
+
+# ---------------------------------------------------------------------------
+# v1.110.3+: CORRECTION AND EXTENSION of the note above - "Creating a user
+# should automatically create a timer helper for family hub a
+# timer.family_hub.Username and there should be an additional 4 timer
+# entities for family these are for is you need a timer and dont set a
+# user."
+#
+# The v1.110.2 note says there is "no supported way to create one
+# programmatically". That was right about the BACKEND and wrong as a
+# blanket statement, and the difference matters:
+#
+#   - Re-checked the config-entry hypothesis first, with a positive
+#     control: `components/timer/` has NO config_flow.py (404) and its
+#     manifest carries no "config_flow": true - while `components/min_max/`
+#     (a genuine config-entry helper) has both. `input_boolean`, `counter`,
+#     `input_number` and `schedule` are all 404 too. So `timer` is NOT a
+#     config-entry helper and hass.config_entries.flow.async_init("timer",
+#     ...) would have nothing to init. HA has two distinct kinds of thing
+#     both called "helpers", and timer is in the older storage-collection
+#     family, not the config-entry family.
+#   - What the earlier pass missed: the storage collection IS exposed, just
+#     not to Python. `timer` registers a
+#     `collection.DictStorageCollectionWebsocket`, which publishes
+#     `timer/list`, `timer/create`, `timer/update` and `timer/delete` as
+#     ordinary websocket commands (all mutations @require_admin). That is
+#     precisely what Home Assistant's own "+ Add Helper -> Timer" button
+#     calls - a fully public, documented API surface, not private
+#     internals.
+#
+# RE-VERIFIED LIVE in v1.110.3 (not just re-read from source): called
+# `timer/create` against this household's real running Home Assistant
+# instance via the ha-mcp tooling, got back a real `timer.family_hub_*`
+# entity in state `idle` with the `duration`/`restore`/`icon` fields
+# reflected exactly as sent, then deleted it again the same way. Separately,
+# the HA best-practices reference bundled with that same tooling (verified
+# against HA core 2026.8.3) states explicitly: storage-collection helpers
+# (created via `<domain>/create`) are `input_boolean, input_number,
+# input_select, input_text, input_datetime, input_button, counter, timer,
+# schedule, zone, person, tag`; config-entry/config-flow helpers are a
+# disjoint list that does NOT include timer. Both checks agree with each
+# other and with the source-reading pass below, which is the highest
+# confidence this integration can have on this question without HA core's
+# own test suite. `timer/create`'s mutations are @require_admin, same as
+# every other helper collection - harmless for a non-admin card load, since
+# _ensureTimerHelpers's failure is always swallowed.
+#
+# So creation is possible; it is just websocket-only, which means it must
+# be driven from a CARD (which holds an authenticated admin connection)
+# rather than from integration Python (which holds none, and cannot reach
+# the collection object - `collection.py` publishes nothing to hass.data
+# and timer's own storage_collection is a local variable). Hence
+# _ensureTimerHelpers() living in the frontend cards.
+#
+# `timer/create` takes timer's STORAGE_FIELDS: {name (required), icon,
+# duration, restore}. The entity_id is slugified from `name` by HA itself
+# (TimerStorageCollection._get_suggested_id returns the name), so naming a
+# helper "Family Hub Emma" yields timer.family_hub_emma - which is why
+# every auto-created helper is named with the "Family Hub " prefix and so
+# lands under TIMER_ENTITY_PREFIX above with no extra work.
+#
+# WHAT GETS AUTO-CREATED (idempotently, admin-only, never duplicated):
+#   - One dedicated helper per household member: "Family Hub <Name>" ->
+#     timer.family_hub_<name>. Reconciled whenever Settings is saved and
+#     whenever the Active Timers card loads, so existing households get
+#     theirs backfilled without re-adding anyone.
+#   - TIMER_FAMILY_POOL_SIZE shared ones: "Family Hub Family 1..4" ->
+#     timer.family_hub_family_1..4, for timers with nobody assigned (the
+#     oven, a board game). Always present regardless of member count.
+# All are created with restore=True, matching this integration's other
+# durability choices - a countdown survives an HA restart.
+#
+# ON MEMBER REMOVAL the dedicated helper is deliberately LEFT IN PLACE.
+# Removing someone from Family Hub is explicitly a fully reversible act
+# that never deletes their profile, permissions or assignments (see
+# SETTINGS_KEY_MEMBER_USER_IDS and _removeFamilyHubMember's own comment) -
+# silently destroying their timer entity would break that promise, and
+# would also take out anything the household had built on top of it (a
+# dashboard card, an automation trigger). An admin who wants it gone can
+# delete it in one click from Settings > Devices & Services > Helpers.
+TIMER_FAMILY_POOL_SIZE = 4
+TIMER_FAMILY_ENTITY_PREFIX = "timer.family_hub_family_"
+# The display-name prefix every auto-created helper is created with; HA
+# slugifies it into the entity_id, which is what keeps them all inside
+# TIMER_ENTITY_PREFIX.
+TIMER_HELPER_NAME_PREFIX = "Family Hub "
+
+# HA's own bus events for the native timer domain (components/timer's
+# EVENT_TIMER_FINISHED / EVENT_TIMER_CANCELLED). Listened to in
+# __init__.py's async_setup_entry; see _handle_native_timer_event in
+# chores_websocket_api.py for what they resolve to.
+NATIVE_TIMER_EVENT_FINISHED = "timer.finished"
+NATIVE_TIMER_EVENT_CANCELLED = "timer.cancelled"
+
+# v1.110.3+ - Family Hub's OWN event, fired once for every timer of any
+# kind (chore/reward/standalone) that actually completes - see sensor.py's
+# module docstring and chores_websocket_api.py's _fire_timer for the full
+# design note. This is the idiomatic "trigger: event" an automation like
+# "when Sam's screen-time reward ends, lock his computer" is meant to use,
+# since it needs no attribute lookup and fires exactly once per completion
+# regardless of whether the timer was backed by a native timer.* helper or
+# ran off the store-plus-sweep path alone. Event data carries the same
+# identifying fields as the per-timer sensor's attributes: kind, chore_id,
+# reward_item_id, title, user_id, user_name, native_timer_entity_id.
+# Deliberately NOT fired for a cancelled timer - "finished" here means what
+# it means for HA's own timer.finished: it ran out, it wasn't stopped.
+EVENT_FAMILY_HUB_TIMER_FINISHED = "family_hub_timer_finished"
+
+# How often the backend checks whether any timer has run out. Deliberately
+# its own tight interval rather than riding the main poller: that one runs
+# every CONF_POLL_MINUTES (default 5), which is fine for "remind me 30
+# minutes before an event" but not for a countdown someone is watching hit
+# zero - a 30-minute chore timer firing up to 5 minutes late would read as
+# broken. The sweep this drives is pure in-memory (compare each running
+# timer's end time to now; do nothing at all when none have expired), with
+# no network or entity work, so 30s costs effectively nothing. See
+# _expire_due_timers in chores_websocket_api.py.
+#
+# v1.110.2+: for a timer backed by a native timer.* entity this sweep is a
+# BACKSTOP rather than the primary mechanism - HA's own timer.finished
+# event fires first and does the work. It still runs, because (a) most
+# timers have no native entity behind them, and (b) an event can be missed
+# (a restart mid-countdown on a helper with restore off), and a countdown
+# that silently never ends is a far worse failure than one that ends a few
+# seconds late.
+TIMER_SWEEP_SECONDS = 30
+
+# Guard rails on a timer's length. 1 minute minimum (anything shorter is a
+# mis-typed entry, not a real intent); 24 hours maximum (a "timer" longer
+# than a day is a due date, which chores already have a better field for).
+TIMER_MIN_MINUTES = 1
+TIMER_MAX_MINUTES = 24 * 60
+
+TIMER_KIND_CHORE = "chore"
+TIMER_KIND_REWARD = "reward"
+# v1.110.1+: a general-purpose household timer with no chore or reward
+# behind it at all - "an active timers card... a pop up modal that has 3-4
+# common timer times, optional assign to user and optional add time." The
+# oven, a board game, a kid's turn on the tablet. Deliberately a third KIND
+# in this same store rather than a storage system of its own: it shares the
+# entire lifecycle (start / count down / fire / cancel), the same expiry
+# sweep, the same one-per-person reasoning and the same notification
+# plumbing - the ONLY difference is what happens when it fires, which is
+# "notify, and nothing else" (no chore to complete, no stars to pay).
+# Carries `label` instead of chore_id/item_id, and its user_id may be empty
+# (unassigned), which neither of the other two kinds allows.
+TIMER_KIND_STANDALONE = "standalone"
+TIMER_KINDS = (TIMER_KIND_CHORE, TIMER_KIND_REWARD, TIMER_KIND_STANDALONE)
+
+# The quick-timer modal's preset buttons, in minutes. Chosen for the
+# household-timer use case the request describes ("think 'timer for the
+# oven' as much as 'timer for a kid'"): 5 is the nag/turn-taking timer, 15
+# and 30 cover most cooking and screen-time slices, 60 is the long one. A
+# free-entry custom minutes box sits alongside these, so these are
+# shortcuts, never a limit.
+TIMER_PRESET_MINUTES = (5, 15, 30, 60)
+
+# Max length of a standalone timer's free-text label ("Oven", "Sam's turn").
+TIMER_LABEL_MAX_LENGTH = 60
+
+# Optional per-chore / per-catalog-item timer length, in minutes. Absent or
+# None means "no timer," which is every chore and reward that existed
+# before v1.110.0 - so nothing changes for them.
+#
+# On a REWARD this is deliberately an independent field rather than a
+# fourth REWARD_REDEEM_MODE: the three modes describe how the STAR COST is
+# consumed (a one-off spend, an accumulating bank, or once-ever), while a
+# timer describes what happens AFTER redeeming. They compose cleanly -
+# "1 hour of TV, banked" is a perfectly coherent reward that both adds to a
+# bank and starts a countdown - and folding the timer into the mode
+# enumeration would have made those combinations unexpressible.
+CHORE_KEY_TIMER_MINUTES = "timer_minutes"
+REWARD_KEY_TIMER_MINUTES = "timer_minutes"
 
 # First-time setup wizard (config_flow.py's async_step_calendars/grocy/
 # todo_lists/finish): everything it collects - which calendars to monitor,
@@ -459,6 +801,7 @@ GROCY_CONVERSIONS_SYNC_STORAGE_VERSION = 1
 #           "notifyChoreDue": bool,
 #           "notifyGoalApproved": bool,
 #           "notifyGoalRejected": bool,
+#           "notifyTimerAlarm": bool,
 #           "remindersSubscriptions": {"<person calendar entity>": "calendar" | "calendar_alert"},
 #       },
 #       ...
@@ -513,6 +856,14 @@ REMINDER_SUBSCRIPTION_LEVELS = (REMINDER_SUBSCRIPTION_CALENDAR, REMINDER_SUBSCRI
 # reminders) are deliberately independent so a person's calendar and their
 # to-do list can even live on different HA integrations if that's how the
 # household set them up.
+# v1.132.0+: this field's own editable UI (the Calendars tab's per-row
+# "their own Reminders list" input) is gone from the card - it now lives
+# only on that person's userProfiles[uid]["remindersEntity"] instead (see
+# that key's own comment below for the migration that moves an
+# already-set value across). This raw settings["people"][i]["remindersEntity"]
+# key still exists in storage and is still read (a row whose calendar
+# isn't claimed as anyone's primaryCalendar has nowhere to migrate its
+# value to), it just can no longer be SET from the Calendars tab.
 # notifyRewardClaimed/notifyChoreApproved/notifyChoreRejected (v123+, v128+
 # for the last one) are instant, one-shot pushes - NOT digest-batched, and
 # NOT gated by digestEnabled - sent the moment the underlying event happens
@@ -567,6 +918,16 @@ REMINDER_SUBSCRIPTION_LEVELS = (REMINDER_SUBSCRIPTION_CALENDAR, REMINDER_SUBSCRI
 #     hear back" scoping as the chore pair, and the same optional
 #     reject_reason-in-the-message-body treatment. See goal_engine.py's
 #     module docstring for how Goals itself differs from Chores.
+#   - notifyTimerAlarm (v1.119.0+): NOT its own notification - it changes
+#     HOW the three existing end-of-timer pushes (chore timer, reward timer,
+#     an ASSIGNED standalone timer) are delivered to THIS person when one of
+#     THEIR OWN timers goes off: alarm-style (Android alarm-stream channel /
+#     iOS critical alert - see chores_websocket_api.py's
+#     _send_alarm_notification) instead of the plain quiet push everyone
+#     else still gets. Snapshotted onto the timer itself at start time
+#     (timer_engine.py's "alarm" field), same reasoning as notify_targets/
+#     title being snapshots there. Household ask: "route this through alarm
+#     notifications for the person the timer is for."
 # The chore/reward/goal pair-events above are sent from chores_websocket_
 # api.py (ws_redeem_reward/ws_approve_chore/ws_reject_chore/ws_approve_goal/
 # ws_reject_goal - all Goals commands live in this same unified file) and,
@@ -585,6 +946,74 @@ REMINDER_SUBSCRIPTION_LEVELS = (REMINDER_SUBSCRIPTION_CALENDAR, REMINDER_SUBSCRI
 # data (nothing is destroyed, and Configure's old "Calendar reminders"
 # screen still shows exactly what it always did) - it just stops being what
 # the poller actually reads once this key exists.
+# v1.131.0+: userProfiles[uid]["remindersEntity"] / ["wishlistEntity"] /
+# ["badges"] - household ask, verbatim: *"I would like to be able to set a
+# user calendar, a user reminder todo list and a user wish list all under
+# their settings."* Before this, a person's own calendar/reminders/wish-list
+# setup was scattered across three different, only loosely-connected
+# places left over from this project's original calendar-only design:
+#   - their CALENDAR was only ever "whichever settings.people[] row they
+#     starred as primaryCalendar" (see primaryCalendar's own comment
+#     above) - meaning it had to ALREADY exist as a general Calendars-tab
+#     entry before a profile could point at it, and its badges lived on
+#     that people[] row, entirely separate from the profile.
+#   - their REMINDERS list was settings.people[i].remindersEntity - again,
+#     only reachable through whichever people[] row happened to be their
+#     starred primaryCalendar, never set directly on the profile itself.
+#   - their WISH LIST didn't have a per-person home at all - flagging a
+#     todo.* list as a wish list (TODO_WISHLIST_CONFIG_STORAGE_KEY_PREFIX
+#     below) was done per-entity from the To-Do Lists card's own List(s)
+#     tab, with no link back to "whose" wish list it was beyond the
+#     ownerUserId stamped at flag time.
+# These three new fields let the Users tab set/create all three directly
+# on the profile, while primaryCalendar itself keeps its existing meaning
+# and storage (a calendar entity id - see its own comment above) so
+# nothing already saved needs migrating:
+#   - remindersEntity (str, default ""): this person's own individual
+#     Reminders to-do list. Read in PREFERENCE to the legacy settings.
+#     people[i].remindersEntity lookup (matched via primaryCalendar) by
+#     every call site that resolves "this profile's own reminders list" -
+#     see _resolve_profile_reminders_entity.
+#     v1.132.0+: the Calendars tab's own "their own Reminders list" field
+#     (the settings.people[i].remindersEntity fallback just mentioned) is
+#     gone from the card's UI - household ask, verbatim: *"move the linked
+#     reminders off of the calendar accordion... make sure that if there
+#     is a currently linked todo list on a calendar and a user that
+#     selected a calendar as theirs it transfers over to the new calendars
+#     and reminders area."* _migrate_people_reminders_into_profiles (in
+#     __init__.py, run on every Settings load AND save) does exactly that
+#     transfer: for each people[] row with its own remindersEntity still
+#     set, it copies that value onto every profile whose primaryCalendar
+#     points at that same row (unless that profile already has its own
+#     remindersEntity) and then clears the row's copy, since the whole
+#     point is to MOVE the data, not leave two copies that can drift. A
+#     people[] row whose calendar isn't anybody's primaryCalendar keeps
+#     its own remindersEntity untouched (nowhere to move it to) - see that
+#     function's own docstring for the full detail, including how the
+#     card's "Other people's reminder lists" subscription picker
+#     (_renderNotifyProfileRemindersLists) still reads a legacy,
+#     unmigrated row's value alongside every profile's own field.
+#   - wishlistEntity (str, default ""): this person's own wish list to-do
+#     entity. Saving a profile with this set auto-flags that entity in the
+#     wish-list store (same flag _ws_set_wishlist_flag itself would set,
+#     with ownerUserId = this profile's own user id) - see
+#     _sync_profile_wishlist_flags in __init__.py - and un-flags whatever
+#     entity this SAME profile had here before, if it changed. A blank
+#     value means "no personal wish list set" and never touches the flag
+#     store at all, so a wish list flagged the old way (directly from the
+#     To-do Lists card, with no profile pointing at it) is left alone.
+#   - badges (list of {text, match, hideMatch}, default []): same exact
+#     shape as a settings.people[] row's own "badges" array. Applies to
+#     THIS profile's own primaryCalendar. If that calendar entity is ALSO
+#     a row in settings.people[] (a household that still adds it under the
+#     general Calendars tab too - fully supported, nothing here removes
+#     that), the profile's own badges/color win for that one entity rather
+#     than the two configs needing to be kept in sync by hand - see
+#     family-week-calendar-card.js's _getPeople for the merge. If the
+#     entity is NOT in settings.people[] at all, _getPeople synthesizes a
+#     virtual column for it, named after this profile's own household
+#     member name, so "include a user's calendar under their name on the
+#     calendar" works without ever touching the general Calendars list.
 SETTINGS_KEY_USER_PROFILES = "userProfiles"
 # Marker (also stored in the Settings blob, alongside userProfiles) so the
 # one-time migration never re-runs and clobbers hand-edited profiles with a
@@ -649,6 +1078,19 @@ DEFAULT_DIGEST_SECTIONS = {
 # new install backfills from nothing and starts empty, same net effect as
 # if the household had to opt every person in by hand.
 SETTINGS_KEY_MEMBER_USER_IDS = "memberUserIds"
+
+# v1.132.5+: guards _maybe_migrate_wishlist_claims_permission_default in
+# __init__.py (see PERMISSION_SEE_WISHLIST_CLAIMS's own comment above for
+# why that migration exists at all) - same "presence, not a separate
+# migrated-boolean-per-user" idea SETTINGS_KEY_MEMBER_USER_IDS itself uses,
+# except here the thing being backfilled (a grant inside the Permissions
+# store, keyed by user_id) has no natural way to tell "never touched" apart
+# from "explicitly False," so this lives as its own plain flag in the main
+# Settings blob instead. Runs once, right after member_user_ids has
+# already been migrated (see the call site) - only members in that already-
+# final roster are grandfathered in; anyone added afterward correctly
+# starts without the grant, same as any other permission.
+SETTINGS_KEY_WISHLIST_CLAIMS_PERMISSION_MIGRATED = "wishlistClaimsPermissionMigrated"
 
 # v121+: a second, NARROWER opt-out living UNDER Family Hub membership above,
 # for a household that wants someone (most often a shared kiosk/wall-tablet
@@ -1038,6 +1480,30 @@ PERMISSION_STAR_OVERRIDE = "can_star_override"
 # block. Standalone, not split out of anything - the menu has never had
 # ANY permission gating before this.
 PERMISSION_EDIT_MENU = "can_edit_menu"
+# v1.132.5+: household ask, verbatim (after a kiosk-specific "hide until
+# login" toggle in v1.132.4 already closed most of the gap): "it should be
+# a user setting under permissions instead." Whether someone can see who's
+# claimed what on a wish list that isn't their own (family-hub-todo-
+# card.js's _wishlistItemHtml/_toggleWishlistClaim) - the list's own OWNER
+# already has claim status hidden from them unconditionally (see
+# _isWishlistOwner, unrelated to this permission and never overridden by
+# it); this permission only ever governs whether a NON-owner sees it.
+#
+# UNLIKE every permission above, this one's correct default is the
+# opposite of "nobody has it until granted" - before this permission
+# existed, every signed-in household member could already see claim status
+# with zero restriction at all, so defaulting it to False the ordinary way
+# would silently take that away from everyone's own phone/tablet, not just
+# close the shared-kiosk gap it exists for. __init__.py's
+# _maybe_migrate_wishlist_claims_permission_default runs once and
+# explicitly grants this to every household member who already existed at
+# upgrade time; after that one-time backfill, it behaves exactly like
+# every other permission here (defaults to False, an admin grants/revokes
+# it per person from Users -> a person's own profile -> Permissions) - so
+# an unidentified shared kiosk login, or anyone added to the household
+# after the migration has already run, correctly starts blind to claim
+# status until an admin explicitly turns it on for them.
+PERMISSION_SEE_WISHLIST_CLAIMS = "can_see_wishlist_claims"
 CHORE_PERMISSIONS = (
     PERMISSION_ASSIGN,
     PERMISSION_VERIFY,
@@ -1048,6 +1514,7 @@ CHORE_PERMISSIONS = (
     PERMISSION_EDIT_CHORE,
     PERMISSION_STAR_OVERRIDE,
     PERMISSION_EDIT_MENU,
+    PERMISSION_SEE_WISHLIST_CLAIMS,
 )
 
 # v128+: a catalog item's redeem_mode - see reward_engine.py's own module
@@ -1102,6 +1569,26 @@ PANTRY_CARD_JS_URL = "/family_hub_pantry_card/family-hub-pantry-card.js"
 # static-path/hash/resource pattern as every other card here, just with no
 # new websocket commands to register alongside it.
 TODO_CARD_JS_URL = "/family_hub_todo_card/family-hub-todo-card.js"
+
+# v1.110.1+ - the Active Timers card (see
+# family-hub-active-timers-card.js's own module docstring): every running
+# timer in the house on one board, colour-coded by whoever it's assigned
+# to, plus the quick-timer modal that starts a standalone one. Reads the
+# same timers store the chore/reward timers already use - no storage of its
+# own - so this is the usual four-step static-path/hash/resource wiring
+# plus the three family_hub/timers/* standalone commands.
+ACTIVE_TIMERS_CARD_JS_URL = "/family_hub_active_timers_card/family-hub-active-timers-card.js"
+
+# v1.110.6+ - the standalone Recipe Box card (see
+# family-hub-recipe-box-card.js's own module docstring for "the menu box"
+# naming decision): the household's Recipe Box ("Loved Dishes") from the
+# weekly calendar card's own modal, as its own dashboard tab. Runs on the
+# exact same shared method objects (window.__familyHubRecipeBoxShared) the
+# modal itself does, so it has no storage of its own beyond the same
+# family_hub/get_recipes|set_recipes and get_suggestions|set_suggestions
+# commands the modal already uses - same four-step static-path/hash/resource
+# wiring as every other card here, no new websocket commands needed.
+RECIPE_BOX_CARD_JS_URL = "/family_hub_recipe_box_card/family-hub-recipe-box-card.js"
 
 # The native todo.family_hub_chores entity (todo.py) - a single shared
 # to-do list mirroring every open/pending chore, so Assist/Alexa/Google and

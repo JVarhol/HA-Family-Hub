@@ -52,15 +52,256 @@ const GOAL_STATUS_APPROVED = "approved";
 // goal_engine.archive_goal's own docstring.
 const GOAL_STATUS_ARCHIVED = "archived";
 
+// Shared, dashboard-wide FAB coordinator - "when a user has more than one
+// card on the same screen, the FAB buttons overlap, what is the solution?
+// Can we detect and combine them? If they have the same tabs can we make
+// them not duplicate?" Every Family Hub card with a floating "+" button
+// (Calendar's Add Event, Chores, Rewards, Goals, To-Do) independently
+// fixed-positions it at the same bottom-right spot, so two or more of
+// these cards on one dashboard view (Chores+Rewards+Goals together is
+// explicitly supported - see goalsShowInChores/goalsShowInRewards) stack
+// their FABs directly on top of each other.
+//
+// Same shared-singleton shape as window.__familyHubScreenSaver just above
+// (copy-pasted identically into every FAB-bearing card file, since these
+// are independently-loaded Lovelace resources rather than ES modules that
+// could import one shared file) - only the FIRST card whose script
+// actually runs this block sets it up; every other card's identical copy
+// just sees the flag already set and no-ops. Cards register on connect
+// and unregister on disconnect, exactly mirroring registerClient/
+// unregisterClient/_registerScreenSaver below, so a dashboard-edit that
+// adds/removes a card (or switching HA tabs, which disconnects/reconnects
+// every card on the old one) never leaves a stale slot reserved for a
+// card that's gone, or fails to reserve one for a card that's arrived.
+//
+// DESIGN CHOICE - stack, don't merge. A single mega-FAB trying to stand in
+// for "add a chore OR an event OR a reward" would hide which action does
+// what behind an extra tap, for buttons that already open very different
+// modals. Instead, each FAB stays itself but the coordinator assigns it a
+// distinct vertical slot (via a --fh-fab-offset CSS custom property set on
+// the card's own HOST element, which cascades into its shadow DOM the same
+// way any inherited custom property does - no direct DOM/element handle
+// needed, so this survives the card's own _render() rebuilding its shadow
+// DOM on every data refresh without having to be re-applied each time),
+// stacked in a fixed, deterministic order (FAB_KIND_ORDER below) so the
+// same household always sees Calendar/Chores/Rewards/Goals/To-Do FABs in
+// the same relative stack position regardless of which card's script
+// happened to load or register first.
+//
+// DESIGN CHOICE - Goals tab de-duplication. Goals can appear on-screen
+// from up to three sources at once: the standalone Goals card's own "+"
+// FAB, AND a "Goal" tab on the Chores FAB (when goalsShowInChores is on),
+// AND a "Goal" tab on the Rewards FAB (when goalsShowInRewards is on) -
+// the same underlying add-a-goal action reachable three different ways.
+// Rather than teaching the Chores/Rewards creation modals to strip their
+// own Goal tab (which would mean each of those two files reaching across
+// to know about the OTHER two, and about the standalone Goals card too -
+// a combinatorial mess for marginal benefit, since a Goal tab embedded in
+// a board the household is already looking at is not really "duplicate
+// UI" so much as "the same action, conveniently placed"), only the
+// LOWEST-RISK, clearest case is handled: when the coordinator sees ANY
+// other registered card is already offering a Goal tab, the standalone
+// Goals card suppresses its own add-goal-fab entirely (nothing left to
+// add there that isn't one tap away already) - see registerClient's
+// `meta.providesGoalTab` and the onLayout callback's `otherProvidesGoalTab`
+// below, and family-hub-goals-card.js's own _applyFabCoordinatorState.
+// Chores' and Rewards' own Goal tabs are left alone in both directions -
+// a household running Chores+Rewards with both goals toggles on still
+// sees a Goal tab on each, which is judged acceptable (accomplishing the
+// same underlying thing twice from two boards you're already looking at
+// is harmless, unlike a whole redundant floating button).
+if (!window.__familyHubFabCoordinator) {
+  window.__familyHubFabCoordinator = (function () {
+    // Deterministic stacking order - unrecognized/future kinds sort last,
+    // after everything named here, rather than crashing or colliding.
+    const FAB_KIND_ORDER = ["calendar", "chores", "rewards", "goals", "todo"];
+    // 56px button + 10px breathing room between stacked FABs.
+    const SLOT_HEIGHT_PX = 66;
+    const entries = new Map(); // client -> { kind, seq, meta, onUpdate }
+    let seq = 0;
+
+    function orderIndex(kind) {
+      const i = FAB_KIND_ORDER.indexOf(kind);
+      return i === -1 ? FAB_KIND_ORDER.length : i;
+    }
+    function recompute() {
+      const list = Array.from(entries.entries()).sort((a, b) => {
+        const oa = orderIndex(a[1].kind);
+        const ob = orderIndex(b[1].kind);
+        if (oa !== ob) return oa - ob;
+        return a[1].seq - b[1].seq;
+      });
+      // v1.110.7+: entries with takesSlot:false (a fab_position: "card"
+      // client - see registerClient's own doc below) are skipped when
+      // handing out stacking slots/offsets, but still walked here so they
+      // still see otherProvidesGoalTab and still get an onUpdate call.
+      const slotCount = list.filter(([, entry]) => entry.takesSlot).length;
+      let slotIndex = 0;
+      list.forEach(([client, entry]) => {
+        const otherProvidesGoalTab = list.some(
+          ([otherClient, otherEntry]) => otherClient !== client && otherEntry.meta && otherEntry.meta.providesGoalTab
+        );
+        const index = entry.takesSlot ? slotIndex++ : null;
+        if (typeof entry.onUpdate === "function") {
+          entry.onUpdate({ offsetPx: (index || 0) * SLOT_HEIGHT_PX, slotIndex: index, count: slotCount, otherProvidesGoalTab });
+        }
+      });
+    }
+    return {
+      // `kind` is one of FAB_KIND_ORDER's entries (or anything else, which
+      // just sorts last). `meta` is a plain object of extra facts other
+      // cards' layout decisions might care about - today only
+      // `providesGoalTab` (see this block's own docstring above). `onUpdate`
+      // is called once immediately (so a lone card on an otherwise-empty
+      // dashboard still gets offsetPx: 0) and again on every subsequent
+      // register/unregister/updateClientMeta from ANY card, since adding a
+      // second FAB changes where the first one's slot is too.
+      //
+      // v1.110.7+: `opts.takesSlot` (default true) - pass `{ takesSlot:
+      // false }` for a card whose FAB has opted out of the shared
+      // viewport-corner stack (fab_position: "card" - anchored to its own
+      // card's box instead, see each card's own _registerFabCoordinator).
+      // It's still a full member of the coordinator (still contributes/
+      // reads `meta.providesGoalTab`, so goal-tab de-duplication keeps
+      // working across a mixed dashboard/card-positioned set of FABs), it
+      // just never occupies - or shifts - a stacking slot, since a
+      // shared viewport-corner offset is meaningless once a FAB is
+      // positioned relative to its own card instead.
+      registerClient(client, kind, meta, onUpdate, opts) {
+        const takesSlot = !(opts && opts.takesSlot === false);
+        entries.set(client, { kind, seq: seq++, meta: meta || {}, onUpdate, takesSlot });
+        recompute();
+      },
+      // Call whenever a fact in `meta` changes at runtime (e.g. the
+      // household flips goalsShowInChores in Settings without reloading
+      // the dashboard) - see chores/rewards cards' _fetchSettings.
+      updateClientMeta(client, meta) {
+        const entry = entries.get(client);
+        if (!entry) return;
+        entry.meta = Object.assign({}, entry.meta, meta || {});
+        recompute();
+      },
+      // Call from disconnectedCallback. Frees this card's slot so every
+      // remaining card's FAB shifts back down to close the gap, and (for
+      // Goals) re-checks whether it's still safe to suppress its own FAB.
+      unregisterClient(client) {
+        if (entries.delete(client)) recompute();
+      },
+    };
+  })();
+}
+
+// Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
+// "When you load a card it tends to load the default theme first then it
+// switches over to the theme you set how can we always make it load the
+// set theme first." Root cause: EVERY themed card's first paint happens
+// with no theme CSS vars set at all (falls back to _defaultTheme()'s own
+// hardcoded palette), because resolving the household's actual theme
+// takes two sequential, awaited websocket round trips after `hass` is
+// first set - family_hub/get_settings (_fetchSettings), THEN
+// theme_builder/list (_fetchGlobalThemes, which is what a Global Theme
+// selection actually needs to resolve into real colors) - both happening
+// well after `_build()` has already rendered the card once. There was no
+// way to know the real colors before those round trips finished.
+//
+// Fix: cache the last set of CSS var values this device actually applied
+// (in memory for the rest of this page load, in localStorage across
+// reloads), and apply that cache SYNCHRONOUSLY in `_build()` - before the
+// very first paint, before any fetch has even started - so a reload shows
+// last-known-good colors immediately instead of _defaultTheme()'s
+// hardcoded ones. Once the real fetches resolve, `_applyThemeVars()` runs
+// as it always has and reconciles - a no-op re-application (no visible
+// change) if nothing changed since last time, which is the overwhelmingly
+// common case on an ordinary refresh; a visible switch only when the
+// household's theme has genuinely changed since this device last saw it,
+// which is unavoidable (nothing can know about a change before asking).
+//
+// Same shared-singleton, "only the first card whose script actually runs
+// this block sets it up" pattern as window.__familyHubFabCoordinator/
+// __familyHubKioskSession/__familyHubScreenSaver/__familyHubTimerAlarm
+// above - copy-pasted byte-identically into every themed card file, since
+// these are independently-loaded Lovelace resources rather than ES
+// modules that could import one shared file (same reasoning as those).
+//
+// Cached under a KEY, not one single blob, because different cards (or
+// even the SAME card on a different dashboard placement) can legitimately
+// resolve to different colors at once - a per-card-placement Theme
+// override (`_config.theme_override`) or a per-device override
+// (`_getDeviceThemeOverride()`) both exist specifically so one card can
+// look different from the household's shared theme. Caching under one
+// shared key would "fix" the flash for the common case but introduce a
+// WRONG flash for an overridden card (briefly showing the household's
+// theme before its own override kicks in) - a strictly worse bug than
+// the one being fixed. The key is derived the same way every time
+// (`_familyHubThemeCacheKey`, called identically from `_build()` before
+// first paint and from `_applyThemeVars()` after resolving for real), so
+// a card with no override at all shares one cache entry with every other
+// un-overridden card/placement (the common case this exists for), while
+// an overridden card/placement gets its own.
+if (!window.__familyHubThemeCache) {
+  window.__familyHubThemeCache = (function () {
+    const STORAGE_PREFIX = "familyHubThemeVarsCache::";
+    const memory = new Map(); // key -> {varName: value}
+
+    function get(key) {
+      if (memory.has(key)) return memory.get(key);
+      try {
+        const raw = localStorage.getItem(STORAGE_PREFIX + key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object") {
+            memory.set(key, parsed);
+            return parsed;
+          }
+        }
+      } catch (e) {
+        // Corrupt/blocked localStorage (private browsing, etc.) - just
+        // means no cache to apply this time, same as a first-ever load.
+      }
+      return null;
+    }
+    function set(key, vars) {
+      memory.set(key, vars);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(vars));
+      } catch (e) {
+        // Best-effort only - the in-memory copy above still helps every
+        // OTHER card mounted later in this same page load even if
+        // localStorage itself is unavailable.
+      }
+    }
+    return { get, set };
+  })();
+}
+
 class FamilyHubGoalsCard extends HTMLElement {
   static getStubConfig() {
     return { title: "My Goals" };
   }
-  static getConfigForm() {
-    return { schema: [{ name: "title", selector: { text: {} } }], computeLabel: (s) => (s.name === "title" ? "Title" : undefined) };
+  // v1.111.0+: switched from getConfigForm (a static schema) to
+  // getConfigElement (a real custom element with its own hass/config
+  // lifecycle) solely so the new theme_override field below can offer a
+  // live-fetched list of themes - see FamilyHubGoalsCardEditor at the
+  // bottom of this file for the full reasoning and the rest of the form.
+  static getConfigElement() {
+    return document.createElement("family-hub-goals-card-editor");
   }
+  // v1.110.7+: see family-hub-chores-card.js's identical setConfig/
+  // _registerFabCoordinator comment for the full "dashboard" vs "card"
+  // design note - same option, same mechanism, on every FAB-bearing card.
   setConfig(config) {
-    this._config = { title: (config && config.title) || "My Goals" };
+    this._config = {
+      title: (config && config.title) || "My Goals",
+      fab_position: config && config.fab_position === "card" ? "card" : "dashboard",
+      // v1.111.0+: per-card-placement Theme override, set from this card's
+      // own "Edit Card" dialog - "" (the default, untouched by every
+      // existing dashboard) means "Use device settings," i.e. exactly the
+      // pre-1.111.0 behavior (device override, else household Global
+      // Theme, else this card's own local theme). See _resolveTheme below
+      // for where this actually takes priority.
+      theme_override: (config && typeof config.theme_override === "string") ? config.theme_override : "",
+    };
+    this._registerFabCoordinator();
     if (this._settingsCache === undefined) this._settingsCache = null;
     if (this._globalThemes === undefined) this._globalThemes = [];
     if (this._users === undefined) this._users = [];
@@ -79,9 +320,43 @@ class FamilyHubGoalsCard extends HTMLElement {
   }
   async _initFirstLoad() {
     await Promise.all([this._fetchSettings(), this._fetchUsers(), this._fetchGoals(), this._fetchCatalog(), this._fetchMyPermissions()]);
-    if (this._getSettings().useGlobalTheme) await this._fetchGlobalThemes();
+    // v1.111.0+: always fetched now, not just when the household has
+    // useGlobalTheme on - a per-card theme_override needs this list
+    // regardless of the household's own Global Theme setting.
+    await this._fetchGlobalThemes();
     this._startPolling();
+    this._registerFabCoordinator();
     this._render();
+  }
+  // v1.110.4+: joins the shared FAB-stacking coordinator (see the
+  // singleton block above this class) - unlike Chores/Rewards this card
+  // never SETS `providesGoalTab` (it has no tab, just its own single FAB),
+  // but it READS `otherProvidesGoalTab` off every layout update to decide
+  // whether to suppress its own add-goal-fab - see the coordinator block's
+  // own docstring for the full reasoning on why only this direction is
+  // handled.
+  //
+  // v1.110.7+: fab_position "card" toggles the [fab-position="card"] host
+  // attribute (position:fixed -> :host-relative position:absolute) and
+  // registers with takesSlot:false - it stays a full coordinator member
+  // (so it still reads otherProvidesGoalTab and still suppresses itself
+  // correctly even while card-relative), it just never occupies a shared
+  // viewport-corner stacking slot. See family-hub-chores-card.js's
+  // identical comment for the fuller reasoning.
+  _registerFabCoordinator() {
+    if (!window.__familyHubFabCoordinator) return;
+    const cardRelative = this._config && this._config.fab_position === "card";
+    if (cardRelative) this.setAttribute("fab-position", "card");
+    else this.removeAttribute("fab-position");
+    window.__familyHubFabCoordinator.registerClient(this, "goals", {}, (state) => {
+      this.style.setProperty("--fh-fab-offset", `${state.offsetPx}px`);
+      this._fabSuppressedByOther = state.otherProvidesGoalTab;
+      this._applyFabVisibility();
+    }, { takesSlot: !cardRelative });
+  }
+  _applyFabVisibility() {
+    const fab = this._root && this._root.querySelector(".add-goal-fab");
+    if (fab) fab.hidden = !this._canManageGoals() || !!this._fabSuppressedByOther;
   }
   _startPolling() {
     if (this._interval) return;
@@ -92,10 +367,12 @@ class FamilyHubGoalsCard extends HTMLElement {
       if (this._firstLoadPromise) this._firstLoadPromise.then(() => this.isConnected && this._startPolling());
       else this._startPolling();
     }
+    this._registerFabCoordinator();
   }
   disconnectedCallback() {
     if (this._interval) clearInterval(this._interval);
     this._interval = null;
+    if (window.__familyHubFabCoordinator) window.__familyHubFabCoordinator.unregisterClient(this);
   }
   getCardSize() {
     return 6;
@@ -178,30 +455,46 @@ class FamilyHubGoalsCard extends HTMLElement {
     }
     return raw;
   }
-  _resolveTheme(settings) {
-    const override = this._getDeviceThemeOverride();
-    const useGlobalTheme = override ? override !== "__default__" : settings.useGlobalTheme;
-    const globalThemeId = override ? (override === "__default__" ? "" : override) : settings.globalThemeId;
-    const local = settings.theme || this._defaultTheme();
-    if (!useGlobalTheme || !globalThemeId) return local;
-    const g = (this._globalThemes || []).find((t) => t && t.id === globalThemeId);
-    if (!g) return local;
+  // Shared by both the new per-card override branch and the existing
+  // household-global branch below - factored out so the color-validation/
+  // liquid-glass-fallback logic (see the v144.5+ comment this used to live
+  // under) only needs to exist once in this file.
+  _themeFromGlobalEntry(g) {
     const defaultTheme = this._defaultTheme();
     const colors = {};
     Object.keys(defaultTheme.colors).forEach((k) => {
       const v = g.colors && g.colors[k];
       colors[k] = typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v) ? v : defaultTheme.colors[k];
     });
-    // v144.5+: cardOpacity/glassBlur (the "liquid glass" look - see the
-    // Liquid Glass/Liquid Glass Dark built-in presets) aren't part of
-    // defaultTheme (a local/custom theme with neither set just means
-    // "fully opaque, no blur"), so they're read straight off the global
-    // theme rather than validated against a default-theme shape like
-    // colors above - same fix family-week-calendar-card.js's own
-    // _resolveTheme already applies for its own global-theme branch.
     const cardOpacity = typeof g.cardOpacity === "number" ? g.cardOpacity : 100;
     const glassBlur = typeof g.glassBlur === "number" ? g.glassBlur : 0;
     return { colors, cardOpacity, glassBlur };
+  }
+  _resolveTheme(settings) {
+    const local = settings.theme || this._defaultTheme();
+    // v1.111.0+: a per-card-placement Theme override (set from this card's
+    // own native "Edit Card" dialog) wins over everything else, including
+    // this device's own override and the household's Global Theme - it's
+    // the most specific choice available, same "more specific wins"
+    // precedent the device override below already established over the
+    // household setting. "" (untouched/default) falls straight through to
+    // the exact pre-1.111.0 behavior.
+    const cardOverride = this._config && this._config.theme_override;
+    if (cardOverride) {
+      const g = (this._globalThemes || []).find((t) => t && t.id === cardOverride);
+      if (g) return this._themeFromGlobalEntry(g);
+      // An override pointing at a theme that's since been deleted/renamed
+      // falls back to the normal device/household resolution below rather
+      // than silently going blank - same "never leave a stale reference
+      // broken, just fall through" convention as a stale primaryCalendar.
+    }
+    const override = this._getDeviceThemeOverride();
+    const useGlobalTheme = override ? override !== "__default__" : settings.useGlobalTheme;
+    const globalThemeId = override ? (override === "__default__" ? "" : override) : settings.globalThemeId;
+    if (!useGlobalTheme || !globalThemeId) return local;
+    const g = (this._globalThemes || []).find((t) => t && t.id === globalThemeId);
+    if (!g) return local;
+    return this._themeFromGlobalEntry(g);
   }
   _hexToRgba(hex, alpha) {
     const h = (hex || "#000000").replace("#", "");
@@ -212,6 +505,20 @@ class FamilyHubGoalsCard extends HTMLElement {
     const a = Math.max(0, Math.min(1, typeof alpha === "number" ? alpha : 1));
     return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
+  // v1.126.0+ - see window.__familyHubThemeCache's own comment above the
+  // class for the full "why a key, not one shared blob" reasoning. Called
+  // identically from here (after resolving the REAL theme) and from
+  // `_build()` (before the real theme is known yet, to look up whatever
+  // was cached last time) - both call sites MUST derive the same key for
+  // a given card/placement, or the cache lookup in `_build()` would never
+  // find what `_applyThemeVars()` just wrote for it.
+  _familyHubThemeCacheKey() {
+    const cardOverride = this._config && this._config.theme_override;
+    if (cardOverride) return `card:${cardOverride}`;
+    const deviceOverride = this._getDeviceThemeOverride();
+    if (deviceOverride) return `device:${deviceOverride}`;
+    return "household";
+  }
   _applyThemeVars() {
     const theme = this._resolveTheme(this._getSettings());
     // v144.5+: same "liquid glass" support family-week-calendar-card.js has
@@ -221,18 +528,43 @@ class FamilyHubGoalsCard extends HTMLElement {
     // on this card too, not just the calendar.
     const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
     const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
-    this.style.setProperty("--fc-bg", theme.colors.bg);
-    this.style.setProperty("--fc-card", this._hexToRgba(theme.colors.card, cardOpacity / 100));
-    this.style.setProperty("--fc-border", theme.colors.border);
-    this.style.setProperty("--fc-text", theme.colors.text);
-    this.style.setProperty("--fc-text-secondary", theme.colors.textSecondary);
-    this.style.setProperty("--fc-accent", theme.colors.accent);
-    this.style.setProperty("--fc-accent-text", theme.colors.accentText);
-    this.style.setProperty("--fc-accent2", theme.colors.accent2);
-    this.style.setProperty("--fc-accent3", theme.colors.accent3);
-    this.style.setProperty("--fc-surface-alt", this._hexToRgba(theme.colors.surfaceAlt, cardOpacity / 100));
-    this.style.setProperty("--fc-surface2", this._hexToRgba(theme.colors.surface2, cardOpacity / 100));
-    this.style.setProperty("--fc-glass-blur", `${glassBlur}px`);
+    // v1.126.0+: built as a plain object first (rather than each var going
+    // straight into its own setProperty call, as before) purely so the
+    // exact same values that get applied here also get cached - see
+    // window.__familyHubThemeCache's own comment for why this fixes the
+    // household's reported "loads the default theme first" flash.
+    const vars = {
+      "--fc-bg": theme.colors.bg,
+      "--fc-card": this._hexToRgba(theme.colors.card, cardOpacity / 100),
+      "--fc-border": theme.colors.border,
+      "--fc-text": theme.colors.text,
+      "--fc-text-secondary": theme.colors.textSecondary,
+      "--fc-accent": theme.colors.accent,
+      "--fc-accent-text": theme.colors.accentText,
+      "--fc-accent2": theme.colors.accent2,
+      "--fc-accent3": theme.colors.accent3,
+      "--fc-surface-alt": this._hexToRgba(theme.colors.surfaceAlt, cardOpacity / 100),
+      "--fc-surface2": this._hexToRgba(theme.colors.surface2, cardOpacity / 100),
+      "--fc-glass-blur": `${glassBlur}px`,
+    };
+    Object.keys(vars).forEach((name) => this.style.setProperty(name, vars[name]));
+    if (window.__familyHubThemeCache) window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
+  }
+  // v1.126.0+: applies whatever theme this device/placement last actually
+  // resolved to, SYNCHRONOUSLY, before the real fetches that would
+  // otherwise be the only way to know it - see window.__familyHubTheme
+  // Cache's own comment above the class. Called once from `_build()`,
+  // before the very first `_render()`/paint. A no-op (does nothing,
+  // leaves `_defaultTheme()`'s plain colors as the first paint exactly
+  // like before this fix) on the very first time ANY card resolves this
+  // particular key - there's nothing to have cached yet.
+  _applyCachedThemeVarsIfAny() {
+    if (!window.__familyHubThemeCache) return;
+    const cached = window.__familyHubThemeCache.get(this._familyHubThemeCacheKey());
+    if (!cached) return;
+    Object.keys(cached).forEach((name) => {
+      if (typeof cached[name] === "string") this.style.setProperty(name, cached[name]);
+    });
   }
   async _fetchSettings() {
     if (!this._hass) return;
@@ -246,13 +578,104 @@ class FamilyHubGoalsCard extends HTMLElement {
     this._applyThemeVars();
   }
   async _fetchGlobalThemes() {
+    let custom = [];
     try {
       const result = await this._hass.connection.sendMessagePromise({ type: "theme_builder/list" });
-      this._globalThemes = (result && Array.isArray(result.themes)) ? result.themes : [];
+      custom = (result && Array.isArray(result.themes)) ? result.themes : [];
     } catch (e) {
-      this._globalThemes = [];
+      custom = [];
     }
+    // v1.111.0+: also merge in every installed native Home Assistant theme
+    // - duplicated (not shared/imported) from family-week-calendar-card.js's
+    // own _fetchGlobalThemes/_nativeHaThemeEntries, same "independently
+    // loaded Lovelace resources duplicate small helpers" convention as
+    // every native/websocket pair elsewhere in this project. Needed so a
+    // per-card theme_override can point at a native theme too, matching
+    // exactly what the household's own Global Theme picker already offers.
+    this._globalThemes = custom.concat(this._nativeHaThemeEntries());
     this._applyThemeVars();
+  }
+  // --- Native HA theme support (duplicated from family-week-calendar-
+  // card.js's identical methods - see that file's own comments for the
+  // full reasoning on each) ---
+  _haVarsToBuilderColors(vars) {
+    const v = vars || {};
+    const accent = v["primary-color"];
+    return {
+      bg: v["primary-background-color"],
+      card: v["card-background-color"] || v["ha-card-background"],
+      border: v["divider-color"],
+      text: v["primary-text-color"],
+      textSecondary: v["secondary-text-color"],
+      accent: accent,
+      accentText: v["text-primary-color"],
+      accent2: v["accent-color"] || accent,
+      accent3: v["warning-color"],
+      surfaceAlt: v["secondary-background-color"],
+      surface2: v["secondary-background-color"],
+    };
+  }
+  _haThemeCssVars(name) {
+    const themes = (this._hass && this._hass.themes && this._hass.themes.themes) || {};
+    const theme = themes[name];
+    if (!theme) return {};
+    const vars = {};
+    for (const key of Object.keys(theme)) {
+      if (key === "modes") continue;
+      vars[key] = theme[key];
+    }
+    if (theme.modes) {
+      const dark = !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
+      const modeVars = theme.modes[dark ? "dark" : "light"] || {};
+      for (const key of Object.keys(modeVars)) vars[key] = modeVars[key];
+    }
+    return vars;
+  }
+  _haDefaultCssVars() {
+    try {
+      if (typeof getComputedStyle !== "function" || !document || !document.documentElement) return {};
+      const style = getComputedStyle(document.documentElement);
+      const keys = [
+        "primary-color", "text-primary-color", "primary-background-color", "secondary-background-color",
+        "card-background-color", "primary-text-color", "secondary-text-color", "divider-color",
+        "accent-color", "warning-color", "ha-card-background",
+      ];
+      const vars = {};
+      keys.forEach((k) => {
+        const val = style.getPropertyValue(`--${k}`);
+        if (val && val.trim()) vars[k] = val.trim();
+      });
+      return vars;
+    } catch (e) {
+      return {};
+    }
+  }
+  // Note: this card's own theme shape has no `fonts` concept (unlike
+  // family-week-calendar-card.js's version of this same method) - only
+  // `colors`/`cardOpacity`/`glassBlur` are ever read via
+  // _themeFromGlobalEntry, so these entries carry colors only.
+  _nativeHaThemeEntries() {
+    const entries = [
+      {
+        id: "ha:__default__",
+        name: "Default (Home Assistant)",
+        colors: this._haVarsToBuilderColors(this._haDefaultCssVars()),
+        native: true,
+      },
+    ];
+    const themes = (this._hass && this._hass.themes && this._hass.themes.themes) || {};
+    Object.keys(themes)
+      .filter((name) => name.indexOf("Theme Builder - ") !== 0)
+      .sort((a, b) => a.localeCompare(b))
+      .forEach((name) => {
+        entries.push({
+          id: "ha:" + name,
+          name: name,
+          colors: this._haVarsToBuilderColors(this._haThemeCssVars(name)),
+          native: true,
+        });
+      });
+    return entries;
   }
   async _fetchUsers() {
     try {
@@ -332,6 +755,11 @@ class FamilyHubGoalsCard extends HTMLElement {
 
   _build() {
     this._built = true;
+    // v1.126.0+: applied BEFORE attachShadow/the first innerHTML paint -
+    // see _applyCachedThemeVarsIfAny's own comment and window.__familyHub
+    // ThemeCache's above the class for why this is what actually fixes
+    // the household's reported "loads the default theme first" flash.
+    this._applyCachedThemeVarsIfAny();
     this.attachShadow({ mode: "open" });
     const root = this.shadowRoot;
     root.innerHTML = `
@@ -740,13 +1168,15 @@ class FamilyHubGoalsCard extends HTMLElement {
 
   _render() {
     if (!this._root) return;
-    this._root.querySelector(".add-goal-fab").hidden = !this._canManageGoals();
+    this._applyFabVisibility();
     this._root.querySelector(".board").innerHTML = this._boardHtml();
   }
 
   _css() {
     return `
-      :host { display: block; font-family: 'Varela Round', sans-serif; }
+      /* v1.110.7+: position:relative is the containing block .add-goal-fab
+         needs when [fab-position="card"] switches it to position:absolute. */
+      :host { display: block; position: relative; font-family: 'Varela Round', sans-serif; }
       ha-card { background: var(--fc-bg); color: var(--fc-text); padding: 14px; }
       .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
       .title { font-size: 18px; font-weight: 800; }
@@ -787,8 +1217,12 @@ class FamilyHubGoalsCard extends HTMLElement {
       .completed-goals-title { flex: 1; }
       .completed-goals-badge { background: var(--fc-surface2); color: var(--fc-accent2); border-radius: 8px; padding: 1px 7px; font-size: 11px; }
       .completed-goals-body { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
-      .add-goal-fab { position: fixed; right: 18px; bottom: 18px; z-index: 900; width: 56px; height: 56px; border-radius: 50%; border: none; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 28px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(58,53,44,0.35); }
+      /* v1.110.4+: bottom offset by --fh-fab-offset - see family-hub-chores-card.js's identical comment. */
+      .add-goal-fab { position: fixed; right: 18px; bottom: calc(18px + var(--fh-fab-offset, 0px)); z-index: 900; width: 56px; height: 56px; border-radius: 50%; border: none; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 28px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(58,53,44,0.35); transition: bottom 0.15s ease; }
       .add-goal-fab[hidden] { display: none; }
+      /* v1.110.7+: fab_position: "card" - see family-hub-chores-card.js's
+         identical .add-chore-fab rule for the same mechanism. */
+      :host([fab-position="card"]) .add-goal-fab { position: absolute; bottom: 18px; }
       .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 1000; align-items: center; justify-content: center; }
       .modal-overlay.open { display: flex; }
       .modal-box { background: var(--fc-bg); color: var(--fc-text); border-radius: 14px; padding: 18px; width: min(90vw, 420px); max-height: 85vh; overflow-y: auto; }
@@ -805,6 +1239,98 @@ class FamilyHubGoalsCard extends HTMLElement {
 }
 
 customElements.define("family-hub-goals-card", FamilyHubGoalsCard);
+
+// v1.111.0+: the card's native "Edit Card" config editor - a thin wrapper
+// around Home Assistant's own <ha-form> (every field here is a plain text/
+// select the generic form already renders fine) rather than a hand-built
+// form, needed ONLY because the new theme_override field's option list has
+// to be fetched live (theme_builder/list + hass.themes.themes) - something
+// getConfigForm's static schema object can't do since it's called with no
+// hass in scope. See FamilyHubGoalsCard.getConfigElement above.
+class FamilyHubGoalsCardEditor extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._render();
+  }
+  set hass(hass) {
+    this._hass = hass;
+    if (!this._themeOptions) this._fetchThemeOptions();
+    else this._render();
+  }
+  // Duplicated (not shared/imported) from the card class's own
+  // _fetchGlobalThemes/_nativeHaThemeEntries just above - this editor is a
+  // separate custom element instance with its own independent hass/
+  // lifecycle, same "independently loaded resources duplicate small
+  // helpers" convention as everything else in this project. Only builds
+  // {value, label} pairs for the dropdown; the actual color/effects
+  // resolution for whichever id gets picked still happens in the card's
+  // own _resolveTheme once it's saved into config.
+  async _fetchThemeOptions() {
+    this._themeOptions = [{ value: "", label: "Use device settings (default)" }];
+    if (!this._hass) {
+      this._render();
+      return;
+    }
+    try {
+      const result = await this._hass.connection.sendMessagePromise({ type: "theme_builder/list" });
+      const custom = (result && Array.isArray(result.themes)) ? result.themes : [];
+      custom.forEach((t) => {
+        if (t && t.id) this._themeOptions.push({ value: t.id, label: "Theme Builder: " + (t.name || t.id) });
+      });
+    } catch (e) {
+    }
+    this._themeOptions.push({ value: "ha:__default__", label: "Home Assistant: Default" });
+    const themes = (this._hass && this._hass.themes && this._hass.themes.themes) || {};
+    Object.keys(themes)
+      .filter((name) => name.indexOf("Theme Builder - ") !== 0)
+      .sort((a, b) => a.localeCompare(b))
+      .forEach((name) => this._themeOptions.push({ value: "ha:" + name, label: "Home Assistant: " + name }));
+    this._render();
+  }
+  _schema() {
+    return [
+      { name: "title", selector: { text: {} } },
+      {
+        name: "fab_position",
+        selector: { select: { mode: "dropdown", options: [
+          { value: "dashboard", label: "Dashboard corner (default)" },
+          { value: "card", label: "This card's own corner" },
+        ] } },
+      },
+      {
+        name: "theme_override",
+        selector: { select: { mode: "dropdown", options: this._themeOptions || [{ value: "", label: "Use device settings (default)" }] } },
+      },
+    ];
+  }
+  _render() {
+    if (!this._form) {
+      this._form = document.createElement("ha-form");
+      this._form.addEventListener("value-changed", (e) => {
+        e.stopPropagation();
+        this._config = e.detail.value;
+        this.dispatchEvent(new CustomEvent("config-changed", { detail: { config: this._config }, bubbles: true, composed: true }));
+      });
+      this.appendChild(this._form);
+    }
+    this._form.hass = this._hass;
+    this._form.data = this._config || {};
+    this._form.schema = this._schema();
+    this._form.computeLabel = (s) => (
+      s.name === "title" ? "Title" :
+      s.name === "fab_position" ? "+ button position" :
+      s.name === "theme_override" ? "Theme" : undefined
+    );
+    this._form.computeHelper = (s) => (
+      s.name === "theme_override"
+        ? "Pin this one card to a specific theme, or leave on \"Use device settings\" to follow whatever this device/household normally shows."
+        : undefined
+    );
+  }
+}
+if (!customElements.get("family-hub-goals-card-editor")) {
+  customElements.define("family-hub-goals-card-editor", FamilyHubGoalsCardEditor);
+}
 
 window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === "family-hub-goals-card")) {

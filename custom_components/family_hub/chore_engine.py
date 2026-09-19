@@ -39,6 +39,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.util import dt as dt_util
 
+from . import timer_engine
+
 from .const import (
     CHORE_ASSIGNMENT_MODE_AUTO_ROTATION,
     CHORE_ASSIGNMENT_MODE_CHORE_BIN,
@@ -55,6 +57,7 @@ from .const import (
     CHORE_KEY_OVERDUE_PENALTY_APPLIED,
     CHORE_KEY_QUANTITY_REMAINING,
     CHORE_KEY_QUANTITY_TOTAL,
+    CHORE_KEY_TIMER_MINUTES,
     CHORE_KEY_RECUR_NEXT_DUE,
     CHORE_KEY_REJECT_REASON,
     CHORE_KEY_REJECTED_AT,
@@ -364,6 +367,10 @@ def create_chore(
 
     recur_type = _normalize_recur_type(payload.get("recur_type"))
     quantity_total = _normalize_quantity_total(payload.get(CHORE_KEY_QUANTITY_TOTAL))
+    # v1.110.0+: optional countdown length. None (the default, and every
+    # pre-v1.110.0 chore) means "no timer" and changes nothing - see
+    # timer_engine.normalize_timer_minutes.
+    timer_minutes = timer_engine.normalize_timer_minutes(payload.get(CHORE_KEY_TIMER_MINUTES))
 
     chore = default_chore(
         id=new_chore_id(),
@@ -393,6 +400,7 @@ def create_chore(
             # in complete_chore, which only branches on quantity at all
             # when quantity_total is actually set.
             CHORE_KEY_QUANTITY_REMAINING: quantity_total,
+            CHORE_KEY_TIMER_MINUTES: timer_minutes,
         },
     )
     if mode == CHORE_ASSIGNMENT_MODE_DIRECT and not chore.get("assigned_to"):
@@ -848,6 +856,7 @@ _EDITABLE_FIELDS = (
     "recur_weekdays",
     CHORE_KEY_NO_APPROVAL_REQUIRED,
     CHORE_KEY_QUANTITY_TOTAL,
+    CHORE_KEY_TIMER_MINUTES,
 )
 
 
@@ -872,6 +881,11 @@ def update_chore(
         if not title:
             raise ChoreError("invalid_title", "A chore needs a title.")
         chore["title"] = title
+    if CHORE_KEY_TIMER_MINUTES in fields:
+        # Normalized (and so clearable back to None) exactly like it is on
+        # create - editing a chore's timer to blank must genuinely remove
+        # it, not leave a stale length behind.
+        chore[CHORE_KEY_TIMER_MINUTES] = timer_engine.normalize_timer_minutes(fields[CHORE_KEY_TIMER_MINUTES])
     if "star_value" in fields:
         chore["star_value"] = max(0, int(fields["star_value"] or 0))
     if "overdue_penalty" in fields:

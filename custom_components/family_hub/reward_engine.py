@@ -54,7 +54,9 @@ from typing import Any, Optional
 
 from homeassistant.util import dt as dt_util
 
+from . import timer_engine
 from .const import (
+    REWARD_KEY_TIMER_MINUTES,
     REWARD_REDEEM_MODE_BANKED,
     REWARD_REDEEM_MODE_INSTANT,
     REWARD_REDEEM_MODE_ONE_TIME,
@@ -271,6 +273,7 @@ def add_catalog_item(
     value_note: str = "",
     stack_unit_amount: float = 1,
     stack_unit_label: str = "",
+    timer_minutes: Any = None,
 ) -> dict[str, Any]:
     """v128+ adds four optional fields on top of the original title/cost/
     icon/color - see const.py's REWARD_REDEEM_MODES docstring for the full
@@ -308,6 +311,13 @@ def add_catalog_item(
         "value_note": str(value_note or "").strip(),
         "stack_unit_amount": stack_unit_amount,
         "stack_unit_label": str(stack_unit_label or "").strip(),
+        # v1.110.0+: optional countdown started when this reward is used -
+        # "2 hours of gaming." None (every pre-v1.110.0 reward) means no
+        # timer, and Use behaves exactly as it always has. Deliberately
+        # INDEPENDENT of redeem_mode rather than a fourth mode: the modes
+        # describe how the star cost is consumed, a timer describes what
+        # happens after, and they compose ("1 hour of TV, banked").
+        REWARD_KEY_TIMER_MINUTES: timer_engine.normalize_timer_minutes(timer_minutes),
     }
     rewards.setdefault("catalog", []).append(item)
     return item
@@ -328,6 +338,8 @@ def update_catalog_item(rewards: dict[str, Any], item_id: str, **fields: Any) ->
         if cost_stars < 0:
             raise RewardError("invalid_cost", "Cost can't be negative.")
         item["cost_stars"] = cost_stars
+    if REWARD_KEY_TIMER_MINUTES in fields:
+        item[REWARD_KEY_TIMER_MINUTES] = timer_engine.normalize_timer_minutes(fields[REWARD_KEY_TIMER_MINUTES])
     if "icon" in fields:
         item["icon"] = fields["icon"] or ""
     if "color" in fields:

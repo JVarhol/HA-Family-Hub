@@ -67,7 +67,6 @@ from .const import (
     GOAL_REWARD_TYPE_STARS,
     GOAL_REWARD_TYPES,
     GOAL_STATUS_APPROVED,
-    GOAL_STATUS_ARCHIVED,
     GOAL_STATUS_OPEN,
     GOAL_STATUS_PENDING_VERIFICATION,
 )
@@ -348,36 +347,6 @@ def reject_goal(
     goal["reject_reason"] = reason or None
     goal["updated_at"] = goal["rejected_at"]
     _fire_goal_event(hass, goal, previous_status=previous, actor=rejecter, extra={"event": "rejected", "reason": goal["reject_reason"]})
-    return goal
-
-
-def archive_goal(
-    goals: dict[str, dict[str, Any]],
-    hass: HomeAssistant,
-    goal_id: str,
-    actor: Optional[str],
-) -> dict[str, Any]:
-    """Approved -> Archived - the household report this fixes: an approved
-    goal used to just sit at the bottom of My Goals forever with no way to
-    tidy it away, unlike a one-off chore's own Completed accordion (which at
-    least ages itself out after 7 days). There's no reward side effect
-    here - approve_goal already disbursed the star_value/catalog item the
-    moment the goal was actually approved; archiving is purely "I've seen
-    it, get it out of my active list," the same "done reviewing this" step
-    chores never needed since theirs happens automatically on a timer
-    instead of a deliberate tap. Reversible only by deleting/recreating the
-    goal - there's no un-archive action, mirroring how there's no
-    un-approve either."""
-    goal = _get_goal(goals, goal_id)
-    if goal["status"] != GOAL_STATUS_APPROVED:
-        raise GoalError("not_approved", "Only an achieved goal can be archived.")
-
-    previous = goal["status"]
-    goal["status"] = GOAL_STATUS_ARCHIVED
-    goal["archived_by"] = actor
-    goal["archived_at"] = _now_iso()
-    goal["updated_at"] = goal["archived_at"]
-    _fire_goal_event(hass, goal, previous_status=previous, actor=actor, extra={"event": "archived"})
     return goal
 
 

@@ -9,9 +9,13 @@
     "frontend",
     "http",
     "lovelace",
-    "file_upload"
+    "file_upload",
+    "image_upload"
+  ],
+  "after_dependencies": [
+    "timer"
   ],
   "documentation": "https://github.com/JVarhol/HA-Family-Hub",
   "iot_class": "local_polling",
-  "version": "1.109.6"
+  "version": "1.132.9"
 }

@@ -50,8 +50,9 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant
 
-from . import chore_engine, goal_engine, reward_engine, routine_engine, store as chores_store
+from . import chore_engine, goal_engine, reward_engine, routine_engine, sensor as timer_sensor, store as chores_store, timer_engine
 from .const import (
+    CHORE_KEY_TIMER_MINUTES,
     CHORE_PERMISSIONS,
     CONF_NOTIFICATION_CLICK_PATH,
     DOMAIN,
@@ -63,7 +64,17 @@ from .const import (
     PERMISSION_AUTO_APPROVE,
     PERMISSION_STAR_OVERRIDE,
     PERMISSION_VERIFY,
+    REWARD_KEY_TIMER_MINUTES,
     ROUTINE_CATEGORIES,
+    EVENT_FAMILY_HUB_TIMER_FINISHED,
+    NATIVE_TIMER_EVENT_CANCELLED,
+    NATIVE_TIMER_EVENT_FINISHED,
+    TIMER_ENTITY_PREFIX,
+    TIMER_FAMILY_ENTITY_PREFIX,
+    TIMER_FAMILY_POOL_SIZE,
+    TIMER_KIND_CHORE,
+    TIMER_KIND_REWARD,
+    TIMER_KIND_STANDALONE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -150,6 +161,73 @@ async def _send_instant_notification(hass: HomeAssistant, notify_targets: list[s
             sent += 1
         except Exception as err:  # noqa: BLE001 - a failed notify must never break the underlying action
             _LOGGER.warning("Family Hub: failed to send instant notification via %s: %s", target, err)
+    return sent
+
+
+async def _send_alarm_notification(hass: HomeAssistant, notify_targets: list[str], title: str, message: str) -> int:
+    """v1.119.0+: same send loop as _send_instant_notification, but with an
+    enriched `data` payload asking the Home Assistant Companion App for
+    alarm-like delivery instead of a normal quiet push - only used for a
+    timer whose own "alarm" field is True (the owner's own notifyTimerAlarm
+    profile flag, snapshotted at start - see timer_engine.py's docstring
+    and _timer_alarm_enabled_for_user above). Household ask: "route this
+    through alarm notifications for the person the timer is for."
+
+    What this data payload actually does, per platform - these are Home
+    Assistant Companion App features, not anything Family Hub invents:
+
+      - Android: `channel: "alarm_stream_max"` is the app's own documented
+        special channel name that routes the notification's sound through
+        the phone's ALARM audio stream at max volume, the same stream a
+        real alarm clock uses - it plays even with the ringer silenced or
+        Do Not Disturb on, unlike a normal notification channel. `sticky`
+        stops it being swiped away, and `tag` means a second alarm firing
+        for the same person updates this one notification in place rather
+        than stacking duplicates.
+      - iOS: `push.sound.critical`/`push["interruption-level"]: "critical"`
+        asks for a Critical Alert - the one iOS notification type allowed
+        to sound even through Silent Mode and Focus. This REQUIRES Apple's
+        Critical Alerts entitlement on the Companion App itself - already
+        granted for Home Assistant Cloud (Nabu Casa) push, not available
+        to a self-hosted install without applying to Apple directly. On a
+        phone without that entitlement, iOS silently falls back to an
+        ordinary (louder-than-default, but not DND-piercing) notification
+        instead - there is nothing Family Hub can do from here to change
+        that; it's an Apple/OS-level restriction on the app, not a
+        household setting.
+
+    There's no "ignore Stop until tapped" push notification type on either
+    platform - the closest either OS offers is exactly this "bypass
+    silent/DND once" alarm-style delivery. The actual "you must tap Stop to
+    silence it" experience is the kiosk-side sound+modal handled entirely
+    client-side by the tab that started the timer (see the card's own
+    window.__familyHubTimerAlarm) - this function is only the phone half.
+    """
+    entry = _get_entry(hass)
+    data = dict(_notification_click_data(entry))
+    data.update({
+        "channel": "alarm_stream_max",
+        "importance": "high",
+        "sticky": "true",
+        "tag": "family_hub_timer_alarm",
+        "push": {
+            "sound": {"name": "default", "critical": 1, "volume": 1.0},
+            "interruption-level": "critical",
+        },
+    })
+    sent = 0
+    for target in notify_targets:
+        split = _split_notify_target(target)
+        if split is None:
+            continue
+        domain, service = split
+        try:
+            await hass.services.async_call(
+                domain, service, {"title": title, "message": message, "data": data}, blocking=True,
+            )
+            sent += 1
+        except Exception as err:  # noqa: BLE001 - a failed notify must never break the underlying action
+            _LOGGER.warning("Family Hub: failed to send alarm notification via %s: %s", target, err)
     return sent
 
 
@@ -415,6 +493,8 @@ async def ws_list_chores(hass: HomeAssistant, connection: websocket_api.ActiveCo
         vol.Optional("recur_weekdays"): [int],
         vol.Optional("no_approval_required"): bool,
         vol.Optional("quantity_total"): vol.Any(int, None),
+        # v1.110.0+: optional countdown length in minutes, None to clear.
+        vol.Optional("timer_minutes"): vol.Any(int, None),
     }
 )
 @websocket_api.async_response
@@ -462,6 +542,8 @@ async def ws_create_chore(hass: HomeAssistant, connection: websocket_api.ActiveC
         vol.Optional("recur_weekdays"): [int],
         vol.Optional("no_approval_required"): bool,
         vol.Optional("quantity_total"): vol.Any(int, None),
+        # v1.110.0+: optional countdown length in minutes, None to clear.
+        vol.Optional("timer_minutes"): vol.Any(int, None),
     }
 )
 @websocket_api.async_response
@@ -522,6 +604,8 @@ async def ws_delete_chore(hass: HomeAssistant, connection: websocket_api.ActiveC
     except chore_engine.ChoreError as err:
         connection.send_error(msg["id"], err.code, str(err))
         return
+    # v1.110.0+: a deleted chore's timer has nothing left to count toward.
+    await _clear_chore_timers(hass, entry_data, msg["chore_id"])
     await _save_chores(hass, entry_data)
     connection.send_result(msg["id"], {"success": True})
 
@@ -570,6 +654,13 @@ async def ws_assign_chore(hass: HomeAssistant, connection: websocket_api.ActiveC
     except chore_engine.ChoreError as err:
         connection.send_error(msg["id"], err.code, str(err))
         return
+    # v1.110.0+: reassigning a chore mid-countdown drops its timer. The
+    # timer belongs to the person it was started for, and silently
+    # transferring "you have 12 minutes left to clean" to somebody who
+    # never agreed to it (or leaving it counting for the old assignee, who
+    # no longer owns the chore) are both worse than making the new
+    # assignee tap Start themselves.
+    await _clear_chore_timers(hass, entry_data, msg["chore_id"])
     await _save_chores(hass, entry_data)
     connection.send_result(msg["id"], {"chore": chore})
 
@@ -635,6 +726,33 @@ async def ws_complete_chore(hass: HomeAssistant, connection: websocket_api.Activ
     except chore_engine.ChoreError as err:
         connection.send_error(msg["id"], err.code, str(err))
         return
+    # v1.110.0+: completing a chore by hand while a timer is counting down
+    # on it just ends the timer - "don't fight the user." They've clearly
+    # finished early (or changed their mind about timing it), and leaving
+    # an orphan timer running against a now-approved chore would fire a
+    # second, meaningless completion later.
+    await _clear_chore_timers(hass, entry_data, msg["chore_id"])
+    await _apply_chore_completion_effects(hass, entry_data, chore)
+    connection.send_result(msg["id"], {"chore": chore})
+
+
+async def _apply_chore_completion_effects(hass: HomeAssistant, entry_data: dict[str, Any], chore: dict[str, Any]) -> None:
+    """Everything that has to happen AFTER chore_engine.complete_chore
+    succeeds, factored out of ws_complete_chore (v1.110.0+) so a chore
+    timer running out can reuse the completion path byte-for-byte instead
+    of forking its own.
+
+    That reuse is the whole design of chore timers, and it is deliberate -
+    the household's own words when asked what a timer ending should do:
+    "the chore already has a does not require approval and the users
+    already have a permission for does not require approval on chores, this
+    should handle it already." So a timer ending is simply an alternate way
+    of pressing Done. Whether the chore lands in Awaiting Approval or
+    auto-approves and pays out is decided exactly where it always was -
+    inside chore_engine.complete_chore, off the chore's own
+    no_approval_required flag and the completer's PERMISSION_AUTO_APPROVE
+    grant. Nothing about that logic is duplicated or re-implemented here.
+    """
     await _save_chores(hass, entry_data)
     if chore.get("status") == chore_engine.CHORE_STATUS_APPROVED:
         # Auto-approved on completion (chore_skips_verification) - same
@@ -643,7 +761,6 @@ async def ws_complete_chore(hass: HomeAssistant, connection: websocket_api.Activ
         # since approve_chore's own code path never ran for this one.
         await _save_rewards(hass, entry_data)
         await _notify_chore_approved(hass, entry_data, chore)
-    connection.send_result(msg["id"], {"chore": chore})
 
 
 @websocket_api.websocket_command(
@@ -824,6 +941,8 @@ async def ws_get_rewards_state(hass: HomeAssistant, connection: websocket_api.Ac
         vol.Optional("value_note"): str,
         vol.Optional("stack_unit_amount"): vol.Any(int, float),
         vol.Optional("stack_unit_label"): str,
+        vol.Optional("timer_minutes"): vol.Any(int, None),
+        vol.Optional("elevation_token"): str,
     }
 )
 @websocket_api.async_response
@@ -835,11 +954,32 @@ async def ws_add_catalog_item(hass: HomeAssistant, connection: websocket_api.Act
     (no price, pending an approve_suggestion) - the card decides which of
     the two commands to call based on what family_hub/permissions/get_mine
     told it, and this handler independently re-checks rather than trusting
-    that client-side choice, same as every other permission gate here."""
+    that client-side choice, same as every other permission gate here.
+
+    v1.132.9+: household report, verbatim: "when logged in as elevated user
+    on todo lists I cant assign a star value to items on the kiosk." Root
+    cause: unlike ws_approve_suggestion/ws_reject_suggestion (which accept
+    an optional elevation_token and resolve the actor via _effective_actor +
+    _can_add_rewards_ctx), this handler only ever checked the raw connection
+    identity (_can_add_rewards(entry_data, connection)) - so on a shared
+    kiosk display, tying a wish-list item to a reward (family-hub-todo-
+    card.js's _openTieRewardModal) or adding a reward straight from the
+    Rewards card's own + button always checked the SHARED KIOSK's own HA
+    login, never whichever household member had actually PIN-elevated on
+    that kiosk, even when the card correctly showed the "Add star value"/
+    "canPrice" UI because it *had* checked the elevated user's own
+    permissions client-side. Fixed the same way the suggestion handlers
+    already were: elevation_token is now accepted here too, and the
+    permission check is elevation-aware via _effective_actor/
+    _can_add_rewards_ctx - the cards' own _kioskMsg wrapper (already used
+    for other kiosk-aware calls) supplies the token whenever a kiosk
+    elevation is active, and is simply absent (so this falls back to the
+    real connection identity, unchanged) everywhere else."""
     entry_data = _entry_data_or_error(hass, connection, msg["id"])
     if entry_data is None:
         return
-    if not _can_add_rewards(entry_data, connection):
+    actor_id, is_admin = await _effective_actor(hass, connection, entry_data, msg)
+    if not _can_add_rewards_ctx(entry_data, actor_id, is_admin):
         connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted reward-add/reward-override permission) can add straight to the catalog - try suggesting it instead.")
         return
     try:
@@ -850,6 +990,7 @@ async def ws_add_catalog_item(hass: HomeAssistant, connection: websocket_api.Act
             value_note=msg.get("value_note", ""),
             stack_unit_amount=msg.get("stack_unit_amount", 1),
             stack_unit_label=msg.get("stack_unit_label", ""),
+            timer_minutes=msg.get("timer_minutes"),
         )
     except reward_engine.RewardError as err:
         connection.send_error(msg["id"], err.code, str(err))
@@ -871,6 +1012,7 @@ async def ws_add_catalog_item(hass: HomeAssistant, connection: websocket_api.Act
         vol.Optional("value_note"): str,
         vol.Optional("stack_unit_amount"): vol.Any(int, float),
         vol.Optional("stack_unit_label"): str,
+        vol.Optional("timer_minutes"): vol.Any(int, None),
     }
 )
 @websocket_api.async_response
@@ -1332,6 +1474,13 @@ async def ws_get_my_permissions(hass: HomeAssistant, connection: websocket_api.A
         vol.Optional("can_edit_chore"): bool,
         vol.Optional("can_star_override"): bool,
         vol.Optional("can_edit_menu"): bool,
+        # v1.132.5+: PERMISSION_SEE_WISHLIST_CLAIMS - see its own docstring
+        # in const.py. Must be listed here literally (this schema doesn't
+        # derive its keys from CHORE_PERMISSIONS) or a save carrying this
+        # field would be silently stripped by voluptuous before the handler
+        # ever saw it, even though the handler's own `for key in
+        # CHORE_PERMISSIONS` loop below already handles it generically.
+        vol.Optional("can_see_wishlist_claims"): bool,
     }
 )
 @websocket_api.async_response
@@ -1976,6 +2125,811 @@ async def _notify_goal_rejected(hass: HomeAssistant, entry_data: dict[str, Any],
     )
 
 
+
+# ---------------------------------------------------------------------------
+# Chore/reward timers (v1.110.0+) - "2 hours of gaming, when you click use
+# reward a timer would start and then a timer would go off at the end of the
+# 2 hours. Or if you have a chore thats like clean for 30 minutes, at the end
+# of 30 minutes it would set off a timer, and either go to approval mode or
+# complete the award."
+#
+# State lives in its own Store (see const.py's TIMERS_STORAGE_KEY_PREFIX) and
+# holds only what is currently counting down - timer_engine.py owns all the
+# pure logic. Expiry is driven from the backend on a dedicated tight sweep
+# (see _expire_due_timers below and its registration in __init__.py), NOT
+# from a browser, so a timer still fires with every dashboard closed and the
+# tablet asleep.
+#
+# Permissions follow the non-timer equivalents exactly, on the principle
+# that starting a timer is just a way of doing the thing the timer ends in:
+#   - Starting/cancelling a timer on YOUR OWN chore, or using your own
+#     timed reward, needs nothing extra - same as tapping Done or Use.
+#   - Doing either on someone ELSE's behalf needs the same grant that
+#     action already needs: PERMISSION_VERIFY or PERMISSION_COMPLETE_ANY
+#     for chores (mirroring ws_complete_chore), PERMISSION_REWARD_OVERRIDE
+#     for rewards (mirroring ws_redeem_reward).
+# ---------------------------------------------------------------------------
+
+
+def _timers_state(entry_data: dict[str, Any]) -> dict[str, Any]:
+    """The in-memory timers dict, created on first use. Mirrors how
+    entry_data["chores"]/["rewards"] are held alongside their Store."""
+    state = entry_data.get("timers")
+    if not isinstance(state, dict):
+        state = {"timers": []}
+        entry_data["timers"] = state
+    return state
+
+
+async def _save_timers(hass: HomeAssistant, entry_data: dict[str, Any]) -> None:
+    store = entry_data.get("timers_store")
+    if store is not None:
+        await store.async_save(_timers_state(entry_data))
+
+
+
+
+# ---------------------------------------------------------------------------
+# Native Home Assistant timer.* integration (v1.110.2+)
+#
+# "this should use the home assistant native timer.*". See const.py's
+# TIMER_ENTITY_PREFIX for the full research note on why Family Hub ADOPTS
+# native timer helpers rather than creating them (short version: `timer` is
+# a helper domain, not an entity platform - it is absent from HA's own
+# generated entity_platforms list, and its storage collection is a local
+# variable no other integration can reach, so there is no supported way to
+# create one programmatically).
+#
+# What these helpers do: when a Family Hub timer starts, if the household
+# has any free `timer.family_hub*` helper, the countdown is handed to it via
+# the real timer.start service and completion arrives as HA's own
+# timer.finished event instead of being polled. Everything downstream -
+# which chore gets completed, who gets notified, the approval path - is the
+# UNCHANGED code from v1.110.0/v1.110.1; only the trigger moved.
+# ---------------------------------------------------------------------------
+
+
+def slugify_for_entity(name: str) -> str:
+    """Match Home Assistant's own slugify closely enough for the names
+    Family Hub generates: lowercase, every run of non-alphanumerics
+    collapsed to a single underscore, trimmed. HA slugifies a helper's
+    `name` into its entity_id itself (see const.py's
+    TIMER_HELPER_NAME_PREFIX note), so this is how the backend predicts
+    which entity a given person's dedicated helper will be - it never
+    creates anything, it only has to agree with HA about the name.
+
+    Deliberately conservative: ordinary household names ("Emma", "Mom &
+    Dad", "Jo-Anne") land on the same slug HA produces. Anything exotic
+    enough to diverge simply fails the lookup and falls through to the
+    shared pool, which is a harmless outcome rather than a wrong one.
+    """
+    out = []
+    prev_us = False
+    for ch in str(name or "").lower():
+        if ch.isalnum() and ch.isascii():
+            out.append(ch)
+            prev_us = False
+        elif not prev_us:
+            out.append("_")
+            prev_us = True
+    return "".join(out).strip("_")
+
+
+async def dedicated_timer_entity_id(hass: HomeAssistant, user_id: Optional[str]) -> Optional[str]:
+    """The entity_id of this person's OWN auto-created timer helper, or
+    None for a timer with nobody assigned. Derived from their display name
+    rather than stored in a mapping table: the helper was named from that
+    same name in the first place (see _ensureTimerHelpers in the cards), so
+    deriving it keeps the two sides in sync with nothing to migrate and
+    nothing that can go stale when somebody is renamed - a rename just
+    means the old helper stops being matched and a new one is created on
+    the next reconcile."""
+    if not user_id:
+        return None
+    slug = slugify_for_entity(await _user_display_name(hass, user_id))
+    if not slug:
+        return None
+    return f"{TIMER_ENTITY_PREFIX}_{slug}"
+
+
+def _is_free_native_timer(hass: HomeAssistant, entity_id: str, bound: set) -> bool:
+    """Idle, ours to use, and not already counting down for somebody else."""
+    if entity_id in bound:
+        return False
+    state = hass.states.get(entity_id)
+    return state is not None and str(state.state) == "idle"
+
+
+async def _pick_native_timer(
+    hass: HomeAssistant, entry_data: dict[str, Any], timer: dict[str, Any]
+) -> Optional[str]:
+    """Choose which native timer helper should run this countdown.
+
+    v1.110.3+ preference chain, in order - each step falling through to the
+    next when nothing is available:
+
+      (a) THE ASSIGNED PERSON'S OWN dedicated helper
+          (timer.family_hub_<their name>). Preferred first so someone's
+          timer shows up on the entity that carries their name, which is
+          what makes "when timer.family_hub_emma finishes, announce it in
+          Emma's room" a natural automation to write.
+      (b) One of the shared family helpers
+          (timer.family_hub_family_1..TIMER_FAMILY_POOL_SIZE) - the pool
+          the household's unassigned timers live on, and the natural
+          overflow when a person already has their own one running.
+      (c) Any OTHER adoptable timer.family_hub* helper. This is the
+          v1.110.2 behaviour, kept so a household that hand-made helpers
+          under the old model keeps working untouched.
+      (d) None - run unbacked, off the store plus the backstop sweep,
+          exactly as v1.110.0 did. Still the zero-setup default.
+    """
+    bound = timer_engine.bound_entity_ids(_timers_state(entry_data))
+
+    own = await dedicated_timer_entity_id(hass, timer.get("user_id"))
+    if own and _is_free_native_timer(hass, own, bound):
+        return own
+
+    for index in range(1, TIMER_FAMILY_POOL_SIZE + 1):
+        entity_id = f"{TIMER_FAMILY_ENTITY_PREFIX}{index}"
+        if _is_free_native_timer(hass, entity_id, bound):
+            return entity_id
+
+    # Anything else the household has made under the naming convention -
+    # sorted so the choice is deterministic rather than state-order luck.
+    # Somebody ELSE's dedicated helper is excluded: borrowing Emma's timer
+    # for Sam's chore would put Sam's countdown on an entity named after
+    # Emma, which is exactly the confusion this chain exists to avoid.
+    others = []
+    for state in hass.states.async_all("timer"):
+        entity_id = state.entity_id
+        if not entity_id.startswith(TIMER_ENTITY_PREFIX):
+            continue
+        if entity_id.startswith(TIMER_FAMILY_ENTITY_PREFIX):
+            continue
+        if await _is_someone_elses_dedicated_timer(hass, entry_data, entity_id, timer.get("user_id")):
+            continue
+        if _is_free_native_timer(hass, entity_id, bound):
+            others.append(entity_id)
+    return sorted(others)[0] if others else None
+
+
+async def _is_someone_elses_dedicated_timer(
+    hass: HomeAssistant, entry_data: dict[str, Any], entity_id: str, for_user_id: Optional[str]
+) -> bool:
+    """True when this helper is another household member's own named timer.
+    Checked against the CURRENT member list so a helper left behind by a
+    removed member (which is deliberately never deleted - see const.py)
+    becomes generally adoptable again rather than staying reserved for
+    somebody who is no longer here."""
+    settings_store = entry_data.get("settings_store")
+    settings = (await settings_store.async_load() or {}) if settings_store is not None else {}
+    for member_id in settings.get("memberUserIds") or []:
+        if member_id == for_user_id:
+            continue
+        if await dedicated_timer_entity_id(hass, member_id) == entity_id:
+            return True
+    return False
+
+
+async def _adopt_native_timer(hass: HomeAssistant, entry_data: dict[str, Any], timer: dict[str, Any]) -> None:
+    """Hand this timer's countdown to a free native timer.* entity, if there
+    is one. Best-effort on purpose: a household with no helpers (the
+    zero-setup default) simply gets the store-plus-sweep behaviour that
+    shipped in v1.110.0, and so does one whose helper refuses the call.
+    The Family Hub timer record is the source of truth either way, which is
+    what keeps the two paths behaviourally identical.
+    """
+    try:
+        entity_id = await _pick_native_timer(hass, entry_data, timer)
+        if not entity_id:
+            return
+        minutes = int(timer.get("duration_minutes") or 0)
+        await hass.services.async_call(
+            "timer",
+            "start",
+            {"entity_id": entity_id, "duration": f"{minutes // 60:02d}:{minutes % 60:02d}:00"},
+            blocking=True,
+        )
+        timer["entity_id"] = entity_id
+    except Exception as err:  # noqa: BLE001 - never let this break starting a timer
+        _LOGGER.debug("Family Hub: could not adopt a native timer entity: %s", err)
+        timer.pop("entity_id", None)
+
+
+async def _release_native_timer(hass: HomeAssistant, timer: dict[str, Any], *, cancel: bool = True) -> None:
+    """Give a native entity back to the pool. `cancel=True` stops a still-
+    running countdown (our timer was cancelled); `cancel=False` is for a
+    timer that already fired, where HA has returned the helper to idle by
+    itself and calling cancel would be a pointless extra service call.
+    """
+    entity_id = timer.get("entity_id")
+    if not entity_id or not cancel:
+        return
+    try:
+        await hass.services.async_call("timer", "cancel", {"entity_id": entity_id}, blocking=True)
+    except Exception as err:  # noqa: BLE001 - the Family Hub record is the source of truth
+        _LOGGER.debug("Family Hub: could not cancel native timer %s: %s", entity_id, err)
+
+
+async def _fire_timer(hass: HomeAssistant, entry_data: dict[str, Any], timer: dict[str, Any]) -> None:
+    """The one dispatcher both completion paths go through - HA's own
+    timer.finished event (_handle_native_timer_event) and the backstop
+    sweep (_expire_due_timers). Factored out in v1.110.2 precisely so that
+    moving to native, event-driven completion changed only WHAT TRIGGERS a
+    timer firing and nothing at all about what firing does: the three
+    _fire_*_timer functions below are the same code that shipped in
+    v1.110.0/v1.110.1, untouched.
+    """
+    # v1.110.3+ - fire Family Hub's own event FIRST, before the kind-
+    # specific action, so an automation reacting to it (see
+    # EVENT_FAMILY_HUB_TIMER_FINISHED in const.py) sees this exactly once
+    # per completion regardless of which of the three actions below does
+    # or doesn't raise. The sensor for this timer is removed by the caller
+    # (handle_native_timer_event / _expire_due_timers) - by the time either
+    # calls this, the Store record is already gone, which is what "expired,
+    # about to fire" means.
+    hass.bus.async_fire(
+        EVENT_FAMILY_HUB_TIMER_FINISHED,
+        {
+            "uid": timer.get("uid"),
+            "kind": timer.get("kind"),
+            "chore_id": timer.get("chore_id"),
+            "reward_item_id": timer.get("item_id"),
+            "title": timer.get("title"),
+            "user_id": timer.get("user_id"),
+            "user_name": await _user_display_name(hass, timer.get("user_id")) if timer.get("user_id") else None,
+            "native_timer_entity_id": timer.get("entity_id"),
+            "started_at": timer.get("started_at"),
+            "duration_minutes": timer.get("duration_minutes"),
+        },
+    )
+    kind = timer.get("kind")
+    if kind == TIMER_KIND_CHORE:
+        await _fire_chore_timer(hass, entry_data, timer)
+    elif kind == TIMER_KIND_STANDALONE:
+        await _fire_standalone_timer(hass, entry_data, timer)
+    else:
+        await _fire_reward_timer(hass, entry_data, timer)
+
+
+async def handle_native_timer_event(hass: HomeAssistant, event: Any) -> None:
+    """Completion driven by Home Assistant itself.
+
+    Registered in __init__.py against HA's own timer.finished and
+    timer.cancelled bus events. The event carries only an entity_id, which
+    timer_engine.timer_for_entity turns back into the Family Hub timer that
+    has to be acted on; an event for any other timer helper in the house
+    (someone's own kitchen timer) resolves to nothing and is ignored.
+
+    Removal happens BEFORE the action runs and is persisted either way -
+    the same ordering, and the same reasoning, as the sweep: a timer that
+    threw while firing must not be able to fire again on the next event or
+    sweep tick and loop forever.
+
+    timer.cancelled is handled too, so stopping a Family Hub countdown from
+    Home Assistant's OWN UI (Developer Tools, a dashboard timer card, an
+    automation) correctly clears it here rather than leaving a ghost on the
+    Active Timers board. A cancel deliberately does NOT run the completion
+    action - cancelling is not finishing.
+    """
+    entity_id = (event.data or {}).get("entity_id")
+    if not entity_id:
+        return
+    entry_data = _get_entry_data(hass)
+    if entry_data is None:
+        return
+    state = _timers_state(entry_data)
+    timer = timer_engine.timer_for_entity(state, entity_id)
+    if timer is None:
+        return
+    timer_engine.remove_timer(state, timer.get("uid"))
+    timer_sensor.remove_timer_sensor(entry_data, timer.get("uid"))
+    await _save_timers(hass, entry_data)
+    if event.event_type != NATIVE_TIMER_EVENT_FINISHED:
+        return
+    try:
+        await _fire_timer(hass, entry_data, timer)
+    except Exception as err:  # noqa: BLE001 - one bad timer must not break the listener
+        _LOGGER.warning("Family Hub: native timer %s failed to fire: %s", timer.get("uid"), err)
+
+
+def _get_entry_data(hass: HomeAssistant) -> Optional[dict[str, Any]]:
+    """Local copy of __init__.py's _get_family_hub_entry_data - see this
+    module's own docstring for why it isn't imported."""
+    entry = _get_entry(hass)
+    if entry is None:
+        return None
+    return hass.data.get(DOMAIN, {}).get("entries", {}).get(entry.entry_id)
+
+
+async def _clear_chore_timers(hass: HomeAssistant, entry_data: dict[str, Any], chore_id: str) -> None:
+    """Drop any timer running against this chore. Called when the chore is
+    completed by hand, deleted, or reassigned - in all three cases the
+    countdown has nothing left to count toward, and letting it survive
+    would fire a stray completion later."""
+    removed = timer_engine.remove_timers_for_chore(_timers_state(entry_data), chore_id)
+    if removed:
+        timer_sensor.remove_timer_sensors(entry_data, [t.get("uid") for t in removed])
+        await _save_timers(hass, entry_data)
+        for timer in removed:
+            await _release_native_timer(hass, timer, cancel=True)
+
+
+async def _notify_targets_for_user(hass: HomeAssistant, entry_data: dict[str, Any], user_id: Optional[str]) -> list[str]:
+    """This person's configured notify.* targets, straight off their
+    Settings profile - the same notifyTargets list every other push in this
+    file reads (see _notify_chore_approved). Snapshotted into the timer at
+    start time so an end-of-timer push still lands even if the profile is
+    edited mid-countdown."""
+    if not user_id:
+        return []
+    store = entry_data.get("settings_store")
+    settings = (await store.async_load() or {}) if store is not None else {}
+    profile = (settings.get("userProfiles") or {}).get(user_id) or {}
+    targets = profile.get("notifyTargets") or []
+    return [t for t in targets if isinstance(t, str)]
+
+
+async def _timer_alarm_enabled_for_user(hass: HomeAssistant, entry_data: dict[str, Any], user_id: Optional[str]) -> bool:
+    """v1.119.0+: this person's own notifyTimerAlarm profile flag, read raw
+    the same way _notify_targets_for_user reads notifyTargets - snapshotted
+    onto the timer's own "alarm" field at start time (see timer_engine.py's
+    own docstring for why every notify-relevant field on a timer is a
+    snapshot, never re-read live at fire time). An unassigned/unknown user
+    (no profile at all) simply never gets the alarm treatment - there's
+    nobody's setting to honor."""
+    if not user_id:
+        return False
+    store = entry_data.get("settings_store")
+    settings = (await store.async_load() or {}) if store is not None else {}
+    profile = (settings.get("userProfiles") or {}).get(user_id) or {}
+    return bool(profile.get("notifyTimerAlarm"))
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/timers/list"})
+@websocket_api.async_response
+async def ws_list_timers(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Every running timer, household-wide. Open to any authenticated
+    member on purpose: siblings each running their own screen-time timer is
+    the expected case, and both cards want to show "Emma: 34m left" next to
+    the person it belongs to. Nothing here is private - it is a list of
+    what is currently counting down."""
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+    connection.send_result(msg["id"], {"timers": timer_engine.list_timers(_timers_state(entry_data))})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/timers/start_chore",
+        vol.Required("chore_id"): str,
+        # v1.119.0+: this tab's own per-browser-tab id, echoed back onto the
+        # timer as origin_client_id - see timer_engine.py's own docstring.
+        vol.Optional("client_id"): str,
+        vol.Optional("elevation_token"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_start_chore_timer(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Begin the countdown on a timed chore ("clean for 30 minutes"). The
+    duration is the chore's OWN configured timer_minutes - never a value
+    from the client - so nobody can shorten their own chore by sending a
+    smaller number."""
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+    chore = entry_data["chores"].get(msg["chore_id"])
+    if chore is None:
+        connection.send_error(msg["id"], "not_found", "That chore no longer exists.")
+        return
+    if chore.get("status") != chore_engine.CHORE_STATUS_OPEN:
+        connection.send_error(msg["id"], "not_open", "Only an open chore's timer can be started.")
+        return
+    minutes = timer_engine.normalize_timer_minutes(chore.get(CHORE_KEY_TIMER_MINUTES))
+    if minutes is None:
+        connection.send_error(msg["id"], "no_timer", "That chore doesn't have a timer set.")
+        return
+    user_id, is_admin = await _effective_actor(hass, connection, entry_data, msg)
+    assignee = chore.get("assigned_to")
+    # Same gate ws_complete_chore applies, for the same reason: starting
+    # the timer IS starting the completion.
+    if assignee != user_id and not (
+        _has_permission_ctx(entry_data, user_id, is_admin, PERMISSION_VERIFY)
+        or _has_permission_ctx(entry_data, user_id, is_admin, PERMISSION_COMPLETE_ANY)
+    ):
+        connection.send_error(msg["id"], "forbidden", "Only the person this chore is assigned to (or an admin/verifier/can_complete_any grant) can start its timer.")
+        return
+    # The timer belongs to whoever the chore is assigned to, not whoever
+    # tapped Start - so a parent starting a young child's chore timer from
+    # a shared tablet produces the child's timer, counted against the
+    # child's one-per-person cap and notifying the child's devices.
+    owner = assignee or user_id
+    try:
+        timer = timer_engine.start_timer(
+            _timers_state(entry_data),
+            kind=TIMER_KIND_CHORE,
+            user_id=owner,
+            duration_minutes=minutes,
+            title=chore.get("title") or "",
+            chore_id=msg["chore_id"],
+            notify_targets=await _notify_targets_for_user(hass, entry_data, owner),
+            alarm=await _timer_alarm_enabled_for_user(hass, entry_data, owner),
+            client_id=msg.get("client_id"),
+        )
+    except timer_engine.TimerError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    await _adopt_native_timer(hass, entry_data, timer)
+    timer_sensor.create_timer_sensor(hass, entry_data, timer, await _user_display_name(hass, owner))
+    await _save_timers(hass, entry_data)
+    connection.send_result(msg["id"], {"timer": timer})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/timers/start_reward",
+        vol.Required("item_id"): str,
+        vol.Optional("user_id"): str,
+        vol.Optional("client_id"): str,
+        vol.Optional("elevation_token"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_start_reward_timer(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Redeem a timed reward AND start its countdown, in one step.
+
+    Stars are deducted exactly as an ordinary redemption does (same
+    reward_engine.redeem_item call ws_redeem_reward makes, same
+    notification) - the timer is what happens on top, not instead. The
+    order matters and is deliberate: the one-per-person timer check runs
+    FIRST, so a refused second timer never charges anybody stars for a
+    reward that didn't start.
+    """
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+    actor_id, is_admin = await _effective_actor(hass, connection, entry_data, msg)
+    target_user_id = msg.get("user_id") or actor_id
+    if not target_user_id:
+        connection.send_error(msg["id"], "no_user", "Not logged in.")
+        return
+    # Same gate ws_redeem_reward applies to redeeming for someone else.
+    if target_user_id != actor_id and not _has_permission_ctx(entry_data, actor_id, is_admin, PERMISSION_REWARD_OVERRIDE):
+        connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted reward-override permission) can redeem on someone else's behalf.")
+        return
+    item = next((it for it in (entry_data["rewards"].get("catalog") or []) if it.get("id") == msg["item_id"]), None)
+    if item is None:
+        connection.send_error(msg["id"], "not_found", "That reward no longer exists.")
+        return
+    minutes = timer_engine.normalize_timer_minutes(item.get(REWARD_KEY_TIMER_MINUTES))
+    if minutes is None:
+        connection.send_error(msg["id"], "no_timer", "That reward doesn't have a timer set.")
+        return
+    # Refuse BEFORE spending stars - see this function's own docstring.
+    running = timer_engine.has_active_timer(_timers_state(entry_data), target_user_id, TIMER_KIND_REWARD)
+    if running is not None:
+        left = max(1, round(timer_engine.remaining_seconds(running) / 60))
+        connection.send_error(
+            msg["id"], "timer_already_running",
+            f"You've already got \"{running.get('title') or 'a reward'}\" running - about {left} "
+            f"minute{'s' if left != 1 else ''} left. Cancel it first if you want to start this one.",
+        )
+        return
+    try:
+        redemption = reward_engine.redeem_item(entry_data["rewards"], target_user_id, msg["item_id"])
+    except reward_engine.RewardError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    try:
+        timer = timer_engine.start_timer(
+            _timers_state(entry_data),
+            kind=TIMER_KIND_REWARD,
+            user_id=target_user_id,
+            duration_minutes=minutes,
+            title=item.get("title") or "",
+            item_id=msg["item_id"],
+            notify_targets=await _notify_targets_for_user(hass, entry_data, target_user_id),
+            alarm=await _timer_alarm_enabled_for_user(hass, entry_data, target_user_id),
+            client_id=msg.get("client_id"),
+        )
+    except timer_engine.TimerError as err:
+        # Should be unreachable (the cap was checked above), but if it
+        # somehow isn't, don't leave the person charged for nothing.
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    await _adopt_native_timer(hass, entry_data, timer)
+    timer_sensor.create_timer_sensor(hass, entry_data, timer, await _user_display_name(hass, target_user_id))
+    await _save_rewards(hass, entry_data)
+    await _save_timers(hass, entry_data)
+    await _notify_reward_claimed(hass, entry_data, target_user_id, redemption)
+    connection.send_result(
+        msg["id"],
+        {
+            "timer": timer,
+            "redemption": redemption,
+            "balance": reward_engine.get_balance(entry_data["rewards"], target_user_id),
+        },
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/timers/start_standalone",
+        vol.Required("duration_minutes"): vol.Coerce(int),
+        vol.Optional("label"): str,
+        vol.Optional("user_id"): vol.Any(str, None),
+        vol.Optional("client_id"): str,
+        vol.Optional("elevation_token"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_start_standalone_timer(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Start a general-purpose household timer from the Active Timers
+    card's quick-timer modal - "3-4 common timer times, optional assign to
+    user and optional add time."
+
+    Unlike the chore/reward commands, the DURATION comes from the client
+    here, because there is no chore or catalog item to read it off - this
+    is the person typing "12 minutes" or tapping a preset.
+    timer_engine.normalize_timer_minutes still clamps it to 1..24h, so an
+    absurd or malformed value can't be stored.
+
+    Assignment is optional and defaults to nobody. Anyone can start one
+    (it costs nothing and gates nothing), and anyone can assign one to
+    anyone - deliberately not permission-gated: "start a 10 minute timer
+    for Sam" is a normal thing for a sibling to do, it takes nothing away
+    from Sam, and the cancel rules below keep it recoverable. This is the
+    one timer command with no permission check at all, and that is the
+    intended asymmetry - the other two start something consequential (a
+    chore completion, a star spend); this one starts a countdown.
+    """
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+    actor_id, _is_admin = await _effective_actor(hass, connection, entry_data, msg)
+    assigned_to = msg.get("user_id") or ""
+    label = timer_engine.normalize_timer_label(msg.get("label"))
+    try:
+        timer = timer_engine.start_timer(
+            _timers_state(entry_data),
+            kind=TIMER_KIND_STANDALONE,
+            user_id=assigned_to,
+            duration_minutes=msg["duration_minutes"],
+            title=label,
+            # Only an assigned timer has someone specific to tell; an
+            # unassigned one falls back to the household at fire time (see
+            # _fire_standalone_timer).
+            notify_targets=await _notify_targets_for_user(hass, entry_data, assigned_to) if assigned_to else [],
+            alarm=await _timer_alarm_enabled_for_user(hass, entry_data, assigned_to) if assigned_to else False,
+            client_id=msg.get("client_id"),
+        )
+    except timer_engine.TimerError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    # Who started it, so an unassigned timer still has a recoverable owner
+    # for the cancel rules (see ws_cancel_timer).
+    timer["started_by"] = actor_id
+    await _adopt_native_timer(hass, entry_data, timer)
+    timer_sensor.create_timer_sensor(
+        hass, entry_data, timer, await _user_display_name(hass, assigned_to) if assigned_to else None
+    )
+    await _save_timers(hass, entry_data)
+    connection.send_result(msg["id"], {"timer": timer})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/timers/cancel",
+        vol.Required("uid"): str,
+        vol.Optional("elevation_token"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_cancel_timer(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Stop a countdown without it firing.
+
+    Worth having rather than leaving out: a mis-tapped two-hour reward
+    timer with no way to stop it is a real usability hole, and with a
+    one-per-person cap it would also lock that person out of every other
+    timed reward until it ran down. Cancelling a REWARD timer deliberately
+    does NOT refund the stars - the reward was redeemed, and un-redeeming
+    is what the existing reverse-redemption flow is for; conflating the two
+    here would let someone start-and-cancel repeatedly to no effect but
+    confusion in the ledger. Cancelling a CHORE timer costs nothing and
+    simply leaves the chore open to be started again or completed by hand.
+    """
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+    state = _timers_state(entry_data)
+    timer = timer_engine.get_timer(state, msg["uid"])
+    if timer is None:
+        # Already fired, or already cancelled elsewhere - not an error,
+        # since either way it isn't running any more, which is what the
+        # caller wanted.
+        connection.send_result(msg["id"], {"cancelled": None, "timers": timer_engine.list_timers(state)})
+        return
+    user_id, is_admin = await _effective_actor(hass, connection, entry_data, msg)
+    kind = timer.get("kind")
+    if kind == TIMER_KIND_STANDALONE:
+        # v1.110.1+: a standalone timer is household furniture, not
+        # somebody's property. An UNASSIGNED one (the oven, a board game)
+        # can be stopped by anyone - it belongs to the room, and making
+        # people hunt down whoever tapped Start to silence the kitchen
+        # would be absurd. An ASSIGNED one can be stopped by the person
+        # it's for, by whoever started it (so a mis-assignment is
+        # immediately undoable by the person who made it), or by an admin.
+        # Nothing is lost by cancelling either way - no stars, no chore -
+        # which is exactly why this is looser than the other two kinds.
+        if timer.get("user_id") and not (
+            timer.get("user_id") == user_id or timer.get("started_by") == user_id or is_admin
+        ):
+            connection.send_error(
+                msg["id"], "forbidden", "Only the person this timer is for (or whoever started it) can stop it."
+            )
+            return
+    elif timer.get("user_id") != user_id:
+        allowed = (
+            _has_permission_ctx(entry_data, user_id, is_admin, PERMISSION_VERIFY)
+            or _has_permission_ctx(entry_data, user_id, is_admin, PERMISSION_COMPLETE_ANY)
+            if kind == TIMER_KIND_CHORE
+            else _has_permission_ctx(entry_data, user_id, is_admin, PERMISSION_REWARD_OVERRIDE)
+        )
+        if not allowed:
+            connection.send_error(msg["id"], "forbidden", "You can only cancel your own timers.")
+            return
+    cancelled = timer_engine.remove_timer(state, msg["uid"])
+    timer_sensor.remove_timer_sensor(entry_data, msg["uid"])
+    await _save_timers(hass, entry_data)
+    # v1.110.2+: hand the native entity back. Done AFTER removal so the
+    # timer.cancelled event this triggers resolves to nothing and can't
+    # double-handle what we already cleared.
+    if cancelled:
+        await _release_native_timer(hass, cancelled, cancel=True)
+    connection.send_result(msg["id"], {"cancelled": cancelled, "timers": timer_engine.list_timers(state)})
+
+
+async def _expire_due_timers(hass: HomeAssistant, entry_data: dict[str, Any]) -> bool:
+    """The backend sweep: fire every timer whose time is up. Returns True
+    if anything fired, so the caller can refresh dependent entities.
+
+    Called from __init__.py on its own TIMER_SWEEP_SECONDS interval rather
+    than from the main poller - see that constant's own comment for why a
+    5-minute granularity isn't good enough for a countdown someone is
+    watching.
+
+    A timer is removed BEFORE its action runs, and removal is persisted
+    even if the action then fails. That ordering is deliberate: a timer
+    that somehow throws on completion would otherwise be retried every 30
+    seconds forever, turning one bad record into an endless notification
+    loop. Firing at most once and logging the failure is the safer half of
+    that trade.
+    """
+    state = _timers_state(entry_data)
+    due = timer_engine.due_timers(state)
+    if not due:
+        return False
+    for timer in due:
+        timer_engine.remove_timer(state, timer.get("uid"))
+        timer_sensor.remove_timer_sensor(entry_data, timer.get("uid"))
+    await _save_timers(hass, entry_data)
+    for timer in due:
+        try:
+            # v1.110.2+: a timer backed by a native entity has almost
+            # certainly already fired through HA's own timer.finished event
+            # by now and been removed - reaching it here means the event was
+            # missed, so release the helper back to the pool as we go.
+            await _release_native_timer(hass, timer, cancel=True)
+            await _fire_timer(hass, entry_data, timer)
+        except Exception as err:  # noqa: BLE001 - one bad timer must not stop the rest
+            _LOGGER.warning("Family Hub: timer %s failed to fire: %s", timer.get("uid"), err)
+    return True
+
+
+async def _fire_chore_timer(hass: HomeAssistant, entry_data: dict[str, Any], timer: dict[str, Any]) -> None:
+    """A chore timer running out completes the chore exactly as tapping
+    Done would - see _apply_chore_completion_effects' own docstring for why
+    this reuses that path rather than deciding anything itself. Whether the
+    result is Awaiting Approval or an instant star payout is entirely
+    chore_engine.complete_chore's call, off the chore's own
+    no_approval_required flag and the completer's PERMISSION_AUTO_APPROVE
+    grant."""
+    chore_id = timer.get("chore_id")
+    chore = entry_data["chores"].get(chore_id) if chore_id else None
+    if chore is None:
+        # Deleted mid-countdown - nothing to complete, and the timer is
+        # already gone. Silence is the right outcome.
+        return
+    if chore.get("status") != chore_engine.CHORE_STATUS_OPEN:
+        # Completed by hand in the seconds before the sweep ran, or reset.
+        return
+    try:
+        completed = chore_engine.complete_chore(
+            entry_data["chores"], entry_data["rewards"], hass, chore_id, timer.get("user_id"),
+            permissions=entry_data.get("permissions"),
+        )
+    except chore_engine.ChoreError as err:
+        _LOGGER.warning("Family Hub: chore timer for %s could not complete it: %s", chore_id, err)
+        return
+    await _apply_chore_completion_effects(hass, entry_data, completed)
+    # Tell them their time is up regardless of which way the completion
+    # landed - the two messages differ because "it's been sent for
+    # approval" and "you've been paid" are genuinely different news.
+    targets = timer.get("notify_targets") or []
+    if targets:
+        approved = completed.get("status") == chore_engine.CHORE_STATUS_APPROVED
+        body = (
+            f"Time's up on \"{completed.get('title')}\" - all done!"
+            if approved
+            else f"Time's up on \"{completed.get('title')}\" - sent for approval."
+        )
+        # v1.119.0+: alarm-style delivery for whoever opted into it on their
+        # own profile (see timer.get("alarm")'s own docstring) - everyone
+        # else keeps getting the plain, quiet push exactly as before.
+        send = _send_alarm_notification if timer.get("alarm") else _send_instant_notification
+        await send(hass, targets, "Family Hub chore timer", body)
+
+
+async def _fire_reward_timer(hass: HomeAssistant, entry_data: dict[str, Any], timer: dict[str, Any]) -> None:
+    """A reward timer running out gates nothing - it is purely "time's up,"
+    so this only sends the notification. No approval step, no star change
+    (the stars were spent when it started), nothing to complete."""
+    targets = timer.get("notify_targets") or []
+    if not targets:
+        return
+    title = timer.get("title") or "your reward"
+    send = _send_alarm_notification if timer.get("alarm") else _send_instant_notification
+    await send(
+        hass, targets, "Family Hub reward timer", f"Time's up - {title} is finished."
+    )
+
+
+async def _fire_standalone_timer(hass: HomeAssistant, entry_data: dict[str, Any], timer: dict[str, Any]) -> None:
+    """A standalone (general-purpose) timer running out just says so - no
+    chore to complete, no stars, nothing gated. See TIMER_KIND_STANDALONE
+    in const.py.
+
+    Who gets told: an ASSIGNED timer notifies that person's own devices
+    (snapshotted at start, same as the other two kinds) - consistent with
+    how a reward timer already tells its owner. An UNASSIGNED one has no
+    person to notify, so it falls back to the household-wide notify
+    targets, i.e. everyone who has any target configured at all. That
+    fallback is the whole reason unassigned timers are useful: "the oven is
+    done" is news for whoever is nearest the kitchen, not for one
+    nominated person.
+    """
+    targets = list(timer.get("notify_targets") or [])
+    if not targets and not timer.get("user_id"):
+        targets = await _all_household_notify_targets(hass, entry_data)
+    if not targets:
+        return
+    label = timer.get("title") or "Timer"
+    # Only ever true for an ASSIGNED timer (see ws_start_standalone_timer) -
+    # the household-wide fallback for an unassigned one has no single
+    # person's setting to honor, so it always stays the plain push.
+    send = _send_alarm_notification if timer.get("alarm") else _send_instant_notification
+    await send(
+        hass, targets, "Family Hub timer", f"Time's up - {label}."
+    )
+
+
+async def _all_household_notify_targets(hass: HomeAssistant, entry_data: dict[str, Any]) -> list[str]:
+    """Every configured notify target in the household, de-duplicated -
+    only used for an UNASSIGNED standalone timer, which by definition has
+    nobody of its own to tell."""
+    store = entry_data.get("settings_store")
+    settings = (await store.async_load() or {}) if store is not None else {}
+    seen: list[str] = []
+    for profile in (settings.get("userProfiles") or {}).values():
+        if not isinstance(profile, dict):
+            continue
+        for target in profile.get("notifyTargets") or []:
+            if isinstance(target, str) and target not in seen:
+                seen.append(target)
+    return seen
+
+
 ALL_COMMANDS = (
     ws_list_chores,
     ws_create_chore,
@@ -2026,6 +2980,12 @@ ALL_COMMANDS = (
     ws_approve_goal,
     ws_archive_goal,
     ws_reject_goal,
+    # v1.110.0+: chore/reward timers.
+    ws_list_timers,
+    ws_start_chore_timer,
+    ws_start_reward_timer,
+    ws_start_standalone_timer,
+    ws_cancel_timer,
 )
 
 

@@ -13,6 +13,19 @@
 // menu gating is UI-only (read __init__.py's design note above
 // _encode_dish_description before relying on it).
 //
+// v1.109.8: adding an additional (side/dessert/sauce) recipe "from a link"
+// no longer fires two stacked window.prompt() dialogs - it expands an
+// inline name + link form under the additional-recipes list instead, which
+// doubles as the edit surface for an already-added entry (new pencil
+// button per row). See _openAdditionalRecipeForm.
+//
+// v1.109.7: the meal editor's leftovers day-picker (13 checkboxes, by far
+// the tallest single field in that modal) is now an accordion - collapsed
+// by default, auto-expanded when the meal already has leftover days
+// picked, with the count in the header. Reuses this file's existing
+// .accordion-toggle/.accordion-body pattern and its one generic click
+// handler; see _syncLeftoversAccordion.
+//
 // v1.109.6 also compacts the Settings > Permissions tab: the per-member
 // permission checkboxes are now generated from one _permissionDefs()
 // array, grouped by feature area (Chores / Rewards / Menu) and laid out
@@ -62,6 +75,1690 @@ const HA_THEME_PREFIX_MARKER = "Theme Builder - ";
 // work everywhere the card is installed.
 const HALLOWEEN_BG_IMAGE =
 "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0MDAgODAwIiB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIj4KICA8ZGVmcz4KICAgIDwhLS0gU29mdCBMaWdodCBQYXN0ZWwgQmFja2dyb3VuZCAtLT4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0ibGlnaHQtYmciIHgxPSIwJSIgeTE9IjAlIiB4Mj0iMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI2YzZThmZiIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjQwJSIgc3RvcC1jb2xvcj0iI2ZhZWZlZSIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjgwJSIgc3RvcC1jb2xvcj0iI2ZmZjRlNiIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiNmZmU4ZDYiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CgogICAgPCEtLSBTdW4vTW9vbiBTb2Z0IFBhc3RlbCBSYWRpYWwgLS0+CiAgICA8cmFkaWFsR3JhZGllbnQgaWQ9ImxpZ2h0LXN1biIgY3g9IjUwJSIgY3k9IjUwJSIgcj0iNTAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI2ZmYjcwMyIgc3RvcC1vcGFjaXR5PSIwLjM1Ii8+CiAgICAgIDxzdG9wIG9mZnNldD0iNzAlIiBzdG9wLWNvbG9yPSIjZmI4NTAwIiBzdG9wLW9wYWNpdHk9IjAuMTUiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjZmI4NTAwIiBzdG9wLW9wYWNpdHk9IjAiLz4KICAgIDwvcmFkaWFsR3JhZGllbnQ+CiAgPC9kZWZzPgoKICA8IS0tIENhbnZhcyBCYWNrZ3JvdW5kIC0tPgogIDxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iODAwIiBmaWxsPSJ1cmwoI2xpZ2h0LWJnKSIvPgoKICA8IS0tIFRvcCBBbWJpZW50IFN1biBHbG93IC0tPgogIDxjaXJjbGUgY3g9IjIwMCIgY3k9IjEzMCIgcj0iMTQwIiBmaWxsPSJ1cmwoI2xpZ2h0LXN1bikiLz4KCiAgPCEtLSBGbG9hdGluZyBHaG9zdHMgJiBCYXRzIChUb3AgSGVhZGVyIEFyZWEgLSBJbmNyZWFzZWQpIC0tPgogIDxnIGZpbGw9IiM2YjIxYTgiIG9wYWNpdHk9IjAuMTgiPgogICAgPCEtLSBNYWluIExlZnQgR2hvc3QgLS0+CiAgICA8cGF0aCBkPSJNIDUwIDExMCBDIDUwIDkwIDcwIDkwIDcwIDExMCBDIDcwIDEyNSA2NSAxMjAgNjUgMTMwIEMgNjAgMTI1IDU4IDEzMCA1NSAxMjUgQyA1MiAxMzAgNTAgMTI1IDUwIDExMCBaIi8+CiAgICA8Y2lyY2xlIGN4PSI1OCIgY3k9IjEwMyIgcj0iMS41IiBmaWxsPSIjNGMxZDk1Ii8+CiAgICA8Y2lyY2xlIGN4PSI2NCIgY3k9IjEwMyIgcj0iMS41IiBmaWxsPSIjNGMxZDk1Ii8+CiAgICAKICAgIDwhLS0gQ2x1c3RlciBVcHBlciBMZWZ0IC0tPgogICAgPHBhdGggZD0iTSAxMTAgODAgQyAxMTAgNjUgMTI1IDY1IDEyNSA4MCBRIDEyNSA5MCAxMjAgOTUgTCAxMTUgOTAgWiIgb3BhY2l0eT0iMC43Ii8+CiAgICA8cGF0aCBkPSJNIDg1IDU1IFEgODkgNTEgOTMgNTUgUSA5NyA1MSAxMDEgNTUgUSA5MyA2MCA4NSA1NSBaIi8+CgogICAgPCEtLSBNYWluIFJpZ2h0IEdob3N0IC0tPgogICAgPHBhdGggZD0iTSAzMzAgNzAgQyAzMzAgNTUgMzQ1IDU1IDM0NSA3MCBDIDM0NSA4MiAzNDEgNzggMzQxIDg2IEMgMzM3IDgyIDMzNSA4NiAzMzMgODIgQyAzMzEgODYgMzMwIDgyIDMzMCA3MCBaIi8+CiAgICA8Y2lyY2xlIGN4PSIzMzUuNSIgY3k9IjY1IiByPSIxLjIiIGZpbGw9IiM0YzFkOTUiLz4KICAgIDxjaXJjbGUgY3g9IjM0MC41IiBjeT0iNjUiIHI9IjEuMiIgZmlsbD0iIzRjMWQ5NSIvPgogICAgCiAgICA8IS0tIENsdXN0ZXIgVXBwZXIgUmlnaHQgLS0+CiAgICA8cGF0aCBkPSJNIDI5MCA5NSBDIDI5MCA4NSAzMDAgODUgMzAwIDk1IFEgMzAwIDEwMiAyOTUgMTA1IEwgMjkyIDEwMiBaIiBvcGFjaXR5PSIwLjciLz4KICAgIDxwYXRoIGQ9Ik0gMzU1IDExMCBRIDM1OSAxMDYgMzYzIDExMCBRIDM2NyAxMDYgMzcxIDExMCBRIDM2MyAxMTUgMzU1IDExMCBaIi8+CgogICAgPCEtLSBBZGRpdGlvbmFsIENlbnRlciBTbWFsbCBHaG9zdHMgLS0+CiAgICA8cGF0aCBkPSJNIDE3MCAxNzAgQyAxNzAgMTYwIDE4MCAxNjAgMTgwIDE3MCBRIDE4MCAxNzYgMTc1IDE3OCBaIiBvcGFjaXR5PSIwLjYiLz4KICAgIDxwYXRoIGQ9Ik0gMjMwIDE1MCBDIDIzMCAxNDAgMjQwIDE0MCAyNDAgMTUwIFEgMjQwIDE1NiAyMzUgMTU4IFoiIG9wYWNpdHk9IjAuNiIvPgoKICAgIDwhLS0gTWluaW1hbCBCYXRzIC0tPgogICAgPHBhdGggZD0iTSAxODAgNjAgUSAxODUgNTUgMTkwIDYwIFEgMTk1IDU1IDIwMCA2MCBRIDE5MCA2NyAxODAgNjAgWiIvPgogICAgPHBhdGggZD0iTSAyMjAgODUgUSAyMjMgODEgMjI3IDg1IFEgMjMxIDgxIDIzNSA4NSBRIDIyNyA5MCAyMjAgODUgWiIvPgogICAgPHBhdGggZD0iTSAxNDAgNDAgUSAxNDMgMzYgMTQ3IDQwIFEgMTUxIDM2IDE1NSA0MCBRIDE0NyA0NSAxNDAgNDAgWiIvPgogIDwvZz4KCiAgPCEtLSBCb3R0b20gUHVtcGtpbiAmIEhpbGwgU2lsaG91ZXR0ZXMgKFN1YnRsZSBGb290ZXIgQW5jaG9yIC0gSW5jcmVhc2VkIFBhdGNoKSAtLT4KICA8ZyBmaWxsPSIjNGMxZDk1IiBvcGFjaXR5PSIwLjEyIj4KICAgIDwhLS0gQmFzZSBDdXJ2ZWQgSGlsbCAtLT4KICAgIDxwYXRoIGQ9Ik0gLTIwIDc0MCBRIDE4MCA3MDAgNDIwIDc0MCBMIDQyMCA4MDAgTCAtMjAgODAwIFoiLz4KICAgIAogICAgPCEtLSBMZWZ0IE1haW4gUHVtcGtpbiAtLT4KICAgIDxwYXRoIGQ9Ik0gNDAgNzM1IEMgMjUgNzM1IDIwIDc0OCAyMCA3NTggQyAyMCA3NzAgMjggNzc4IDQwIDc3OCBDIDUyIDc3OCA2MCA3NzAgNjAgNzU4IEMgNjAgNzQ4IDU1IDczNSA0MCA3MzUgWiIvPgogICAgPHJlY3QgeD0iMzgiIHk9IjczMCIgd2lkdGg9IjQiIGhlaWdodD0iNyIgcng9IjEiIGZpbGw9IiM0YzFkOTUiLz4KICAgIDwhLS0gTGVmdCBDbHVzdGVyIEFkZGl0aW9ucyAtLT4KICAgIDxwYXRoIGQ9Ik0gNzUgNzQ1IEMgNjggNzQ1IDY1IDc1MiA2NSA3NTcgQyA2NSA3NjMgNjkgNzY3IDc1IDc2NyBDIDgxIDc2NyA4NSA3NjMgODUgNzU3IEMgODUgNzUyIDgyIDc0NSA3NSA3NDUgWiIgb3BhY2l0eT0iMC43Ii8+CiAgICA8cmVjdCB4PSI3NCIgeT0iNzQyIiB3aWR0aD0iMiIgaGVpZ2h0PSI0IiByeD0iMSIgZmlsbD0iIzRjMWQ5NSIvPgoKICAgIDwhLS0gUmlnaHQgTWFpbiBQdW1wa2luIChTbWFsbCkgLS0+CiAgICA8cGF0aCBkPSJNIDM0MCA3NDUgQyAzMjggNzQ1IDMyNCA3NTUgMzI0IDc2MyBDIDMyNCA3NzMgMzMwIDc3OSAzNDAgNzc5IEMgMzUwIDc3OSAzNTYgNzczIDM1NiA3NjMgQyAzNTYgNzU1IDM1MiA3NDUgMzQwIDc0NSBaIi8+CiAgICA8cmVjdCB4PSIzMzkiIHk9Ijc0MSIgd2lkdGg9IjMiIGhlaWdodD0iNSIgcng9IjEiIGZpbGw9IiM0YzFkOTUiLz4KICAgIDwhLS0gUmlnaHQgQ2x1c3RlciBBZGRpdGlvbnMgLS0+CiAgICA8cGF0aCBkPSJNIDMxMCA3NTUgQyAzMDMgNzU1IDMwMCA3NjAgMzAwIDc2NCBDIDMwMCA3NjkgMzAzIDc3MiAzMTAgNzcyIEMgMzE3IDc3MiAzMjAgNzY5IDMyMCA3NjQgQyAzMjAgNzYwIDMxNyA3NTUgMzEwIDc1NSBaIiBvcGFjaXR5PSIwLjciLz4KICAgIDxwYXRoIGQ9Ik0gMzY1IDc1MCBDIDM1OCA3NTAgMzU1IDc1NyAzNTUgNzYyIEMgMzU1IDc2OCAzNTkgNzcyIDM2NSA3NzIgQyAzNzEgNzcyIDM3NSA3NjggMzc1IDc2MiBDIDM3NSA3NTcgMzcyIDc1MCAzNjUgNzUwIFoiIG9wYWNpdHk9IjAuOCIvPgoKICAgIDwhLS0gQ2VudGVyIEdyb3VuZCBDb3ZlciAtLT4KICAgIDxwYXRoIGQ9Ik0gMTgwIDczMCBDIDE3MCA3MzAgMTY3IDczOCAxNjcgNzQzIEMgMTY3IDc0OCAxNzEgNzUxIDE4MCA3NTEgQyAxODkgNzUxIDE5MyA3NDggMTkzIDc0MyBDIDE5MyA3MzggMTkwIDczMCAxODAgNzMwIFoiIG9wYWNpdHk9IjAuNSIvPgogICAgPHBhdGggZD0iTSAyMjAgNzM1IEMgMjEzIDczNSAyMTAgNzQwIDIxMCA3NDQgQyAyMTAgNzQ5IDIxMyA3NTEgMjIwIDc1MSBDIDIyNyA3NTEgMjMwIDc0OSAyMzAgNzQ0IEMgMjMwIDc0MCAyMjcgNzM1IDIyMCA3MzUgWiIgb3BhY2l0eT0iMC41Ii8+CiAgPC9nPgo8L3N2Zz4K";
+// Shared, dashboard-wide FAB coordinator - "when a user has more than one
+// card on the same screen, the FAB buttons overlap, what is the solution?
+// Can we detect and combine them? If they have the same tabs can we make
+// them not duplicate?" Every Family Hub card with a floating "+" button
+// (Calendar's Add Event, Chores, Rewards, Goals, To-Do) independently
+// fixed-positions it at the same bottom-right spot, so two or more of
+// these cards on one dashboard view (Chores+Rewards+Goals together is
+// explicitly supported - see goalsShowInChores/goalsShowInRewards) stack
+// their FABs directly on top of each other.
+//
+// Same shared-singleton shape as window.__familyHubScreenSaver just above
+// (copy-pasted identically into every FAB-bearing card file, since these
+// are independently-loaded Lovelace resources rather than ES modules that
+// could import one shared file) - only the FIRST card whose script
+// actually runs this block sets it up; every other card's identical copy
+// just sees the flag already set and no-ops. Cards register on connect
+// and unregister on disconnect, exactly mirroring registerClient/
+// unregisterClient/_registerScreenSaver below, so a dashboard-edit that
+// adds/removes a card (or switching HA tabs, which disconnects/reconnects
+// every card on the old one) never leaves a stale slot reserved for a
+// card that's gone, or fails to reserve one for a card that's arrived.
+//
+// DESIGN CHOICE - stack, don't merge. A single mega-FAB trying to stand in
+// for "add a chore OR an event OR a reward" would hide which action does
+// what behind an extra tap, for buttons that already open very different
+// modals. Instead, each FAB stays itself but the coordinator assigns it a
+// distinct vertical slot (via a --fh-fab-offset CSS custom property set on
+// the card's own HOST element, which cascades into its shadow DOM the same
+// way any inherited custom property does - no direct DOM/element handle
+// needed, so this survives the card's own _render() rebuilding its shadow
+// DOM on every data refresh without having to be re-applied each time),
+// stacked in a fixed, deterministic order (FAB_KIND_ORDER below) so the
+// same household always sees Calendar/Chores/Rewards/Goals/To-Do FABs in
+// the same relative stack position regardless of which card's script
+// happened to load or register first.
+//
+// DESIGN CHOICE - Goals tab de-duplication. Goals can appear on-screen
+// from up to three sources at once: the standalone Goals card's own "+"
+// FAB, AND a "Goal" tab on the Chores FAB (when goalsShowInChores is on),
+// AND a "Goal" tab on the Rewards FAB (when goalsShowInRewards is on) -
+// the same underlying add-a-goal action reachable three different ways.
+// Rather than teaching the Chores/Rewards creation modals to strip their
+// own Goal tab (which would mean each of those two files reaching across
+// to know about the OTHER two, and about the standalone Goals card too -
+// a combinatorial mess for marginal benefit, since a Goal tab embedded in
+// a board the household is already looking at is not really "duplicate
+// UI" so much as "the same action, conveniently placed"), only the
+// LOWEST-RISK, clearest case is handled: when the coordinator sees ANY
+// other registered card is already offering a Goal tab, the standalone
+// Goals card suppresses its own add-goal-fab entirely (nothing left to
+// add there that isn't one tap away already) - see registerClient's
+// `meta.providesGoalTab` and the onLayout callback's `otherProvidesGoalTab`
+// below, and family-hub-goals-card.js's own _applyFabCoordinatorState.
+// Chores' and Rewards' own Goal tabs are left alone in both directions -
+// a household running Chores+Rewards with both goals toggles on still
+// sees a Goal tab on each, which is judged acceptable (accomplishing the
+// same underlying thing twice from two boards you're already looking at
+// is harmless, unlike a whole redundant floating button).
+if (!window.__familyHubFabCoordinator) {
+  window.__familyHubFabCoordinator = (function () {
+    // Deterministic stacking order - unrecognized/future kinds sort last,
+    // after everything named here, rather than crashing or colliding.
+    const FAB_KIND_ORDER = ["calendar", "chores", "rewards", "goals", "todo"];
+    // 56px button + 10px breathing room between stacked FABs.
+    const SLOT_HEIGHT_PX = 66;
+    const entries = new Map(); // client -> { kind, seq, meta, onUpdate }
+    let seq = 0;
+
+    function orderIndex(kind) {
+      const i = FAB_KIND_ORDER.indexOf(kind);
+      return i === -1 ? FAB_KIND_ORDER.length : i;
+    }
+    function recompute() {
+      const list = Array.from(entries.entries()).sort((a, b) => {
+        const oa = orderIndex(a[1].kind);
+        const ob = orderIndex(b[1].kind);
+        if (oa !== ob) return oa - ob;
+        return a[1].seq - b[1].seq;
+      });
+      // v1.110.7+: entries with takesSlot:false (a fab_position: "card"
+      // client - see registerClient's own doc below) are skipped when
+      // handing out stacking slots/offsets, but still walked here so they
+      // still see otherProvidesGoalTab and still get an onUpdate call.
+      const slotCount = list.filter(([, entry]) => entry.takesSlot).length;
+      let slotIndex = 0;
+      list.forEach(([client, entry]) => {
+        const otherProvidesGoalTab = list.some(
+          ([otherClient, otherEntry]) => otherClient !== client && otherEntry.meta && otherEntry.meta.providesGoalTab
+        );
+        const index = entry.takesSlot ? slotIndex++ : null;
+        if (typeof entry.onUpdate === "function") {
+          entry.onUpdate({ offsetPx: (index || 0) * SLOT_HEIGHT_PX, slotIndex: index, count: slotCount, otherProvidesGoalTab });
+        }
+      });
+    }
+    return {
+      // `kind` is one of FAB_KIND_ORDER's entries (or anything else, which
+      // just sorts last). `meta` is a plain object of extra facts other
+      // cards' layout decisions might care about - today only
+      // `providesGoalTab` (see this block's own docstring above). `onUpdate`
+      // is called once immediately (so a lone card on an otherwise-empty
+      // dashboard still gets offsetPx: 0) and again on every subsequent
+      // register/unregister/updateClientMeta from ANY card, since adding a
+      // second FAB changes where the first one's slot is too.
+      //
+      // v1.110.7+: `opts.takesSlot` (default true) - pass `{ takesSlot:
+      // false }` for a card whose FAB has opted out of the shared
+      // viewport-corner stack (fab_position: "card" - anchored to its own
+      // card's box instead, see each card's own _registerFabCoordinator).
+      // It's still a full member of the coordinator (still contributes/
+      // reads `meta.providesGoalTab`, so goal-tab de-duplication keeps
+      // working across a mixed dashboard/card-positioned set of FABs), it
+      // just never occupies - or shifts - a stacking slot, since a
+      // shared viewport-corner offset is meaningless once a FAB is
+      // positioned relative to its own card instead.
+      registerClient(client, kind, meta, onUpdate, opts) {
+        const takesSlot = !(opts && opts.takesSlot === false);
+        entries.set(client, { kind, seq: seq++, meta: meta || {}, onUpdate, takesSlot });
+        recompute();
+      },
+      // Call whenever a fact in `meta` changes at runtime (e.g. the
+      // household flips goalsShowInChores in Settings without reloading
+      // the dashboard) - see chores/rewards cards' _fetchSettings.
+      updateClientMeta(client, meta) {
+        const entry = entries.get(client);
+        if (!entry) return;
+        entry.meta = Object.assign({}, entry.meta, meta || {});
+        recompute();
+      },
+      // Call from disconnectedCallback. Frees this card's slot so every
+      // remaining card's FAB shifts back down to close the gap, and (for
+      // Goals) re-checks whether it's still safe to suppress its own FAB.
+      unregisterClient(client) {
+        if (entries.delete(client)) recompute();
+      },
+    };
+  })();
+}
+
+// -------------------------------------------------------------------------
+// Recipe Box ("Loved Dishes") shared logic (v1.110.6+) - "the menu box" the
+// household asked to also see as its own dashboard tab. There is no literal
+// "menu box" anywhere else in this codebase; this modal - searchable/
+// filterable/sortable, add/edit/delete a dish, heart it, suggest it for a
+// meal - is the only self-contained thing that reads as a "box" someone
+// would want pinned open as its own tab, as opposed to the week/month grid
+// (not a modal at all) or the day/meal editor (edits one specific slot, not
+// something you'd browse as a tab). See README.md's own long-standing
+// "Recipe box (\"Loved Dishes\")" feature entry for the same name.
+//
+// This object is the ONE place these methods' bodies live. Both this card's
+// own FamilyWeekCalendarCard.prototype AND the new standalone
+// family-hub-recipe-box-card.js's FamilyHubRecipeBoxCard.prototype get them
+// via `Object.assign(SomeClass.prototype, window.__familyHubRecipeBoxShared)`
+// after their own class bodies - not a mixin function re-evaluated per class
+// (which would create textually-identical but reference-DISTINCT closures),
+// but a single object literal assigned by reference to both prototypes, so
+// e.g. FamilyWeekCalendarCard.prototype._renderLoved ===
+// FamilyHubRecipeBoxCard.prototype._renderLoved is literally true at runtime
+// (see test_recipe_box_card_sharing.js, which asserts exactly that for every
+// method here) - editing the modal's code in this one block is guaranteed to
+// change the standalone card's behavior identically, and vice versa.
+//
+// Same window-singleton, guarded-by-`if` shape as window.__familyHubFabCoordinator
+// above (the only cross-card-coordination precedent this codebase already had) -
+// whichever of this file or the standalone card's file loads first "wins" and
+// defines it; the second file's identical guarded block becomes a no-op.
+//
+// Deliberately NOT included here (kept card-specific, each side supplies its
+// own): _openDishEditor/_saveDishEditor - fused with the day/menu editor's
+// shared `.edit-overlay` modal on this card, not cleanly separable from meal-
+// plan editing, so the standalone card gets its own small, separate add/edit-
+// dish mini-modal that calls the SAME shared _upsertDish/_deleteDish below;
+// _openModal (this card's version drives the mobile back-button history
+// stack shared by every modal on this card - general navigation infra, not
+// Recipe Box logic); "Add from Grocy"/"Import from a link" (_selectGrocyRecipe,
+// _renderGrocyPicker - the search picker itself, not the viewer it can preview
+// into) and the screensaver idle-timer and "+ picker mode" used only from the
+// day/menu editor's "Pick a Recipe"/"+ From Recipe Box" buttons
+// (_selectLovedDish, _addAdditionalRecipeFromLoved) - calendar-only call
+// sites.
+//
+// v1.118.0+: the full in-card Grocy Recipe Viewer (_openGrocyRecipeViewer and
+// its whole supporting cast) IS included below, no longer out of scope -
+// household report: "the recipe box card tries to send you to the external
+// grocy link for recipes. this needs to use the internal recipe viewer."
+if (!window.__familyHubRecipeBoxShared) {
+window.__familyHubRecipeBoxShared = {
+_genId() {
+return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+},
+_parseDishDescription(raw) {
+if (!raw) return { description: "", link: "", rating: null, color: null, block: 0, recur: null, grocyRecipeId: null, servings: null, category: "", image: "", additionalRecipes: [], leftoverDates: [] };
+try {
+const parsed = JSON.parse(raw);
+return {
+description: parsed.description || "",
+link: parsed.link || "",
+rating: parsed.rating || null,
+color: parsed.color || null,
+// Recipe Box-only fields (see _upsertDish) - harmlessly blank on
+// every other kind of item this same parser also handles (a planned
+// meal, a recurring-meal anchor, a suggestion), since none of those
+// ever set them.
+category: parsed.category || "",
+image: parsed.image || "",
+block: typeof parsed.block === "number" ? parsed.block : 0,
+// "weekly" if this meal-plan entry is the anchor of a "repeat weekly"
+// meal - see _getMealForDay for how that anchor gets projected onto
+// every future week's matching day-of-week + block.
+recur: parsed.recur || null,
+// Set only for suggestions added via "Add from Grocy" - lets the
+// suggestions list open the in-card Recipe Viewer (which fetches
+// live from Grocy) instead of just opening the plain link, which
+// would hit Grocy's own login wall (see _openGrocyRecipeViewer).
+grocyRecipeId: parsed.grocyRecipeId || null,
+// How many people this specific planned meal is meant to feed - only
+// meaningful alongside grocyRecipeId. null means "use whatever the
+// Grocy recipe's own desired_servings is currently set to" rather
+// than any specific number - see _ws_push_grocery_list's docstring
+// for how this becomes a real (persistent) edit to the recipe in
+// Grocy at push time.
+servings: typeof parsed.servings === "number" ? parsed.servings : null,
+// v141+: leftovers - how many EXTRA days (beyond the day it's actually
+// entered on) this same meal should keep showing for, same block, on
+// the immediately following days. 1 (the default) means "just this one
+// day," identical to every meal entered before this existed. v144.10+:
+// superseded by leftoverDates below for anything saved from here on
+// (an explicit, non-contiguous day picker instead of "the next N days
+// in a row") - spanDays is kept ONLY so pre-v144.10 data (which never
+// had leftoverDates) still projects the same contiguous run it always
+// did; see _fetchMealPlan for the actual fallback logic, since a single
+// number here can no longer represent an arbitrary day selection.
+spanDays: typeof parsed.spanDays === "number" && parsed.spanDays > 1 ? parsed.spanDays : 1,
+// v144.10+: "leftovers should let you choose what days you have the
+// leftovers on" - an explicit list of "YYYY-MM-DD" date keys this same
+// meal should ALSO show on (same block), replacing spanDays' "next N
+// days in a row" assumption with an arbitrary pick of any day(s), not
+// necessarily contiguous with each other or with the day it was cooked.
+// Malformed/non-string entries are dropped defensively, same reasoning
+// as additionalRecipes just below.
+leftoverDates: Array.isArray(parsed.leftoverDates) ? parsed.leftoverDates.filter((d) => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d)) : [],
+// v142+: "additional recipes" - any number of side/dessert/sauce
+// recipes attached alongside this one main recipe (see _upsertMealPlan
+// and the day/menu editor's Additional Recipes field). Each entry is
+// {name, link, grocyRecipeId} - name-less/malformed entries are
+// dropped defensively since this is user-editable JSON going back
+// years before this field existed.
+additionalRecipes: Array.isArray(parsed.additionalRecipes)
+? parsed.additionalRecipes
+.filter((r) => r && typeof r.name === "string" && r.name.trim())
+.map((r) => ({ name: r.name, link: r.link || "", grocyRecipeId: r.grocyRecipeId || null }))
+: [],
+};
+} catch (e) {
+return { description: raw, link: "", rating: null, color: null, block: 0, recur: null, grocyRecipeId: null, servings: null, category: "", image: "", spanDays: 1, additionalRecipes: [], leftoverDates: [] };
+}
+},
+async _getItems(entityId) {
+const result = await this._hass.connection.sendMessagePromise({
+type: "call_service",
+domain: "todo",
+service: "get_items",
+service_data: { status: ["needs_action", "completed"] },
+target: { entity_id: entityId },
+return_response: true,
+});
+return (result && result.response && result.response[entityId] && result.response[entityId].items) || [];
+},
+_normalizeForDuplicateCheck(name) {
+return (name || "")
+.toString()
+.normalize("NFKD")
+.replace(/[̀-ͯ]/g, "")
+.toLowerCase()
+.replace(/[^a-z0-9]+/g, " ")
+.trim()
+.replace(/\s+/g, " ");
+},
+_levenshteinDistance(a, b) {
+if (a === b) return 0;
+if (!a.length) return b.length;
+if (!b.length) return a.length;
+let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+for (let i = 1; i <= a.length; i++) {
+const cur = [i];
+for (let j = 1; j <= b.length; j++) {
+cur[j] =
+a[i - 1] === b[j - 1]
+? prev[j - 1]
+: 1 + Math.min(prev[j - 1], prev[j], cur[j - 1]);
+}
+prev = cur;
+}
+return prev[b.length];
+},
+_findFuzzyDuplicate(name, list, getName) {
+const norm = this._normalizeForDuplicateCheck(name);
+if (!norm) return null;
+let best = null;
+let bestDistance = Infinity;
+for (const item of list || []) {
+const otherNorm = this._normalizeForDuplicateCheck(getName(item));
+if (!otherNorm) continue;
+const distance = otherNorm === norm ? 0 : this._levenshteinDistance(norm, otherNorm);
+const threshold = otherNorm === norm ? 0 : Math.max(1, Math.round(Math.max(norm.length, otherNorm.length) * 0.2));
+if (distance <= threshold && distance < bestDistance) {
+best = item;
+bestDistance = distance;
+}
+}
+return best;
+},
+async _fetchRecipes() {
+if (!this._hass) return;
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/get_recipes" });
+if (!result.migrated) {
+const items = this._config.recipe_entity ? await this._getItems(this._config.recipe_entity) : [];
+this._recipes = items.map((it) => {
+const parsed = this._parseDishDescription(it.description);
+return {
+uid: it.uid,
+name: it.summary,
+description: parsed.description,
+link: parsed.link,
+rating: parsed.rating,
+grocyRecipeId: parsed.grocyRecipeId,
+category: parsed.category,
+image: parsed.image,
+};
+});
+await this._persistRecipes();
+} else {
+this._recipes = result.recipes || [];
+}
+} catch (e) {
+this._recipes = [];
+}
+this._renderLoved();
+this._renderGrid();
+},
+async _persistRecipes() {
+if (!this._hass) return;
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/set_recipes", recipes: this._recipes });
+} catch (e) {
+}
+},
+async _fetchSuggestions() {
+if (!this._hass) return;
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/get_suggestions" });
+if (!result.migrated) {
+const items = this._config.suggestions_entity ? await this._getItems(this._config.suggestions_entity) : [];
+this._suggestions = items.map((it) => {
+const parsed = this._parseDishDescription(it.description);
+return { uid: it.uid, name: it.summary, description: parsed.description, link: parsed.link, grocyRecipeId: parsed.grocyRecipeId };
+});
+await this._persistSuggestions();
+} else {
+this._suggestions = result.suggestions || [];
+}
+} catch (e) {
+this._suggestions = [];
+}
+// No standalone Suggestions modal to re-render into anymore - "viewing
+// suggestions" is just the Recipe Box's own "💡 Suggested" filter now
+// (_openSuggestedRecipes), which reads this._suggestions fresh each time
+// it renders rather than needing a push here.
+},
+async _persistSuggestions() {
+if (!this._hass) return;
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/set_suggestions", suggestions: this._suggestions });
+} catch (e) {
+}
+},
+async _addSuggestion(name, description, link, grocyRecipeId) {
+if (!name) return;
+const dupe = this._findFuzzyDuplicate(name, this._suggestions, (s) => s.name);
+if (dupe) {
+const isExact = this._normalizeForDuplicateCheck(dupe.name) === this._normalizeForDuplicateCheck(name);
+if (isExact) return;
+if (!window.confirm(`"${dupe.name}" is already suggested and looks very similar. Add "${name}" as a separate suggestion anyway?`)) {
+return;
+}
+}
+this._suggestions.push({ uid: this._genId(), name, description: description || "", link: link || "", grocyRecipeId: grocyRecipeId || null });
+await this._persistSuggestions();
+},
+async _removeSuggestion(uid) {
+if (!uid) return;
+this._suggestions = this._suggestions.filter((s) => s.uid !== uid);
+await this._persistSuggestions();
+},
+_isAdmin() {
+return !!(this._hass && this._hass.user && this._hass.user.is_admin);
+},
+_myUserId() {
+return this._hass && this._hass.user ? this._hass.user.id : null;
+},
+_hasPermission(key) {
+// Admin first, so this answers correctly on the very first paint,
+// before _fetchMyPermissions has resolved - an admin's own admin-ness
+// needs no round trip to know.
+if (this._isAdmin()) return true;
+return !!(this._myPermissions && this._myPermissions[key]);
+},
+_canEditMenu() {
+return this._hasPermission("can_edit_menu");
+},
+async _fetchMyPermissions() {
+if (!this._hass) return;
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/permissions/get_mine" });
+this._myPermissions = (result && result.permissions) || {};
+} catch (e) {
+// An older backend (or a transient failure) means "no extra grants" -
+// never "everything allowed". An admin still passes via _isAdmin().
+this._myPermissions = {};
+}
+},
+async _upsertDish(name, description, link, rating, uidOverride, grocyRecipeId, category, image, checkDuplicates) {
+if (!name) return;
+const existing = uidOverride
+? this._recipes.find((r) => r.uid === uidOverride)
+: this._recipes.find((r) => r.name.toLowerCase() === name.toLowerCase());
+// Only worth asking about when this is about to become a genuinely new
+// Recipe Box entry - an exact-name match above already merges in place
+// (existing truthy), and that's the desired behavior, not a duplicate to
+// warn about. This is the same fuzzy check _addSuggestion uses, applied
+// to the household's actual data gap that prompted it: Grocy recipes and
+// hand-typed entries piling up as separate near-identical cards ("Our
+// Favorite Buttery Herb Stuffing" vs "...Stuffing4") with no nudge that
+// one might already exist.
+if (!existing && checkDuplicates) {
+const dupe = this._findFuzzyDuplicate(name, this._recipes, (r) => r.name);
+if (dupe && !window.confirm(`"${dupe.name}" is already in your Recipe Box and looks very similar. Add "${name}" as a separate recipe anyway?`)) {
+return;
+}
+}
+// category/image are Recipe Box-only fields that not every caller knows
+// about - the day/menu editor's "also save this as a loved dish" path
+// (see _saveEditor) calls this without them, and a heart click straight
+// from a Recipe Box card (see _renderLoved) only ever wants to flip the
+// rating, not silently blank out a category or photo someone already
+// set. Passing undefined here means "leave it alone" (falls back to
+// whatever the existing entry already had); pass an empty string
+// explicitly to actually clear one.
+const finalCategory = category !== undefined ? category : (existing ? existing.category || "" : "");
+const finalImage = image !== undefined ? image : (existing ? existing.image || "" : "");
+const record = {
+uid: existing ? existing.uid : this._genId(),
+name,
+description: description || "",
+link: link || "",
+rating: rating || null,
+grocyRecipeId: grocyRecipeId || null,
+category: finalCategory,
+image: finalImage,
+};
+if (existing) {
+this._recipes[this._recipes.indexOf(existing)] = record;
+} else {
+this._recipes.push(record);
+}
+await this._persistRecipes();
+this._renderLoved();
+this._renderGrid();
+},
+async _deleteDish(uid, grocyRecipeId) {
+if (!uid) return;
+if (grocyRecipeId) {
+try {
+await this._hass.connection.sendMessagePromise({
+type: "family_hub/delete_grocy_recipe",
+recipe_id: grocyRecipeId,
+});
+} catch (e) {
+}
+}
+this._recipes = this._recipes.filter((r) => r.uid !== uid);
+await this._persistRecipes();
+this._renderLoved();
+this._renderGrid();
+},
+async _suggestDish(recipe) {
+const name = (recipe.name || "").trim().toLowerCase();
+const existing = (this._suggestions || []).find((s) => (s.name || "").trim().toLowerCase() === name);
+if (existing) {
+await this._removeSuggestion(existing.uid);
+} else {
+await this._addSuggestion(recipe.name, recipe.description, recipe.link, recipe.grocyRecipeId);
+}
+// _addSuggestion/_removeSuggestion (Store-backed - see _fetchSuggestions)
+// update this._suggestions in memory before persisting, so it's already
+// current here - no extra re-fetch needed before re-rendering the
+// suggest icon's highlighted state.
+this._renderLoved();
+},
+_openLoved(pickerMode) {
+// v142+: pickerMode is now also allowed to be the string "additional"
+// (the day/menu editor's "+ From Recipe Box" additional-recipe button -
+// see _addAdditionalRecipeFromLoved), on top of the existing true/false.
+// Both true and "additional" are equally "picker mode" for every
+// existing truthy check below (hides bulk-select, shows the hint, tap-
+// to-close instead of opening dish detail) - only the exact click
+// behavior and title text differ, handled where _pickerMode is compared
+// with === rather than just used as a boolean.
+this._pickerMode = pickerMode === "additional" ? "additional" : !!pickerMode;
+this._lovedSearchTerm = "";
+this._recipeBoxCategory = "All";
+this._recipeBoxSort = "default";
+this._recipeBoxSelectMode = false;
+this._recipeBoxSelectedUids.clear();
+this._root.querySelector(".loved-search").value = "";
+this._root.querySelector(".recipe-sort-select").value = "default";
+this._fetchRecipes();
+// Picker mode (opened from the day/menu editor's single "Pick a
+// Recipe" button - see the pick-btn-group HTML) is now the exact same
+// searchable/filterable/sortable grid-or-list browse experience as the
+// full Recipe Box, not a separate, narrower loved-only list - it just
+// fills in the editor and closes on tap instead of opening dish detail
+// (see _renderLoved's click wiring), and hides the bulk-select/delete
+// entry point since that's not a task that belongs mid-picking.
+this._root.querySelector(".loved-title").textContent =
+this._pickerMode === "additional"
+? "\u{1F37D}\u{FE0F} Add Additional Recipe"
+: this._pickerMode
+? "\u{1F37D}\u{FE0F} Pick a Recipe"
+: "\u{1F37D}\u{FE0F} Recipe Box";
+this._root.querySelector(".loved-hint").style.display = this._pickerMode ? "block" : "none";
+this._root.querySelector(".recipe-box-select-btn").style.display = this._pickerMode ? "none" : "";
+this._openModal(this._root.querySelector(".loved-overlay"));
+},
+_closeLoved() {
+this._root.querySelector(".loved-overlay").classList.remove("open");
+},
+_openSuggestedRecipes() {
+this._openLoved(false);
+this._recipeBoxCategory = "💡 Suggested";
+this._renderLoved();
+},
+_renderLoved() {
+if (!this._root) return;
+const list = this._root.querySelector(".loved-list");
+const viewMode = this._getRecipeBoxViewMode();
+list.classList.toggle("recipe-grid", viewMode !== "list");
+list.classList.toggle("recipe-list", viewMode === "list");
+this._updateRecipeBoxViewButtons();
+this._renderRecipeBoxCategoryChips();
+this._updateRecipeBoxSelectBar();
+// Fire-and-forget: fills in photos for Grocy-imported dishes that don't
+// have one yet (see _hydrateGrocyRecipeImages) and re-renders once they
+// land, so the grid doesn't have to wait on Grocy before showing names/
+// placeholders first.
+this._hydrateGrocyRecipeImages();
+let recipes = this._recipes.slice();
+// Matches a Recipe Box entry to a Meal Suggestions entry by name
+// (case-insensitive) since the two aren't otherwise linked records -
+// same matching rule _sortRecipeBoxList's "suggested" sort already uses.
+// Computed once here so both the "Suggested" filter chip below and each
+// card/row's suggest-icon highlight (see the .map() further down) agree
+// on the same answer for the same render.
+const suggestedNameSet = new Set((this._suggestions || []).map((s) => (s.name || "").trim().toLowerCase()));
+const term = (this._lovedSearchTerm || "").trim().toLowerCase();
+if (term) {
+recipes = recipes.filter(
+(r) =>
+(r.name || "").toLowerCase().includes(term) ||
+(r.description || "").toLowerCase().includes(term) ||
+(r.category || "").toLowerCase().includes(term)
+);
+}
+const activeCategory = this._recipeBoxCategory || "All";
+if (activeCategory === "❤️ Loved") {
+recipes = recipes.filter((r) => r.rating === "up");
+} else if (activeCategory === "💡 Suggested") {
+recipes = recipes.filter((r) => suggestedNameSet.has((r.name || "").trim().toLowerCase()));
+} else if (activeCategory !== "All") {
+recipes = recipes.filter((r) => (r.category || "Uncategorized") === activeCategory);
+}
+recipes = this._sortRecipeBoxList(recipes);
+if (!recipes.length) {
+list.innerHTML = `<div class="loved-empty">${
+term || activeCategory !== "All"
+? "No recipes match this search/filter."
+: "Your Recipe Box is empty - tap “+ Add Recipe” or “\u{1F517} Import from a link” above to get started."
+}</div>`;
+return;
+}
+const isListView = viewMode === "list";
+const selectMode = this._recipeBoxSelectMode && !this._pickerMode;
+list.innerHTML = recipes
+.map((r, idx) => {
+const isLoved = r.rating === "up";
+const isSuggested = suggestedNameSet.has((r.name || "").trim().toLowerCase());
+const isSelected = selectMode && this._recipeBoxSelectedUids.has(r.uid);
+const initial = (r.name || "?").trim().charAt(0).toUpperCase();
+if (isListView) {
+const media = r.image
+? `<div class="recipe-row-media" style="background-image:url('${String(r.image).replace(/'/g, "%27")}')"></div>`
+: `<div class="recipe-row-media recipe-row-media-placeholder"><span>${initial}</span></div>`;
+const category = r.category ? `<span class="recipe-row-category">${r.category}</span>` : "";
+const trailing = selectMode
+? `<div class="recipe-row-select-badge">${isSelected ? "&#10003;" : ""}</div>`
+: `<div class="recipe-row-actions">
+<button type="button" class="recipe-row-heart ${isLoved ? "is-loved" : ""}" data-idx="${idx}" title="${isLoved ? "Remove from loved" : "Love this dish"}">${isLoved ? "&#10084;&#65039;" : "&#129293;"}</button>
+<button type="button" class="recipe-row-suggest ${isSuggested ? "is-suggested" : ""}" data-idx="${idx}" title="${isSuggested ? "Remove from Suggestions" : "Suggest this for a meal"}">&#128161;</button>
+</div>`;
+return `<div class="recipe-row ${isSelected ? "is-selected" : ""}" data-idx="${idx}">
+${media}
+<div class="recipe-row-body">
+<div class="recipe-row-name">${r.name}</div>
+${category}
+</div>
+${trailing}
+</div>`;
+}
+const media = r.image
+? `<div class="recipe-card-media" style="background-image:url('${String(r.image).replace(/'/g, "%27")}')"></div>`
+: `<div class="recipe-card-media recipe-card-media-placeholder"><span>${initial}</span></div>`;
+const category = r.category ? `<span class="recipe-card-category">${r.category}</span>` : "";
+const overlay = selectMode
+? `<div class="recipe-card-select-badge">${isSelected ? "&#10003;" : ""}</div>`
+: `<button type="button" class="recipe-card-heart ${isLoved ? "is-loved" : ""}" data-idx="${idx}" title="${isLoved ? "Remove from loved" : "Love this dish"}">${isLoved ? "&#10084;&#65039;" : "&#129293;"}</button>
+<button type="button" class="recipe-card-suggest ${isSuggested ? "is-suggested" : ""}" data-idx="${idx}" title="${isSuggested ? "Remove from Suggestions" : "Suggest this for a meal"}">&#128161;</button>`;
+return `<div class="recipe-card ${isSelected ? "is-selected" : ""}" data-idx="${idx}">
+${media}
+${overlay}
+<div class="recipe-card-body">
+<div class="recipe-card-name">${r.name}</div>
+${category}
+</div>
+</div>`;
+})
+.join("");
+const cardSelector = isListView ? ".recipe-row" : ".recipe-card";
+list.querySelectorAll(cardSelector).forEach((el) => {
+el.addEventListener("click", () => {
+const idx = parseInt(el.dataset.idx, 10);
+const recipe = recipes[idx];
+if (selectMode) {
+this._toggleRecipeBoxSelected(recipe.uid);
+} else if (this._pickerMode === "additional") {
+this._addAdditionalRecipeFromLoved(recipe);
+} else if (this._pickerMode) {
+this._selectLovedDish(recipe);
+} else if (recipe.grocyRecipeId) {
+// v1.129.0+: household report, verbatim: "the recipe box card open
+// a menu in a modal but the recipe modal in the calendar opens the
+// recipe full screen, the recipe box card needs to function the
+// same." Root cause: browsing the Recipe Box always opened the
+// small `.dish-detail-overlay` "menu" first (name/photo/rating/
+// description plus Suggest/Edit/Delete and a "View recipe" link) -
+// reaching the actual full-screen Grocy Recipe Viewer took a
+// SECOND tap on that link. The calendar's own "click a planned
+// meal's recipe" call sites (its day-cell chips, the Expiring Soon
+// list, etc.) never went through that menu at all - they call
+// _openGrocyRecipeViewer directly, straight to full-screen, in one
+// tap. A recipe imported from Grocy has real ingredients/
+// instructions/servings to show, so there's no reason browsing IT
+// needed an extra tap through a menu screen first; a recipe with
+// only a name/description/link (no Grocy import) has nothing else
+// to promote to full-screen, so THAT case still opens the small
+// menu exactly as before, unchanged. The `recipe` argument here
+// (the actual Recipe Box entry, not just its Grocy id) is new -
+// see _openGrocyRecipeViewer's own comment on
+// _grocyRecipeViewerSourceRecipe for why it's passed through, and
+// this file's own connectedCallback for the Suggest/Edit/Delete
+// footer buttons it unlocks so browsing this way doesn't lose
+// those actions.
+this._openGrocyRecipeViewer(recipe.grocyRecipeId, recipe.name, recipe.link, false, null, recipe);
+} else {
+this._openDishDetail(recipe);
+}
+});
+});
+if (!selectMode) {
+const heartSelector = isListView ? ".recipe-row-heart" : ".recipe-card-heart";
+const suggestSelector = isListView ? ".recipe-row-suggest" : ".recipe-card-suggest";
+list.querySelectorAll(heartSelector).forEach((el) => {
+el.addEventListener("click", (e) => {
+e.stopPropagation();
+const idx = parseInt(el.dataset.idx, 10);
+this._toggleDishLoved(recipes[idx]);
+});
+});
+list.querySelectorAll(suggestSelector).forEach((el) => {
+el.addEventListener("click", (e) => {
+e.stopPropagation();
+const idx = parseInt(el.dataset.idx, 10);
+this._suggestDish(recipes[idx]);
+});
+});
+}
+},
+_sortRecipeBoxList(recipes) {
+const mode = this._recipeBoxSort || "default";
+if (mode === "name") {
+return recipes.slice().sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+}
+if (mode === "suggested") {
+const suggestedNames = new Set((this._suggestions || []).map((s) => (s.name || "").trim().toLowerCase()));
+return recipes
+.map((r, i) => ({ r, i, suggested: suggestedNames.has((r.name || "").trim().toLowerCase()) }))
+.sort((a, b) => {
+if (a.suggested !== b.suggested) return a.suggested ? -1 : 1;
+return a.i - b.i;
+})
+.map((x) => x.r);
+}
+return recipes;
+},
+_getRecipeBoxViewMode() {
+return window.localStorage.getItem("familyHubRecipeBoxView") === "list" ? "list" : "grid";
+},
+_setRecipeBoxViewMode(mode) {
+window.localStorage.setItem("familyHubRecipeBoxView", mode === "list" ? "list" : "grid");
+this._renderLoved();
+},
+_updateRecipeBoxViewButtons() {
+const root = this._root;
+if (!root) return;
+const mode = this._getRecipeBoxViewMode();
+root.querySelectorAll(".recipe-view-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.view === mode);
+});
+},
+_toggleRecipeBoxSelectMode(active) {
+this._recipeBoxSelectMode = !!active;
+if (!this._recipeBoxSelectMode) this._recipeBoxSelectedUids.clear();
+this._renderLoved();
+},
+_toggleRecipeBoxSelected(uid) {
+if (this._recipeBoxSelectedUids.has(uid)) {
+this._recipeBoxSelectedUids.delete(uid);
+} else {
+this._recipeBoxSelectedUids.add(uid);
+}
+this._renderLoved();
+},
+_updateRecipeBoxSelectBar() {
+const root = this._root;
+if (!root) return;
+const active = this._recipeBoxSelectMode && !this._pickerMode;
+const bar = root.querySelector(".recipe-box-select-bar");
+const actions = root.querySelector(".recipe-box-actions");
+if (bar) bar.style.display = active ? "flex" : "none";
+if (actions) actions.style.display = active ? "none" : "";
+const countEl = root.querySelector(".recipe-box-select-count");
+if (countEl) {
+const n = this._recipeBoxSelectedUids.size;
+countEl.textContent = `${n} selected`;
+}
+},
+async _deleteSelectedRecipeBoxItems() {
+const uids = Array.from(this._recipeBoxSelectedUids);
+if (!uids.length) return;
+const recipesToDelete = uids.map((uid) => this._recipes.find((r) => r.uid === uid)).filter(Boolean);
+if (!recipesToDelete.length) return;
+const hasGrocy = recipesToDelete.some((r) => r.grocyRecipeId);
+const label = recipesToDelete.length === 1 ? `"${recipesToDelete[0].name}"` : `these ${recipesToDelete.length} recipes`;
+const grocyNote = hasGrocy ? " This will also delete the linked recipe(s) from Grocy." : "";
+if (!window.confirm(`Delete ${label} from the Recipe Box?${grocyNote}`)) return;
+for (const recipe of recipesToDelete) {
+await this._deleteDish(recipe.uid, recipe.grocyRecipeId);
+}
+this._recipeBoxSelectMode = false;
+this._recipeBoxSelectedUids.clear();
+this._renderLoved();
+},
+async _hydrateGrocyRecipeImages() {
+if (!this._hass) return;
+// _fetchRecipes() replaces this._recipes wholesale from the Store on
+// every load, reconnect, AND the 60s poll (see _refreshAllData) - and
+// the Store itself never persists a Grocy-fetched photo (see
+// _persistRecipes) - so a recipe whose photo was already resolved into
+// _grocyImageCache on an earlier call shows up here again with a fresh
+// object and image: null. Re-apply anything already cached BEFORE
+// deciding what still needs a network fetch, or a photo that loaded
+// fine once quietly disappears again at the very next poll (this was
+// the actual bug behind "recipe box still isn't pulling images from
+// Grocy" - it briefly worked, then reverted).
+let reapplied = false;
+(this._recipes || []).forEach((r) => {
+if (r.grocyRecipeId && !r.image && this._grocyImageCache[r.grocyRecipeId]) {
+r.image = this._grocyImageCache[r.grocyRecipeId];
+reapplied = true;
+}
+});
+const targets = (this._recipes || []).filter(
+(r) =>
+r.grocyRecipeId &&
+!r.image &&
+!(r.grocyRecipeId in this._grocyImageCache) &&
+!this._grocyImageFetching.has(r.grocyRecipeId)
+);
+if (!targets.length) {
+if (
+reapplied &&
+this._root &&
+this._root.querySelector(".loved-overlay") &&
+this._root.querySelector(".loved-overlay").classList.contains("open") &&
+!this._pickerMode
+) {
+this._renderLoved();
+}
+return;
+}
+targets.forEach((r) => this._grocyImageFetching.add(r.grocyRecipeId));
+const results = await Promise.all(
+targets.map(async (r) => {
+let image = null;
+try {
+const result = await this._hass.connection.sendMessagePromise({
+type: "family_hub/get_grocy_recipe_detail",
+recipe_id: r.grocyRecipeId,
+});
+image = (result && result.recipe && result.recipe.image) || null;
+} catch (e) {
+image = null;
+} finally {
+this._grocyImageFetching.delete(r.grocyRecipeId);
+}
+return { id: r.grocyRecipeId, image };
+})
+);
+let changed = false;
+results.forEach(({ id, image }) => {
+this._grocyImageCache[id] = image;
+if (image) changed = true;
+});
+if (!changed && !reapplied) return;
+(this._recipes || []).forEach((r) => {
+if (r.grocyRecipeId && !r.image && this._grocyImageCache[r.grocyRecipeId]) {
+r.image = this._grocyImageCache[r.grocyRecipeId];
+}
+});
+// Guard against re-entering the picker's plain list or a since-closed
+// modal - a slow Grocy response could land well after the Recipe Box
+// itself moved on.
+if (
+this._root &&
+this._root.querySelector(".loved-overlay") &&
+this._root.querySelector(".loved-overlay").classList.contains("open") &&
+!this._pickerMode
+) {
+this._renderLoved();
+}
+},
+_toggleDishLoved(recipe) {
+const newRating = recipe.rating === "up" ? null : "up";
+this._upsertDish(recipe.name, recipe.description, recipe.link, newRating, recipe.uid, recipe.grocyRecipeId);
+},
+_renderRecipeBoxCategoryChips() {
+const root = this._root;
+if (!root) return;
+const container = root.querySelector(".recipe-box-categories");
+if (!container) return;
+const categories = Array.from(
+new Set((this._recipes || []).map((r) => (r.category || "").trim()).filter(Boolean))
+).sort((a, b) => a.localeCompare(b));
+const chips = ["All", "❤️ Loved", "💡 Suggested", ...categories];
+if (!this._recipeBoxCategory || !chips.includes(this._recipeBoxCategory)) {
+this._recipeBoxCategory = "All";
+}
+container.innerHTML = chips
+.map(
+(c) =>
+`<button type="button" class="recipe-chip ${c === this._recipeBoxCategory ? "active" : ""}" data-category="${c.replace(/"/g, "&quot;")}">${c}</button>`
+)
+.join("");
+container.querySelectorAll(".recipe-chip").forEach((el) => {
+el.addEventListener("click", () => {
+this._recipeBoxCategory = el.dataset.category;
+this._renderLoved();
+});
+});
+},
+_openDishDetail(recipe) {
+const root = this._root;
+this._dishDetailRecipe = recipe;
+root.querySelector(".dish-detail-title").textContent = recipe.name || "(untitled)";
+const photo = root.querySelector(".dish-detail-photo");
+if (photo) {
+if (recipe.image) {
+photo.src = recipe.image;
+photo.style.display = "block";
+} else {
+photo.src = "";
+photo.style.display = "none";
+}
+}
+const ratingHtml =
+(recipe.rating === "up"
+? `<span class="event-info-chip" style="background:#f2ddd4">&#10084;&#65039; Loved</span>`
+: recipe.rating === "down"
+? `<span class="event-info-chip" style="background:#d8e3e0">&#128078; Not a fan</span>`
+: "") + (recipe.category ? `<span class="event-info-chip">${recipe.category}</span>` : "");
+root.querySelector(".dish-detail-rating").innerHTML = ratingHtml;
+root.querySelector(".dish-detail-desc").textContent = recipe.description || "No notes added.";
+const suggestBtn = root.querySelector(".dish-detail-suggest-btn");
+if (suggestBtn) {
+suggestBtn.textContent = "\u{1F4A1} Suggest this";
+suggestBtn.onclick = () => {
+this._suggestDish(recipe);
+suggestBtn.textContent = "\u{2705} Added to Suggestions";
+setTimeout(() => {
+suggestBtn.textContent = "\u{1F4A1} Suggest this";
+}, 1600);
+};
+}
+const linkRow = root.querySelector(".dish-detail-link-row");
+if (recipe.link) {
+const label = recipe.grocyRecipeId ? "&#128279; View recipe" : "&#128279; Open recipe link";
+linkRow.innerHTML = `<button type="button" class="pick-loved-btn dish-detail-open-link">${label}</button>`;
+linkRow.querySelector(".dish-detail-open-link").addEventListener("click", () => {
+if (recipe.grocyRecipeId) {
+this._openGrocyRecipeViewer(recipe.grocyRecipeId, recipe.name, recipe.link);
+} else {
+window.open(recipe.link, "_blank", "noopener");
+}
+});
+} else {
+linkRow.innerHTML = "";
+}
+this._openModal(root.querySelector(".dish-detail-overlay"));
+// Re-evaluate the screensaver idle timer now that a recipe detail view is
+// open - when "Disable while a recipe is open" is on, _screenSaverApplicable
+// now returns false, so this clears any pending countdown outright
+// (nothing to reschedule to) rather than leaving it running underneath.
+this._resetScreenSaverIdleTimer();
+},
+_closeDishDetail() {
+this._root.querySelector(".dish-detail-overlay").classList.remove("open");
+// Mirror of the open-side call above: closing the recipe detail view
+// means _screenSaverApplicable can be true again, so this restarts the
+// idle countdown fresh rather than leaving it dormant until some other
+// activity happens to trigger it.
+this._resetScreenSaverIdleTimer();
+},
+_populateDishCategoryOptions() {
+const root = this._root;
+if (!root) return;
+const datalist = root.querySelector("#dish-category-options");
+if (!datalist) return;
+const categories = Array.from(
+new Set((this._recipes || []).map((r) => (r.category || "").trim()).filter(Boolean))
+).sort((a, b) => a.localeCompare(b));
+datalist.innerHTML = categories.map((c) => `<option value="${c.replace(/"/g, "&quot;")}"></option>`).join("");
+},
+// v1.118.0+: the full in-card Grocy Recipe Viewer, moved here from being
+// a FamilyWeekCalendarCard-only set of methods so family-hub-recipe-box-
+// card.js can open the exact same live viewer for a Grocy-linked dish
+// instead of just opening the plain external Grocy link (household
+// report: "the recipe box card tries to send you to the external grocy
+// link for recipes. this needs to use the internal recipe viewer"). Not
+// shared: _selectGrocyRecipe/_renderGrocyPicker (the "Add from Grocy"
+// search picker) - Recipe Box has no such picker and doesn't need one,
+// same as before.
+// v1.121.0+: household report, verbatim: "recipe card opens recipes in a
+// modal instead of the full screen like the recipe modal does." Root
+// cause: wherever this shared viewer is running, if the card sits in a
+// normal masonry/sections dashboard grid (rather than filling the whole
+// screen, which is how a panel-view deployment usually hides this
+// entirely) Home Assistant's own grid container establishes a CSS
+// containing block around the card - which traps this overlay's
+// `position: fixed` inside that card-sized box instead of letting it
+// reach the real viewport, so what's meant to be a full-screen viewer
+// renders as a small modal confined to the card instead. Same root cause,
+// and same fix, as this file's own screensaver overlay (see
+// family-screensaver-card.js's _ensureScreenSaverOverlay for the fuller
+// "why"): promote the overlay out of the shadow root and the dashboard
+// grid entirely by parking it directly on document.body, where
+// position:fixed is guaranteed to mean the actual screen.
+//
+// The one thing that trick doesn't get for free here (unlike the
+// screensaver's own plain, inline-styled overlay): this overlay's look
+// comes entirely from THIS card's shadow-root <style> (._css(), all the
+// .grocy-recipe-viewer-* rules plus the --fc-* theme variables) - CSS
+// defined inside a shadow root only ever applies to elements still
+// inside that same shadow tree, so moving the bare element out to
+// document.body on its own would leave it completely unstyled. Fixed by
+// moving it inside its own small "portal" wrapper instead of straight
+// onto document.body: a plain div carrying a COPY of this card's entire
+// stylesheet, with the one substitution that copy actually needs -
+// ":host" (meaningless outside an actual shadow root, since it only ever
+// matches THE shadow host element) swapped for the portal wrapper's own
+// class, which plays the exact same "single top-level selector" role.
+// That reproduces every rule/variable default correctly, but a THEME
+// value that's picked at runtime (_applyThemeVars, called on config/
+// theme changes) is set as a live inline override on `this` - the card
+// element itself, back in the light DOM - which the portal, now
+// disconnected from this card's tree entirely, no longer inherits from.
+// So each call ALSO re-copies the current computed value of every one of
+// those theme variables from `this` onto the portal, keeping a
+// full-screen viewer that's been open across a theme change visually
+// correct rather than frozen on whatever theme was active the first time
+// it moved. Moving itself is still done once, lazily, the first time the
+// viewer is opened (not eagerly in _build, since there's no reason to do
+// this before the viewer's ever used) and cached afterward via
+// this._grocyRecipeViewerPortalEl - every other call site below goes
+// through this accessor instead of querying `root`/`this._root`
+// directly, both so the move only has to happen once and so a query
+// issued after that move still finds the right element (it's no longer
+// a descendant of the shadow root at all once moved). Each card's own
+// disconnectedCallback removes this portal too, so it doesn't outlive
+// the card itself (a dashboard edit, or Lovelace simply re-creating the
+// element, must not leave an orphaned full-screen viewer floating on
+// the page).
+_grocyViewerOverlay() {
+if (!this._grocyRecipeViewerOverlayEl) {
+const root = this._root;
+this._grocyRecipeViewerOverlayEl = root && root.querySelector(".grocy-recipe-viewer-overlay");
+}
+const overlay = this._grocyRecipeViewerOverlayEl;
+if (overlay && !this._grocyRecipeViewerPortalEl) {
+const portal = document.createElement("div");
+portal.className = "fh-grocy-viewer-portal";
+if (typeof this._css === "function") {
+const style = document.createElement("style");
+style.textContent = this._css().split(":host").join(".fh-grocy-viewer-portal");
+portal.appendChild(style);
+}
+portal.appendChild(overlay);
+document.body.appendChild(portal);
+this._grocyRecipeViewerPortalEl = portal;
+}
+if (this._grocyRecipeViewerPortalEl && typeof getComputedStyle === "function") {
+const live = getComputedStyle(this);
+[
+"--fc-bg", "--fc-card", "--fc-border", "--fc-text", "--fc-text-secondary",
+"--fc-accent", "--fc-accent-text", "--fc-accent2", "--fc-accent3",
+"--fc-surface-alt", "--fc-surface2", "--fc-glass-blur", "--fh-header-offset",
+].forEach((name) => {
+const value = live.getPropertyValue(name);
+if (value && value.trim()) this._grocyRecipeViewerPortalEl.style.setProperty(name, value.trim());
+});
+}
+return overlay;
+},
+_openGrocyRecipeViewer(recipeId, fallbackName, fallbackLink, isPreview, tabs, sourceRecipe) {
+if (!recipeId) return;
+this._grocyRecipeViewerRecipeId = recipeId;
+this._grocyRecipeViewerFallbackLink = fallbackLink || "";
+// v1.129.0+: the actual Recipe Box entry this viewer was opened FROM, if
+// any - only ever passed by the Recipe Box's own primary browse click
+// (see that click handler's own comment, just below in this file), never
+// by a meal-preview/Expiring-Soon/additional-recipe call site elsewhere,
+// which only ever have a bare Grocy recipe id and no local uid to act on.
+// Drives whether the Suggest/Edit/Delete footer buttons show at all -
+// see the .grocy-recipe-viewer-recipe-actions toggle a few lines down.
+this._grocyRecipeViewerSourceRecipe = sourceRecipe || null;
+const overlay = this._grocyViewerOverlay();
+// Preview mode (task #177's picker preview icon) opens the exact same
+// viewer, but over a picker that's deliberately left open underneath -
+// show a "Back" button instead of relying on the plain close (X) to
+// implicitly reveal it, so it reads as "look, then come back" rather
+// than "close this and lose your place".
+overlay.classList.toggle("preview-mode", !!isPreview);
+// "block", not "" - .grocy-recipe-viewer-back-btn's CSS rule defaults to
+// display:none (same gotcha as the photo elements above), so clearing
+// the inline style here would silently leave it hidden even in preview
+// mode instead of showing it.
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-back-btn").style.display = isPreview ? "block" : "none";
+// v1.129.0+: same "block", not "" gotcha as the back button above -
+// .grocy-recipe-viewer-recipe-actions defaults to display:none in CSS.
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-recipe-actions").style.display = this._grocyRecipeViewerSourceRecipe ? "flex" : "none";
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = fallbackName || "Recipe";
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-stats").innerHTML = "";
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-servings").textContent = "";
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-ingredients").innerHTML = "";
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-instructions").innerHTML = "";
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-description").innerHTML = "";
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-scale-row").style.display = "none";
+this._grocyRecipeViewerIngredients = [];
+this._grocyRecipeViewerBaseServings = 1;
+this._grocyRecipeViewerServings = 1;
+this._grocyRecipeViewerRawDescription = "";
+const photoEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-photo");
+photoEl.style.display = "none";
+photoEl.src = "";
+// The full-screen modal-box scrolls its own content (overflow-y: auto);
+// without this, reopening the viewer after scrolling through a previous
+// recipe reused the same stale scrollTop and opened mid-page with the
+// title scrolled out of view above the fold.
+this._grocyViewerOverlay().querySelector(".modal-box").scrollTop = 0;
+// v1.114.0+ multi-recipe tabs - see this method's own doc note in the
+// CSS above (.grocy-recipe-viewer-tabs) for the feature this serves. An
+// optional `tabs` array of {id, name} covering every Grocy recipe a
+// meal resolves to (main recipe first, then any additionalRecipes
+// entries that themselves have a grocyRecipeId - a plain external link
+// with no grocyRecipeId was never a "Grocy recipe" to begin with and
+// stays exactly as before, a plain link). Omitted, empty, or a single
+// entry all mean "just recipeId itself" - the pre-1.114.0 behavior every
+// other call site (additional-recipe links, Expiring Soon chips, Recipe
+// Box dish detail, the picker preview icon) still gets unchanged.
+const dedupedTabs = [];
+const seenTabIds = new Set();
+(tabs || []).forEach((t) => {
+const tid = t && t.id != null ? String(t.id) : "";
+if (tid && !seenTabIds.has(tid)) {
+seenTabIds.add(tid);
+dedupedTabs.push(t);
+}
+});
+this._grocyRecipeViewerTabs = dedupedTabs.length > 1 ? dedupedTabs : null;
+this._grocyRecipeViewerDetailsById = {};
+this._grocyRecipeViewerTabErrors = {};
+const tabsEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-tabs");
+if (this._grocyRecipeViewerTabs) {
+tabsEl.innerHTML = this._grocyRecipeViewerTabs
+.map(
+(t) =>
+`<button type="button" class="grocy-recipe-viewer-tab-btn ${String(t.id) === String(recipeId) ? "active" : ""}" data-recipe-tab-id="${t.id}">${t.name || "Recipe"}</button>`
+)
+.join("");
+tabsEl.style.display = "flex";
+} else {
+tabsEl.innerHTML = "";
+tabsEl.style.display = "none";
+}
+this._openModal(this._grocyViewerOverlay());
+if (this._grocyRecipeViewerTabs) {
+this._fetchGrocyRecipeDetailsBatch(this._grocyRecipeViewerTabs.map((t) => t.id), recipeId);
+} else {
+this._fetchGrocyRecipeDetail(recipeId);
+}
+// Same screensaver idle-timer re-check as _openDishDetail - see its
+// comment for why.
+this._resetScreenSaverIdleTimer();
+},
+_closeGrocyRecipeViewer() {
+this._grocyViewerOverlay().classList.remove("open");
+// v1.129.0+: don't let a stale Recipe Box entry leak into the NEXT
+// viewer open (a bare-recipe-id call site, e.g. a meal preview, that
+// forgets to pass a 6th argument would otherwise inherit whatever was
+// last set here rather than correctly showing no Suggest/Edit/Delete
+// buttons at all).
+this._grocyRecipeViewerSourceRecipe = null;
+// Same screensaver idle-timer re-check as _closeDishDetail - see its
+// comment for why.
+this._resetScreenSaverIdleTimer();
+},
+// "I made this" button - calls Grocy's own /consume endpoint, which is a
+// real, one-way stock deduction (see the backend handler's docstring),
+// the same thing clicking "Consume all ingredients needed" on the
+// recipe's own page in Grocy does. Confirmed first since there's no undo
+// here beyond manually re-adding stock in Grocy afterward.
+async _consumeGrocyRecipeIngredients() {
+const recipeId = this._grocyRecipeViewerRecipeId;
+if (!recipeId || !this._hass) return;
+if (!window.confirm("Deduct this recipe's ingredients from your Grocy stock now? This can't be undone from here.")) {
+return;
+}
+const statusEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-status");
+statusEl.textContent = "Consuming ingredients in Grocy…";
+statusEl.classList.remove("is-error");
+try {
+// Only sent when the viewer's own scaler has been moved off the
+// recipe's base servings - leaving it out otherwise means an
+// untouched recipe consumes at whatever desired_servings was already
+// saved in Grocy, instead of this call silently overwriting it back
+// to the base count for recipes plenty of people leave scaled up.
+const servings =
+this._grocyRecipeViewerServings && this._grocyRecipeViewerServings !== this._grocyRecipeViewerBaseServings
+? this._grocyRecipeViewerServings
+: undefined;
+const result = await this._hass.connection.sendMessagePromise({
+type: "family_hub/consume_grocy_recipe",
+recipe_id: recipeId,
+...(servings ? { servings } : {}),
+});
+if (result.configured === false) {
+statusEl.textContent = "Grocy isn't connected — set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.";
+statusEl.classList.add("is-error");
+return;
+}
+if (!result.success) {
+statusEl.textContent = `Couldn't consume this recipe's ingredients: ${result.error || "unknown error"}`;
+statusEl.classList.add("is-error");
+return;
+}
+statusEl.textContent = "Ingredients deducted from Grocy stock.";
+statusEl.classList.remove("is-error");
+} catch (e) {
+statusEl.textContent = "Couldn't reach Grocy.";
+statusEl.classList.add("is-error");
+}
+},
+async _fetchGrocyRecipeDetail(recipeId) {
+if (!this._hass) return;
+const statusEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-status");
+statusEl.textContent = "Loading recipe from Grocy…";
+statusEl.classList.remove("is-error");
+try {
+const result = await this._hass.connection.sendMessagePromise({
+type: "family_hub/get_grocy_recipe_detail",
+recipe_id: recipeId,
+});
+if (result.configured === false) {
+statusEl.textContent = "Grocy isn't connected — set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.";
+return;
+}
+if (result.error || !result.recipe) {
+statusEl.textContent = `Couldn't load this recipe from Grocy: ${result.error || "not found"}`;
+statusEl.classList.add("is-error");
+return;
+}
+statusEl.textContent = "";
+this._renderGrocyRecipeDetail(result.recipe);
+} catch (e) {
+statusEl.textContent = "Couldn't reach Grocy.";
+statusEl.classList.add("is-error");
+}
+},
+// v1.114.0+ batch counterpart to _fetchGrocyRecipeDetail above, for the
+// multi-recipe tabs _openGrocyRecipeViewer sets up when it's passed more
+// than one recipe id (see that method's own comment). Fetches every
+// tab's recipe detail in ONE round trip (family_hub/get_grocy_recipe_
+// details, plural - __init__.py's _ws_get_grocy_recipe_details) rather
+// than one call per tab, caches all of them in
+// this._grocyRecipeViewerDetailsById keyed by id (string, since that's
+// how the backend's JSON response keys them and how _switchGrocyRecipe
+// ViewerTab looks them up), and renders whichever one is `activeId` -
+// the recipe the viewer was actually opened for - so the tab a person
+// clicked stays the one they see once loading finishes, even if the
+// other tabs' recipes come back in Grocy's own arbitrary iteration order.
+async _fetchGrocyRecipeDetailsBatch(recipeIds, activeId) {
+if (!this._hass) return;
+const statusEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-status");
+statusEl.textContent = "Loading recipes from Grocy…";
+statusEl.classList.remove("is-error");
+try {
+const result = await this._hass.connection.sendMessagePromise({
+type: "family_hub/get_grocy_recipe_details",
+recipe_ids: recipeIds,
+});
+if (result.configured === false) {
+statusEl.textContent = "Grocy isn't connected — set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.";
+return;
+}
+this._grocyRecipeViewerDetailsById = result.recipes || {};
+this._grocyRecipeViewerTabErrors = result.errors || {};
+this._renderActiveGrocyRecipeViewerTab(activeId);
+} catch (e) {
+statusEl.textContent = "Couldn't reach Grocy.";
+statusEl.classList.add("is-error");
+}
+},
+// Shared by the batch fetch above (once all tabs' details have loaded)
+// and _switchGrocyRecipeViewerTab (when someone clicks a different tab
+// that's already cached, or one that failed to load) - renders whichever
+// recipe id is asked for from the cache if present, or a friendly
+// per-tab error state (clearing every render target, same "nothing
+// stale left showing" approach _openGrocyRecipeViewer's own reset uses)
+// if that id came back in `errors` instead of `recipes`.
+_renderActiveGrocyRecipeViewerTab(recipeId) {
+const statusEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-status");
+const detail = (this._grocyRecipeViewerDetailsById || {})[String(recipeId)];
+if (detail) {
+statusEl.textContent = "";
+statusEl.classList.remove("is-error");
+this._renderGrocyRecipeDetail(detail);
+return;
+}
+const err = (this._grocyRecipeViewerTabErrors || {})[String(recipeId)];
+const tabInfo = ((this._grocyRecipeViewerTabs || []).find((t) => String(t.id) === String(recipeId)) || {});
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = tabInfo.name || "Recipe";
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-stats").innerHTML = "";
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-servings").textContent = "";
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-ingredients").innerHTML = "";
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-instructions").innerHTML = "";
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-description").innerHTML = "";
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-scale-row").style.display = "none";
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-photo").style.display = "none";
+statusEl.textContent = `Couldn't load this recipe from Grocy: ${err || "not found"}`;
+statusEl.classList.add("is-error");
+},
+// Tab-row click handler (delegated, see the connectedCallback wiring on
+// .grocy-recipe-viewer-tabs) - just swaps which cached recipe's data is
+// showing and moves the .active highlight; never re-fetches anything,
+// since _fetchGrocyRecipeDetailsBatch already loaded every tab's detail
+// up front when the viewer opened.
+_switchGrocyRecipeViewerTab(recipeId) {
+if (!this._grocyRecipeViewerTabs) return;
+this._grocyViewerOverlay().querySelectorAll(".grocy-recipe-viewer-tab-btn").forEach((btn) => {
+btn.classList.toggle("active", String(btn.dataset.recipeTabId) === String(recipeId));
+});
+this._grocyRecipeViewerRecipeId = recipeId;
+this._renderActiveGrocyRecipeViewerTab(recipeId);
+this._grocyViewerOverlay().querySelector(".modal-box").scrollTop = 0;
+},
+_renderGrocyRecipeDetail(recipe) {
+const photoEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-photo");
+if (recipe.image) {
+photoEl.src = recipe.image;
+// NOT "" - .grocy-recipe-viewer-photo's own CSS rule sets
+// `display: none` as its base/default (so it stays hidden for
+// recipes with no photo without extra markup) - clearing the inline
+// style here would just fall back to that class rule and the image
+// would silently never show even though src is set correctly.
+photoEl.style.display = "block";
+} else {
+photoEl.style.display = "none";
+photoEl.src = "";
+}
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = recipe.name || "Recipe";
+// Prep/Cook/Total stat pills (task #250/mockup) - only the ones this
+// recipe actually has real data for; a manually-typed Grocy recipe with
+// none of the three published just gets an empty (and, per the
+// :empty CSS rule, invisible) stats row instead of a placeholder.
+const statsEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-stats");
+const statDefs = [
+["Prep", recipe.prep_time],
+["Cook", recipe.cook_time],
+["Total", recipe.total_time],
+].filter(([, value]) => (value || "").trim());
+statsEl.innerHTML = statDefs
+.map(([label, value]) => `<div class="grocy-recipe-stat"><span class="grocy-recipe-stat-label">${label}</span><span class="grocy-recipe-stat-value">${value}</span></div>`)
+.join("");
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-servings").textContent = recipe.servings
+? `Makes ${recipe.servings} serving${recipe.servings === 1 ? "" : "s"}`
+: "";
+// The picker only ever had the list-page link; once the detail call
+// resolves we have the authoritative one from the recipe object itself
+// (same value in practice, but this is the one that should win).
+this._grocyRecipeViewerFallbackLink = recipe.link || this._grocyRecipeViewerFallbackLink || "";
+
+const ingredients = Array.isArray(recipe.ingredients) ? recipe.ingredients : [];
+this._grocyRecipeViewerIngredients = ingredients;
+// The scaler (task #173) works off the recipe's own base_servings - the
+// serving count Grocy's recipes_pos amounts are actually calibrated for -
+// separate from "servings" above, which can reflect a previously-saved
+// desired_servings override instead. Falls back gracefully to whatever's
+// available so old/partial responses (or the plain "amount" string with
+// no raw amount_value) still render exactly as before.
+const baseServings = Number(recipe.base_servings) > 0 ? Number(recipe.base_servings) : (Number(recipe.servings) > 0 ? Number(recipe.servings) : 1);
+this._grocyRecipeViewerBaseServings = baseServings;
+this._grocyRecipeViewerServings = Number(recipe.servings) > 0 ? Number(recipe.servings) : baseServings;
+const scaleRow = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-scale-row");
+const canScale = ingredients.some((ing) => typeof ing.amount_value === "number");
+scaleRow.style.display = canScale ? "flex" : "none";
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-scale-value").textContent = String(this._grocyRecipeViewerServings);
+this._renderGrocyRecipeIngredients();
+
+// The description/instructions HTML can itself embed a plain-text
+// ingredients list (see _createImportedGrocyRecipe's "Ingredients"
+// <ul> block, added for recipes imported via the card's "Import a
+// recipe from a link" flow, task #158) - kept unscaled here so
+// _renderGrocyRecipeDescription can re-derive the scaled version from
+// the original every time the stepper changes, rather than scaling an
+// already-scaled string a second time.
+this._grocyRecipeViewerRawDescription = recipe.description || "";
+this._renderGrocyRecipeDescription();
+},
+// Recomputes the description/instructions block against the current
+// servings ratio - mirrors _renderGrocyRecipeIngredients, but for the
+// plain-text "Ingredients" list some recipes also carry inside their
+// description HTML (see the comment above). Recipes without that exact
+// block (hand-typed directly in Grocy, or from before task #158) simply
+// pass through _scaleIngredientsDescriptionHtml unchanged.
+_renderGrocyRecipeDescription() {
+if (!this._root) return;
+const descEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-description");
+const instructionsEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-instructions");
+if (!descEl) return;
+const raw = this._grocyRecipeViewerRawDescription || "";
+if (!raw) {
+if (instructionsEl) instructionsEl.innerHTML = "";
+descEl.innerHTML = `<div class="loved-empty">No instructions added in Grocy.</div>`;
+return;
+}
+const baseServings = this._grocyRecipeViewerBaseServings || 1;
+const servings = this._grocyRecipeViewerServings || baseServings;
+const ratio = baseServings > 0 ? servings / baseServings : 1;
+let html = this._scaleIngredientsDescriptionHtml(raw, ratio);
+
+// Recipes imported via this card's own "Import a recipe from a link"
+// flow (_createImportedGrocyRecipe, task #158/#223) write a predictable
+// "<p><strong>Preparation</strong></p><p>step 1</p><p>step 2</p>..."
+// block, followed by (optionally) the Prep/Cook line and/or a Source
+// line, each of which starts with its own "<p><strong>". Recipes without
+// that exact shape (hand-typed directly in Grocy, older imports, plain
+// pasted text with no parsed steps) simply have no match here and fall
+// through to the untouched raw-HTML rendering exactly as before this
+// feature existed - nothing about them changes.
+const stepsMatch = html.match(/<p><strong>Preparation<\/strong><\/p>([\s\S]*?)(?=<p><strong>|$)/i);
+const steps = [];
+if (stepsMatch) {
+const stepRe = /<p>([\s\S]*?)<\/p>/gi;
+let m;
+while ((m = stepRe.exec(stepsMatch[1]))) {
+const text = m[1].trim();
+if (text) steps.push(text);
+}
+}
+
+if (instructionsEl) {
+instructionsEl.innerHTML = steps.length
+? `<div class="grocy-recipe-instructions-title">Instructions</div>` +
+steps
+.map(
+(step, i) =>
+`<div class="grocy-recipe-instruction-row"><span class="grocy-recipe-instruction-badge">${i + 1}</span><span class="grocy-recipe-instruction-text">${step}</span></div>`
+)
+.join("")
+: "";
+}
+
+// Once a block has its own dedicated element above (structured
+// ingredients list, numbered Instructions), it'd otherwise appear twice
+// on the page. The Ingredients block needs real care though: an
+// ingredient the importer couldn't match (or the person left unmatched/
+// skipped) never becomes a recipes_pos row at all (see
+// _ws_create_grocy_recipe's "skipped" list), so the structured list
+// above can be a strict SUBSET of what's in the raw text - and outright
+// removing the raw block used to hide those skipped ingredients
+// entirely (a real household report: "not including the ingredients in
+// the preparation section"). Rather than try to judge redundancy and
+// hide it, this always keeps the raw written-out list available - just
+// tucked behind a collapsed-by-default accordion, so it's a tap away
+// when needed (a skipped ingredient, double-checking exact wording,
+// etc.) without permanently duplicating the structured list above for
+// the common case where every ingredient already matched.
+const ingredientsBlockMatch = html.match(/<p><strong>Ingredients<\/strong><\/p><ul>([\s\S]*?)<\/ul>/i);
+if (ingredientsBlockMatch) {
+const accordionHtml =
+`<div class="grocy-recipe-ingredients-accordion">` +
+`<button type="button" class="accordion-toggle recipe-viewer-ingredients-toggle" data-target="recipe-viewer-ingredients-body">` +
+`<span class="theme-section-label">Written-out ingredients list</span>` +
+`<span class="accordion-chevron">&#9660;</span>` +
+`</button>` +
+`<div class="accordion-body" id="recipe-viewer-ingredients-body"><ul>${ingredientsBlockMatch[1]}</ul></div>` +
+`</div>`;
+html = html.replace(ingredientsBlockMatch[0], accordionHtml);
+}
+if (steps.length) {
+html = html.replace(stepsMatch[0], "");
+}
+// The Prep/Cook line is now always shown as its own stat pills whenever
+// it exists at all (see _renderGrocyRecipeDetail), so it's always
+// redundant here - safe to strip unconditionally.
+html = html.replace(/<p>[\s\S]*?<strong>(?:Prep|Cook):<\/strong>[\s\S]*?<\/p>/i, "");
+html = html.trim();
+descEl.innerHTML = html || `<div class="loved-empty">No additional notes.</div>`;
+const ingredientsToggle = descEl.querySelector(".recipe-viewer-ingredients-toggle");
+if (ingredientsToggle) {
+ingredientsToggle.addEventListener("click", () => {
+const body = descEl.querySelector(`#${ingredientsToggle.dataset.target}`);
+ingredientsToggle.classList.toggle("open");
+if (body) body.classList.toggle("open");
+});
+}
+},
+// Finds the "Ingredients" <ul> block _createImportedGrocyRecipe writes
+// into a recipe's description (raw scraped lines like "2 cups flour",
+// not the structured recipes_pos data the main ingredients list above
+// uses) and scales just the LEADING quantity of each line by ratio,
+// leaving everything else - product names, notes, and especially the
+// Preparation instructions below it (so "bake for 20 minutes" never gets
+// mistaken for a scalable quantity) - untouched. A line whose quantity
+// isn't a plain number/fraction (a range like "3-4 cloves", or no
+// leading number at all, e.g. "a pinch of salt") is left exactly as
+// written rather than guessed at. Recipes with no such block (hand-typed
+// directly in Grocy) pass through completely unchanged.
+_scaleIngredientsDescriptionHtml(html, ratio) {
+if (!html) return html;
+const blockRe = /(<p><strong>Ingredients<\/strong><\/p><ul>)([\s\S]*?)(<\/ul>)/i;
+const match = html.match(blockRe);
+if (!match) return html;
+const qtyRe = /^(\s*)(\d+\s+\d+\/\d+|\d+\/\d+|\d+(?:\.\d+)?[¼½¾⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞]?|[¼½¾⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞])(?=\s|$)/;
+const scaledItems = match[2].replace(/<li>([\s\S]*?)<\/li>/gi, (full, inner) => {
+const qm = inner.match(qtyRe);
+if (!qm) return full;
+const value = this._parseQuantityToken(qm[2]);
+if (value === null || !isFinite(value)) return full;
+const scaledText = this._formatScaledQuantityToken(value * ratio);
+const rest = inner.slice(qm[0].length);
+return `<li>${qm[1]}${scaledText}${rest}</li>`;
+});
+return html.slice(0, match.index) + match[1] + scaledItems + match[3] + html.slice(match.index + match[0].length);
+},
+// "1 1/2" / "1/2" / "1½" / "½" / "2" / "2.5" / "1-2" -> a plain decimal.
+// A plain range ("1-2", "3-4") resolves to its upper bound rather than
+// failing outright - see the backend's _parse_quantity_token (kept in
+// sync deliberately) for why: a household reported ordinary countable
+// ingredients like "1-2 russet potatoes" defaulting to "Don't count
+// toward stock" every time, since that checkbox's own default just
+// follows whether a usable number came back at all. Returns null for
+// anything else (non-numeric text) so the caller knows to leave that
+// line alone rather than silently mangling it.
+_parseQuantityToken(token) {
+token = (token || "").trim();
+const FRACTION_MAP = {
+"¼": 0.25, "½": 0.5, "¾": 0.75,
+"⅓": 1 / 3, "⅔": 2 / 3,
+"⅕": 0.2, "⅖": 0.4, "⅗": 0.6, "⅘": 0.8,
+"⅙": 1 / 6, "⅚": 5 / 6,
+"⅛": 0.125, "⅜": 0.375, "⅝": 0.625, "⅞": 0.875,
+};
+let m = token.match(/^(\d+)\s+(\d+)\/(\d+)$/);
+if (m) return parseInt(m[1], 10) + parseInt(m[2], 10) / parseInt(m[3], 10);
+m = token.match(/^(\d+)\/(\d+)$/);
+if (m) return parseInt(m[1], 10) / parseInt(m[2], 10);
+m = token.match(/^(\d+(?:\.\d+)?)?([¼½¾⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞])?$/);
+if (m && (m[1] || m[2])) {
+const whole = m[1] ? parseFloat(m[1]) : 0;
+const frac = m[2] ? FRACTION_MAP[m[2]] : 0;
+return whole + frac;
+}
+m = token.match(/^(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)$/);
+if (m) return parseFloat(m[2]);
+return null;
+},
+// The inverse of _parseQuantityToken - renders a scaled decimal back as
+// a recipe-friendly whole/fraction string (e.g. "1 1/2" rather than
+// "1.5") when it lands close to a common cooking fraction (halves,
+// thirds, quarters, fifths, sixths, eighths), falling back to a plain
+// rounded decimal otherwise.
+_formatScaledQuantityToken(value) {
+const rounded = Math.round(value * 100) / 100;
+const whole = Math.floor(rounded + 1e-6);
+const frac = rounded - whole;
+const FRACTIONS = [
+[1 / 8, "1/8"], [1 / 6, "1/6"], [0.2, "1/5"], [0.25, "1/4"],
+[1 / 3, "1/3"], [0.375, "3/8"], [0.4, "2/5"], [0.5, "1/2"],
+[0.6, "3/5"], [0.625, "5/8"], [2 / 3, "2/3"], [0.75, "3/4"],
+[0.8, "4/5"], [5 / 6, "5/6"], [0.875, "7/8"],
+];
+if (frac > 0.03) {
+for (const [f, label] of FRACTIONS) {
+if (Math.abs(frac - f) < 0.03) {
+return whole > 0 ? `${whole} ${label}` : label;
+}
+}
+}
+return String(rounded);
+},
+// Recomputes just the ingredients list against
+// this._grocyRecipeViewerServings/_grocyRecipeViewerBaseServings, without
+// re-fetching from Grocy - called on initial render and again every time
+// the scale stepper changes.
+//
+// v1.110.5+ bug report: "if you click do not include in amounts the
+// ingredient doesnt show on the top of the recipe viewer. It should."
+// this._grocyRecipeViewerIngredients (set in _renderGrocyRecipeDetail from
+// the backend's own family_hub/get_grocy_recipe_detail response) already
+// includes every ingredient unconditionally - see that handler's own
+// comment. This method must keep doing the same: not_check_stock_
+// fulfillment ("don't count toward stock") is a STOCK-MATH concern only,
+// never a reason to skip a row here.
+_renderGrocyRecipeIngredients() {
+if (!this._root) return;
+const ingredientsEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-ingredients");
+if (!ingredientsEl) return;
+const ingredients = this._grocyRecipeViewerIngredients || [];
+if (!ingredients.length) {
+ingredientsEl.innerHTML = "";
+return;
+}
+const baseServings = this._grocyRecipeViewerBaseServings || 1;
+const servings = this._grocyRecipeViewerServings || baseServings;
+const ratio = baseServings > 0 ? servings / baseServings : 1;
+let lastGroup = null;
+ingredientsEl.innerHTML = ingredients
+.map((ing, idx) => {
+let groupHtml = "";
+const group = ing.group || "";
+if (group !== lastGroup) {
+lastGroup = group;
+if (group) groupHtml = `<div class="grocy-recipe-ingredient-group">${group}</div>`;
+}
+const note = ing.note ? ` <span class="grocy-recipe-ingredient-note">(${ing.note})</span>` : "";
+const amountText = this._formatScaledIngredientAmount(ing, ratio);
+// Numbered circular badge (task #251/mockup) in place of the amount
+// leading the row - the amount itself moves down alongside the
+// product name so nothing shown before is lost.
+return `${groupHtml}<div class="grocy-recipe-ingredient-row"><span class="grocy-recipe-ingredient-badge">${idx + 1}</span><span><span class="grocy-recipe-ingredient-amount">${amountText}</span> ${ing.product || ""}${note}</span></div>`;
+})
+.join("");
+},
+// A free-text amount ("to taste") can't be scaled - passed through as-is.
+// Anything without a raw numeric amount_value (an older/partial response)
+// falls back to the pre-formatted "amount" string, matching the exact
+// behavior before this feature existed.
+_formatScaledIngredientAmount(ing, ratio) {
+if (ing.variable_amount) return ing.variable_amount;
+if (typeof ing.amount_value !== "number") return ing.amount || "";
+const scaled = ing.amount_value * ratio;
+const rounded = Math.round(scaled * 100) / 100;
+const unit = (rounded === 1 ? (ing.unit_name || ing.unit_name_plural) : (ing.unit_name_plural || ing.unit_name)) || "";
+return `${rounded} ${unit}`.trim();
+},
+_adjustGrocyRecipeViewerServings(delta) {
+const next = Math.max(1, (this._grocyRecipeViewerServings || 1) + delta);
+if (next === this._grocyRecipeViewerServings) return;
+this._grocyRecipeViewerServings = next;
+const valueEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-scale-value");
+if (valueEl) valueEl.textContent = String(next);
+this._renderGrocyRecipeIngredients();
+this._renderGrocyRecipeDescription();
+},
+};
+}
+
+
+// Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
+// "When you load a card it tends to load the default theme first then it
+// switches over to the theme you set how can we always make it load the
+// set theme first." Root cause: EVERY themed card's first paint happens
+// with no theme CSS vars set at all (falls back to _defaultTheme()'s own
+// hardcoded palette), because resolving the household's actual theme
+// takes two sequential, awaited websocket round trips after `hass` is
+// first set - family_hub/get_settings (_fetchSettings), THEN
+// theme_builder/list (_fetchGlobalThemes, which is what a Global Theme
+// selection actually needs to resolve into real colors) - both happening
+// well after `_build()` has already rendered once. There was no way to
+// know the real colors before those round trips finished.
+//
+// Fix: cache the last set of CSS var values this device actually applied
+// (in memory for the rest of this page load, in localStorage across
+// reloads), and apply that cache SYNCHRONOUSLY in `_build()` - before the
+// very first paint, before any fetch has even started - so a reload shows
+// last-known-good colors immediately instead of _defaultTheme()'s
+// hardcoded ones. Once the real fetches resolve, the theme-applying
+// method runs as it always has and reconciles - a no-op re-application
+// (no visible change) if nothing changed since last time, which is the
+// overwhelmingly common case on an ordinary refresh; a visible switch
+// only when the household's theme has genuinely changed since this
+// device last saw it, which is unavoidable (nothing can know about a
+// change before asking).
+//
+// Same shared-singleton, "only the first card whose script actually runs
+// this block sets it up" pattern as window.__familyHubFabCoordinator
+// above - copy-pasted byte-identically into every themed card file
+// (including this one, the source-of-truth Settings card), since these
+// are independently-loaded Lovelace resources rather than ES modules
+// that could import one shared file.
+//
+// Cached under a KEY, not one single blob - see this same comment block
+// in family-hub-chores-card.js for the full "why a key" reasoning. This
+// card has no per-card-placement theme_override concept of its own (that
+// only exists on the standalone chores/rewards/goals/pantry/my-chores/
+// todo/active-timers/recipe-box cards), so the key here is only ever this
+// device's own override, or the shared "household" bucket.
+if (!window.__familyHubThemeCache) {
+  window.__familyHubThemeCache = (function () {
+    const STORAGE_PREFIX = "familyHubThemeVarsCache::";
+    const memory = new Map(); // key -> {varName: value}
+
+    function get(key) {
+      if (memory.has(key)) return memory.get(key);
+      try {
+        const raw = localStorage.getItem(STORAGE_PREFIX + key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object") {
+            memory.set(key, parsed);
+            return parsed;
+          }
+        }
+      } catch (e) {
+        // Corrupt/blocked localStorage (private browsing, etc.) - just
+        // means no cache to apply this time, same as a first-ever load.
+      }
+      return null;
+    }
+    function set(key, vars) {
+      memory.set(key, vars);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(vars));
+      } catch (e) {
+        // Best-effort only - the in-memory copy above still helps every
+        // OTHER card mounted later in this same page load even if
+        // localStorage itself is unavailable.
+      }
+    }
+    return { get, set };
+  })();
+}
+
 class FamilyWeekCalendarCard extends HTMLElement {
 // No getConfigElement/getConfigForm here on purpose - a graphical editor
 // was tried (v33) but reverted (v34): it only ever covered a bootstrap
@@ -174,6 +1871,17 @@ if (this._settingsUserProfilesDraft === undefined) this._settingsUserProfilesDra
 if (this._notifyProfileEditingUserId === undefined) this._notifyProfileEditingUserId = null;
 if (this._notifyProfileUsersCache === undefined) this._notifyProfileUsersCache = null;
 if (this._notifyProfileUsersError === undefined) this._notifyProfileUsersError = false;
+// v1.131.0+: {user_id: name} for every household member, fetched
+// unconditionally (see _fetchHouseholdMemberNames, called from
+// _refreshAllData) rather than only when Settings happens to be open -
+// _getPeople's own profile-calendar synthesis needs a display name for
+// "include a user's calendar under their name on the calendar" at ALL
+// times the grid renders, not just while the Users tab profile editor is
+// open (which is the only place _notifyProfileUsersCache above gets
+// populated). Starts empty, same "best-effort, never blocks a render"
+// spirit as every other cache here - a synthesized calendar column simply
+// falls back to showing the raw user id until this first resolves.
+if (this._householdMemberNamesById === undefined) this._householdMemberNamesById = {};
 if (this._settingsActiveTab === undefined) this._settingsActiveTab = "general";
 if (this._reminderOverrides === undefined) this._reminderOverrides = {};
 if (this._eventPeopleOverrides === undefined) this._eventPeopleOverrides = {};
@@ -199,8 +1907,24 @@ const first = !this._hass;
 this._hass = hass;
 if (first) {
 this._firstLoadPromise = this._initFirstLoad();
-}
+// v1.126.0+: skip the _applySizeVars() call below on this very first
+// assignment - _settingsCache/_globalThemes are still their just-
+// initialized defaults at this exact synchronous point (the real
+// values only arrive once _initFirstLoad's own awaited fetches above
+// resolve, at least a tick later), so running it now would briefly
+// overwrite whatever _build() already painted (from this device's
+// cached theme, or _defaultTheme() on a genuine first-ever load with
+// nothing cached yet) with a premature, usually-wrong resolution -
+// this WAS the household's reported "loads the default theme first
+// then switches" flash for this card specifically (every other
+// themed card only ever resolves via its own awaited fetch, never
+// synchronously from its `hass` setter, so this quirk was unique to
+// the calendar card). _fetchSettings()/_fetchGlobalThemes() (both
+// awaited inside _initFirstLoad above) call _applySizeVars() again
+// once they actually have something real to resolve.
+} else {
 this._applySizeVars();
+}
 }
 // One shared list of "refresh everything" fetches, used by the very first
 // load, a reconnect (e.g. switching dashboard views), and the 60s poll -
@@ -224,6 +1948,31 @@ this._fetchReminders();
 // (week/month/timeline/planner/all-day) needs it to know which events
 // get the multi-person color collage.
 this._fetchEventPeopleOverrides();
+this._fetchHouseholdMemberNames();
+}
+// v1.131.0+: household member display names, kept current independent of
+// whether the Settings modal (and its own, Settings-scoped
+// _notifyProfileUsersCache) has ever been opened this session - see
+// _householdMemberNamesById's own comment for why _getPeople needs this
+// available unconditionally. Same "fresh fetch every refresh, not cached
+// indefinitely" policy as every other _fetch* here, so a newly-created
+// Home Assistant user's name reaches an already-open dashboard within one
+// poll tick rather than needing a reload.
+async _fetchHouseholdMemberNames() {
+if (!this._hass) return;
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/list_users" });
+const users = Array.isArray(result && result.users) ? result.users : [];
+const byId = {};
+users.forEach((u) => {
+if (u && u.id) byId[u.id] = u.name || u.id;
+});
+this._householdMemberNamesById = byId;
+} catch (e) {
+// best-effort - keep whatever was cached from the last successful fetch
+return;
+}
+if (this._root) this._renderGrid();
 }
 _startPolling() {
 if (this._interval) return;
@@ -257,6 +2006,7 @@ this._viewMode = s.defaultView === "month" ? this._getMonthViewVariant() : this.
 }
 this._refreshAllData();
 this._startPolling();
+this._registerFabCoordinator();
 // Tell the backend which to-do list holds reminders, so its poller knows
 // what to check - best-effort, and only needs to happen once per session
 // since it rarely changes.
@@ -265,6 +2015,44 @@ this._syncDailyDigestConfig();
 this._syncGrocyExpiringConfig();
 this._syncGrocyLowStockConfig();
 this._syncNotificationClickPath();
+}
+// v1.110.4+: joins the shared FAB-stacking coordinator - see
+// family-hub-chores-card.js's identical _registerFabCoordinator for the
+// full design note. This card's FAB (add-event-fab) offers no Goal tab,
+// so it registers with no meta at all - just a slot in the stack.
+//
+// v1.110.7+: settings.fabPosition ("dashboard" default | "card") toggles
+// the [fab-position="card"] host attribute the CSS below keys off of to
+// switch .add-event-fab from position:fixed (viewport corner, stacked
+// with every other Family Hub card's FAB via the coordinator) to
+// position:absolute (this card's OWN corner - see :host's now-relative
+// position). It still registers as a full coordinator member either way
+// (so Goal-tab de-duplication elsewhere keeps working), but passes
+// takesSlot:false when card-relative - see the coordinator singleton's
+// own doc for why a shared viewport-corner stacking slot is meaningless
+// once a FAB is positioned relative to its own card's box instead.
+_registerFabCoordinator() {
+// v1.132.5+: "Small screen mode" - household ask, verbatim: "Create a
+// small screen mode for small devices, this would hide the top bar on
+// the calendar, and moves the settings button to the fab, this only
+// happens when you turn on small screen mode." Folded into this same
+// method (rather than its own call site) purely because it's already
+// called from exactly the right places - first load, and after every
+// settings save/refetch - same reasoning as the fab-position attribute
+// right below. Toggles a host attribute the CSS keys off of to hide
+// .week-nav (see :host([small-screen-mode]) .week-nav below) and reveal
+// the add-fab-settings item in the + button's own menu (see _build's
+// add-menu-list markup and its click handler).
+if (this._getSmallScreenMode()) this.setAttribute("small-screen-mode", "");
+else this.removeAttribute("small-screen-mode");
+if (!window.__familyHubFabCoordinator) return;
+const settings = this._getSettings ? this._getSettings() : null;
+const cardRelative = !!(settings && settings.fabPosition === "card");
+if (cardRelative) this.setAttribute("fab-position", "card");
+else this.removeAttribute("fab-position");
+window.__familyHubFabCoordinator.registerClient(this, "calendar", {}, (state) => {
+this.style.setProperty("--fh-fab-offset", `${state.offsetPx}px`);
+}, { takesSlot: !cardRelative });
 }
 connectedCallback() {
 if (this._hass && !this._interval) {
@@ -294,6 +2082,7 @@ this._refreshAllData();
 this._startPolling();
 }
 }
+this._registerFabCoordinator();
 if (!this._boundSyncHeight) this._boundSyncHeight = this._syncHeight.bind(this);
 window.addEventListener("resize", this._boundSyncHeight);
 window.addEventListener("orientationchange", this._boundSyncHeight);
@@ -331,8 +2120,19 @@ this._plannerMobileMQ.addListener(this._boundPlannerMQChange);
 }
 }
 disconnectedCallback() {
+if (window.__familyHubFabCoordinator) window.__familyHubFabCoordinator.unregisterClient(this);
 if (this._interval) clearInterval(this._interval);
 this._interval = null;
+// v1.121.0+: the Grocy Recipe Viewer's portal (see _grocyViewerOverlay's
+// own comment) lives on document.body, outside this card's own DOM
+// entirely - it must be torn down here explicitly, or a dashboard edit/
+// Lovelace re-creating this element would leave an orphaned full-screen
+// viewer behind forever.
+if (this._grocyRecipeViewerPortalEl) {
+this._grocyRecipeViewerPortalEl.remove();
+this._grocyRecipeViewerPortalEl = null;
+this._grocyRecipeViewerOverlayEl = null;
+}
 if (this._heightInterval) clearInterval(this._heightInterval);
 this._heightInterval = null;
 if (this._countdownTickerInterval) clearInterval(this._countdownTickerInterval);
@@ -417,13 +2217,58 @@ return { grid_rows: "auto", grid_columns: "full" };
 _dateKey(d) {
 return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
+// v1.110.5+: the household's chosen day-count (_getWeekViewDayCount,
+// 3/5/7 - see its own comment) branches this in two ways:
+//  - 7 (the default, unchanged): exactly today's Week-view behavior -
+//    the calendar week containing today, offset by this._weekOffset
+//    whole WEEKS via forward/back navigation, always starting Sunday.
+//  - 3 or 5: "today's date is always the CENTER column... and it should
+//    recenter as the displayed date changes (navigating forward/back, or
+//    a new day rolling over at midnight)." this._weekOffset is reused
+//    here too (so every existing forward/back/today caller - see
+//    _setWeekOffset - just works unchanged), but now counts whole
+//    N-day WINDOWS rather than weeks: offset 0 is "today" itself is the
+//    center date, offset +1 shifts the center date N days later, etc.
+//    Either way the actual start date is just that center date minus
+//    half the window, so the center column is always the middle of what
+//    _buildWeekLikeContext/_renderWeekGrid lay out - no separate
+//    "which column is center" logic needed anywhere else. Because this
+//    computes from `new Date()` (today) fresh on every call rather than
+//    caching a stored anchor date, a real midnight rollover while the
+//    dashboard stays open on offset 0 recenters on its own the next time
+//    anything re-renders (a poll tick, at worst), with no special-cased
+//    "did the day change" check required.
 _weekStart() {
+const n = this._weekViewDayCount ? this._weekViewDayCount() : 7;
 const now = new Date();
+if (n === 7) {
 const day = now.getDay();
 const sunday = new Date(now);
 sunday.setHours(0, 0, 0, 0);
 sunday.setDate(now.getDate() - day + (this._weekOffset || 0) * 7);
 return sunday;
+}
+const center = new Date(now);
+center.setHours(0, 0, 0, 0);
+center.setDate(center.getDate() + (this._weekOffset || 0) * n);
+const start = new Date(center);
+start.setDate(center.getDate() - Math.floor(n / 2));
+return start;
+}
+// Only exists as a tiny indirection so _weekStart (and anything else
+// that needs "how many day columns right now") always asks the view
+// itself rather than reading localStorage directly - _getWeekViewDayCount
+// is the one place that actually knows the storage key/valid values.
+//
+// Deliberately scoped to the plain "week" variant only (this._viewMode
+// === "week") - Planner and Portrait both still hardcode 7 day columns
+// (Portrait's own 4-then-3 split in particular has nowhere sane to put a
+// 3- or 5-day window), and the household's chosen day-count is stored
+// independently of which Week-family variant is currently showing, so
+// switching to Portrait/Planner must not suddenly hand _weekStart a
+// day-count those renderers never asked for and don't lay out for.
+_weekViewDayCount() {
+return this._viewMode === "week" ? this._getWeekViewDayCount() : 7;
 }
 _setWeekOffset(n) {
 this._weekOffset = n;
@@ -485,13 +2330,28 @@ const anchor = this._monthAnchor();
 this._root.querySelector(".week-label").textContent = anchor.toLocaleDateString(undefined, { month: "long", year: "numeric" });
 } else {
 if (shortcuts) shortcuts.style.display = "";
+// v1.110.5+: a 3/5-day window isn't a "week" at all - this._weekOffset
+// counts N-day windows in that case (see _weekStart's own comment), so
+// the "N Weeks Out"/"This Week" phrasing (and the day-shortcut buttons,
+// which jump by whole weeks) only make sense for the plain 7-day Week
+// view. shortcuts.style.display above still applies (a 3/5-day window
+// is still the "week" viewFamily, just a narrower window of it), but
+// the week-shortcut ROW itself is hidden here instead for 3/5, and the
+// label falls back to a plain date range with no "weeks out" framing.
+const dayCount = this._weekViewDayCount();
 const start = this._weekStart();
 const end = new Date(start);
-end.setDate(start.getDate() + 6);
+end.setDate(start.getDate() + dayCount - 1);
 const fmt = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+if (dayCount === 7) {
 const prefix =
 this._weekOffset === 0 ? "This Week" : this._weekOffset === 1 ? "Next Week" : this._weekOffset > 1 ? `${this._weekOffset} Weeks Out` : `${Math.abs(this._weekOffset)} Week(s) Ago`;
 this._root.querySelector(".week-label").textContent = `${prefix} · ${fmt(start)} – ${fmt(end)}`;
+if (shortcuts) shortcuts.style.display = "";
+} else {
+this._root.querySelector(".week-label").textContent = `${fmt(start)} – ${fmt(end)}`;
+if (shortcuts) shortcuts.style.display = "none";
+}
 this._root.querySelectorAll(".week-shortcut").forEach((btn) => {
 btn.classList.toggle("active", parseInt(btn.dataset.weeks, 10) === this._weekOffset);
 });
@@ -530,6 +2390,77 @@ local = localStorage.getItem("familyCalendarWeekViewVariantLocal");
 } catch (e) {
 }
 return ["week", "planner", "portrait"].includes(local) ? local : "week";
+}
+// v1.110.5+ task: "Display X days for smaller displays - In calendar
+// settings add a way to change how many days to view at a time this
+// will make smaller displays a little more manageable." Same this-
+// device-only localStorage pattern as _getWeekViewVariant just above -
+// how many day columns comfortably fit is a property of the physical
+// screen, not something every device in the household should share (the
+// household-wide settings blob is for things like theme/timeline range
+// that genuinely should match everywhere). 7 (today's plain Week
+// behavior, unchanged) is the default for anyone who's never touched
+// this control. See _weekStart's own comment for how 3/5 vs 7 change
+// which dates actually get computed.
+_getWeekViewDayCount() {
+let local = null;
+try {
+local = localStorage.getItem("familyCalendarWeekDayCountLocal");
+} catch (e) {
+}
+const n = parseInt(local, 10);
+return [3, 5, 7].includes(n) ? n : 7;
+}
+// v1.132.7+: "Small screen mode" was originally a shared household
+// Settings field (v1.132.5) - household report, verbatim: "the small
+// display mode needs to be device specific. only apply to the device its
+// marked on." Turning it on on one tablet was turning it on on every
+// Family Hub device in the household, which defeats the whole point (a
+// toggle for hiding the top bar on a physically small screen). Same
+// this-device-only localStorage pattern as _getWeekViewVariant/
+// _getWeekViewDayCount above - "on"/"off" once this device has its own
+// saved value, hardcoded false (today's normal top bar) for a device
+// that's never touched it. Deliberately NOT the same "falls through to
+// the shared setting when nothing's saved locally" pattern
+// _getShowTimeline/_getDeviceThemeOverride use elsewhere - a live
+// fallback to the shared field would still let one device's-worth of
+// intent silently apply to every other device that just hasn't opened
+// Settings yet, which is exactly the bug being fixed here. Instead, the
+// FIRST read on a given device does a one-time migration: if this device
+// has never saved its own value AND the old shared
+// settings.smallScreenMode was already true (from before this fix), seed
+// this device's own local value to "on" so nobody's current display goes
+// back to showing the top bar out of nowhere the moment they update -
+// and immediately persist that seed, so it only ever happens once and
+// every read after that (on this device) is 100% local from then on. A
+// household that never used the old shared toggle (the common case for
+// most installs) never sees anything seeded - defaults quietly to false,
+// same as `smallScreenMode: false`'s own household default always was.
+_getSmallScreenMode() {
+let local = null;
+try {
+local = localStorage.getItem("familyCalendarSmallScreenModeLocal");
+} catch (e) {
+}
+if (local === "on") return true;
+if (local === "off") return false;
+// No local value saved yet AND the real household settings haven't
+// actually loaded on this card yet (this._settingsCache is still null,
+// e.g. connectedCallback's own _registerFabCoordinator() call fires
+// before `hass`/_initFirstLoad has ever resolved) - don't migrate off of
+// _getSettings()'s DEFAULTS (smallScreenMode: false) and lock that in as
+// this device's own permanent local value before the real fetch even
+// gets a chance to run. Just report off for this one call, with nothing
+// written - _registerFabCoordinator runs again once settings genuinely
+// load (see _fetchSettings/_fetchLegacySettings), and THAT call is what
+// actually performs the one-time migration below.
+if (!this._settingsCache) return false;
+const legacyShared = !!this._settingsCache.smallScreenMode;
+try {
+localStorage.setItem("familyCalendarSmallScreenModeLocal", legacyShared ? "on" : "off");
+} catch (e) {
+}
+return legacyShared;
 }
 // v144+ task #28: same idea as _getWeekViewVariant, for the Month
 // family. Originally only "month" existed - the getter/localStorage key
@@ -676,6 +2607,26 @@ showMealsInMonth: false,
 // to other days, since "past" only means something relative to today.
 // Off by default, opt-in like every other display toggle here.
 greyOutPastEvents: false,
+// v1.110.7: "dashboard" (default, unchanged) pins the + FAB to the
+// viewport's bottom-right corner like every other Family Hub FAB
+// (and stacks with them via the shared window.__familyHubFabCoordinator);
+// "card" instead anchors it to this card's OWN box (position: absolute
+// off the host element rather than position: fixed off the viewport),
+// for a multi-column/sections dashboard where a viewport-fixed FAB would
+// sit disconnected from a card that isn't in the bottom-right column. See
+// _registerFabCoordinator's own comment for why "card" opts all the way
+// out of the shared stacking instead of trying to stack in its own corner.
+fabPosition: "dashboard",
+// v1.132.5+: "Small screen mode" - household ask, verbatim: "Create a
+// small screen mode for small devices, this would hide the top bar on
+// the calendar, and moves the settings button to the fab, this only
+// happens when you turn on small screen mode." Off by default (the top
+// bar - week-nav, with Settings/Week/Month/Edit Meals/Suggestions/Recipe
+// Box/More - keeps showing exactly as it always has) so nothing changes
+// for anyone until they opt in from a small device. See _build()'s
+// .week-nav/small-screen-mode CSS and the add-menu's new
+// add-fab-settings item (_openSettings moved there) for the other half.
+smallScreenMode: false,
 scrollLocked: false,
 theme: this._defaultTheme(),
 useGlobalTheme: false,
@@ -706,9 +2657,6 @@ usersEnabled: {},
 disableWhileRecipeOpen: false,
 },
 };
-}
-_genId() {
-return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 // A brand new user - nothing subscribed, nothing enabled - so adding
 // someone to Home Assistant (or just having a household member no one's
@@ -760,6 +2708,14 @@ notifyChoreRejected: false,
 // chores-card.js), same "opt in to nothing" default as everything else
 // here.
 notifyChoreDue: false,
+// v1.119.0+: doesn't add a new notification - changes HOW the three
+// existing end-of-timer pushes (chore/reward/assigned-standalone timer)
+// reach THIS person when one of THEIR OWN timers goes off: alarm-style
+// (Android alarm-stream/iOS critical, bypasses silent mode and DND)
+// instead of the plain quiet push. See const.py's own notifyTimerAlarm
+// docstring. Household ask: "route this through alarm notifications for
+// the person the timer is for."
+notifyTimerAlarm: false,
 // v124+: which calendar entity (an id from settings.people - see
 // _getPeople) this person's events should visually follow their own
 // `color` above, instead of that calendar's own separately-configured
@@ -782,6 +2738,33 @@ primaryCalendar: "",
 // above) - the owner always sees/can add to their own list regardless of
 // this map, which only ever governs access to OTHER people's lists.
 remindersSubscriptions: {},
+// v1.131.0+: see SETTINGS_KEY_USER_PROFILES's own comment in const.py
+// (backend) for the full "why does this exist alongside primaryCalendar/
+// people[]" picture - household ask, verbatim: *"I would like to be able
+// to set a user calendar, a user reminder todo list and a user wish list
+// all under their settings."* Mirrors the backend's _default_user_
+// profile() exactly - keep the two in sync.
+//
+// This profile's own individual Reminders list, set/created directly from
+// the Users tab (see _openNotifyProfileModal's new Reminders section and
+// _ws_create_todo_list's "+ Add list" button) rather than only reachable
+// through a settings.people[] row's own remindersEntity field. Read in
+// PREFERENCE to that legacy lookup by every call site that resolves "this
+// profile's own list" - see _resolveOwnRemindersEntity - so a household
+// that already set one up the old way keeps working unchanged.
+remindersEntity: "",
+// This profile's own personal wish list to-do entity. Saving a profile
+// with this set auto-flags that entity in the wish-list store (backend's
+// _sync_profile_wishlist_flags), with no need to separately visit the
+// To-Do Lists card's own List(s) tab to flag it by hand first.
+wishlistEntity: "",
+// Badges (same {text, match, hideMatch} shape as a settings.people[] row's
+// own "badges" array - see _getPeople) for THIS profile's own
+// primaryCalendar. If that same entity is ALSO a people[] row (still
+// fully supported - "allow users to still add calendars under
+// calendars"), the profile's own badges win for that entity rather than
+// needing the two configs kept in sync by hand.
+badges: [],
 };
 }
 // Strips a name down to lowercase alphanumerics-and-single-spaces so
@@ -789,38 +2772,11 @@ remindersSubscriptions: {},
 // plainer, cheaper first pass than full fuzzy matching that alone catches
 // most accidental near-duplicates (punctuation, casing, extra whitespace)
 // without any risk of false positives between genuinely different dishes.
-_normalizeForDuplicateCheck(name) {
-return (name || "")
-.toString()
-.normalize("NFKD")
-.replace(/[̀-ͯ]/g, "")
-.toLowerCase()
-.replace(/[^a-z0-9]+/g, " ")
-.trim()
-.replace(/\s+/g, " ");
-}
 // Standard Levenshtein edit distance (insert/delete/substitute), used
 // only on the already-normalized strings above so it's comparing "beef
 // stew" against "beef stow", not raw user input still carrying
 // punctuation/casing differences the normalize step already handles for
 // free.
-_levenshteinDistance(a, b) {
-if (a === b) return 0;
-if (!a.length) return b.length;
-if (!b.length) return a.length;
-let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
-for (let i = 1; i <= a.length; i++) {
-const cur = [i];
-for (let j = 1; j <= b.length; j++) {
-cur[j] =
-a[i - 1] === b[j - 1]
-? prev[j - 1]
-: 1 + Math.min(prev[j - 1], prev[j], cur[j - 1]);
-}
-prev = cur;
-}
-return prev[b.length];
-}
 // Finds the closest existing item to `name` worth flagging as a possible
 // duplicate - an exact match after normalizing (distance 0) always
 // counts; anything else only counts if the edit distance is small
@@ -832,23 +2788,6 @@ return prev[b.length];
 // `getName` extracts the comparable name string from each item in
 // `list`; returns null when nothing is close enough to be worth asking
 // about.
-_findFuzzyDuplicate(name, list, getName) {
-const norm = this._normalizeForDuplicateCheck(name);
-if (!norm) return null;
-let best = null;
-let bestDistance = Infinity;
-for (const item of list || []) {
-const otherNorm = this._normalizeForDuplicateCheck(getName(item));
-if (!otherNorm) continue;
-const distance = otherNorm === norm ? 0 : this._levenshteinDistance(norm, otherNorm);
-const threshold = otherNorm === norm ? 0 : Math.max(1, Math.round(Math.max(norm.length, otherNorm.length) * 0.2));
-if (distance <= threshold && distance < bestDistance) {
-best = item;
-bestDistance = distance;
-}
-}
-return best;
-}
 _normalizeBadges(p) {
 if (Array.isArray(p.badges)) {
 return p.badges
@@ -947,6 +2886,8 @@ people = this._config.people.map((p) => ({ ...p, countdown: p.entity === this._c
 const weekendBreakfast = typeof parsed.weekendBreakfast === "boolean" ? parsed.weekendBreakfast : defaults.weekendBreakfast;
 const showMealsInMonth = typeof parsed.showMealsInMonth === "boolean" ? parsed.showMealsInMonth : defaults.showMealsInMonth;
 const greyOutPastEvents = typeof parsed.greyOutPastEvents === "boolean" ? parsed.greyOutPastEvents : defaults.greyOutPastEvents;
+const fabPosition = parsed.fabPosition === "card" ? "card" : defaults.fabPosition;
+const smallScreenMode = typeof parsed.smallScreenMode === "boolean" ? parsed.smallScreenMode : defaults.smallScreenMode;
 const scrollLocked = typeof parsed.scrollLocked === "boolean" ? parsed.scrollLocked : defaults.scrollLocked;
 const defaultTheme = defaults.theme;
 const parsedTheme = parsed.theme && typeof parsed.theme === "object" ? parsed.theme : {};
@@ -1036,6 +2977,8 @@ people,
 weekendBreakfast,
 showMealsInMonth,
 greyOutPastEvents,
+fabPosition,
+smallScreenMode,
 scrollLocked,
 theme,
 useGlobalTheme,
@@ -1079,6 +3022,19 @@ remindersSubscriptions[personEntity] = level;
 }
 });
 }
+// v1.131.0+: see _defaultUserProfile's own comment for what these three
+// are/why they exist alongside primaryCalendar/people[] above.
+const remindersEntity = typeof p.remindersEntity === "string" ? p.remindersEntity.trim() : "";
+const wishlistEntity = typeof p.wishlistEntity === "string" ? p.wishlistEntity.trim() : "";
+const badges = Array.isArray(p.badges)
+? p.badges
+.filter((b) => b && typeof b === "object")
+.map((b) => ({
+text: (b.text ? String(b.text) : "").trim(),
+match: (b.match ? String(b.match) : "").trim(),
+hideMatch: (b.hideMatch ? String(b.hideMatch) : "").trim(),
+}))
+: [];
 result[userId] = {
 notifyTargets,
 subscribedCalendars,
@@ -1091,8 +3047,12 @@ notifyRewardClaimed: !!p.notifyRewardClaimed,
 notifyChoreApproved: !!p.notifyChoreApproved,
 notifyChoreRejected: !!p.notifyChoreRejected,
 notifyChoreDue: !!p.notifyChoreDue,
+notifyTimerAlarm: !!p.notifyTimerAlarm,
 primaryCalendar,
 remindersSubscriptions,
+remindersEntity,
+wishlistEntity,
+badges,
 };
 });
 return result;
@@ -1143,6 +3103,7 @@ if (fetchId !== this._settingsFetchSeq) return;
 if (storeReachable && storeResult && storeResult.settings && typeof storeResult.settings === "object") {
 this._settingsCache = this._normalizeSettings(storeResult.settings);
 this._applySizeVars();
+this._registerFabCoordinator();
 if (this._root) {
 this._renderGrid();
 this._renderLegend();
@@ -1168,6 +3129,7 @@ const item = matches.length ? matches[matches.length - 1] : items[0] || null;
 this._settingsItemUid = item ? item.uid : null;
 const parsed = item ? this._parseSettingsDescription(item.description) : null;
 this._settingsCache = this._normalizeSettings(parsed);
+this._registerFabCoordinator();
 if (matches.length > 1) {
 for (let i = 0; i < matches.length - 1; i++) {
 this._hass
@@ -1232,33 +3194,117 @@ if (entity && color) map[entity] = color;
 });
 return map;
 }
+// v1.131.0+: sibling of _primaryCalendarColorByEntity above, same "only
+// overrides when the profile actually has something set" rule - a
+// profile with an empty badges array (the default - nobody's touched
+// this section of their profile yet) never blanks out badges someone
+// already configured the OLD way, on the matching settings.people[] row
+// directly. See SETTINGS_KEY_USER_PROFILES's own comment in const.py.
+_primaryCalendarBadgesByEntity() {
+const profiles = (this._settingsCache && this._settingsCache.userProfiles) || {};
+const map = {};
+Object.keys(profiles).forEach((uid) => {
+const profile = profiles[uid];
+const entity = profile && profile.primaryCalendar;
+const badges = profile && profile.badges;
+if (entity && Array.isArray(badges) && badges.length) map[entity] = badges;
+});
+return map;
+}
+// v1.132.0+: sibling of _primaryCalendarColorByEntity/_primaryCalendarBadgesByEntity
+// above, same override rule. Needed now that the Calendars tab no longer
+// has its own "their own Reminders list" field - a people[] row's OWN
+// remindersEntity is "" for any calendar that's someone's primaryCalendar
+// (the backend migration moves it onto that profile and clears the row -
+// see _migrate_people_reminders_into_profiles), so without this override
+// _getPeople() would report that calendar as having no individual
+// reminders list at all right after the exact migration that was
+// supposed to preserve it. A calendar nobody's claimed still reads its
+// own remindersEntity directly, same as before this version.
+_primaryCalendarRemindersByEntity() {
+const profiles = (this._settingsCache && this._settingsCache.userProfiles) || {};
+const map = {};
+Object.keys(profiles).forEach((uid) => {
+const profile = profiles[uid];
+const entity = profile && profile.primaryCalendar;
+const remindersEntity = profile && profile.remindersEntity;
+if (entity && typeof remindersEntity === "string" && remindersEntity.trim()) map[entity] = remindersEntity.trim();
+});
+return map;
+}
 _getPeople() {
 const settings = this._getSettings();
-if (Array.isArray(settings.people) && settings.people.length) {
 const palette = ["#a9c6c2", "#dba99c", "#d9bf7e", "#a8bd93", "#b9a7c9", "#cf8f6c", "#a89a83"];
 const primaryColors = this._primaryCalendarColorByEntity();
-return settings.people.map((p, i) => ({
+const primaryBadges = this._primaryCalendarBadgesByEntity();
+const primaryReminders = this._primaryCalendarRemindersByEntity();
+let people;
+if (Array.isArray(settings.people) && settings.people.length) {
+people = settings.people.map((p, i) => ({
 entity: p.entity,
 name: p.name || p.entity,
 color: primaryColors[p.entity] || p.color || palette[i % palette.length],
 countdown: !!p.countdown,
-badges: Array.isArray(p.badges) ? p.badges : [],
+badges: primaryBadges[p.entity] || (Array.isArray(p.badges) ? p.badges : []),
 // v130+: that person's own individual Reminders to-do list entity
 // (separate from the shared family list) - carried through here so
-// both the Calendars editor's "Reminders list" field and the
-// Users tab's per-list subscription picker
-// (_renderNotifyProfileRemindersLists) see it after a fresh
+// the Users tab's per-list subscription picker
+// (_renderNotifyProfileRemindersLists) sees it after a fresh
 // Settings-modal open, not just right after editing it in the same
-// session.
-remindersEntity: typeof p.remindersEntity === "string" ? p.remindersEntity : "",
+// session. v1.132.0+: prefers the owning profile's own remindersEntity
+// (see _primaryCalendarRemindersByEntity) over this row's own field,
+// same override order as color/badges just above - the Calendars tab
+// no longer has a field to set this row's own value at all.
+remindersEntity: primaryReminders[p.entity] || (typeof p.remindersEntity === "string" ? p.remindersEntity : ""),
+}));
+} else {
+// A household still running off the static Lovelace config (never
+// opened Settings' own Calendars editor, so settings.people is empty)
+// should still get the primary-calendar color/badges overrides - same
+// lookups as above, just applied to _config.people's own shape instead.
+people = this._config.people.map((p) => ({
+...p,
+color: primaryColors[p.entity] || p.color,
+badges: primaryBadges[p.entity] || p.badges,
+remindersEntity: primaryReminders[p.entity] || p.remindersEntity,
+countdown: !!p.countdown,
 }));
 }
-// A household still running off the static Lovelace config (never opened
-// Settings' own Calendars editor, so settings.people is empty) should
-// still get the primary-calendar color override - same lookup as above,
-// just applied to _config.people's own shape instead.
-const primaryColorsFallback = this._primaryCalendarColorByEntity();
-return this._config.people.map((p) => ({ ...p, color: primaryColorsFallback[p.entity] || p.color, countdown: !!p.countdown }));
+// v1.131.0+: household ask, verbatim: *"include a user's calendars under
+// their name on the calendar."* Every profile whose OWN primaryCalendar
+// isn't already one of the entities above (a household that set it up
+// straight from the Users tab, never also adding it under the General
+// tab's Calendars section) gets synthesized as its own extra column here
+// - named after that household member (see _householdMemberNamesById,
+// kept current independent of whether Settings has ever been opened this
+// session), colored with their own profile color, and carrying their own
+// badges/remindersEntity - so the ENTIRE rest of this file (columns,
+// badge matching, colors, countdown eligibility) just works for it with
+// no further changes, since every one of those call sites already reads
+// _getPeople()'s own return value generically. A profile whose
+// primaryCalendar IS already covered above contributes nothing extra
+// here - see _primaryCalendarColorByEntity/_primaryCalendarBadgesByEntity
+// for how its color/badges still win on that existing entry instead.
+const knownEntities = new Set(people.map((p) => p.entity));
+const profiles = (settings && settings.userProfiles) || {};
+const names = this._householdMemberNamesById || {};
+Object.keys(profiles)
+.sort()
+.forEach((uid) => {
+const profile = profiles[uid];
+const entity = profile && profile.primaryCalendar;
+if (!entity || knownEntities.has(entity)) return;
+knownEntities.add(entity);
+people.push({
+entity,
+name: names[uid] || uid,
+color: profile.color || palette[people.length % palette.length],
+countdown: false,
+badges: Array.isArray(profile.badges) ? profile.badges : [],
+remindersEntity: typeof profile.remindersEntity === "string" ? profile.remindersEntity : "",
+});
+});
+return people;
 }
 _colorByName(people) {
 const map = {};
@@ -1803,7 +3849,6 @@ if (!userId) return;
 if (!Array.isArray(this._settingsMemberIdsDraft)) this._settingsMemberIdsDraft = [];
 if (!this._settingsMemberIdsDraft.includes(userId)) this._settingsMemberIdsDraft.push(userId);
 this._renderNotifyProfilesList();
-this._renderPermissionsList();
 }
 // "Remove" (Users tab, per-row) - takes someone out of Family Hub. Never
 // deletes their profile, permission grants, or chore assignments (see
@@ -1818,7 +3863,6 @@ const idx = this._settingsMemberIdsDraft.indexOf(userId);
 if (idx === -1) return;
 this._settingsMemberIdsDraft.splice(idx, 1);
 this._renderNotifyProfilesList();
-this._renderPermissionsList();
 }
 // Plain-language one-liner for a user's profile row - "Not set up yet"
 // when every toggle is still off/empty (the common case right after this
@@ -1834,33 +3878,42 @@ if (profile.notifyRewardClaimed) parts.push("Reward-claimed alerts on");
 if (profile.notifyChoreApproved) parts.push("Chore-approved alerts on");
 if (profile.notifyChoreRejected) parts.push("Chore-sent-back alerts on");
 if (profile.notifyChoreDue) parts.push("Chore-due reminders on");
+if (profile.notifyTimerAlarm) parts.push("Timer alarm on");
 if (!parts.length) return "Not set up yet";
 return parts.join(" • ");
 }
-// --- Permissions tab (admin-only) - who besides an admin can assign a
+// --- Permissions (admin-only) - who besides an admin can assign a
 // chore to someone else, approve/verify a completed chore, override a
-// reward's star cost, or add a new reward straight to the catalog with a
+// reward's star cost, add a new reward straight to the catalog with a
 // price (v127+ - see const.py's PERMISSION_REWARD_ADD; without this,
 // family-hub-rewards-card.js's own + button still lets someone suggest a
 // reward, it just can't be priced by them, so it waits in a suggestions
-// bin for someone who has this or can_override_rewards to approve it).
-// This used to live in the Chores card's own Settings
-// modal; it's here now so every Family Hub setting lives in one place (see
-// _openSettings). The backend's family_hub/permissions/get and .../set
-// commands are themselves hard-gated to real Home Assistant admin
-// accounts (see chores_websocket_api.py) - hiding this tab from a
-// non-admin here is just UX, not the actual security boundary, and this
-// card never even shows the tab button to them (see _openSettings).
+// bin for someone who has this or can_override_rewards to approve it), or
+// see who's claimed what on a wish list (v1.132.5+ - see const.py's
+// PERMISSION_SEE_WISHLIST_CLAIMS).
 //
-// Unlike the rest of Settings, each checkbox here saves immediately on
-// change (mirrors exactly how the Chores card's own Permissions tab used
-// to behave) rather than waiting for the modal's Save button - so there's
-// no separate "permissions draft" merged in by _saveSettings.
+// v1.132.5+: this used to be its own standalone Permissions tab showing
+// every member's grants at once, as a whole grid. Household ask,
+// verbatim: "lets also move permissions for each user to an accordian
+// under their user account. keep it as admin only though." Each person's
+// own grants now live in an accordion inside THEIR OWN Notification
+// Profile modal (see _renderNotifyProfilePermissions/_openNotifyProfile
+// Modal) instead of one combined grid - _permissionDefs()/
+// _savePermissionCheck() below are unchanged and directly reused, only
+// the rendering is now per-person. The backend's family_hub/permissions/
+// get and .../set commands are themselves hard-gated to real Home
+// Assistant admin accounts (see chores_websocket_api.py) - hiding this
+// from a non-admin here is just UX, not the actual security boundary,
+// and this card never shows the accordion itself to them either (see
+// _openNotifyProfileModal's own admin-only toggle).
+//
+// Each checkbox here still saves immediately on change (unchanged from
+// the old standalone tab) rather than waiting for a Save button - so
+// there's no separate "permissions draft" merged in by _saveSettings.
 async _fetchPermissionsData() {
 if (!this._hass) return;
 this._permissionsUsersCache = null;
 this._permissionsDraft = null;
-this._renderPermissionsList();
 try {
 const [usersResult, permsResult] = await Promise.all([
 this._hass.connection.sendMessagePromise({ type: "family_hub/list_users" }),
@@ -1872,7 +3925,12 @@ this._permissionsDraft = (permsResult && permsResult.permissions) || {};
 this._permissionsUsersCache = [];
 this._permissionsDraft = {};
 }
-this._renderPermissionsList();
+// If a person's Notification Profile modal was already open when this
+// fetch was kicked off (or opened while it was still in flight), its
+// Permissions accordion started out showing "Checking..." - refresh it
+// now that real data has arrived. Harmless no-op otherwise (the element
+// stays in the DOM even while that overlay isn't visible).
+if (this._notifyProfileOpenUserId) this._renderNotifyProfilePermissions(this._notifyProfileOpenUserId);
 }
 // Filtered to current Family Hub members, same as the Users tab (see
 // _renderNotifyProfilesList) - "added" is the one gate for both tabs.
@@ -1908,59 +3966,42 @@ return [
 { key: "can_override_rewards", group: "Rewards", label: "Override star costs", hint: "Can override what a reward costs in stars." },
 { key: "can_add_rewards", group: "Rewards", label: "Add to catalog", hint: "Can add rewards to the catalog with a star cost. Without this, what they add is a suggestion that needs approval." },
 { key: "can_edit_menu", group: "Menu", label: "Edit the menu", hint: "Can edit the weekly meal plan. Without this they can still suggest a meal for any day - someone with this permission decides whether it goes on the menu." },
+{ key: "can_see_wishlist_claims", group: "Wish Lists", label: "See claim status", hint: "Can see who's claimed what on a wish list they don't own themselves (the list's own owner never sees this regardless). Off by default for anyone not already using Family Hub when this permission was introduced - see PERMISSION_SEE_WISHLIST_CLAIMS in const.py - so an unidentified shared kiosk login can't spoil a surprise." },
 ];
 }
-_renderPermissionsList() {
+// v1.132.5+: replaces the old whole-grid _renderPermissionsList - renders
+// just ONE person's own grants (the userId whose Notification Profile
+// modal is currently open) into that modal's own Permissions accordion
+// (.notify-profile-perm-rows-list - see _openNotifyProfileModal). Reuses
+// _permissionDefs() and _savePermissionCheck() completely unchanged; only
+// the "loop over every member" part of the old renderer is gone, since
+// there's now exactly one person's row to draw per call.
+_renderNotifyProfilePermissions(userId) {
 const root = this._root;
 if (!root) return;
-const listEl = root.querySelector(".perm-rows-list");
-const emptyEl = root.querySelector(".perm-rows-empty");
+const listEl = root.querySelector(".notify-profile-perm-rows-list");
 if (!listEl) return;
-const users = this._permissionsUsersCache;
-if (users === null || users === undefined) {
+if (!userId || this._permissionsUsersCache === null || this._permissionsUsersCache === undefined) {
 listEl.innerHTML = `<div class="notify-profiles-empty-state">Checking Home Assistant users&hellip;</div>`;
-if (emptyEl) emptyEl.style.display = "none";
 return;
 }
-const memberIds = Array.isArray(this._settingsMemberIdsDraft) ? this._settingsMemberIdsDraft : [];
-const members = users.filter((u) => memberIds.includes(u.id));
-if (!members.length) {
-listEl.innerHTML = "";
-if (emptyEl) emptyEl.style.display = "";
-if (emptyEl) emptyEl.textContent = "Nobody's been added to Family Hub yet - add people from the Users tab first.";
-return;
-}
-if (emptyEl) emptyEl.style.display = "none";
 const perms = this._permissionsDraft || {};
-// One ordered list of group names, derived from the defs themselves so a
-// new permission only ever has to be declared in one place (and a whole
-// new group appears just by naming one).
+const entry = perms[userId] || {};
 const defs = this._permissionDefs();
 const groups = [];
 defs.forEach((d) => {
 if (!groups.includes(d.group)) groups.push(d.group);
 });
-listEl.innerHTML = members
-.map((u) => {
-const entry = perms[u.id] || {};
-const groupsHtml = groups
+listEl.innerHTML = groups
 .map((group) => {
 const opts = defs
 .filter((d) => d.group === group)
 .map(
 (d) =>
-`<label class="perm-opt" title="${d.hint}"><input type="checkbox" class="perm-check" data-user="${u.id}" data-key="${d.key}" ${entry[d.key] ? "checked" : ""} /><span>${d.label}</span></label>`
+`<label class="perm-opt" title="${d.hint}"><input type="checkbox" class="perm-check" data-user="${userId}" data-key="${d.key}" ${entry[d.key] ? "checked" : ""} /><span>${d.label}</span></label>`
 )
 .join("");
 return `<div class="perm-group"><div class="perm-group-name">${group}</div><div class="perm-group-opts">${opts}</div></div>`;
-})
-.join("");
-return `
-<div class="perm-row" data-user-id="${u.id}">
-<div class="perm-name">${u.name}</div>
-${groupsHtml}
-</div>
-`;
 })
 .join("");
 listEl.querySelectorAll(".perm-check").forEach((check) => {
@@ -2083,6 +4124,37 @@ _isHalloweenToday() {
 const now = new Date();
 return now.getMonth() === 9 && now.getDate() === 31;
 }
+// v1.126.0+ - see window.__familyHubThemeCache's own comment above the
+// class for the full "why a key, not one shared blob" reasoning. This
+// card (the source-of-truth Settings card) has no per-card-placement
+// theme_override concept of its own, so the key is only ever this
+// device's own override, or the shared "household" bucket every other
+// device/card uses.
+_familyHubThemeCacheKey() {
+const deviceOverride = this._getDeviceThemeOverride();
+if (deviceOverride) return `device:${deviceOverride}`;
+return "household";
+}
+// v1.126.0+: applies whatever theme this device last actually resolved
+// to, SYNCHRONOUSLY, before the real fetches that would otherwise be the
+// only way to know it - see window.__familyHubThemeCache's own comment
+// above the class. Called once from `_build()`, before the very first
+// `_render()`/paint. A no-op (does nothing, leaves _defaultTheme()'s
+// plain colors as the first paint exactly like before this fix) on the
+// very first time ANY card resolves this particular key - there's
+// nothing to have cached yet.
+// Returns true when it actually found and applied a cached value, false
+// when there was nothing cached yet for this key - see _build()'s own
+// comment on the one call site that cares about the difference.
+_applyCachedThemeVarsIfAny() {
+if (!window.__familyHubThemeCache) return false;
+const cached = window.__familyHubThemeCache.get(this._familyHubThemeCacheKey());
+if (!cached) return false;
+Object.keys(cached).forEach((name) => {
+if (typeof cached[name] === "string") this.style.setProperty(name, cached[name]);
+});
+return true;
+}
 _applySizeVars() {
 const settings = this._getSettings();
 const v = this._sizeVars(settings);
@@ -2148,6 +4220,54 @@ this.style.removeProperty("--fc-bg-position");
 this.style.removeProperty("--fc-bg-blur");
 this.style.removeProperty("--fc-bg-image-opacity");
 this.style.removeProperty("--fc-bg-overlay-image");
+}
+// v1.126.0+: snapshot exactly what was just set/removed above into the
+// shared cache under this device's key, so a future _build() can apply
+// the same values before the real fetches resolve - see
+// window.__familyHubThemeCache's own comment for the full reasoning. A
+// var not currently set on the host (e.g. --fc-bg-image when there is no
+// background image right now) is simply skipped rather than cached as an
+// empty string, so applying the cache later never clobbers a var that
+// should stay unset.
+if (window.__familyHubThemeCache) {
+const __familyHubCacheVarNames = [
+"--menu-block-min-height",
+"--menu-block-padding",
+"--fc-bg",
+"--fc-card",
+"--fc-border",
+"--fc-text",
+"--fc-text-secondary",
+"--fc-accent",
+"--fc-accent-text",
+"--fc-accent2",
+"--fc-accent3",
+"--fc-surface-alt",
+"--fc-surface2",
+"--fc-glass-blur",
+"--fs-day-name",
+"--fs-day-number",
+"--fs-wx-temp",
+"--fs-event",
+"--fs-chip",
+"--fs-header-title",
+"--fs-countdown",
+"--menu-label-font-size",
+"--menu-font-size",
+"--fc-shadow",
+"--fc-bg-image",
+"--fc-bg-size",
+"--fc-bg-position",
+"--fc-bg-blur",
+"--fc-bg-image-opacity",
+"--fc-bg-overlay-image",
+];
+const vars = {};
+__familyHubCacheVarNames.forEach((name) => {
+const v = this.style.getPropertyValue(name);
+if (v) vars[name] = v;
+});
+window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
 }
 this._applyScrollLock();
 }
@@ -2352,84 +4472,6 @@ windy: "\u{1F4A8}",
 exceptional: "\u{26A0}\u{FE0F}",
 };
 return map[condition] || "\u{1F321}\u{FE0F}";
-}
-_parseDishDescription(raw) {
-if (!raw) return { description: "", link: "", rating: null, color: null, block: 0, recur: null, grocyRecipeId: null, servings: null, category: "", image: "", additionalRecipes: [], leftoverDates: [] };
-try {
-const parsed = JSON.parse(raw);
-return {
-description: parsed.description || "",
-link: parsed.link || "",
-rating: parsed.rating || null,
-color: parsed.color || null,
-// Recipe Box-only fields (see _upsertDish) - harmlessly blank on
-// every other kind of item this same parser also handles (a planned
-// meal, a recurring-meal anchor, a suggestion), since none of those
-// ever set them.
-category: parsed.category || "",
-image: parsed.image || "",
-block: typeof parsed.block === "number" ? parsed.block : 0,
-// "weekly" if this meal-plan entry is the anchor of a "repeat weekly"
-// meal - see _getMealForDay for how that anchor gets projected onto
-// every future week's matching day-of-week + block.
-recur: parsed.recur || null,
-// Set only for suggestions added via "Add from Grocy" - lets the
-// suggestions list open the in-card Recipe Viewer (which fetches
-// live from Grocy) instead of just opening the plain link, which
-// would hit Grocy's own login wall (see _openGrocyRecipeViewer).
-grocyRecipeId: parsed.grocyRecipeId || null,
-// How many people this specific planned meal is meant to feed - only
-// meaningful alongside grocyRecipeId. null means "use whatever the
-// Grocy recipe's own desired_servings is currently set to" rather
-// than any specific number - see _ws_push_grocery_list's docstring
-// for how this becomes a real (persistent) edit to the recipe in
-// Grocy at push time.
-servings: typeof parsed.servings === "number" ? parsed.servings : null,
-// v141+: leftovers - how many EXTRA days (beyond the day it's actually
-// entered on) this same meal should keep showing for, same block, on
-// the immediately following days. 1 (the default) means "just this one
-// day," identical to every meal entered before this existed. v144.10+:
-// superseded by leftoverDates below for anything saved from here on
-// (an explicit, non-contiguous day picker instead of "the next N days
-// in a row") - spanDays is kept ONLY so pre-v144.10 data (which never
-// had leftoverDates) still projects the same contiguous run it always
-// did; see _fetchMealPlan for the actual fallback logic, since a single
-// number here can no longer represent an arbitrary day selection.
-spanDays: typeof parsed.spanDays === "number" && parsed.spanDays > 1 ? parsed.spanDays : 1,
-// v144.10+: "leftovers should let you choose what days you have the
-// leftovers on" - an explicit list of "YYYY-MM-DD" date keys this same
-// meal should ALSO show on (same block), replacing spanDays' "next N
-// days in a row" assumption with an arbitrary pick of any day(s), not
-// necessarily contiguous with each other or with the day it was cooked.
-// Malformed/non-string entries are dropped defensively, same reasoning
-// as additionalRecipes just below.
-leftoverDates: Array.isArray(parsed.leftoverDates) ? parsed.leftoverDates.filter((d) => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d)) : [],
-// v142+: "additional recipes" - any number of side/dessert/sauce
-// recipes attached alongside this one main recipe (see _upsertMealPlan
-// and the day/menu editor's Additional Recipes field). Each entry is
-// {name, link, grocyRecipeId} - name-less/malformed entries are
-// dropped defensively since this is user-editable JSON going back
-// years before this field existed.
-additionalRecipes: Array.isArray(parsed.additionalRecipes)
-? parsed.additionalRecipes
-.filter((r) => r && typeof r.name === "string" && r.name.trim())
-.map((r) => ({ name: r.name, link: r.link || "", grocyRecipeId: r.grocyRecipeId || null }))
-: [],
-};
-} catch (e) {
-return { description: raw, link: "", rating: null, color: null, block: 0, recur: null, grocyRecipeId: null, servings: null, category: "", image: "", spanDays: 1, additionalRecipes: [], leftoverDates: [] };
-}
-}
-async _getItems(entityId) {
-const result = await this._hass.connection.sendMessagePromise({
-type: "call_service",
-domain: "todo",
-service: "get_items",
-service_data: { status: ["needs_action", "completed"] },
-target: { entity_id: entityId },
-return_response: true,
-});
-return (result && result.response && result.response[entityId] && result.response[entityId].items) || [];
 }
 // Reminders live as items on Home Assistant to-do lists, not as calendar
 // events - so unlike the calendar/people fetches above, there's no
@@ -2669,80 +4711,15 @@ path: settings.notificationClickPath || "",
 // to-do list once (if recipe_entity is even configured - fine either way
 // if not) and immediately persists the result, so every later load skips
 // the to-do lookup entirely. The old to-do items are never touched again.
-async _fetchRecipes() {
-if (!this._hass) return;
-try {
-const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/get_recipes" });
-if (!result.migrated) {
-const items = this._config.recipe_entity ? await this._getItems(this._config.recipe_entity) : [];
-this._recipes = items.map((it) => {
-const parsed = this._parseDishDescription(it.description);
-return {
-uid: it.uid,
-name: it.summary,
-description: parsed.description,
-link: parsed.link,
-rating: parsed.rating,
-grocyRecipeId: parsed.grocyRecipeId,
-category: parsed.category,
-image: parsed.image,
-};
-});
-await this._persistRecipes();
-} else {
-this._recipes = result.recipes || [];
-}
-} catch (e) {
-this._recipes = [];
-}
-this._renderLoved();
-this._renderGrid();
-}
 // Saves the full Recipe Box list in one shot - the card keeps the
 // authoritative in-memory array (this._recipes) and just re-persists all
 // of it after every add/edit/delete, same "set the whole blob" pattern
 // Settings already uses, rather than fine-grained per-item mutation
 // endpoints.
-async _persistRecipes() {
-if (!this._hass) return;
-try {
-await this._hass.connection.sendMessagePromise({ type: "family_hub/set_recipes", recipes: this._recipes });
-} catch (e) {
-}
-}
 // Meal Suggestions moved off its old todo.meal_suggestions list onto a
 // Store-backed list (family_hub/get_suggestions + set_suggestions) - same
 // reasoning and same lazy one-time migration pattern as _fetchRecipes
 // just above (see its comment for the full explanation).
-async _fetchSuggestions() {
-if (!this._hass) return;
-try {
-const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/get_suggestions" });
-if (!result.migrated) {
-const items = this._config.suggestions_entity ? await this._getItems(this._config.suggestions_entity) : [];
-this._suggestions = items.map((it) => {
-const parsed = this._parseDishDescription(it.description);
-return { uid: it.uid, name: it.summary, description: parsed.description, link: parsed.link, grocyRecipeId: parsed.grocyRecipeId };
-});
-await this._persistSuggestions();
-} else {
-this._suggestions = result.suggestions || [];
-}
-} catch (e) {
-this._suggestions = [];
-}
-// No standalone Suggestions modal to re-render into anymore - "viewing
-// suggestions" is just the Recipe Box's own "💡 Suggested" filter now
-// (_openSuggestedRecipes), which reads this._suggestions fresh each time
-// it renders rather than needing a push here.
-}
-async _persistSuggestions() {
-if (!this._hass) return;
-try {
-await this._hass.connection.sendMessagePromise({ type: "family_hub/set_suggestions", suggestions: this._suggestions });
-} catch (e) {
-}
-}
 // Every path that creates a suggestion now runs through here - the
 // Recipe Box's own 💡 toggle (_suggestDish, which already skips this
 // entirely for an exact-name match by removing instead), and the dish
@@ -2754,24 +4731,6 @@ await this._hass.connection.sendMessagePromise({ type: "family_hub/set_suggestio
 // same idea. Anything merely close (a likely typo, not a different dish)
 // gets a confirm() instead of a silent block, since a fuzzy match can
 // occasionally be wrong and the household should get the final say.
-async _addSuggestion(name, description, link, grocyRecipeId) {
-if (!name) return;
-const dupe = this._findFuzzyDuplicate(name, this._suggestions, (s) => s.name);
-if (dupe) {
-const isExact = this._normalizeForDuplicateCheck(dupe.name) === this._normalizeForDuplicateCheck(name);
-if (isExact) return;
-if (!window.confirm(`"${dupe.name}" is already suggested and looks very similar. Add "${name}" as a separate suggestion anyway?`)) {
-return;
-}
-}
-this._suggestions.push({ uid: this._genId(), name, description: description || "", link: link || "", grocyRecipeId: grocyRecipeId || null });
-await this._persistSuggestions();
-}
-async _removeSuggestion(uid) {
-if (!uid) return;
-this._suggestions = this._suggestions.filter((s) => s.uid !== uid);
-await this._persistSuggestions();
-}
 // -------------------------------------------------------------------------
 // Permissions (v1.109.6+) - "need a permission to edit menu, prevents kids
 // from messing with the menu, anyone can suggest but only ones with edit
@@ -2789,33 +4748,6 @@ await this._persistSuggestions();
 // edit/move/delete of an already-placed meal is frontend-gated ONLY, on
 // purpose - see that file's long design note above _encode_dish_description
 // for why, and what that does and doesn't buy.
-_isAdmin() {
-return !!(this._hass && this._hass.user && this._hass.user.is_admin);
-}
-_myUserId() {
-return this._hass && this._hass.user ? this._hass.user.id : null;
-}
-_hasPermission(key) {
-// Admin first, so this answers correctly on the very first paint,
-// before _fetchMyPermissions has resolved - an admin's own admin-ness
-// needs no round trip to know.
-if (this._isAdmin()) return true;
-return !!(this._myPermissions && this._myPermissions[key]);
-}
-_canEditMenu() {
-return this._hasPermission("can_edit_menu");
-}
-async _fetchMyPermissions() {
-if (!this._hass) return;
-try {
-const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/permissions/get_mine" });
-this._myPermissions = (result && result.permissions) || {};
-} catch (e) {
-// An older backend (or a transient failure) means "no extra grants" -
-// never "everything allowed". An admin still passes via _isAdmin().
-this._myPermissions = {};
-}
-}
 // -------------------------------------------------------------------------
 // Menu suggestions (v1.109.6+) - the "anyone can suggest" half. Backed by
 // its own Store-and-websocket-commands pair on the backend
@@ -3067,54 +4999,6 @@ anchorDateKey: best.anchorDateKey,
 // recipe" entry points (_saveDishEditor, the Recipe Box's "Add from
 // Grocy" picker) opt in explicitly instead, since that's where a near-
 // duplicate is actually likely and a nudge is welcome, not disruptive.
-async _upsertDish(name, description, link, rating, uidOverride, grocyRecipeId, category, image, checkDuplicates) {
-if (!name) return;
-const existing = uidOverride
-? this._recipes.find((r) => r.uid === uidOverride)
-: this._recipes.find((r) => r.name.toLowerCase() === name.toLowerCase());
-// Only worth asking about when this is about to become a genuinely new
-// Recipe Box entry - an exact-name match above already merges in place
-// (existing truthy), and that's the desired behavior, not a duplicate to
-// warn about. This is the same fuzzy check _addSuggestion uses, applied
-// to the household's actual data gap that prompted it: Grocy recipes and
-// hand-typed entries piling up as separate near-identical cards ("Our
-// Favorite Buttery Herb Stuffing" vs "...Stuffing4") with no nudge that
-// one might already exist.
-if (!existing && checkDuplicates) {
-const dupe = this._findFuzzyDuplicate(name, this._recipes, (r) => r.name);
-if (dupe && !window.confirm(`"${dupe.name}" is already in your Recipe Box and looks very similar. Add "${name}" as a separate recipe anyway?`)) {
-return;
-}
-}
-// category/image are Recipe Box-only fields that not every caller knows
-// about - the day/menu editor's "also save this as a loved dish" path
-// (see _saveEditor) calls this without them, and a heart click straight
-// from a Recipe Box card (see _renderLoved) only ever wants to flip the
-// rating, not silently blank out a category or photo someone already
-// set. Passing undefined here means "leave it alone" (falls back to
-// whatever the existing entry already had); pass an empty string
-// explicitly to actually clear one.
-const finalCategory = category !== undefined ? category : (existing ? existing.category || "" : "");
-const finalImage = image !== undefined ? image : (existing ? existing.image || "" : "");
-const record = {
-uid: existing ? existing.uid : this._genId(),
-name,
-description: description || "",
-link: link || "",
-rating: rating || null,
-grocyRecipeId: grocyRecipeId || null,
-category: finalCategory,
-image: finalImage,
-};
-if (existing) {
-this._recipes[this._recipes.indexOf(existing)] = record;
-} else {
-this._recipes.push(record);
-}
-await this._persistRecipes();
-this._renderLoved();
-this._renderGrid();
-}
 async _upsertMealPlan(dateKey, blockIndex, name, description, link, color, recur, grocyRecipeId, servings, spanDays, additionalRecipes, leftoverDates) {
 const payload = JSON.stringify({ description, link, color, block: blockIndex, recur: recur || null, grocyRecipeId: grocyRecipeId || null, servings: typeof servings === "number" ? servings : null, spanDays: typeof spanDays === "number" && spanDays > 1 ? spanDays : 1, additionalRecipes: Array.isArray(additionalRecipes) ? additionalRecipes : [], leftoverDates: Array.isArray(leftoverDates) ? leftoverDates : [] });
 // Deliberately keyed off the EXPLICIT entry for this exact date, not
@@ -3371,6 +5255,20 @@ return luminance > 0.6 ? "#3a2f00" : "#ffffff";
 }
 _build() {
 this._built = true;
+// v1.126.0+: applied BEFORE attachShadow/the first innerHTML paint - see
+// _applyCachedThemeVarsIfAny's own comment and window.__familyHubTheme
+// Cache's above the class for why this is what actually fixes the
+// household's reported "loads the default theme first" flash. The
+// boolean result is remembered (see this._familyHubUsedCachedThemeVars
+// further down, right before the pre-existing unconditional
+// _applySizeVars() call this _build() already made before hass/settings
+// can possibly be ready) so that call can skip re-resolving once this one
+// has already put the right values on screen - unlike every other themed
+// card, this one (the source-of-truth Settings card) has no `:host` CSS
+// fallback colors of its own to fall back on, so on a genuine first-ever
+// load (nothing cached yet) that later call still has to run, exactly as
+// it always has, to avoid an unstyled flash of its own.
+this._familyHubUsedCachedThemeVars = this._applyCachedThemeVarsIfAny();
 const root = this.attachShadow ? this.attachShadow({ mode: "open" }) : this;
 const hourOptionsHtml = Array.from({ length: 24 }, (_, h) => `<option value="${h}">${this._fmtHour12(h)}</option>`).join("");
 const endHourOptionsHtml = hourOptionsHtml + `<option value="24">Midnight</option>`;
@@ -3378,6 +5276,12 @@ root.innerHTML = `
 <style>
 :host {
 display: block;
+/* v1.110.7+: needed as the containing block for .add-event-fab when
+   [fab-position="card"] switches it from position:fixed (viewport
+   corner) to position:absolute (this card's own corner) - see
+   _registerFabCoordinator's own comment. Harmless when unused (the
+   default position:fixed doesn't care about its containing block). */
+position: relative;
 height: 100vh;
 height: 100dvh;
 box-sizing: border-box;
@@ -3602,8 +5506,45 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .recipe-import-debug-btn { display: block; width: 100%; margin-top: 6px; border: none; background: none; color: var(--fc-text-secondary); font-size: 12px; cursor: pointer; padding: 6px 2px; text-align: center; }
 .recipe-import-instructions-input { width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(0,0,0,0.15); font-size: 13px; line-height: 1.6; font-family: inherit; resize: vertical; background: var(--fc-surface-alt, #fff); color: var(--fc-text); }
 .recipe-import-ingredient-select { max-width: 45%; background: var(--fc-surface-alt, #fff); color: var(--fc-text); border: 1px solid rgba(0,0,0,0.12); border-radius: 6px; padding: 4px 6px; font-size: 13px; }
-.add-event-fab { position: fixed; right: 18px; bottom: 18px; z-index: 900; width: 56px; height: 56px; border-radius: 50%; border: none; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 28px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(58,53,44,0.35); transition: transform 0.15s ease; }
+/* v1.110.4+: bottom offset by --fh-fab-offset, set by the shared window.__familyHubFabCoordinator (see the singleton block near the top of this file) so this FAB stacks above any other Family Hub card's FAB sharing the same dashboard view instead of overlapping it. */
+.add-event-fab { position: fixed; right: 18px; bottom: calc(18px + var(--fh-fab-offset, 0px)); z-index: 900; width: 56px; height: 56px; border-radius: 50%; border: none; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 28px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(58,53,44,0.35); transition: transform 0.15s ease, bottom 0.15s ease; }
 .add-event-fab:active { transform: scale(0.94); }
+/* v1.110.7+: settings.fabPosition "card" - anchors to THIS card's own
+   box (position:absolute off :host, now position:relative above)
+   instead of the viewport (position:fixed). Opts out of the shared
+   coordinator's stacking offset entirely (see _registerFabCoordinator),
+   so this is a flat 18px/18px corner, no --fh-fab-offset involved. */
+:host([fab-position="card"]) .add-event-fab { position: absolute; bottom: 18px; }
+/* v1.132.5+: Small screen mode - hides the top bar (.week-nav: Settings/
+   Week/Month/Edit Meals/nav arrows/week label/Suggestions/Recipe Box/
+   More) entirely, since Settings moves into the + button's own menu
+   instead (see the add-fab-settings item in _build's add-menu-list and
+   its click handler) - see _registerFabCoordinator for where this host
+   attribute gets set from _getSmallScreenMode() (v1.132.7+: this-device-
+   only localStorage, not the shared settings blob - see that method's own
+   comment). */
+:host([small-screen-mode]) .week-nav { display: none; }
+/* Settings moved into the + button's own menu - only shown there once
+   small screen mode is actually on, since the top bar's own Settings
+   button (⚙️) still handles it otherwise (no duplicate entry point). */
+.add-fab-settings { display: none; }
+:host([small-screen-mode]) .add-fab-settings { display: block; }
+/* v1.110.5+: a small reusable "it worked" confirmation - "adding a
+   recipe/meal gives no save confirmation, modal stays open." Used by
+   _showToast wherever a save used to just silently close the modal (or,
+   for the day/menu editor and Recipe Box editor, close it with no visible
+   sign anything happened) - see that method's own docstring for why this
+   didn't reuse a browser alert()/confirm() (already used elsewhere in this
+   file for confirmations that need a yes/no answer, but those block the
+   whole page and don't fit a fire-and-forget "saved" notice) or an
+   existing per-flow "is-error" status line (several of those exist, but
+   each is scoped to just its own modal, and disappears the instant that
+   modal closes - this needs to still be readable for a beat AFTER the
+   modal it belongs to closes). Fixed bottom-center, above the FAB, so it
+   never overlaps it or the FAB coordinator's own stacked siblings. */
+.fh-toast { position: fixed; left: 50%; bottom: calc(24px + var(--fh-fab-offset, 0px)); transform: translate(-50%, 12px); z-index: 1300; max-width: min(90vw, 360px); background: var(--fc-accent2); color: var(--fc-accent-text); font-size: 13px; font-weight: 700; text-align: center; padding: 10px 18px; border-radius: 20px; box-shadow: 0 4px 16px rgba(0,0,0,0.25); opacity: 0; pointer-events: none; transition: opacity 0.2s ease, transform 0.2s ease; }
+.fh-toast.show { opacity: 1; transform: translate(-50%, 0); }
+.fh-toast[hidden] { display: none; }
 /* The + button's 4 choices (Calendar Entry / Reminder / Meal Suggestion /
    Recipe) open in a real modal like everything else in the card, rather
    than a floating pill list next to the FAB - a stacked list of full-width
@@ -3645,6 +5586,14 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .chip.type-chip { background: var(--fc-surface-alt); color: var(--fc-text); border: 2px solid var(--fc-border); margin-left: 4px; }
 .grid { flex: 1 1 auto; min-height: 0; overflow: hidden; touch-action: pan-y; }
 .grid.mode-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); gap: 8px; }
+/* v1.110.5+: "Display X days for smaller displays" - a 3/5-day window is
+   just today's exact Week layout (same day-column markup, meal blocks,
+   timeline, drag-and-drop, print - see _weekStart/_renderWeekGrid's own
+   comments) with fewer, correspondingly WIDER columns - a modifier on
+   .mode-week rather than a real fourth view family/mode, since nothing
+   else about how a day column renders changes. */
+.grid.mode-week.day-count-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.grid.mode-week.day-count-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .grid.mode-month { display: flex; flex-direction: column; gap: 4px; }
 /* Planner: days down the side, one column per person - unlike week/month
    above, the grid itself scrolls (both directions) rather than the page,
@@ -3949,6 +5898,23 @@ them to (see _closeGrocyRecipeViewer). */
 .grocy-recipe-viewer-overlay .grocy-recipe-viewer-back-btn:active { background: var(--fc-border); }
 .grocy-recipe-viewer-overlay .grocy-recipe-viewer-title { font-size: 1.8em; text-align: center; margin: 4px 50px 6px; color: var(--fc-accent); }
 .grocy-recipe-viewer-overlay.preview-mode .grocy-recipe-viewer-title { margin-left: 70px; margin-right: 70px; }
+/* v1.114.0+ multi-recipe tabs (task: a meal card with more than one Grocy
+recipe attached - its main recipe plus any "additional recipes" that are
+themselves imported Grocy recipes, not just plain links - now shows every
+one of them as a tab here, so switching between e.g. a main dish and its
+side doesn't mean backing out and re-opening a different recipe). Same
+button-row idiom as .shopping-tabs/.shopping-tab-btn and .settings-tabs/
+.settings-tab-btn elsewhere in this file - a flex row of equal-width
+buttons, one highlighted .active - built dynamically in
+_openGrocyRecipeViewer instead of fixed markup, since a meal's recipe
+count varies. Hidden entirely (see the base "display:none" on the inline
+style in the DOM template) whenever a viewer is opened for just one
+recipe, which is every OTHER call site (additional-recipe links, Expiring
+Soon chips, Recipe Box dish detail, the picker preview icon) as well as a
+meal with only a main recipe. */
+.grocy-recipe-viewer-tabs { display: flex; gap: 8px; margin: 0 0 14px; flex-wrap: wrap; justify-content: center; }
+.grocy-recipe-viewer-tab-btn { flex: 0 1 auto; min-height: 36px; padding: 7px 14px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
+.grocy-recipe-viewer-tab-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
 /* The photo grabbed during recipe import (see create_grocy_recipe's
 picture upload) or added by hand in Grocy - hidden entirely when the
 recipe has none, in which case the ingredients column below just takes
@@ -4146,6 +6112,17 @@ comes later in paint order. */
 .notify-profile-reminders-sub-btn { border: 2px solid var(--fc-border); background: var(--fc-surface-alt); color: var(--fc-text-secondary); font-size: 11px; font-weight: 700; border-radius: 8px; padding: 5px 7px; cursor: pointer; white-space: nowrap; }
 .notify-profile-reminders-sub-btn.active { border-color: var(--sub-list-color, var(--fc-accent)); background: color-mix(in srgb, var(--sub-list-color, var(--fc-accent)) 18%, var(--fc-card)); color: var(--fc-text); }
 .notify-devices-autodetect-btn { display: block; width: 100%; box-sizing: border-box; border: none; border-radius: 10px; padding: 10px; margin-bottom: 10px; font-size: 13px; font-weight: 700; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; box-shadow: var(--fc-shadow); }
+/* v1.131.0+: a person's own calendar/reminders/wish list, set directly on
+   their Users tab profile - see SETTINGS_KEY_USER_PROFILES's comment in
+   const.py for the full picture. */
+.notify-profile-calendar-entity { width: 100%; box-sizing: border-box; }
+.notify-profile-own-calendar-badges { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.notify-profile-list-row { display: flex; align-items: center; gap: 6px; }
+.notify-profile-list-entity { flex: 1 1 0; min-width: 0; }
+.notify-profile-list-add-btn { flex: 0 0 auto; border: none; border-radius: 10px; padding: 8px 12px; font-size: 12px; font-weight: 700; background: var(--fc-accent); color: var(--fc-accent-text); cursor: pointer; white-space: nowrap; }
+.notify-profile-list-add-btn:disabled { opacity: 0.6; cursor: default; }
+.notify-profile-list-status { font-size: 12px; color: var(--fc-text-secondary); padding: 4px 2px 0; min-height: 14px; }
+.notify-profile-list-status.is-error { color: #b5583c; }
 .modal-close { position: absolute; top: 10px; right: 10px; width: 36px; height: 36px; border-radius: 50%; border: none; background: var(--fc-surface-alt); color: var(--fc-text); font-size: 18px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: var(--fc-shadow); }
 .modal-box h2 { margin: 0 26px 14px 0; font-size: 1.2em; color: var(--fc-text); }
 .field { margin-bottom: 14px; }
@@ -4191,7 +6168,21 @@ comes later in paint order. */
 .additional-recipe-remove { flex: none; border: none; background: none; cursor: pointer; font-size: 16px; color: var(--fc-text-secondary); padding: 2px 4px; }
 .additional-recipe-add-row { display: flex; gap: 8px; }
 .additional-recipe-add-row button { flex: 1; border: none; border-radius: 10px; padding: 8px 10px; font-size: 12px; font-weight: 700; background: #f2ddd4; color: #7a4436; cursor: pointer; box-shadow: var(--fc-shadow); }
+.additional-recipe-edit { flex: none; border: none; background: none; cursor: pointer; font-size: 14px; color: var(--fc-text-secondary); padding: 2px 4px; }
 .additional-recipes-empty-hint { font-size: 12px; color: var(--fc-text-secondary); }
+/* v1.109.8: the inline "From a link" add/edit form that replaced the old
+   pair of window.prompt() dialogs. Deliberately styled as part of the
+   field it sits in - plain stacked inputs plus a right-aligned
+   Cancel/Add pair - rather than as a card or a modal, so it reads as the
+   add row expanding in place instead of a new surface appearing. Button
+   colors reuse the same pair the add row's own "+" buttons already use. */
+.additional-recipe-inline-form { display: flex; flex-direction: column; gap: 6px; }
+.additional-recipe-inline-form input { width: 100%; box-sizing: border-box; }
+.additional-recipe-inline-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.additional-recipe-inline-actions button { border: none; border-radius: 10px; padding: 8px 14px; font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
+.additional-recipe-inline-cancel { background: var(--fc-surface-alt); color: var(--fc-text); }
+.additional-recipe-inline-save { background: #f2ddd4; color: #7a4436; }
+.additional-recipe-inline-save:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
 .size-btn-row { display: flex; gap: 8px; }
 .size-btn { flex: 1 1 auto; min-height: 44px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
 .size-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
@@ -4347,8 +6338,6 @@ instead of the usual stacked field layout. */
 .person-row .person-name { flex: 1 1 0; min-width: 0; font-size: 13px !important; padding: 8px 10px !important; }
 .person-row .person-color { width: 36px; height: 36px; padding: 0; border: 2px solid transparent; border-radius: 8px; cursor: pointer; background: none; flex: 0 0 auto; box-shadow: var(--fc-shadow); }
 .person-countdown-btn { flex: 0 0 auto; width: 36px; height: 36px; border-radius: 8px; border: 2px solid var(--fc-border); background: var(--fc-card); font-size: 15px; cursor: pointer; opacity: 0.4; box-shadow: var(--fc-shadow); }
-.person-reminders-row { margin: -2px 0 4px; }
-.person-reminders-row .person-reminders-entity { width: 100%; font-size: 12px !important; padding: 6px 10px !important; color: var(--fc-text-secondary); }
 .notify-devices-box { width: min(92vw, 420px); }
 .notify-devices-subtitle { font-size: 13px; color: var(--fc-text-secondary); margin: -6px 0 12px; }
 .notify-devices-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
@@ -4413,6 +6402,13 @@ instead of the usual stacked field layout. */
 .accordion-toggle.open .accordion-chevron { transform: rotate(180deg); }
 .accordion-body { display: none; margin-top: 10px; }
 .accordion-body.open { display: block; }
+/* v1.109.7: the leftovers day-picker accordion is NESTED inside the meal
+   editor's own "More options" accordion, so it's toned down a step -
+   flat rather than raised - to read as a sub-section instead of competing
+   with its parent header. */
+.leftovers-accordion-toggle { background: transparent; box-shadow: none; padding: 6px 2px; }
+.leftovers-accordion-label small { font-weight: 600; color: var(--fc-text-secondary); }
+.leftovers-field .accordion-body { margin-top: 6px; }
 /* .suggestions-search is likewise still a real, shared class - the Meal
    Templates search box (.suggestions-search.templates-search) uses this
    same base style, it isn't just a leftover from the old Suggestions
@@ -4573,10 +6569,16 @@ instead of the usual stacked field layout. */
 <div class="field dish-hide-field menu-edit-only-field">
 <label class="remind-check-opt"><input type="checkbox" class="input-recur-weekly" />&#128257; Repeat weekly (until turned off or overridden for one week)</label>
 </div>
-<div class="field dish-hide-field menu-edit-only-field">
-<label>&#9851;&#65039; Leftovers - also show this meal on:</label>
+<div class="field dish-hide-field menu-edit-only-field leftovers-field">
+<button type="button" class="accordion-toggle leftovers-accordion-toggle" data-target="menu-leftovers-body">
+<span class="theme-section-label leftovers-accordion-label">&#9851;&#65039; Leftovers</span>
+<span class="accordion-chevron">&#9660;</span>
+</button>
+<div class="accordion-body" id="menu-leftovers-body">
+<label>Also show this meal on:</label>
 <div class="leftover-days-picker"></div>
 <div class="remind-hint">Pick any day(s) - they don't need to be in a row.</div>
+</div>
 </div>
 <div class="field dish-hide-field menu-edit-only-field move-meal-field" style="display:none;">
 <label>&#128197; Move to another week</label>
@@ -4585,12 +6587,20 @@ instead of the usual stacked field layout. */
 <button type="button" class="btn-move-meal">Move</button>
 </div>
 </div>
-<div class="field dish-hide-field">
+<div class="field dish-hide-field menu-edit-only-field additional-recipes-field">
 <label>&#127858; Additional recipes <small>(sides, sauces, desserts...)</small></label>
 <div class="additional-recipes-list"></div>
 <div class="additional-recipe-add-row">
 <button type="button" class="btn-add-additional-recipe-box">+ From Recipe Box</button>
 <button type="button" class="btn-add-additional-recipe-link">+ From a link</button>
+</div>
+<div class="additional-recipe-inline-form" style="display:none;">
+<input type="text" class="input-additional-recipe-name" placeholder="Recipe name" maxlength="80" />
+<input type="url" class="input-additional-recipe-link" placeholder="Recipe link (optional)" maxlength="255" />
+<div class="additional-recipe-inline-actions">
+<button type="button" class="additional-recipe-inline-cancel">Cancel</button>
+<button type="button" class="additional-recipe-inline-save" disabled>Add</button>
+</div>
 </div>
 </div>
 </div>
@@ -4684,6 +6694,7 @@ instead of the usual stacked field layout. */
 <button class="modal-close grocy-recipe-viewer-close" aria-label="Close">&#10005;</button>
 <button type="button" class="grocy-recipe-viewer-back-btn" style="display:none;">&#8592; Back</button>
 <h2 class="grocy-recipe-viewer-title"></h2>
+<div class="grocy-recipe-viewer-tabs" style="display:none;"></div>
 <div class="grocy-recipe-viewer-status"></div>
 <div class="grocy-recipe-viewer-stats"></div>
 <div class="grocy-recipe-viewer-columns">
@@ -4705,6 +6716,11 @@ instead of the usual stacked field layout. */
 <div class="grocy-recipe-viewer-footer">
 <button type="button" class="suggestion-add-btn grocy-recipe-viewer-consume-btn">&#127860; Mark Consumed (deduct from Grocy stock)</button>
 <button type="button" class="suggestion-add-btn grocy-recipe-viewer-open-btn">&#128279; Open in Grocy</button>
+<div class="modal-actions grocy-recipe-viewer-recipe-actions" style="display:none;">
+<button type="button" class="btn-cancel grocy-recipe-viewer-suggest-btn">&#128161; Suggest this</button>
+<button type="button" class="btn-cancel grocy-recipe-viewer-edit-btn">&#9999;&#65039; Edit</button>
+<button type="button" class="btn-clear grocy-recipe-viewer-delete-btn">&#128465;&#65039; Delete</button>
+</div>
 </div>
 </div>
 </div>
@@ -4856,7 +6872,6 @@ instead of the usual stacked field layout. */
 <div class="settings-tabs">
 <button type="button" class="settings-tab-btn active" data-settings-tab="general">General</button>
 <button type="button" class="settings-tab-btn" data-settings-tab="notifications">Users</button>
-<button type="button" class="settings-tab-btn permissions-tab-btn" data-settings-tab="permissions" style="display:none">Permissions</button>
 </div>
 <div class="settings-tab-panel" data-settings-tab-panel="general">
 <div class="field">
@@ -4881,6 +6896,14 @@ instead of the usual stacked field layout. */
 <button type="button" class="size-btn week-variant-btn" data-value="week">Week</button>
 <button type="button" class="size-btn week-variant-btn" data-value="planner">Planner</button>
 <button type="button" class="size-btn week-variant-btn" data-value="portrait">Portrait</button>
+</div>
+</div>
+<div class="field">
+<label>Days shown in Week view — this device only (smaller displays: fewer columns)</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn week-day-count-btn" data-value="3">3 days</button>
+<button type="button" class="size-btn week-day-count-btn" data-value="5">5 days</button>
+<button type="button" class="size-btn week-day-count-btn" data-value="7">7 days</button>
 </div>
 </div>
 <div class="field">
@@ -4912,6 +6935,18 @@ instead of the usual stacked field layout. */
 <button type="button" class="size-btn grey-out-past-btn" data-value="on">On</button>
 </div>
 <div class="remind-hint">Today's events grey out one by one as they end; any earlier day is greyed out entirely, since the whole day is already over.</div>
+</div>
+<div class="field">
+<label>+ button position</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn fab-position-btn" data-value="dashboard">Dashboard corner</button>
+<button type="button" class="size-btn fab-position-btn" data-value="card">This card's corner</button>
+</div>
+<div class="remind-hint">"Dashboard corner" pins the + button to the bottom-right of the whole screen (today's behavior). "This card's corner" anchors it to the bottom-right of THIS card instead - useful when this card shares a dashboard row/column with other cards, so the button doesn't float off in a corner unrelated to it.</div>
+</div>
+<div class="field">
+<label class="remind-check-opt"><input type="checkbox" class="small-screen-mode-check" /> Small screen mode — this device only</label>
+<div class="remind-hint">Hides the top bar (Settings/Week/Month/Edit Meals/Suggestions/Recipe Box/More) to save space on a small device - Settings moves into the + button's menu instead, right alongside Calendar Entry/Reminder/Meal Suggestion/Recipe. Saved to THIS device/browser only, like the Days shown/Month button settings above - turning it on here won't affect any other Family Hub tablet or screen in the household.</div>
 </div>
 </div>
 </div>
@@ -5221,11 +7256,6 @@ instead of the usual stacked field layout. */
 <div class="remind-hint notify-profiles-empty" style="display:none">Nobody's been added to Family Hub yet. Use "Add a person" above to get started.</div>
 </div>
 </div>
-<div class="settings-tab-panel permissions-tab-panel" data-settings-tab-panel="permissions" style="display:none">
-<div class="remind-hint">Only visible to a Home Assistant admin account - everyone can still do their own chores and claim anything from the Chore Bin regardless of these. Changes here save immediately, not on the Save button below.</div>
-<div class="perm-rows-list"></div>
-<div class="remind-hint perm-rows-empty" style="display:none">No Home Assistant user accounts found.</div>
-</div>
 <div class="modal-actions">
 <span class="settings-save-status"></span>
 <button class="btn-cancel settings-cancel">Cancel</button>
@@ -5273,16 +7303,57 @@ instead of the usual stacked field layout. */
 <button type="button" class="notify-profile-targets-btn">&#128276; Notify targets <span class="notify-profile-targets-count">0</span></button>
 </div>
 <div class="field">
+<button type="button" class="accordion-toggle" data-target="notify-profile-calendar-body">
+<span class="theme-section-label">Calendar</span>
+<span class="accordion-chevron">&#9660;</span>
+</button>
+<div class="accordion-body" id="notify-profile-calendar-body">
+<div class="field">
 <label>Calendars</label>
 <div class="notify-profile-calendars-list"></div>
 <div class="remind-hint notify-profile-calendars-empty" style="display:none">No calendars added yet - add one under the General tab's Calendars section first.</div>
 <div class="remind-hint">Tap a card to subscribe them to reminders from that calendar. Tap the star to make it their primary calendar - that calendar's events follow their own color above instead of its own configured color, everywhere it's shown on the dashboard.</div>
 </div>
 <div class="field">
+<label>Their own calendar</label>
+<input type="text" class="notify-profile-calendar-entity" placeholder="calendar.jaret (optional)" />
+<div class="remind-hint">Set this directly here if their calendar isn't already added under the General tab's Calendars section - it'll show up as its own column on the calendar, labeled with their name and their color above, without needing to also add it under Calendars. If it's ALSO added there, this profile's own color/badges win for it.</div>
+<div class="notify-profile-own-calendar-badges"></div>
+<button type="button" class="notify-profile-own-calendar-badge-add-btn">&#10133; Add badge</button>
+</div>
+</div>
+</div>
+<div class="field">
+<button type="button" class="accordion-toggle" data-target="notify-profile-lists-body">
+<span class="theme-section-label">Lists</span>
+<span class="accordion-chevron">&#9660;</span>
+</button>
+<div class="accordion-body" id="notify-profile-lists-body">
+<div class="field">
+<label>Their reminders list</label>
+<div class="notify-profile-list-row">
+<input type="text" class="notify-profile-list-entity" data-list-kind="remindersEntity" placeholder="todo.jaret_reminders" />
+<button type="button" class="notify-profile-list-add-btn" data-list-kind="remindersEntity">+ Add list</button>
+</div>
+<div class="notify-profile-list-status" data-list-kind="remindersEntity"></div>
+<div class="remind-hint">Their own individual Reminders list, separate from the shared family Reminders list. Leave blank and tap "+ Add list" to create one automatically.</div>
+</div>
+<div class="field">
+<label>Their wish list</label>
+<div class="notify-profile-list-row">
+<input type="text" class="notify-profile-list-entity" data-list-kind="wishlistEntity" placeholder="todo.jaret_wishlist" />
+<button type="button" class="notify-profile-list-add-btn" data-list-kind="wishlistEntity">+ Add list</button>
+</div>
+<div class="notify-profile-list-status" data-list-kind="wishlistEntity"></div>
+<div class="remind-hint">A to-do list just for their own wish list - saving automatically flags it, same as the To-Do Lists card's own Wish List toggle. Leave blank and tap "+ Add list" to create one automatically.</div>
+</div>
+<div class="field">
 <label>Other people's reminder lists</label>
 <div class="notify-profile-reminders-lists"></div>
 <div class="remind-hint notify-profile-reminders-lists-empty" style="display:none">Nobody else has their own individual Reminders list set up yet - add one to a person under the General tab's Calendars section first.</div>
 <div class="remind-hint">Everyone always sees their own list. For anyone else's: "None" keeps it fully out of sight, "Add to calendar" shows it on this person's own calendar (colored with its owner's color) with no push, and "...+ alert" also sends a notification the moment one of its reminders comes due. Anyone subscribed at either level can add new reminders to that list too.</div>
+</div>
+</div>
 </div>
 <div class="field">
 <label>Reminders</label>
@@ -5292,13 +7363,25 @@ instead of the usual stacked field layout. */
 </div>
 </div>
 <div class="field">
-<label>Instant notifications</label>
+<button type="button" class="accordion-toggle" data-target="notify-profile-instant-body">
+<span class="theme-section-label">Instant notifications</span>
+<span class="accordion-chevron">&#9660;</span>
+</button>
+<div class="accordion-body" id="notify-profile-instant-body">
 <label class="remind-check-opt"><input type="checkbox" class="notify-profile-reward-claimed-check" /> A reward is claimed (anyone in the household)</label>
 <label class="remind-check-opt"><input type="checkbox" class="notify-profile-chore-approved-check" /> One of my chores is approved</label>
 <label class="remind-check-opt"><input type="checkbox" class="notify-profile-chore-rejected-check" /> One of my chores is sent back (not approved)</label>
 <label class="remind-check-opt"><input type="checkbox" class="notify-profile-chore-due-check" /> One of my chores is due soon (uses that chore's own "remind me" times)</label>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-timer-alarm-check" /> One of my timers goes off (alarm-style: bypasses silent mode/DND on your phone)</label>
 <div class="remind-hint">Sent right away, separate from the Daily Digest below - not folded into tomorrow morning's summary.</div>
 </div>
+</div>
+<div class="field">
+<button type="button" class="accordion-toggle" data-target="notify-profile-digest-body">
+<span class="theme-section-label">Daily Digest</span>
+<span class="accordion-chevron">&#9660;</span>
+</button>
+<div class="accordion-body" id="notify-profile-digest-body">
 <div class="field">
 <label>Daily Digest</label>
 <div class="size-btn-row">
@@ -5320,12 +7403,31 @@ instead of the usual stacked field layout. */
 <div class="remind-hint">Sends what's currently checked above (even if not Saved yet) to this person's notify targets, right now - handy for checking a device actually gets it and previewing today's content.</div>
 <div class="notify-profile-send-digest-status"></div>
 </div>
+</div>
+</div>
+<div class="notify-profile-kiosk-accordion admin-only-block" style="display:none">
+<button type="button" class="accordion-toggle" data-target="notify-profile-kiosk-body">
+<span class="theme-section-label">Kiosk PIN login</span>
+<span class="accordion-chevron">&#9660;</span>
+</button>
+<div class="accordion-body" id="notify-profile-kiosk-body">
 <div class="field">
-<label>Kiosk PIN login</label>
 <label class="remind-check-opt"><input type="checkbox" class="notify-profile-kiosk-login-check" /> Enable logging in as this person on a shared kiosk display</label>
 <div class="remind-hint">Once enabled, a &#128274; Login button appears on the Chores and Rewards boards - typing this person's PIN there runs those boards as them for a bit (auto logs out after 45 seconds idle) to claim their own rewards, mark their own chores done, or (if they have approval permission) approve/reject others'.</div>
 <button type="button" class="notify-profile-kiosk-set-pin-btn admin-only-btn" style="display:none">&#128272; Set / change PIN&hellip;</button>
 <div class="notify-profile-kiosk-pin-status"></div>
+</div>
+</div>
+</div>
+<div class="notify-profile-permissions-accordion admin-only-block" style="display:none">
+<button type="button" class="accordion-toggle" data-target="notify-profile-permissions-body">
+<span class="theme-section-label">Permissions</span>
+<span class="accordion-chevron">&#9660;</span>
+</button>
+<div class="accordion-body" id="notify-profile-permissions-body">
+<div class="remind-hint">Only visible to a Home Assistant admin account - everyone can still do their own chores and claim anything from the Chore Bin regardless of these. Changes here save immediately, not on the Done button below.</div>
+<div class="notify-profile-perm-rows-list"></div>
+</div>
 </div>
 <div class="modal-actions">
 <button class="btn-save notify-profile-done">Done</button>
@@ -5365,6 +7467,7 @@ instead of the usual stacked field layout. */
 <button type="button" class="add-fab-item add-fab-reminder">&#128276; Reminder</button>
 <button type="button" class="add-fab-item add-fab-suggestion">&#128161; Meal Suggestion</button>
 <button type="button" class="add-fab-item add-fab-recipe">&#127838; Recipe</button>
+<button type="button" class="add-fab-item add-fab-settings">&#9881;&#65039; Settings</button>
 </div>
 </div>
 </div>
@@ -5471,6 +7574,7 @@ instead of the usual stacked field layout. */
 </div>
 </ha-card>
 <button class="add-event-fab" title="Add" aria-haspopup="true" aria-expanded="false">&#65291;</button>
+<div class="fh-toast" role="status" aria-live="polite" hidden></div>
 `;
 this._root = root;
 // On narrow/mobile layouts, :host and ha-card both get overflow:hidden
@@ -5496,7 +7600,17 @@ this._modalOpenObserver.observe(el, { attributes: true, attributeFilter: ["class
 });
 }
 this._setupScreenSaverActivityListeners();
-this._applySizeVars();
+// v1.126.0+: skipped when the top of this same _build() already applied a
+// cached theme (see this._familyHubUsedCachedThemeVars there) - this call
+// runs the REAL theme resolution against whatever's in _settingsCache/
+// _globalThemes right now, which for a just-built card is still nothing
+// (that's the whole two-round-trip gap this fix exists for), so running
+// it here would immediately overwrite the correct cached values just
+// applied above with a premature, wrong resolution. Still runs on a
+// genuine first-ever load (nothing cached yet for this key), exactly as
+// it always has, since this card has no `:host` CSS fallback colors to
+// lean on otherwise.
+if (!this._familyHubUsedCachedThemeVars) this._applySizeVars();
 root.querySelector(".grid").addEventListener("click", (e) => {
 // v145+ task: the split Month variant's "Go to this week" button, in
 // its detail pane - reuses the same _goToWeekFromDate the plain Month
@@ -5692,7 +7806,7 @@ const idx = parseInt(el.dataset.idx, 10);
 const entry = ((this._editingExistingMeal && this._editingExistingMeal.additionalRecipes) || [])[idx];
 if (!entry) return;
 if (entry.grocyRecipeId) {
-this._openGrocyRecipeViewer(entry.grocyRecipeId, entry.name, entry.link, true);
+this._openGrocyRecipeViewer(entry.grocyRecipeId, entry.name, entry.link, true, this._buildGrocyRecipeViewerTabsForCurrentMeal());
 } else if (entry.link) {
 window.open(entry.link, "_blank", "noopener");
 }
@@ -5701,7 +7815,34 @@ root.querySelector(".meal-view-edit-btn").addEventListener("click", () => this._
 root.querySelector(".btn-move-meal").addEventListener("click", () => this._moveMealToDate());
 root.querySelector(".btn-add-additional-recipe-box").addEventListener("click", () => this._openLoved("additional"));
 root.querySelector(".btn-add-additional-recipe-link").addEventListener("click", () => this._addAdditionalRecipeFromLink());
+// v1.109.8+: the inline "From a link" add/edit form that replaced the old
+// pair of window.prompt() dialogs - see _openAdditionalRecipeForm.
+const addlNameEl = root.querySelector(".input-additional-recipe-name");
+const addlLinkEl = root.querySelector(".input-additional-recipe-link");
+addlNameEl.addEventListener("input", () => this._updateAdditionalRecipeFormState());
+[addlNameEl, addlLinkEl].forEach((el) => {
+el.addEventListener("keydown", (e) => {
+// Enter commits (when there's a name to commit), Escape backs out -
+// the keyboard equivalents of the two buttons, so the form behaves
+// like every other small form rather than trapping anyone in it.
+if (e.key === "Enter") {
+e.preventDefault();
+this._commitAdditionalRecipeForm();
+} else if (e.key === "Escape") {
+e.preventDefault();
+e.stopPropagation();
+this._closeAdditionalRecipeForm();
+}
+});
+});
+root.querySelector(".additional-recipe-inline-cancel").addEventListener("click", () => this._closeAdditionalRecipeForm());
+root.querySelector(".additional-recipe-inline-save").addEventListener("click", () => this._commitAdditionalRecipeForm());
 root.querySelector(".additional-recipes-list").addEventListener("click", (e) => {
+const editBtn = e.target.closest(".additional-recipe-edit");
+if (editBtn) {
+this._openAdditionalRecipeForm(parseInt(editBtn.dataset.idx, 10));
+return;
+}
 const removeBtn = e.target.closest(".additional-recipe-remove");
 if (removeBtn) {
 const idx = parseInt(removeBtn.dataset.idx, 10);
@@ -5714,7 +7855,7 @@ const idx = parseInt(nameEl.dataset.idx, 10);
 const entry = (this._editingAdditionalRecipes || [])[idx];
 if (entry) {
 if (entry.grocyRecipeId) {
-this._openGrocyRecipeViewer(entry.grocyRecipeId, entry.name, entry.link, true);
+this._openGrocyRecipeViewer(entry.grocyRecipeId, entry.name, entry.link, true, this._buildGrocyRecipeViewerTabsForCurrentMeal());
 } else if (entry.link) {
 window.open(entry.link, "_blank", "noopener");
 }
@@ -5808,12 +7949,50 @@ this._renderGrocyPicker();
 });
 root.querySelector(".grocy-recipe-viewer-close").addEventListener("click", () => this._closeGrocyRecipeViewer());
 root.querySelector(".grocy-recipe-viewer-back-btn").addEventListener("click", () => this._closeGrocyRecipeViewer());
+// v1.114.0+ multi-recipe tabs - delegated (not one listener per button)
+// since the tab row's buttons are rebuilt fresh every time
+// _openGrocyRecipeViewer opens, same reason .additional-recipes-list's
+// own click handler elsewhere in this file is delegated too.
+root.querySelector(".grocy-recipe-viewer-tabs").addEventListener("click", (e) => {
+const btn = e.target.closest(".grocy-recipe-viewer-tab-btn");
+if (!btn) return;
+this._switchGrocyRecipeViewerTab(btn.dataset.recipeTabId);
+});
 root.querySelector(".grocy-recipe-viewer-open-btn").addEventListener("click", () => {
 if (this._grocyRecipeViewerFallbackLink) window.open(this._grocyRecipeViewerFallbackLink, "_blank", "noopener");
 });
 root.querySelector(".grocy-recipe-viewer-consume-btn").addEventListener("click", () => this._consumeGrocyRecipeIngredients());
 root.querySelector(".grocy-recipe-viewer-scale-down").addEventListener("click", () => this._adjustGrocyRecipeViewerServings(-1));
 root.querySelector(".grocy-recipe-viewer-scale-up").addEventListener("click", () => this._adjustGrocyRecipeViewerServings(1));
+// v1.129.0+: Suggest/Edit/Delete for whichever Recipe Box entry this
+// viewer was opened FROM (see _openGrocyRecipeViewer's own comment on
+// _grocyRecipeViewerSourceRecipe) - only ever visible when there IS
+// one, i.e. when the viewer was opened by tapping a recipe straight
+// from the Recipe Box's own browse list, not from a meal preview or
+// any other call site that only ever has a bare Grocy recipe id.
+root.querySelector(".grocy-recipe-viewer-suggest-btn").addEventListener("click", (e) => {
+const recipe = this._grocyRecipeViewerSourceRecipe;
+if (!recipe) return;
+this._suggestDish(recipe);
+const btn = e.currentTarget;
+btn.textContent = "\u{2705} Added to Suggestions";
+setTimeout(() => {
+btn.textContent = "\u{1F4A1} Suggest this";
+}, 1600);
+});
+root.querySelector(".grocy-recipe-viewer-edit-btn").addEventListener("click", () => {
+const recipe = this._grocyRecipeViewerSourceRecipe;
+if (!recipe) return;
+this._closeGrocyRecipeViewer();
+this._openRecipeBoxEditor(recipe);
+});
+root.querySelector(".grocy-recipe-viewer-delete-btn").addEventListener("click", () => {
+const recipe = this._grocyRecipeViewerSourceRecipe;
+if (!recipe) return;
+if (!window.confirm(`Delete "${recipe.name}" from the Recipe Box? This will also delete it from Grocy.`)) return;
+this._deleteDish(recipe.uid, recipe.grocyRecipeId);
+this._closeGrocyRecipeViewer();
+});
 root.querySelector(".templates-btn").addEventListener("click", () => this._openTemplates());
 root.querySelector(".templates-close").addEventListener("click", () => this._closeTemplates());
 root.querySelector(".templates-save-btn").addEventListener("click", () => {
@@ -5889,6 +8068,13 @@ this._openSuggestedRecipes();
 root.querySelector(".add-fab-recipe").addEventListener("click", () => {
 this._closeAddMenu();
 this._openRecipeImport();
+});
+// v1.132.5+: Small screen mode's own entry point to Settings - only
+// visible at all once smallScreenMode is on (see the CSS above), since
+// that's also when the top bar's own Settings button is hidden.
+root.querySelector(".add-fab-settings").addEventListener("click", () => {
+this._closeAddMenu();
+this._openSettings();
 });
 root.querySelector(".add-event-close").addEventListener("click", () => this._closeAddEvent());
 root.querySelector(".add-event-cancel").addEventListener("click", () => this._closeAddEvent());
@@ -6047,6 +8233,39 @@ const userId = this._notifyProfileEditingUserId;
 if (userId === undefined || userId === null) return;
 this._settingsUserProfilesDraft[userId].notifyChoreDue = e.target.checked;
 });
+root.querySelector(".notify-profile-timer-alarm-check").addEventListener("change", (e) => {
+const userId = this._notifyProfileEditingUserId;
+if (userId === undefined || userId === null) return;
+this._settingsUserProfilesDraft[userId].notifyTimerAlarm = e.target.checked;
+});
+// v1.131.0+: this profile's own directly-set calendar/reminders/wish
+// list - see SETTINGS_KEY_USER_PROFILES's own comment in const.py.
+root.querySelector(".notify-profile-calendar-entity").addEventListener("input", (e) => {
+const userId = this._notifyProfileEditingUserId;
+if (userId === undefined || userId === null) return;
+if (!this._settingsUserProfilesDraft[userId]) this._settingsUserProfilesDraft[userId] = this._defaultUserProfile();
+this._settingsUserProfilesDraft[userId].primaryCalendar = e.target.value.trim();
+});
+root.querySelector(".notify-profile-own-calendar-badge-add-btn").addEventListener("click", () => {
+const userId = this._notifyProfileEditingUserId;
+if (userId === undefined || userId === null) return;
+this._syncNotifyProfileBadgesFromDom(userId);
+if (!Array.isArray(this._settingsUserProfilesDraft[userId].badges)) this._settingsUserProfilesDraft[userId].badges = [];
+this._settingsUserProfilesDraft[userId].badges.push({ text: "", match: "", hideMatch: "" });
+this._renderNotifyProfileBadges(userId);
+});
+root.querySelectorAll(".notify-profile-list-entity").forEach((input) => {
+input.addEventListener("input", (e) => {
+const userId = this._notifyProfileEditingUserId;
+if (userId === undefined || userId === null) return;
+if (!this._settingsUserProfilesDraft[userId]) this._settingsUserProfilesDraft[userId] = this._defaultUserProfile();
+this._settingsUserProfilesDraft[userId][e.target.dataset.listKind] = e.target.value.trim();
+this._syncNotifyProfileListAddButtons();
+});
+});
+root.querySelectorAll(".notify-profile-list-add-btn").forEach((btn) => {
+btn.addEventListener("click", () => this._createNotifyProfileList(btn.dataset.listKind));
+});
 // v144+ task #29: toggles kiosk PIN login enrollment - see
 // _settingsKioskLoginUserIdsDraft's own docstring above.
 root.querySelector(".notify-profile-kiosk-login-check").addEventListener("change", (e) => {
@@ -6171,6 +8390,12 @@ root.querySelectorAll(".grey-out-past-btn").forEach((b) => b.classList.remove("a
 btn.classList.add("active");
 });
 });
+root.querySelectorAll(".fab-position-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".fab-position-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+});
+});
 root.querySelectorAll(".scroll-lock-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
 root.querySelectorAll(".scroll-lock-btn").forEach((b) => b.classList.remove("active"));
@@ -6192,6 +8417,12 @@ btn.classList.add("active");
 root.querySelectorAll(".month-variant-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
 root.querySelectorAll(".month-variant-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+});
+});
+root.querySelectorAll(".week-day-count-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".week-day-count-btn").forEach((b) => b.classList.remove("active"));
 btn.classList.add("active");
 });
 });
@@ -6356,9 +8587,6 @@ container.innerHTML = list
 <input type="color" class="person-color" value="${p.color || "#d9bf7e"}" />
 <button type="button" class="person-countdown-btn ${p.countdown ? "active" : ""}" data-idx="${idx}" title="Include in countdown">&#9203;</button>
 <button type="button" class="person-remove-btn" data-idx="${idx}" title="Remove">&#10005;</button>
-</div>
-<div class="person-reminders-row" data-idx="${idx}">
-<input type="text" class="person-reminders-entity" placeholder="todo.their_reminders (optional - their own Reminders list)" value="${p.remindersEntity || ""}" />
 </div>
 <div class="person-badges" data-idx="${idx}">
 ${(p.badges || [])
@@ -6613,6 +8841,8 @@ const choreRejectedCheck = root.querySelector(".notify-profile-chore-rejected-ch
 if (choreRejectedCheck) choreRejectedCheck.checked = !!profile.notifyChoreRejected;
 const choreDueCheck = root.querySelector(".notify-profile-chore-due-check");
 if (choreDueCheck) choreDueCheck.checked = !!profile.notifyChoreDue;
+const timerAlarmCheck = root.querySelector(".notify-profile-timer-alarm-check");
+if (timerAlarmCheck) timerAlarmCheck.checked = !!profile.notifyTimerAlarm;
 // v144+ task #29: kiosk PIN login enrollment - see
 // _settingsKioskLoginUserIdsDraft's own docstring for why this reads/
 // writes that separate draft rather than the profile object above.
@@ -6628,6 +8858,26 @@ if (pinStatusEl) {
 pinStatusEl.textContent = "";
 pinStatusEl.classList.remove("is-error");
 }
+// v1.132.6+: the whole Kiosk PIN login field now lives in its own
+// accordion, hidden from non-admins entirely (same isAdminForPin check
+// already used for the Set/change PIN button and the Permissions
+// accordion just below) - household ask, verbatim: "Put Kiosk pin in an
+// accordian hide this accordian from non admins." Previously only the Set
+// PIN button itself was admin-gated; the enable checkbox and hint text
+// were visible (and, since the checkbox's own change handler has no
+// admin check, editable) by anyone who opened a profile modal.
+const kioskAccordion = root.querySelector(".notify-profile-kiosk-accordion");
+if (kioskAccordion) kioskAccordion.style.display = isAdminForPin ? "" : "none";
+// v1.132.5+: Permissions accordion - admin-only, same isAdminForPin check
+// (real HA admin, re-checked every open) already used for the PIN button
+// just above. this._notifyProfileOpenUserId is tracked so a permissions
+// fetch still in flight (kicked off when Settings itself opened - see
+// _openSettings) can re-draw THIS accordion once it resolves, even though
+// it started before this particular person's modal was opened.
+this._notifyProfileOpenUserId = userId;
+const permAccordion = root.querySelector(".notify-profile-permissions-accordion");
+if (permAccordion) permAccordion.style.display = isAdminForPin ? "" : "none";
+if (isAdminForPin) this._renderNotifyProfilePermissions(userId);
 // Grocy's two digest sections only make sense to show once the matching
 // household-wide feature is actually on - otherwise it's a checkbox for
 // a section that can never appear in anyone's digest. Reads the LIVE
@@ -6636,6 +8886,19 @@ pinStatusEl.classList.remove("is-error");
 this._syncGrocyNotifyVisibility();
 this._renderNotifyProfileCalendars(userId);
 this._renderNotifyProfileRemindersLists(userId);
+// v1.131.0+: this profile's own directly-set calendar/reminders/wish
+// list - see SETTINGS_KEY_USER_PROFILES's own comment in const.py.
+const calendarEntityEl = root.querySelector(".notify-profile-calendar-entity");
+if (calendarEntityEl) calendarEntityEl.value = profile.primaryCalendar || "";
+this._renderNotifyProfileBadges(userId);
+root.querySelectorAll(".notify-profile-list-entity").forEach((input) => {
+input.value = profile[input.dataset.listKind] || "";
+});
+this._syncNotifyProfileListAddButtons();
+root.querySelectorAll(".notify-profile-list-status").forEach((el) => {
+el.textContent = "";
+el.classList.remove("is-error");
+});
 // Clear any leftover "Sent!"/error text from whichever person's profile
 // was open last - each person's Send-test result is only meaningful for
 // them, not whoever gets shown next.
@@ -6862,23 +9125,61 @@ this._renderNotifyProfileRemindersLists(userId);
 });
 }
 // v130+: for every OTHER person who's configured their own individual
-// Reminders list (settings.people[i].remindersEntity - see the person-row
-// "Reminders list" field under the General tab's Calendars section), a
-// 3-way control for how much of it THIS profile can see: none, add-to-
-// calendar (visible, no alert), or add-to-calendar-plus-alert (visible AND
-// pushed the moment a reminder on it comes due). This profile's OWN list
-// (wherever their primaryCalendar points) is never shown here - they
-// always see/can add to their own list unconditionally, this control only
-// ever governs access to someone ELSE's list. Mirrors
-// _renderNotifyProfileCalendars' own card-list shape/wiring.
+// Reminders list, a 3-way control for how much of it THIS profile can
+// see: none, add-to-calendar (visible, no alert), or add-to-calendar-
+// plus-alert (visible AND pushed the moment a reminder on it comes due).
+// This profile's OWN list (wherever their primaryCalendar points) is
+// never shown here - they always see/can add to their own list
+// unconditionally, this control only ever governs access to someone
+// ELSE's list. Mirrors _renderNotifyProfileCalendars' own card-list
+// shape/wiring.
+//
+// v1.132.0+: "someone else's individual Reminders list" now has two
+// possible sources, merged together here. Most households will only ever
+// hit the second one going forward - the first is legacy-only:
+//   1. settings.people[i].remindersEntity - the Calendars tab's old
+//      per-row "their own Reminders list" field. The field itself is
+//      gone from that tab's UI now (moved to each profile below), but a
+//      row whose calendar was never claimed as anyone's primaryCalendar
+//      has nowhere for the backend migration to move its value TO (see
+//      _migrate_people_reminders_into_profiles on the backend), so it's
+//      still read from here rather than silently dropped.
+//   2. settings.userProfiles[otherUserId].remindersEntity - the new
+//      Users tab field. This is what a people[] row's remindersEntity
+//      gets migrated INTO the moment that row's calendar is/becomes
+//      someone's primaryCalendar, and it's the only way to set one up
+//      for a brand new calendar now. Keyed here by that profile's own
+//      primaryCalendar (the same "who is this" identity
+//      remindersSubscriptions has always used), so a profile with no
+//      primaryCalendar set yet has no identity to subscribe to and is
+//      skipped - same limitation a bare people[] row with no matching
+//      profile already had before this version.
 _renderNotifyProfileRemindersLists(userId) {
 const root = this._root;
 const listEl = root.querySelector(".notify-profile-reminders-lists");
 const emptyEl = root.querySelector(".notify-profile-reminders-lists-empty");
 if (!listEl) return;
 const profile = this._settingsUserProfilesDraft[userId];
+const myPrimary = profile.primaryCalendar || "";
 const calendars = Array.isArray(this._settingsPeopleDraft) ? this._settingsPeopleDraft : [];
-const others = calendars.filter((c) => c.entity && c.remindersEntity && c.entity !== (profile.primaryCalendar || ""));
+const seenEntities = new Set();
+const others = [];
+calendars.forEach((c) => {
+if (!c.entity || !c.remindersEntity || c.entity === myPrimary || seenEntities.has(c.entity)) return;
+seenEntities.add(c.entity);
+others.push({ entity: c.entity, remindersEntity: c.remindersEntity, name: c.name || c.entity, color: c.color || "#d9bf7e" });
+});
+const profilesDraft = this._settingsUserProfilesDraft || {};
+Object.keys(profilesDraft).forEach((otherUserId) => {
+if (otherUserId === userId) return;
+const otherProfile = profilesDraft[otherUserId];
+const otherEntity = otherProfile && otherProfile.primaryCalendar;
+if (!otherProfile || !otherEntity || !otherProfile.remindersEntity) return;
+if (otherEntity === myPrimary || seenEntities.has(otherEntity)) return;
+seenEntities.add(otherEntity);
+const user = (this._notifyProfileUsersCache || []).find((u) => u.id === otherUserId);
+others.push({ entity: otherEntity, remindersEntity: otherProfile.remindersEntity, name: (user && user.name) || otherEntity, color: otherProfile.color || "#d9bf7e" });
+});
 if (!others.length) {
 listEl.innerHTML = "";
 if (emptyEl) emptyEl.style.display = "";
@@ -6919,6 +9220,125 @@ this._renderNotifyProfileRemindersLists(userId);
 });
 });
 }
+// v1.131.0+: badges for THIS profile's own primaryCalendar - same exact
+// {text, match, hideMatch} shape and .person-badge-row/.person-badge-text/
+// .person-badge-match/.person-badge-hide/.person-badge-remove-btn CSS
+// classes a settings.people[] row's own badges editor already uses (see
+// _renderPeopleSettings), just rendered into a container scoped to this
+// modal (.notify-profile-own-calendar-badges) and read from/written to
+// this profile's own `badges` array instead of a people[] row by index -
+// reusing the classes gets the exact same look for free without a second
+// copy of that CSS.
+_renderNotifyProfileBadges(userId) {
+const root = this._root;
+const container = root.querySelector(".notify-profile-own-calendar-badges");
+if (!container) return;
+const profile = this._settingsUserProfilesDraft[userId] || this._defaultUserProfile();
+const badges = Array.isArray(profile.badges) ? profile.badges : [];
+container.innerHTML = badges
+.map(
+(b, bidx) => `
+<div class="person-badge-row" data-badge-idx="${bidx}">
+<input type="text" class="person-badge-text" placeholder="Badge (e.g. N)" value="${b.text || ""}" maxlength="4" />
+<input type="text" class="person-badge-match" placeholder="Show badge when event contains..." value="${b.match || ""}" />
+<input type="text" class="person-badge-hide" placeholder="Hide event when contains..." value="${b.hideMatch || ""}" />
+<button type="button" class="person-badge-remove-btn" data-badge-idx="${bidx}" title="Remove badge">&#10005;</button>
+</div>
+`
+)
+.join("");
+container.querySelectorAll(".person-badge-text, .person-badge-match, .person-badge-hide").forEach((input) => {
+input.addEventListener("input", () => this._syncNotifyProfileBadgesFromDom(userId));
+});
+container.querySelectorAll(".person-badge-remove-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+this._syncNotifyProfileBadgesFromDom(userId);
+const bidx = parseInt(btn.dataset.badgeIdx, 10);
+this._settingsUserProfilesDraft[userId].badges.splice(bidx, 1);
+this._renderNotifyProfileBadges(userId);
+});
+});
+}
+// Reads whatever's currently typed into the badge rows back into the
+// profile draft - called before any add/remove so an in-progress edit in
+// another row is never lost by the re-render those trigger (same
+// read-before-mutate pattern _syncPeopleDraftFromDom uses for the
+// people[] version of this same editor).
+_syncNotifyProfileBadgesFromDom(userId) {
+const container = this._root.querySelector(".notify-profile-own-calendar-badges");
+if (!container) return;
+const rows = container.querySelectorAll(".person-badge-row");
+const badges = Array.from(rows).map((row) => ({
+text: row.querySelector(".person-badge-text").value.trim(),
+match: row.querySelector(".person-badge-match").value.trim(),
+hideMatch: row.querySelector(".person-badge-hide").value.trim(),
+}));
+if (!this._settingsUserProfilesDraft[userId]) this._settingsUserProfilesDraft[userId] = this._defaultUserProfile();
+this._settingsUserProfilesDraft[userId].badges = badges;
+}
+// Shows/hides each "+ Add list" button based on whether its own field is
+// currently empty - household ask, verbatim: *"if there isn't a todo list
+// for reminders or for wish list make the button say 'add list'"* -
+// nothing to create once a list is already picked, so the button simply
+// disappears rather than staying around as a dead click target.
+_syncNotifyProfileListAddButtons() {
+const root = this._root;
+if (!root) return;
+root.querySelectorAll(".notify-profile-list-entity").forEach((input) => {
+const btn = root.querySelector(`.notify-profile-list-add-btn[data-list-kind="${input.dataset.listKind}"]`);
+if (btn) btn.style.display = input.value.trim() ? "none" : "";
+});
+}
+// "+ Add list" - creates a brand new Local To-do list named
+// "<PersonName>_<Reminders|Wish List>" via family_hub/create_todo_list
+// (wrapping the same _create_local_todo_list helper the first-run setup
+// wizard's own "create the lists I don't have yet" checkbox uses) and
+// fills the matching field with the resulting entity id. listKind is
+// "remindersEntity" or "wishlistEntity" - both the profile field name AND
+// (title-cased) half of the generated list name.
+async _createNotifyProfileList(listKind) {
+const root = this._root;
+const userId = this._notifyProfileEditingUserId;
+if (!root || !this._hass || userId === undefined || userId === null) return;
+const input = root.querySelector(`.notify-profile-list-entity[data-list-kind="${listKind}"]`);
+const btn = root.querySelector(`.notify-profile-list-add-btn[data-list-kind="${listKind}"]`);
+const statusEl = root.querySelector(`.notify-profile-list-status[data-list-kind="${listKind}"]`);
+if (!input) return;
+const user = (this._notifyProfileUsersCache || []).find((u) => u.id === userId);
+const personName = (user && user.name) || "Family Hub";
+const listLabel = listKind === "wishlistEntity" ? "Wish List" : "Reminders";
+const listName = `${personName}_${listLabel}`;
+if (btn) {
+btn.disabled = true;
+btn.textContent = "Creating…";
+}
+if (statusEl) {
+statusEl.textContent = "";
+statusEl.classList.remove("is-error");
+}
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/create_todo_list", name: listName });
+if (result && result.entity_id) {
+input.value = result.entity_id;
+if (!this._settingsUserProfilesDraft[userId]) this._settingsUserProfilesDraft[userId] = this._defaultUserProfile();
+this._settingsUserProfilesDraft[userId][listKind] = result.entity_id;
+this._syncNotifyProfileListAddButtons();
+if (statusEl) statusEl.textContent = `Created ${result.entity_id} - tap Save to keep it.`;
+} else if (statusEl) {
+statusEl.textContent = "Couldn't create a list automatically - add one under Settings → Devices & Services → Local To-do, then type its entity id above.";
+statusEl.classList.add("is-error");
+}
+} catch (e) {
+if (statusEl) {
+statusEl.textContent = "Couldn't create a list automatically - add one under Settings → Devices & Services → Local To-do, then type its entity id above.";
+statusEl.classList.add("is-error");
+}
+}
+if (btn) {
+btn.disabled = false;
+btn.textContent = "+ Add list";
+}
+}
 _closeNotifyProfileModal() {
 this._root.querySelector(".notify-profile-overlay").classList.remove("open");
 this._notifyProfileEditingUserId = null;
@@ -6926,6 +9346,7 @@ this._renderNotifyProfilesList();
 }
 _syncPeopleDraftFromDom() {
 const rows = this._root.querySelectorAll(".person-row");
+const priorDraft = Array.isArray(this._settingsPeopleDraft) ? this._settingsPeopleDraft : [];
 this._settingsPeopleDraft = Array.from(rows).map((row, idx) => {
 const badgesContainer = this._root.querySelector(`.person-badges[data-idx="${idx}"]`);
 const badgeRows = badgesContainer ? badgesContainer.querySelectorAll(".person-badge-row") : [];
@@ -6934,8 +9355,17 @@ text: br.querySelector(".person-badge-text").value.trim(),
 match: br.querySelector(".person-badge-match").value.trim(),
 hideMatch: br.querySelector(".person-badge-hide").value.trim(),
 }));
-const remindersRow = this._root.querySelector(`.person-reminders-row[data-idx="${idx}"]`);
-const remindersEntity = remindersRow ? remindersRow.querySelector(".person-reminders-entity").value.trim() : "";
+// v1.132.0+: the Calendars tab no longer has a "their own Reminders
+// list" field on each row - moved to the Users tab profile editor (see
+// _migrate_people_reminders_into_profiles on the backend, which already
+// transfers any calendar that's someone's primaryCalendar the moment
+// Settings are loaded/saved, clearing this back to "" once it has). No
+// DOM field to read it from any more, so just carry forward whatever
+// this row's draft already holds - "" for an already-migrated row,
+// unchanged for the rarer case of a calendar nobody's claimed yet (the
+// backend has nowhere to move that one, so there's still nothing here
+// to destroy by round-tripping an unrelated edit through Save).
+const remindersEntity = (priorDraft[idx] && priorDraft[idx].remindersEntity) || "";
 return {
 entity: row.querySelector(".person-entity").value.trim(),
 name: row.querySelector(".person-name").value.trim(),
@@ -6970,6 +9400,11 @@ btn.classList.toggle("active", btn.dataset.value === (settings.showMealsInMonth 
 root.querySelectorAll(".grey-out-past-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.greyOutPastEvents ? "on" : "off"));
 });
+root.querySelectorAll(".fab-position-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (settings.fabPosition === "card" ? "card" : "dashboard"));
+});
+const smallScreenModeCheckEl = root.querySelector(".small-screen-mode-check");
+if (smallScreenModeCheckEl) smallScreenModeCheckEl.checked = this._getSmallScreenMode();
 root.querySelectorAll(".scroll-lock-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.scrollLocked ? "on" : "off"));
 });
@@ -6981,6 +9416,9 @@ btn.classList.toggle("active", btn.dataset.value === this._getWeekViewVariant())
 });
 root.querySelectorAll(".month-variant-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === this._getMonthViewVariant());
+});
+root.querySelectorAll(".week-day-count-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === String(this._getWeekViewDayCount()));
 });
 root.querySelectorAll(".countdown-enabled-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.countdownEnabled ? "on" : "off"));
@@ -7115,13 +9553,15 @@ cameraOptionsEl.innerHTML = Object.keys(this._hass.states)
 .map((id) => `<option value="${id}"></option>`)
 .join("");
 }
-// The Permissions tab is admin-only - both to view and to change (the
-// backend independently enforces this too, see _fetchPermissionsData) -
-// so a non-admin never even sees the tab button. Re-checked every time
-// Settings opens rather than cached, same as everything else here.
+// v1.132.5+: Permissions no longer has its own tab here - it lives in an
+// admin-only accordion inside each person's own Notification Profile
+// modal (see _openNotifyProfileModal/_renderNotifyProfilePermissions).
+// Permissions data is admin-only to view and to change (the backend
+// independently enforces this too, see _fetchPermissionsData), so it's
+// only prefetched here when the viewer is an admin - re-checked every
+// time Settings opens rather than cached, same as everything else here -
+// so it's already in hand the moment they tap into a person's profile.
 const isAdmin = !!(this._hass && this._hass.user && this._hass.user.is_admin);
-const permTabBtn = root.querySelector(".permissions-tab-btn");
-if (permTabBtn) permTabBtn.style.display = isAdmin ? "" : "none";
 if (isAdmin) {
 this._fetchPermissionsData();
 } else {
@@ -7316,7 +9756,11 @@ const root = this._root;
 if (!root) return false;
 const dishDetail = root.querySelector(".dish-detail-overlay");
 if (dishDetail && dishDetail.classList.contains("open")) return true;
-const grocyViewer = root.querySelector(".grocy-recipe-viewer-overlay");
+// v1.121.0+: goes through the shared _grocyViewerOverlay() accessor now,
+// not a plain root.querySelector - the overlay may have already been
+// promoted to document.body (see that method's own comment on why), in
+// which case it's no longer a descendant of `root` at all.
+const grocyViewer = this._grocyViewerOverlay();
 if (grocyViewer && grocyViewer.classList.contains("open")) return true;
 return false;
 }
@@ -7583,6 +10027,117 @@ this._renderCountdownItemsList();
 });
 });
 }
+// v1.110.3+ - auto-provision native timer.* helpers. See const.py's
+// TIMER_FAMILY_POOL_SIZE / TIMER_HELPER_NAME_PREFIX comment block for the
+// full research trail on why this lives here rather than in Python: the
+// `timer` domain is a storage-collection helper (like input_boolean/
+// counter/schedule), not a config-entry integration, so there is no
+// config_flow for Family Hub's backend to drive - `timer/create` is a
+// websocket command with no Python-side equivalent, exactly like the
+// "+ Add Helper" dialog in Settings > Devices & Services calls itself.
+// So this reconciliation runs from the frontend, using the same
+// hass.connection every other family_hub/* card call already uses.
+//
+// Called (a) right after every successful Settings save, since that is
+// the one place memberUserIds actually changes, and (b) once when the
+// Active Timers card loads (see that file's own copy), so a household
+// upgrading from an older version gets its helpers backfilled without
+// having to re-open and re-save Settings. Both call sites are idempotent
+// and safe to run concurrently - existing helpers are left untouched,
+// and Home Assistant's own timer/create dedupes by entity_id.
+//
+// WHAT GETS CREATED:
+//   - One dedicated helper per household member: "Family Hub <Name>" ->
+//     timer.family_hub_<slug>.
+//   - 4 shared ones, always present regardless of member count:
+//     "Family Hub Family 1".."Family Hub Family 4" ->
+//     timer.family_hub_family_1.._4, for timers nobody is assigned to.
+//
+// ON MEMBER REMOVAL the dedicated helper is deliberately left in place -
+// see const.py's comment for why (removing a member from Family Hub is a
+// fully reversible act that never destroys their data elsewhere either).
+async _ensureTimerHelpers(memberUserIds) {
+  if (!this._hass || !this._hass.connection || !this._hass.connection.sendMessagePromise) return;
+  const wanted = [];
+  for (const uid of Array.isArray(memberUserIds) ? memberUserIds : []) {
+    const name = await this._resolveMemberDisplayName(uid);
+    const slug = this._slugifyForEntity(name);
+    if (!slug) continue;
+    wanted.push({ entityId: `timer.family_hub_${slug}`, name: `Family Hub ${name}` });
+  }
+  for (let i = 1; i <= 4; i++) {
+    wanted.push({ entityId: `timer.family_hub_family_${i}`, name: `Family Hub Family ${i}` });
+  }
+  const existing = this._hass.states || {};
+  for (const w of wanted) {
+    if (existing[w.entityId]) continue;
+    await this._createTimerHelper(w.name);
+  }
+}
+
+// Home Assistant's own users list (family_hub/list_users), same source as
+// _fetchScreenSaverUsers, so the display name a helper is named after is
+// exactly the name the rest of the app already shows for that person -
+// keeping this frontend slug and the backend's own dedicated_timer_entity_id
+// (chores_websocket_api.py) predicting the identical entity_id.
+async _resolveMemberDisplayName(userId) {
+  try {
+    const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/list_users" });
+    const match = (result.users || []).find((u) => u.id === userId);
+    if (match) return match.name || match.id;
+  } catch (e) {
+  }
+  return userId;
+}
+
+// Mirrors chores_websocket_api.py's slugify_for_entity closely enough for
+// ordinary household names: lowercase, every run of non-alphanumerics
+// collapsed to one underscore, trimmed. Home Assistant slugifies the
+// helper's `name` into its own entity_id the same way, so this only ever
+// needs to predict what HA will already do - it never invents the id
+// itself.
+_slugifyForEntity(name) {
+  let out = "";
+  let prevUnderscore = false;
+  for (const ch of String(name || "").toLowerCase()) {
+    if (/[a-z0-9]/.test(ch) && /^[\x00-\x7F]*$/.test(ch)) {
+      out += ch;
+      prevUnderscore = false;
+    } else if (!prevUnderscore) {
+      out += "_";
+      prevUnderscore = true;
+    }
+  }
+  return out.replace(/^_+|_+$/g, "");
+}
+
+// timer's own STORAGE_FIELDS: name (required), icon, duration, restore.
+// `restore` (survive an HA restart mid-countdown, matching every other
+// durability choice this integration makes) is a newer field than
+// `duration`/`icon` - if an older HA core rejects the extra key, retry
+// once without it rather than leaving the helper never created at all.
+async _createTimerHelper(name) {
+  try {
+    await this._hass.connection.sendMessagePromise({
+      type: "timer/create",
+      name,
+      duration: "00:05:00",
+      icon: "mdi:timer-outline",
+      restore: true,
+    });
+  } catch (e) {
+    try {
+      await this._hass.connection.sendMessagePromise({
+        type: "timer/create",
+        name,
+        duration: "00:05:00",
+        icon: "mdi:timer-outline",
+      });
+    } catch (e2) {
+    }
+  }
+}
+
 async _saveSettings() {
 const root = this._root;
 this._syncPeopleDraftFromDom();
@@ -7633,6 +10188,18 @@ const activeMealsInMonthBtn = root.querySelector(".meals-in-month-btn.active");
 const showMealsInMonth = activeMealsInMonthBtn ? activeMealsInMonthBtn.dataset.value === "on" : false;
 const activeGreyOutPastBtn = root.querySelector(".grey-out-past-btn.active");
 const greyOutPastEvents = activeGreyOutPastBtn ? activeGreyOutPastBtn.dataset.value === "on" : false;
+const activeFabPositionBtn = root.querySelector(".fab-position-btn.active");
+const fabPosition = activeFabPositionBtn && activeFabPositionBtn.dataset.value === "card" ? "card" : "dashboard";
+// v1.132.7+: this device only - see _getSmallScreenMode's own comment for
+// why this is no longer part of settingsObj/family_hub/set_settings below
+// (that would apply it to every Family Hub device in the household again,
+// the exact bug being fixed).
+const smallScreenModeCheck = root.querySelector(".small-screen-mode-check");
+const smallScreenMode = !!(smallScreenModeCheck && smallScreenModeCheck.checked);
+try {
+localStorage.setItem("familyCalendarSmallScreenModeLocal", smallScreenMode ? "on" : "off");
+} catch (e) {
+}
 try {
 localStorage.setItem("familyCalendarShowTimelineLocal", showTimeline ? "on" : "off");
 } catch (e) {
@@ -7647,6 +10214,17 @@ const activeMonthVariantBtn = root.querySelector(".month-variant-btn.active");
 const monthViewVariant = activeMonthVariantBtn ? activeMonthVariantBtn.dataset.value : "month";
 try {
 localStorage.setItem("familyCalendarMonthViewVariantLocal", monthViewVariant);
+} catch (e) {
+}
+// v1.110.5+: "Display X days for smaller displays" - same this-device-
+// only localStorage precedent as weekViewVariant/monthViewVariant just
+// above (not the shared/household settings blob), since how many day
+// columns fit comfortably is a property of the physical screen this
+// dashboard runs on, not something every household device should share.
+const activeWeekDayCountBtn = root.querySelector(".week-day-count-btn.active");
+const weekViewDayCount = activeWeekDayCountBtn ? activeWeekDayCountBtn.dataset.value : "7";
+try {
+localStorage.setItem("familyCalendarWeekDayCountLocal", weekViewDayCount);
 } catch (e) {
 }
 const activeScrollLockBtn = root.querySelector(".scroll-lock-btn.active");
@@ -7765,6 +10343,14 @@ people,
 weekendBreakfast,
 showMealsInMonth,
 greyOutPastEvents,
+fabPosition,
+// v1.132.7+: smallScreenMode deliberately NOT included here any more -
+// see _getSmallScreenMode's own comment. It's this-device-only
+// (localStorage, already written above) now, not part of the shared
+// household settings blob every Family Hub device reads. The old field
+// stays readable in _normalizeSettings purely so a device that's never
+// opened Settings since this update can still do its one-time carry-
+// forward migration from whatever was last saved there.
 scrollLocked,
 theme,
 useGlobalTheme,
@@ -7818,6 +10404,13 @@ statusEl.classList.add("is-error");
 }
 return;
 }
+// v1.110.3+ - "Creating a user should automatically create a timer helper
+// for family hub... and there should be an additional 4 timer entities for
+// family". Best-effort and never blocks the save that already succeeded
+// above - see _ensureTimerHelpers's own docstring for the full design
+// (why this is admin-only-in-effect, idempotent, and never deletes a
+// removed member's helper).
+this._ensureTimerHelpers(memberUserIds).catch(() => {});
 await this._fetchSettings();
 await this._syncDailyDigestConfig();
 await this._syncGrocyExpiringConfig();
@@ -8453,10 +11046,33 @@ const url = this._root.querySelector(".input-link").value.trim();
 if (!url) return;
 const name = this._root.querySelector(".input-name").value.trim();
 if (this._currentGrocyRecipeId) {
-this._openGrocyRecipeViewer(this._currentGrocyRecipeId, name, url);
+this._openGrocyRecipeViewer(this._currentGrocyRecipeId, name, url, false, this._buildGrocyRecipeViewerTabsForCurrentMeal());
 } else {
 window.open(url, "_blank", "noopener");
 }
+}
+// v1.114.0+: a meal can already have more than one Grocy recipe tied to
+// it - the main recipe plus any "additional recipes" (sides, sauces,
+// desserts) that were themselves imported FROM Grocy rather than just
+// linked externally. Shared by every place that opens the Recipe Viewer
+// for the meal currently open in the editor (the main "View Recipe"
+// button above, and both additional-recipe row click handlers below) so
+// opening ANY one of a meal's recipes shows the same complete tab set,
+// built from this._editingAdditionalRecipes - the editor's live
+// in-progress additional-recipes list (kept in sync with the saved meal
+// whenever it isn't actively being edited, see that field's own
+// comment). Entries with only an external `link` (no grocyRecipeId)
+// aren't Grocy recipes at all and are left out - they stay exactly as
+// before, reachable only from their own row in the additional-recipes
+// list, never as a tab.
+_buildGrocyRecipeViewerTabsForCurrentMeal() {
+const mainId = this._currentGrocyRecipeId;
+const mainName = this._root.querySelector(".input-name").value.trim() || "Recipe";
+const tabs = (this._editingAdditionalRecipes || [])
+.filter((r) => r && r.grocyRecipeId)
+.map((r) => ({ id: r.grocyRecipeId, name: r.name || "Recipe" }));
+if (mainId) tabs.unshift({ id: mainId, name: mainName });
+return tabs;
 }
 // Toggles between the read-only meal view-card (title, prep/cook/serves,
 // View Recipe, and the pencil Edit button) and the actual editable fields
@@ -8573,6 +11189,13 @@ const root = this._root;
 if (!root) return;
 const list = root.querySelector(".additional-recipes-list");
 if (!list) return;
+// v1.109.8+: any re-render of the list means the thing the inline
+// add/edit form was pointed at may have moved (an entry removed, the
+// whole list replaced on editor open, a Recipe Box pick appended), so
+// close it rather than leave it editing a stale index. Every path that
+// legitimately keeps the form open (opening it, typing in it) goes
+// through _openAdditionalRecipeForm, which never re-renders.
+this._closeAdditionalRecipeForm();
 const entries = this._editingAdditionalRecipes || [];
 if (!entries.length) {
 list.innerHTML = `<div class="additional-recipes-empty-hint">No additional recipes added yet.</div>`;
@@ -8583,6 +11206,7 @@ list.innerHTML = entries
 const hasLink = !!(r.grocyRecipeId || (r.link && r.link.trim()));
 return `<div class="additional-recipe-row">
 <span class="additional-recipe-name${hasLink ? " has-link" : ""}" data-idx="${idx}" title="${hasLink ? "Open recipe" : ""}">${r.name}</span>
+<button type="button" class="additional-recipe-edit" data-idx="${idx}" title="Edit" aria-label="Edit ${r.name}">&#9998;</button>
 <button type="button" class="additional-recipe-remove" data-idx="${idx}" title="Remove" aria-label="Remove ${r.name}">&#10005;</button>
 </div>`;
 })
@@ -8605,18 +11229,111 @@ this._editingAdditionalRecipes.push({ name: recipe.name, link: recipe.link || ""
 this._closeLoved();
 this._renderAdditionalRecipesList();
 }
-// Entry point for the "+ From a link" button - a plain name + URL, for a
-// side/dessert/sauce recipe that isn't (and doesn't need to be) in the
-// Recipe Box at all. Two short prompts rather than a whole extra modal,
-// matching this card's existing "quick add" pattern elsewhere (e.g. the
-// Pantry card's remove-stock prompt).
-_addAdditionalRecipeFromLink() {
-const name = (window.prompt("Recipe name:") || "").trim();
+// -------------------------------------------------------------------------
+// "+ From a link" - a plain name + URL, for a side/dessert/sauce recipe
+// that isn't (and doesn't need to be) in the Recipe Box at all.
+//
+// v1.109.8+: this used to be TWO back-to-back blocking window.prompt()
+// calls ("Recipe name:", then "Recipe link (optional):") - browser-chrome
+// dialogs stacked on top of the meal editor, which is exactly the
+// popup-on-popup feel the household asked to get away from ("when you
+// select to add a recipe not from grocy it just gives you 2 boxes, name
+// and link and says save. trying to get away from the popup UI on this
+// item"). window.prompt is also genuinely unreliable where this card
+// actually lives: several Android kiosk WebViews suppress it outright, so
+// the button could silently do nothing.
+//
+// Replaced with an INLINE form that expands in place, right under the
+// additional-recipes list - no extra modal layer, nothing stacked. Same
+// shape as this file's other inline add affordances (compare
+// .member-add-row on the Users tab, and the notify-devices add row): the
+// two "+" buttons hide while the form is open so there's one clear thing
+// to do, and Cancel/Add put them back. Add stays disabled until a name is
+// typed rather than popping an "enter a name" alert - a disabled button is
+// the non-popup way to say the same thing. Enter submits, Escape cancels.
+//
+// The same inline form doubles as the EDIT surface for an
+// already-added entry (the pencil on each row) - previously there was no
+// way to fix a typo at all, only remove and re-add. _additionalRecipeEditIdx
+// is null for "adding", or the index being edited.
+_openAdditionalRecipeForm(editIdx) {
+const root = this._root;
+if (!root) return;
+const form = root.querySelector(".additional-recipe-inline-form");
+const addRow = root.querySelector(".additional-recipe-add-row");
+const nameEl = root.querySelector(".input-additional-recipe-name");
+const linkEl = root.querySelector(".input-additional-recipe-link");
+const saveBtn = root.querySelector(".additional-recipe-inline-save");
+if (!form || !nameEl || !linkEl) return;
+const editing = Number.isInteger(editIdx) ? (this._editingAdditionalRecipes || [])[editIdx] : null;
+this._additionalRecipeEditIdx = editing ? editIdx : null;
+nameEl.value = editing ? editing.name || "" : "";
+linkEl.value = editing ? editing.link || "" : "";
+if (saveBtn) saveBtn.textContent = editing ? "Save" : "Add";
+form.style.display = "";
+if (addRow) addRow.style.display = "none";
+this._updateAdditionalRecipeFormState();
+// Focus is best-effort - jsdom and some kiosk WebViews don't always
+// honour it, and nothing here depends on it having worked.
+try {
+nameEl.focus();
+} catch (e) {
+}
+}
+_closeAdditionalRecipeForm() {
+const root = this._root;
+if (!root) return;
+const form = root.querySelector(".additional-recipe-inline-form");
+const addRow = root.querySelector(".additional-recipe-add-row");
+this._additionalRecipeEditIdx = null;
+if (form) form.style.display = "none";
+if (addRow) addRow.style.display = "";
+const nameEl = root.querySelector(".input-additional-recipe-name");
+const linkEl = root.querySelector(".input-additional-recipe-link");
+if (nameEl) nameEl.value = "";
+if (linkEl) linkEl.value = "";
+this._updateAdditionalRecipeFormState();
+}
+// A name is the one required field (the link has always been optional) -
+// so Add/Save is simply disabled until there is one.
+_updateAdditionalRecipeFormState() {
+const root = this._root;
+if (!root) return;
+const nameEl = root.querySelector(".input-additional-recipe-name");
+const saveBtn = root.querySelector(".additional-recipe-inline-save");
+if (!nameEl || !saveBtn) return;
+saveBtn.disabled = !nameEl.value.trim();
+}
+// Commits the inline form - appending a new entry, or replacing the one
+// being edited in place (keeping its grocyRecipeId, so renaming a
+// Recipe-Box/Grocy-sourced side dish doesn't quietly sever its link to the
+// live Grocy recipe). Writes only to this._editingAdditionalRecipes, the
+// same scratch array the old prompt path wrote to - so everything
+// downstream (_renderAdditionalRecipesList, and _saveEditor passing it to
+// _upsertMealPlan/_upsertMealPlanByUid's additionalRecipes parameter) is
+// completely unchanged.
+_commitAdditionalRecipeForm() {
+const root = this._root;
+if (!root) return;
+const name = (root.querySelector(".input-additional-recipe-name").value || "").trim();
 if (!name) return;
-const link = (window.prompt("Recipe link (optional):") || "").trim();
+const link = (root.querySelector(".input-additional-recipe-link").value || "").trim();
 this._editingAdditionalRecipes = this._editingAdditionalRecipes || [];
+const idx = this._additionalRecipeEditIdx;
+if (Number.isInteger(idx) && this._editingAdditionalRecipes[idx]) {
+const prev = this._editingAdditionalRecipes[idx];
+this._editingAdditionalRecipes[idx] = { name, link, grocyRecipeId: prev.grocyRecipeId || null };
+} else {
 this._editingAdditionalRecipes.push({ name, link, grocyRecipeId: null });
+}
+this._closeAdditionalRecipeForm();
 this._renderAdditionalRecipesList();
+}
+// Kept as the button's own handler name so nothing else that referenced
+// it has to change - it just opens the inline form now instead of
+// firing prompts.
+_addAdditionalRecipeFromLink() {
+this._openAdditionalRecipeForm(null);
 }
 _openEditor(dayIndex, blockIndex) {
 const start = this._weekStart();
@@ -8644,6 +11361,56 @@ const label = `${dayNames[d.getDay()]} ${d.getMonth() + 1}/${d.getDate()}`;
 html += `<label class="leftover-day-opt"><input type="checkbox" class="leftover-day-check" value="${key}"${checked.has(key) ? " checked" : ""}> ${label}</label>`;
 }
 container.innerHTML = html;
+this._syncLeftoversAccordion(checked.size);
+// Keeps the collapsed header's "(2 days)" count honest as boxes are
+// ticked - label only, never re-collapsing a drawer the person just
+// opened to use.
+container.querySelectorAll(".leftover-day-check").forEach((cb) => {
+cb.addEventListener("change", () => this._updateLeftoversAccordionLabel());
+});
+}
+// v1.109.7+: "leftovers should be an accordion." The leftovers day-picker
+// is 13 checkboxes - by far the tallest single field in the meal editor -
+// and the overwhelming majority of meals have no leftovers at all, so it
+// now sits behind the same .accordion-toggle/.accordion-body pattern this
+// file already uses everywhere else (Settings' Calendars/Reminders/Digest
+// sections, and the editor's own "More options" block this very field
+// lives inside). Reuses the generic click handler wired once in _build
+// for every .accordion-toggle - nothing bespoke.
+//
+// Collapsed by default, with one deliberate exception: if this meal
+// ALREADY has leftover days picked, it opens expanded. Hiding existing,
+// non-obvious state behind a closed drawer is how people forget a meal is
+// still set to reappear on Thursday - the point of the accordion is to
+// get the 13 checkboxes out of the way in the common (no leftovers) case,
+// not to hide a setting that's actually on. The header also carries the
+// count, so the state is legible even while collapsed.
+//
+// Re-run on every editor open (from _renderLeftoverDaysPicker) because
+// the modal's DOM is persistent - without an explicit reset, whatever the
+// last meal left the drawer at would carry over to the next one.
+_syncLeftoversAccordion(pickedCount) {
+const root = this._root;
+if (!root) return;
+const toggle = root.querySelector(".leftovers-accordion-toggle");
+const body = root.querySelector("#menu-leftovers-body");
+const label = root.querySelector(".leftovers-accordion-label");
+if (!toggle || !body) return;
+const count = typeof pickedCount === "number" ? pickedCount : 0;
+const shouldOpen = count > 0;
+toggle.classList.toggle("open", shouldOpen);
+body.classList.toggle("open", shouldOpen);
+if (label) label.innerHTML = this._leftoversAccordionLabelHtml(count);
+}
+_leftoversAccordionLabelHtml(count) {
+return count
+? `&#9851;&#65039; Leftovers <small>(${count} day${count === 1 ? "" : "s"})</small>`
+: "&#9851;&#65039; Leftovers";
+}
+_updateLeftoversAccordionLabel() {
+const label = this._root && this._root.querySelector(".leftovers-accordion-label");
+if (!label) return;
+label.innerHTML = this._leftoversAccordionLabelHtml(this._readLeftoverDaysPicker().length);
 }
 // Reads back whichever day checkboxes are currently checked in the
 // picker _renderLeftoverDaysPicker just built, as a plain array of
@@ -8838,6 +11605,44 @@ this._openModal(root.querySelector(".edit-overlay"));
 _closeEditor() {
 this._root.querySelector(".edit-overlay").classList.remove("open");
 }
+// v1.110.5+: "adding a recipe to grocery, clicking add doesnt give you
+// any feedback the modal stays open there is no confirmation, we should
+// close the modal and give a meal added successfully message." Checked
+// all three "add" flows in the meal-planning area: the recipe IMPORTER's
+// own "Add to Grocy" (_createImportedGrocyRecipe) already had its own
+// status line + auto-close; the day/menu editor's Save (_saveEditor) and
+// the Recipe Box editor's Save (_saveDishEditor) both already closed the
+// modal on save too, but neither gave any positive confirmation that the
+// save actually happened - closing a modal with no visible feedback reads
+// exactly like "nothing happened" on a quick tap, which is what this was
+// reported as. This is the shared, lightweight confirmation both of those
+// now show right after closing - no other Family Hub card had a toast/
+// snackbar pattern to reuse (checked), so this is deliberately small and
+// self-contained rather than a new dependency: auto-hides itself after a
+// couple seconds, and a second call while one is already showing just
+// restarts the clock with the new message rather than stacking multiple.
+_showToast(message) {
+const root = this._root;
+if (!root) return;
+const el = root.querySelector(".fh-toast");
+if (!el) return;
+if (this._toastHideTimer) clearTimeout(this._toastHideTimer);
+if (this._toastRemoveTimer) clearTimeout(this._toastRemoveTimer);
+el.textContent = message;
+el.hidden = false;
+// Force layout so the immediately-following class add reliably
+// transitions in, even on a toast that was just re-triggered mid-fade
+// (removing+re-adding "show" back-to-back with no reflow between them
+// can get coalesced into a no-op by the browser).
+void el.offsetWidth;
+el.classList.add("show");
+this._toastHideTimer = setTimeout(() => {
+el.classList.remove("show");
+this._toastRemoveTimer = setTimeout(() => {
+el.hidden = true;
+}, 250);
+}, 2200);
+}
 _openDishEditor(recipe) {
 const root = this._root;
 this._dishEditorMode = true;
@@ -8903,22 +11708,6 @@ this._openModal(root.querySelector(".edit-overlay"));
 // temporarily down): the Recipe Box entry is still removed either way,
 // since that's the part actually under this app's control, and a
 // leftover Grocy recipe can always be cleaned up from Grocy's own UI.
-async _deleteDish(uid, grocyRecipeId) {
-if (!uid) return;
-if (grocyRecipeId) {
-try {
-await this._hass.connection.sendMessagePromise({
-type: "family_hub/delete_grocy_recipe",
-recipe_id: grocyRecipeId,
-});
-} catch (e) {
-}
-}
-this._recipes = this._recipes.filter((r) => r.uid !== uid);
-await this._persistRecipes();
-this._renderLoved();
-this._renderGrid();
-}
 _saveEditor() {
 if (this._dishEditorMode) {
 this._saveDishEditor();
@@ -8982,6 +11771,7 @@ this._upsertMealPlan(dateKey, blockIndex, name, description, link, this._current
 this._upsertMealPlan(dateKey, blockIndex, name, description, link, this._currentColor, recur, this._currentGrocyRecipeId, servings, 1, this._editingAdditionalRecipes, leftoverDates);
 }
 this._upsertDish(name, description, link, this._currentRating, null, this._currentGrocyRecipeId);
+this._showToast(`\u{1F37D}\u{FE0F} "${name}" ${this._editingExistingMeal ? "updated" : "added"}`);
 } else if (this._editingMealRecurring && this._editingMealAnchorUid) {
 // Clearing a projected occurrence's name means "skip just this one
 // week" - an explicit "Skipped" entry for this date overrides the
@@ -9028,6 +11818,7 @@ this._upsertDish(name, description, link, this._currentRating, this._editingDish
 if (addAsSuggestion) {
 this._addSuggestion(name, description, link, this._currentGrocyRecipeId);
 }
+this._showToast(`\u{1F37D}\u{FE0F} "${name}" ${this._editingDishUid ? "updated" : "added to your Recipe Box"}`);
 }
 this._closeEditor();
 }
@@ -9059,54 +11850,6 @@ preview.style.display = "none";
 // fixed dropdown - a free-text field with suggestions still lets a
 // three-person household invent "Kid-approved" or "Slow cooker" without
 // this needing to know about it in advance.
-_populateDishCategoryOptions() {
-const root = this._root;
-if (!root) return;
-const datalist = root.querySelector("#dish-category-options");
-if (!datalist) return;
-const categories = Array.from(
-new Set((this._recipes || []).map((r) => (r.category || "").trim()).filter(Boolean))
-).sort((a, b) => a.localeCompare(b));
-datalist.innerHTML = categories.map((c) => `<option value="${c.replace(/"/g, "&quot;")}"></option>`).join("");
-}
-_openLoved(pickerMode) {
-// v142+: pickerMode is now also allowed to be the string "additional"
-// (the day/menu editor's "+ From Recipe Box" additional-recipe button -
-// see _addAdditionalRecipeFromLoved), on top of the existing true/false.
-// Both true and "additional" are equally "picker mode" for every
-// existing truthy check below (hides bulk-select, shows the hint, tap-
-// to-close instead of opening dish detail) - only the exact click
-// behavior and title text differ, handled where _pickerMode is compared
-// with === rather than just used as a boolean.
-this._pickerMode = pickerMode === "additional" ? "additional" : !!pickerMode;
-this._lovedSearchTerm = "";
-this._recipeBoxCategory = "All";
-this._recipeBoxSort = "default";
-this._recipeBoxSelectMode = false;
-this._recipeBoxSelectedUids.clear();
-this._root.querySelector(".loved-search").value = "";
-this._root.querySelector(".recipe-sort-select").value = "default";
-this._fetchRecipes();
-// Picker mode (opened from the day/menu editor's single "Pick a
-// Recipe" button - see the pick-btn-group HTML) is now the exact same
-// searchable/filterable/sortable grid-or-list browse experience as the
-// full Recipe Box, not a separate, narrower loved-only list - it just
-// fills in the editor and closes on tap instead of opening dish detail
-// (see _renderLoved's click wiring), and hides the bulk-select/delete
-// entry point since that's not a task that belongs mid-picking.
-this._root.querySelector(".loved-title").textContent =
-this._pickerMode === "additional"
-? "\u{1F37D}\u{FE0F} Add Additional Recipe"
-: this._pickerMode
-? "\u{1F37D}\u{FE0F} Pick a Recipe"
-: "\u{1F37D}\u{FE0F} Recipe Box";
-this._root.querySelector(".loved-hint").style.display = this._pickerMode ? "block" : "none";
-this._root.querySelector(".recipe-box-select-btn").style.display = this._pickerMode ? "none" : "";
-this._openModal(this._root.querySelector(".loved-overlay"));
-}
-_closeLoved() {
-this._root.querySelector(".loved-overlay").classList.remove("open");
-}
 // The header's 💡 Suggestions button and the + FAB's "Meal Suggestion"
 // item both land here now - there's no standalone Suggestions modal left
 // to open at all (see the removed _openSuggestions/_renderSuggestions).
@@ -9115,11 +11858,6 @@ this._root.querySelector(".loved-overlay").classList.remove("open");
 // and the "suggested" branch of _renderLoved's category filtering) -
 // browsing, editing, or picking a suggested recipe from here is exactly
 // the same as doing any of that for any other Recipe Box entry.
-_openSuggestedRecipes() {
-this._openLoved(false);
-this._recipeBoxCategory = "💡 Suggested";
-this._renderLoved();
-}
 _selectLovedDish(recipe) {
 const root = this._root;
 root.querySelector(".input-name").value = recipe.name || "";
@@ -9145,135 +11883,6 @@ this._closeLoved();
 // dish detail screen (_openDishDetail) - unless bulk-select mode is on
 // (browsing only), in which case a tap toggles that card's selection
 // instead of either of those.
-_renderLoved() {
-if (!this._root) return;
-const list = this._root.querySelector(".loved-list");
-const viewMode = this._getRecipeBoxViewMode();
-list.classList.toggle("recipe-grid", viewMode !== "list");
-list.classList.toggle("recipe-list", viewMode === "list");
-this._updateRecipeBoxViewButtons();
-this._renderRecipeBoxCategoryChips();
-this._updateRecipeBoxSelectBar();
-// Fire-and-forget: fills in photos for Grocy-imported dishes that don't
-// have one yet (see _hydrateGrocyRecipeImages) and re-renders once they
-// land, so the grid doesn't have to wait on Grocy before showing names/
-// placeholders first.
-this._hydrateGrocyRecipeImages();
-let recipes = this._recipes.slice();
-// Matches a Recipe Box entry to a Meal Suggestions entry by name
-// (case-insensitive) since the two aren't otherwise linked records -
-// same matching rule _sortRecipeBoxList's "suggested" sort already uses.
-// Computed once here so both the "Suggested" filter chip below and each
-// card/row's suggest-icon highlight (see the .map() further down) agree
-// on the same answer for the same render.
-const suggestedNameSet = new Set((this._suggestions || []).map((s) => (s.name || "").trim().toLowerCase()));
-const term = (this._lovedSearchTerm || "").trim().toLowerCase();
-if (term) {
-recipes = recipes.filter(
-(r) =>
-(r.name || "").toLowerCase().includes(term) ||
-(r.description || "").toLowerCase().includes(term) ||
-(r.category || "").toLowerCase().includes(term)
-);
-}
-const activeCategory = this._recipeBoxCategory || "All";
-if (activeCategory === "❤️ Loved") {
-recipes = recipes.filter((r) => r.rating === "up");
-} else if (activeCategory === "💡 Suggested") {
-recipes = recipes.filter((r) => suggestedNameSet.has((r.name || "").trim().toLowerCase()));
-} else if (activeCategory !== "All") {
-recipes = recipes.filter((r) => (r.category || "Uncategorized") === activeCategory);
-}
-recipes = this._sortRecipeBoxList(recipes);
-if (!recipes.length) {
-list.innerHTML = `<div class="loved-empty">${
-term || activeCategory !== "All"
-? "No recipes match this search/filter."
-: "Your Recipe Box is empty - tap “+ Add Recipe” or “\u{1F517} Import from a link” above to get started."
-}</div>`;
-return;
-}
-const isListView = viewMode === "list";
-const selectMode = this._recipeBoxSelectMode && !this._pickerMode;
-list.innerHTML = recipes
-.map((r, idx) => {
-const isLoved = r.rating === "up";
-const isSuggested = suggestedNameSet.has((r.name || "").trim().toLowerCase());
-const isSelected = selectMode && this._recipeBoxSelectedUids.has(r.uid);
-const initial = (r.name || "?").trim().charAt(0).toUpperCase();
-if (isListView) {
-const media = r.image
-? `<div class="recipe-row-media" style="background-image:url('${String(r.image).replace(/'/g, "%27")}')"></div>`
-: `<div class="recipe-row-media recipe-row-media-placeholder"><span>${initial}</span></div>`;
-const category = r.category ? `<span class="recipe-row-category">${r.category}</span>` : "";
-const trailing = selectMode
-? `<div class="recipe-row-select-badge">${isSelected ? "&#10003;" : ""}</div>`
-: `<div class="recipe-row-actions">
-<button type="button" class="recipe-row-heart ${isLoved ? "is-loved" : ""}" data-idx="${idx}" title="${isLoved ? "Remove from loved" : "Love this dish"}">${isLoved ? "&#10084;&#65039;" : "&#129293;"}</button>
-<button type="button" class="recipe-row-suggest ${isSuggested ? "is-suggested" : ""}" data-idx="${idx}" title="${isSuggested ? "Remove from Suggestions" : "Suggest this for a meal"}">&#128161;</button>
-</div>`;
-return `<div class="recipe-row ${isSelected ? "is-selected" : ""}" data-idx="${idx}">
-${media}
-<div class="recipe-row-body">
-<div class="recipe-row-name">${r.name}</div>
-${category}
-</div>
-${trailing}
-</div>`;
-}
-const media = r.image
-? `<div class="recipe-card-media" style="background-image:url('${String(r.image).replace(/'/g, "%27")}')"></div>`
-: `<div class="recipe-card-media recipe-card-media-placeholder"><span>${initial}</span></div>`;
-const category = r.category ? `<span class="recipe-card-category">${r.category}</span>` : "";
-const overlay = selectMode
-? `<div class="recipe-card-select-badge">${isSelected ? "&#10003;" : ""}</div>`
-: `<button type="button" class="recipe-card-heart ${isLoved ? "is-loved" : ""}" data-idx="${idx}" title="${isLoved ? "Remove from loved" : "Love this dish"}">${isLoved ? "&#10084;&#65039;" : "&#129293;"}</button>
-<button type="button" class="recipe-card-suggest ${isSuggested ? "is-suggested" : ""}" data-idx="${idx}" title="${isSuggested ? "Remove from Suggestions" : "Suggest this for a meal"}">&#128161;</button>`;
-return `<div class="recipe-card ${isSelected ? "is-selected" : ""}" data-idx="${idx}">
-${media}
-${overlay}
-<div class="recipe-card-body">
-<div class="recipe-card-name">${r.name}</div>
-${category}
-</div>
-</div>`;
-})
-.join("");
-const cardSelector = isListView ? ".recipe-row" : ".recipe-card";
-list.querySelectorAll(cardSelector).forEach((el) => {
-el.addEventListener("click", () => {
-const idx = parseInt(el.dataset.idx, 10);
-const recipe = recipes[idx];
-if (selectMode) {
-this._toggleRecipeBoxSelected(recipe.uid);
-} else if (this._pickerMode === "additional") {
-this._addAdditionalRecipeFromLoved(recipe);
-} else if (this._pickerMode) {
-this._selectLovedDish(recipe);
-} else {
-this._openDishDetail(recipe);
-}
-});
-});
-if (!selectMode) {
-const heartSelector = isListView ? ".recipe-row-heart" : ".recipe-card-heart";
-const suggestSelector = isListView ? ".recipe-row-suggest" : ".recipe-card-suggest";
-list.querySelectorAll(heartSelector).forEach((el) => {
-el.addEventListener("click", (e) => {
-e.stopPropagation();
-const idx = parseInt(el.dataset.idx, 10);
-this._toggleDishLoved(recipes[idx]);
-});
-});
-list.querySelectorAll(suggestSelector).forEach((el) => {
-el.addEventListener("click", (e) => {
-e.stopPropagation();
-const idx = parseInt(el.dataset.idx, 10);
-this._suggestDish(recipes[idx]);
-});
-});
-}
-}
 // "default" (whatever order the recipe_box todo list returns), "name"
 // (A-Z), or "suggested" - the latter puts anything currently sitting in
 // Meal Suggestions at the top (matched by name, case-insensitive, since
@@ -9284,93 +11893,18 @@ this._suggestDish(recipes[idx]);
 // relative order (a stable partition, not a full re-sort within either
 // group) so switching to "Suggested first" doesn't also scramble
 // alphabetical or default ordering someone was relying on.
-_sortRecipeBoxList(recipes) {
-const mode = this._recipeBoxSort || "default";
-if (mode === "name") {
-return recipes.slice().sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-}
-if (mode === "suggested") {
-const suggestedNames = new Set((this._suggestions || []).map((s) => (s.name || "").trim().toLowerCase()));
-return recipes
-.map((r, i) => ({ r, i, suggested: suggestedNames.has((r.name || "").trim().toLowerCase()) }))
-.sort((a, b) => {
-if (a.suggested !== b.suggested) return a.suggested ? -1 : 1;
-return a.i - b.i;
-})
-.map((x) => x.r);
-}
-return recipes;
-}
 // Recipe Box grid/list view is a device-level preference (localStorage),
 // same pattern as the calendar's own "show timeline" toggle - it isn't
 // reset each time the modal reopens, unlike search/category/sort.
-_getRecipeBoxViewMode() {
-return window.localStorage.getItem("familyHubRecipeBoxView") === "list" ? "list" : "grid";
-}
-_setRecipeBoxViewMode(mode) {
-window.localStorage.setItem("familyHubRecipeBoxView", mode === "list" ? "list" : "grid");
-this._renderLoved();
-}
-_updateRecipeBoxViewButtons() {
-const root = this._root;
-if (!root) return;
-const mode = this._getRecipeBoxViewMode();
-root.querySelectorAll(".recipe-view-btn").forEach((btn) => {
-btn.classList.toggle("active", btn.dataset.view === mode);
-});
-}
 // Bulk-select delete (task: "a bulk edit feature to delete multiple
 // recipes from the box") - browsing mode only; picker mode hides the
 // Select button entirely (see _openLoved) since bulk-deleting isn't a
 // task that belongs in the middle of picking tonight's meal.
-_toggleRecipeBoxSelectMode(active) {
-this._recipeBoxSelectMode = !!active;
-if (!this._recipeBoxSelectMode) this._recipeBoxSelectedUids.clear();
-this._renderLoved();
-}
-_toggleRecipeBoxSelected(uid) {
-if (this._recipeBoxSelectedUids.has(uid)) {
-this._recipeBoxSelectedUids.delete(uid);
-} else {
-this._recipeBoxSelectedUids.add(uid);
-}
-this._renderLoved();
-}
-_updateRecipeBoxSelectBar() {
-const root = this._root;
-if (!root) return;
-const active = this._recipeBoxSelectMode && !this._pickerMode;
-const bar = root.querySelector(".recipe-box-select-bar");
-const actions = root.querySelector(".recipe-box-actions");
-if (bar) bar.style.display = active ? "flex" : "none";
-if (actions) actions.style.display = active ? "none" : "";
-const countEl = root.querySelector(".recipe-box-select-count");
-if (countEl) {
-const n = this._recipeBoxSelectedUids.size;
-countEl.textContent = `${n} selected`;
-}
-}
 // Deletes every checked recipe - each one via the same _deleteDish path
 // as a single delete (cascading to Grocy for anything imported from
 // there - see _deleteDish's own comment), one at a time rather than in
 // parallel so a slow/offline Grocy doesn't fire a burst of simultaneous
 // delete requests at it.
-async _deleteSelectedRecipeBoxItems() {
-const uids = Array.from(this._recipeBoxSelectedUids);
-if (!uids.length) return;
-const recipesToDelete = uids.map((uid) => this._recipes.find((r) => r.uid === uid)).filter(Boolean);
-if (!recipesToDelete.length) return;
-const hasGrocy = recipesToDelete.some((r) => r.grocyRecipeId);
-const label = recipesToDelete.length === 1 ? `"${recipesToDelete[0].name}"` : `these ${recipesToDelete.length} recipes`;
-const grocyNote = hasGrocy ? " This will also delete the linked recipe(s) from Grocy." : "";
-if (!window.confirm(`Delete ${label} from the Recipe Box?${grocyNote}`)) return;
-for (const recipe of recipesToDelete) {
-await this._deleteDish(recipe.uid, recipe.grocyRecipeId);
-}
-this._recipeBoxSelectMode = false;
-this._recipeBoxSelectedUids.clear();
-this._renderLoved();
-}
 // Recipe Box cards for a Grocy-imported dish (grocyRecipeId set) show a
 // blank placeholder tile until this runs, because the recipe_box todo
 // item itself only ever stores a manually-entered Photo URL - it never
@@ -9384,207 +11918,23 @@ this._renderLoved();
 // Fire-and-forget from _renderLoved: doesn't block the initial grid
 // paint on Grocy answering, and only re-renders once if it actually has
 // new photos to show.
-async _hydrateGrocyRecipeImages() {
-if (!this._hass) return;
-// _fetchRecipes() replaces this._recipes wholesale from the Store on
-// every load, reconnect, AND the 60s poll (see _refreshAllData) - and
-// the Store itself never persists a Grocy-fetched photo (see
-// _persistRecipes) - so a recipe whose photo was already resolved into
-// _grocyImageCache on an earlier call shows up here again with a fresh
-// object and image: null. Re-apply anything already cached BEFORE
-// deciding what still needs a network fetch, or a photo that loaded
-// fine once quietly disappears again at the very next poll (this was
-// the actual bug behind "recipe box still isn't pulling images from
-// Grocy" - it briefly worked, then reverted).
-let reapplied = false;
-(this._recipes || []).forEach((r) => {
-if (r.grocyRecipeId && !r.image && this._grocyImageCache[r.grocyRecipeId]) {
-r.image = this._grocyImageCache[r.grocyRecipeId];
-reapplied = true;
-}
-});
-const targets = (this._recipes || []).filter(
-(r) =>
-r.grocyRecipeId &&
-!r.image &&
-!(r.grocyRecipeId in this._grocyImageCache) &&
-!this._grocyImageFetching.has(r.grocyRecipeId)
-);
-if (!targets.length) {
-if (
-reapplied &&
-this._root &&
-this._root.querySelector(".loved-overlay") &&
-this._root.querySelector(".loved-overlay").classList.contains("open") &&
-!this._pickerMode
-) {
-this._renderLoved();
-}
-return;
-}
-targets.forEach((r) => this._grocyImageFetching.add(r.grocyRecipeId));
-const results = await Promise.all(
-targets.map(async (r) => {
-let image = null;
-try {
-const result = await this._hass.connection.sendMessagePromise({
-type: "family_hub/get_grocy_recipe_detail",
-recipe_id: r.grocyRecipeId,
-});
-image = (result && result.recipe && result.recipe.image) || null;
-} catch (e) {
-image = null;
-} finally {
-this._grocyImageFetching.delete(r.grocyRecipeId);
-}
-return { id: r.grocyRecipeId, image };
-})
-);
-let changed = false;
-results.forEach(({ id, image }) => {
-this._grocyImageCache[id] = image;
-if (image) changed = true;
-});
-if (!changed && !reapplied) return;
-(this._recipes || []).forEach((r) => {
-if (r.grocyRecipeId && !r.image && this._grocyImageCache[r.grocyRecipeId]) {
-r.image = this._grocyImageCache[r.grocyRecipeId];
-}
-});
-// Guard against re-entering the picker's plain list or a since-closed
-// modal - a slow Grocy response could land well after the Recipe Box
-// itself moved on.
-if (
-this._root &&
-this._root.querySelector(".loved-overlay") &&
-this._root.querySelector(".loved-overlay").classList.contains("open") &&
-!this._pickerMode
-) {
-this._renderLoved();
-}
-}
 // Flips a Recipe Box card's loved state without opening the full editor -
 // the corner heart is meant to be a one-tap action while scrolling the
 // grid, matching the same heart/rating concept used everywhere else in
 // the app (the menu editor's own heart button, the dish detail screen).
 // Passing category/image as undefined (not touched here at all) means
 // _upsertDish preserves whatever the dish already had.
-_toggleDishLoved(recipe) {
-const newRating = recipe.rating === "up" ? null : "up";
-this._upsertDish(recipe.name, recipe.description, recipe.link, newRating, recipe.uid, recipe.grocyRecipeId);
-}
 // Adds a Recipe Box dish straight to Meal Suggestions - the "click the
 // suggest meal ... from this modal" half of the Recipe Box request,
 // available both as a quick icon right on each card and as a full button
 // on the dish detail screen (see _openDishDetail) for anyone who opened
 // a dish first to double check it before suggesting it.
-async _suggestDish(recipe) {
-const name = (recipe.name || "").trim().toLowerCase();
-const existing = (this._suggestions || []).find((s) => (s.name || "").trim().toLowerCase() === name);
-if (existing) {
-await this._removeSuggestion(existing.uid);
-} else {
-await this._addSuggestion(recipe.name, recipe.description, recipe.link, recipe.grocyRecipeId);
-}
-// _addSuggestion/_removeSuggestion (Store-backed - see _fetchSuggestions)
-// update this._suggestions in memory before persisting, so it's already
-// current here - no extra re-fetch needed before re-rendering the
-// suggest icon's highlighted state.
-this._renderLoved();
-}
 // Builds the "All / Loved / <each category in use>" filter chip row
 // above the Recipe Box grid - purely derived from whatever categories
 // already exist on saved recipes (see _populateDishCategoryOptions for
 // the same idea applied to the editor's own datalist), so a household
 // inventing "Slow cooker" or "Kid-approved" sees it show up here too
 // without any setup step.
-_renderRecipeBoxCategoryChips() {
-const root = this._root;
-if (!root) return;
-const container = root.querySelector(".recipe-box-categories");
-if (!container) return;
-const categories = Array.from(
-new Set((this._recipes || []).map((r) => (r.category || "").trim()).filter(Boolean))
-).sort((a, b) => a.localeCompare(b));
-const chips = ["All", "❤️ Loved", "💡 Suggested", ...categories];
-if (!this._recipeBoxCategory || !chips.includes(this._recipeBoxCategory)) {
-this._recipeBoxCategory = "All";
-}
-container.innerHTML = chips
-.map(
-(c) =>
-`<button type="button" class="recipe-chip ${c === this._recipeBoxCategory ? "active" : ""}" data-category="${c.replace(/"/g, "&quot;")}">${c}</button>`
-)
-.join("");
-container.querySelectorAll(".recipe-chip").forEach((el) => {
-el.addEventListener("click", () => {
-this._recipeBoxCategory = el.dataset.category;
-this._renderLoved();
-});
-});
-}
-_openDishDetail(recipe) {
-const root = this._root;
-this._dishDetailRecipe = recipe;
-root.querySelector(".dish-detail-title").textContent = recipe.name || "(untitled)";
-const photo = root.querySelector(".dish-detail-photo");
-if (photo) {
-if (recipe.image) {
-photo.src = recipe.image;
-photo.style.display = "block";
-} else {
-photo.src = "";
-photo.style.display = "none";
-}
-}
-const ratingHtml =
-(recipe.rating === "up"
-? `<span class="event-info-chip" style="background:#f2ddd4">&#10084;&#65039; Loved</span>`
-: recipe.rating === "down"
-? `<span class="event-info-chip" style="background:#d8e3e0">&#128078; Not a fan</span>`
-: "") + (recipe.category ? `<span class="event-info-chip">${recipe.category}</span>` : "");
-root.querySelector(".dish-detail-rating").innerHTML = ratingHtml;
-root.querySelector(".dish-detail-desc").textContent = recipe.description || "No notes added.";
-const suggestBtn = root.querySelector(".dish-detail-suggest-btn");
-if (suggestBtn) {
-suggestBtn.textContent = "\u{1F4A1} Suggest this";
-suggestBtn.onclick = () => {
-this._suggestDish(recipe);
-suggestBtn.textContent = "\u{2705} Added to Suggestions";
-setTimeout(() => {
-suggestBtn.textContent = "\u{1F4A1} Suggest this";
-}, 1600);
-};
-}
-const linkRow = root.querySelector(".dish-detail-link-row");
-if (recipe.link) {
-const label = recipe.grocyRecipeId ? "&#128279; View recipe" : "&#128279; Open recipe link";
-linkRow.innerHTML = `<button type="button" class="pick-loved-btn dish-detail-open-link">${label}</button>`;
-linkRow.querySelector(".dish-detail-open-link").addEventListener("click", () => {
-if (recipe.grocyRecipeId) {
-this._openGrocyRecipeViewer(recipe.grocyRecipeId, recipe.name, recipe.link);
-} else {
-window.open(recipe.link, "_blank", "noopener");
-}
-});
-} else {
-linkRow.innerHTML = "";
-}
-this._openModal(root.querySelector(".dish-detail-overlay"));
-// Re-evaluate the screensaver idle timer now that a recipe detail view is
-// open - when "Disable while a recipe is open" is on, _screenSaverApplicable
-// now returns false, so this clears any pending countdown outright
-// (nothing to reschedule to) rather than leaving it running underneath.
-this._resetScreenSaverIdleTimer();
-}
-_closeDishDetail() {
-this._root.querySelector(".dish-detail-overlay").classList.remove("open");
-// Mirror of the open-side call above: closing the recipe detail view
-// means _screenSaverApplicable can be true again, so this restarts the
-// idle countdown fresh rather than leaving it dormant until some other
-// activity happens to trigger it.
-this._resetScreenSaverIdleTimer();
-}
 // Opened only from the Recipe Box's own "Add from Grocy" button now -
 // see _selectGrocyRecipe's own comment for how the picker used to serve
 // two other callers (the day/dish editor directly, and the Suggestions
@@ -11667,428 +14017,15 @@ this._selectGrocyRecipe(recipes[idx]);
 });
 });
 }
-_openGrocyRecipeViewer(recipeId, fallbackName, fallbackLink, isPreview) {
-if (!recipeId) return;
-this._grocyRecipeViewerRecipeId = recipeId;
-this._grocyRecipeViewerFallbackLink = fallbackLink || "";
-const root = this._root;
-const overlay = root.querySelector(".grocy-recipe-viewer-overlay");
-// Preview mode (task #177's picker preview icon) opens the exact same
-// viewer, but over a picker that's deliberately left open underneath -
-// show a "Back" button instead of relying on the plain close (X) to
-// implicitly reveal it, so it reads as "look, then come back" rather
-// than "close this and lose your place".
-overlay.classList.toggle("preview-mode", !!isPreview);
-// "block", not "" - .grocy-recipe-viewer-back-btn's CSS rule defaults to
-// display:none (same gotcha as the photo elements above), so clearing
-// the inline style here would silently leave it hidden even in preview
-// mode instead of showing it.
-root.querySelector(".grocy-recipe-viewer-back-btn").style.display = isPreview ? "block" : "none";
-root.querySelector(".grocy-recipe-viewer-title").textContent = fallbackName || "Recipe";
-root.querySelector(".grocy-recipe-viewer-stats").innerHTML = "";
-root.querySelector(".grocy-recipe-viewer-servings").textContent = "";
-root.querySelector(".grocy-recipe-viewer-ingredients").innerHTML = "";
-root.querySelector(".grocy-recipe-viewer-instructions").innerHTML = "";
-root.querySelector(".grocy-recipe-viewer-description").innerHTML = "";
-root.querySelector(".grocy-recipe-viewer-scale-row").style.display = "none";
-this._grocyRecipeViewerIngredients = [];
-this._grocyRecipeViewerBaseServings = 1;
-this._grocyRecipeViewerServings = 1;
-this._grocyRecipeViewerRawDescription = "";
-const photoEl = root.querySelector(".grocy-recipe-viewer-photo");
-photoEl.style.display = "none";
-photoEl.src = "";
-// The full-screen modal-box scrolls its own content (overflow-y: auto);
-// without this, reopening the viewer after scrolling through a previous
-// recipe reused the same stale scrollTop and opened mid-page with the
-// title scrolled out of view above the fold.
-root.querySelector(".grocy-recipe-viewer-overlay .modal-box").scrollTop = 0;
-this._openModal(root.querySelector(".grocy-recipe-viewer-overlay"));
-this._fetchGrocyRecipeDetail(recipeId);
-// Same screensaver idle-timer re-check as _openDishDetail - see its
-// comment for why.
-this._resetScreenSaverIdleTimer();
-}
-_closeGrocyRecipeViewer() {
-this._root.querySelector(".grocy-recipe-viewer-overlay").classList.remove("open");
-// Same screensaver idle-timer re-check as _closeDishDetail - see its
-// comment for why.
-this._resetScreenSaverIdleTimer();
-}
-// "I made this" button - calls Grocy's own /consume endpoint, which is a
-// real, one-way stock deduction (see the backend handler's docstring),
-// the same thing clicking "Consume all ingredients needed" on the
-// recipe's own page in Grocy does. Confirmed first since there's no undo
-// here beyond manually re-adding stock in Grocy afterward.
-async _consumeGrocyRecipeIngredients() {
-const recipeId = this._grocyRecipeViewerRecipeId;
-if (!recipeId || !this._hass) return;
-if (!window.confirm("Deduct this recipe's ingredients from your Grocy stock now? This can't be undone from here.")) {
-return;
-}
-const statusEl = this._root.querySelector(".grocy-recipe-viewer-status");
-statusEl.textContent = "Consuming ingredients in Grocy…";
-statusEl.classList.remove("is-error");
-try {
-// Only sent when the viewer's own scaler has been moved off the
-// recipe's base servings - leaving it out otherwise means an
-// untouched recipe consumes at whatever desired_servings was already
-// saved in Grocy, instead of this call silently overwriting it back
-// to the base count for recipes plenty of people leave scaled up.
-const servings =
-this._grocyRecipeViewerServings && this._grocyRecipeViewerServings !== this._grocyRecipeViewerBaseServings
-? this._grocyRecipeViewerServings
-: undefined;
-const result = await this._hass.connection.sendMessagePromise({
-type: "family_hub/consume_grocy_recipe",
-recipe_id: recipeId,
-...(servings ? { servings } : {}),
-});
-if (result.configured === false) {
-statusEl.textContent = "Grocy isn't connected — set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.";
-statusEl.classList.add("is-error");
-return;
-}
-if (!result.success) {
-statusEl.textContent = `Couldn't consume this recipe's ingredients: ${result.error || "unknown error"}`;
-statusEl.classList.add("is-error");
-return;
-}
-statusEl.textContent = "Ingredients deducted from Grocy stock.";
-statusEl.classList.remove("is-error");
-} catch (e) {
-statusEl.textContent = "Couldn't reach Grocy.";
-statusEl.classList.add("is-error");
-}
-}
-async _fetchGrocyRecipeDetail(recipeId) {
-if (!this._hass) return;
-const statusEl = this._root.querySelector(".grocy-recipe-viewer-status");
-statusEl.textContent = "Loading recipe from Grocy…";
-statusEl.classList.remove("is-error");
-try {
-const result = await this._hass.connection.sendMessagePromise({
-type: "family_hub/get_grocy_recipe_detail",
-recipe_id: recipeId,
-});
-if (result.configured === false) {
-statusEl.textContent = "Grocy isn't connected — set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.";
-return;
-}
-if (result.error || !result.recipe) {
-statusEl.textContent = `Couldn't load this recipe from Grocy: ${result.error || "not found"}`;
-statusEl.classList.add("is-error");
-return;
-}
-statusEl.textContent = "";
-this._renderGrocyRecipeDetail(result.recipe);
-} catch (e) {
-statusEl.textContent = "Couldn't reach Grocy.";
-statusEl.classList.add("is-error");
-}
-}
-_renderGrocyRecipeDetail(recipe) {
-const root = this._root;
-const photoEl = root.querySelector(".grocy-recipe-viewer-photo");
-if (recipe.image) {
-photoEl.src = recipe.image;
-// NOT "" - .grocy-recipe-viewer-photo's own CSS rule sets
-// `display: none` as its base/default (so it stays hidden for
-// recipes with no photo without extra markup) - clearing the inline
-// style here would just fall back to that class rule and the image
-// would silently never show even though src is set correctly.
-photoEl.style.display = "block";
-} else {
-photoEl.style.display = "none";
-photoEl.src = "";
-}
-root.querySelector(".grocy-recipe-viewer-title").textContent = recipe.name || "Recipe";
-// Prep/Cook/Total stat pills (task #250/mockup) - only the ones this
-// recipe actually has real data for; a manually-typed Grocy recipe with
-// none of the three published just gets an empty (and, per the
-// :empty CSS rule, invisible) stats row instead of a placeholder.
-const statsEl = root.querySelector(".grocy-recipe-viewer-stats");
-const statDefs = [
-["Prep", recipe.prep_time],
-["Cook", recipe.cook_time],
-["Total", recipe.total_time],
-].filter(([, value]) => (value || "").trim());
-statsEl.innerHTML = statDefs
-.map(([label, value]) => `<div class="grocy-recipe-stat"><span class="grocy-recipe-stat-label">${label}</span><span class="grocy-recipe-stat-value">${value}</span></div>`)
-.join("");
-root.querySelector(".grocy-recipe-viewer-servings").textContent = recipe.servings
-? `Makes ${recipe.servings} serving${recipe.servings === 1 ? "" : "s"}`
-: "";
-// The picker only ever had the list-page link; once the detail call
-// resolves we have the authoritative one from the recipe object itself
-// (same value in practice, but this is the one that should win).
-this._grocyRecipeViewerFallbackLink = recipe.link || this._grocyRecipeViewerFallbackLink || "";
-
-const ingredients = Array.isArray(recipe.ingredients) ? recipe.ingredients : [];
-this._grocyRecipeViewerIngredients = ingredients;
-// The scaler (task #173) works off the recipe's own base_servings - the
-// serving count Grocy's recipes_pos amounts are actually calibrated for -
-// separate from "servings" above, which can reflect a previously-saved
-// desired_servings override instead. Falls back gracefully to whatever's
-// available so old/partial responses (or the plain "amount" string with
-// no raw amount_value) still render exactly as before.
-const baseServings = Number(recipe.base_servings) > 0 ? Number(recipe.base_servings) : (Number(recipe.servings) > 0 ? Number(recipe.servings) : 1);
-this._grocyRecipeViewerBaseServings = baseServings;
-this._grocyRecipeViewerServings = Number(recipe.servings) > 0 ? Number(recipe.servings) : baseServings;
-const scaleRow = root.querySelector(".grocy-recipe-viewer-scale-row");
-const canScale = ingredients.some((ing) => typeof ing.amount_value === "number");
-scaleRow.style.display = canScale ? "flex" : "none";
-root.querySelector(".grocy-recipe-viewer-scale-value").textContent = String(this._grocyRecipeViewerServings);
-this._renderGrocyRecipeIngredients();
-
-// The description/instructions HTML can itself embed a plain-text
-// ingredients list (see _createImportedGrocyRecipe's "Ingredients"
-// <ul> block, added for recipes imported via the card's "Import a
-// recipe from a link" flow, task #158) - kept unscaled here so
-// _renderGrocyRecipeDescription can re-derive the scaled version from
-// the original every time the stepper changes, rather than scaling an
-// already-scaled string a second time.
-this._grocyRecipeViewerRawDescription = recipe.description || "";
-this._renderGrocyRecipeDescription();
-}
-// Recomputes the description/instructions block against the current
-// servings ratio - mirrors _renderGrocyRecipeIngredients, but for the
-// plain-text "Ingredients" list some recipes also carry inside their
-// description HTML (see the comment above). Recipes without that exact
-// block (hand-typed directly in Grocy, or from before task #158) simply
-// pass through _scaleIngredientsDescriptionHtml unchanged.
-_renderGrocyRecipeDescription() {
-if (!this._root) return;
-const descEl = this._root.querySelector(".grocy-recipe-viewer-description");
-const instructionsEl = this._root.querySelector(".grocy-recipe-viewer-instructions");
-if (!descEl) return;
-const raw = this._grocyRecipeViewerRawDescription || "";
-if (!raw) {
-if (instructionsEl) instructionsEl.innerHTML = "";
-descEl.innerHTML = `<div class="loved-empty">No instructions added in Grocy.</div>`;
-return;
-}
-const baseServings = this._grocyRecipeViewerBaseServings || 1;
-const servings = this._grocyRecipeViewerServings || baseServings;
-const ratio = baseServings > 0 ? servings / baseServings : 1;
-let html = this._scaleIngredientsDescriptionHtml(raw, ratio);
-
-// Recipes imported via this card's own "Import a recipe from a link"
-// flow (_createImportedGrocyRecipe, task #158/#223) write a predictable
-// "<p><strong>Preparation</strong></p><p>step 1</p><p>step 2</p>..."
-// block, followed by (optionally) the Prep/Cook line and/or a Source
-// line, each of which starts with its own "<p><strong>". Recipes without
-// that exact shape (hand-typed directly in Grocy, older imports, plain
-// pasted text with no parsed steps) simply have no match here and fall
-// through to the untouched raw-HTML rendering exactly as before this
-// feature existed - nothing about them changes.
-const stepsMatch = html.match(/<p><strong>Preparation<\/strong><\/p>([\s\S]*?)(?=<p><strong>|$)/i);
-const steps = [];
-if (stepsMatch) {
-const stepRe = /<p>([\s\S]*?)<\/p>/gi;
-let m;
-while ((m = stepRe.exec(stepsMatch[1]))) {
-const text = m[1].trim();
-if (text) steps.push(text);
-}
-}
-
-if (instructionsEl) {
-instructionsEl.innerHTML = steps.length
-? `<div class="grocy-recipe-instructions-title">Instructions</div>` +
-steps
-.map(
-(step, i) =>
-`<div class="grocy-recipe-instruction-row"><span class="grocy-recipe-instruction-badge">${i + 1}</span><span class="grocy-recipe-instruction-text">${step}</span></div>`
-)
-.join("")
-: "";
-}
-
-// Once a block has its own dedicated element above (structured
-// ingredients list, numbered Instructions), it'd otherwise appear twice
-// on the page. The Ingredients block needs real care though: an
-// ingredient the importer couldn't match (or the person left unmatched/
-// skipped) never becomes a recipes_pos row at all (see
-// _ws_create_grocy_recipe's "skipped" list), so the structured list
-// above can be a strict SUBSET of what's in the raw text - and outright
-// removing the raw block used to hide those skipped ingredients
-// entirely (a real household report: "not including the ingredients in
-// the preparation section"). Rather than try to judge redundancy and
-// hide it, this always keeps the raw written-out list available - just
-// tucked behind a collapsed-by-default accordion, so it's a tap away
-// when needed (a skipped ingredient, double-checking exact wording,
-// etc.) without permanently duplicating the structured list above for
-// the common case where every ingredient already matched.
-const ingredientsBlockMatch = html.match(/<p><strong>Ingredients<\/strong><\/p><ul>([\s\S]*?)<\/ul>/i);
-if (ingredientsBlockMatch) {
-const accordionHtml =
-`<div class="grocy-recipe-ingredients-accordion">` +
-`<button type="button" class="accordion-toggle recipe-viewer-ingredients-toggle" data-target="recipe-viewer-ingredients-body">` +
-`<span class="theme-section-label">Written-out ingredients list</span>` +
-`<span class="accordion-chevron">&#9660;</span>` +
-`</button>` +
-`<div class="accordion-body" id="recipe-viewer-ingredients-body"><ul>${ingredientsBlockMatch[1]}</ul></div>` +
-`</div>`;
-html = html.replace(ingredientsBlockMatch[0], accordionHtml);
-}
-if (steps.length) {
-html = html.replace(stepsMatch[0], "");
-}
-// The Prep/Cook line is now always shown as its own stat pills whenever
-// it exists at all (see _renderGrocyRecipeDetail), so it's always
-// redundant here - safe to strip unconditionally.
-html = html.replace(/<p>[\s\S]*?<strong>(?:Prep|Cook):<\/strong>[\s\S]*?<\/p>/i, "");
-html = html.trim();
-descEl.innerHTML = html || `<div class="loved-empty">No additional notes.</div>`;
-const ingredientsToggle = descEl.querySelector(".recipe-viewer-ingredients-toggle");
-if (ingredientsToggle) {
-ingredientsToggle.addEventListener("click", () => {
-const body = descEl.querySelector(`#${ingredientsToggle.dataset.target}`);
-ingredientsToggle.classList.toggle("open");
-if (body) body.classList.toggle("open");
-});
-}
-}
-// Finds the "Ingredients" <ul> block _createImportedGrocyRecipe writes
-// into a recipe's description (raw scraped lines like "2 cups flour",
-// not the structured recipes_pos data the main ingredients list above
-// uses) and scales just the LEADING quantity of each line by ratio,
-// leaving everything else - product names, notes, and especially the
-// Preparation instructions below it (so "bake for 20 minutes" never gets
-// mistaken for a scalable quantity) - untouched. A line whose quantity
-// isn't a plain number/fraction (a range like "3-4 cloves", or no
-// leading number at all, e.g. "a pinch of salt") is left exactly as
-// written rather than guessed at. Recipes with no such block (hand-typed
-// directly in Grocy) pass through completely unchanged.
-_scaleIngredientsDescriptionHtml(html, ratio) {
-if (!html) return html;
-const blockRe = /(<p><strong>Ingredients<\/strong><\/p><ul>)([\s\S]*?)(<\/ul>)/i;
-const match = html.match(blockRe);
-if (!match) return html;
-const qtyRe = /^(\s*)(\d+\s+\d+\/\d+|\d+\/\d+|\d+(?:\.\d+)?[¼½¾⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞]?|[¼½¾⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞])(?=\s|$)/;
-const scaledItems = match[2].replace(/<li>([\s\S]*?)<\/li>/gi, (full, inner) => {
-const qm = inner.match(qtyRe);
-if (!qm) return full;
-const value = this._parseQuantityToken(qm[2]);
-if (value === null || !isFinite(value)) return full;
-const scaledText = this._formatScaledQuantityToken(value * ratio);
-const rest = inner.slice(qm[0].length);
-return `<li>${qm[1]}${scaledText}${rest}</li>`;
-});
-return html.slice(0, match.index) + match[1] + scaledItems + match[3] + html.slice(match.index + match[0].length);
-}
-// "1 1/2" / "1/2" / "1½" / "½" / "2" / "2.5" / "1-2" -> a plain decimal.
-// A plain range ("1-2", "3-4") resolves to its upper bound rather than
-// failing outright - see the backend's _parse_quantity_token (kept in
-// sync deliberately) for why: a household reported ordinary countable
-// ingredients like "1-2 russet potatoes" defaulting to "Don't count
-// toward stock" every time, since that checkbox's own default just
-// follows whether a usable number came back at all. Returns null for
-// anything else (non-numeric text) so the caller knows to leave that
-// line alone rather than silently mangling it.
-_parseQuantityToken(token) {
-token = (token || "").trim();
-const FRACTION_MAP = {
-"¼": 0.25, "½": 0.5, "¾": 0.75,
-"⅓": 1 / 3, "⅔": 2 / 3,
-"⅕": 0.2, "⅖": 0.4, "⅗": 0.6, "⅘": 0.8,
-"⅙": 1 / 6, "⅚": 5 / 6,
-"⅛": 0.125, "⅜": 0.375, "⅝": 0.625, "⅞": 0.875,
-};
-let m = token.match(/^(\d+)\s+(\d+)\/(\d+)$/);
-if (m) return parseInt(m[1], 10) + parseInt(m[2], 10) / parseInt(m[3], 10);
-m = token.match(/^(\d+)\/(\d+)$/);
-if (m) return parseInt(m[1], 10) / parseInt(m[2], 10);
-m = token.match(/^(\d+(?:\.\d+)?)?([¼½¾⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞])?$/);
-if (m && (m[1] || m[2])) {
-const whole = m[1] ? parseFloat(m[1]) : 0;
-const frac = m[2] ? FRACTION_MAP[m[2]] : 0;
-return whole + frac;
-}
-m = token.match(/^(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)$/);
-if (m) return parseFloat(m[2]);
-return null;
-}
-// The inverse of _parseQuantityToken - renders a scaled decimal back as
-// a recipe-friendly whole/fraction string (e.g. "1 1/2" rather than
-// "1.5") when it lands close to a common cooking fraction (halves,
-// thirds, quarters, fifths, sixths, eighths), falling back to a plain
-// rounded decimal otherwise.
-_formatScaledQuantityToken(value) {
-const rounded = Math.round(value * 100) / 100;
-const whole = Math.floor(rounded + 1e-6);
-const frac = rounded - whole;
-const FRACTIONS = [
-[1 / 8, "1/8"], [1 / 6, "1/6"], [0.2, "1/5"], [0.25, "1/4"],
-[1 / 3, "1/3"], [0.375, "3/8"], [0.4, "2/5"], [0.5, "1/2"],
-[0.6, "3/5"], [0.625, "5/8"], [2 / 3, "2/3"], [0.75, "3/4"],
-[0.8, "4/5"], [5 / 6, "5/6"], [0.875, "7/8"],
-];
-if (frac > 0.03) {
-for (const [f, label] of FRACTIONS) {
-if (Math.abs(frac - f) < 0.03) {
-return whole > 0 ? `${whole} ${label}` : label;
-}
-}
-}
-return String(rounded);
-}
-// Recomputes just the ingredients list against
-// this._grocyRecipeViewerServings/_grocyRecipeViewerBaseServings, without
-// re-fetching from Grocy - called on initial render and again every time
-// the scale stepper changes.
-_renderGrocyRecipeIngredients() {
-if (!this._root) return;
-const ingredientsEl = this._root.querySelector(".grocy-recipe-viewer-ingredients");
-if (!ingredientsEl) return;
-const ingredients = this._grocyRecipeViewerIngredients || [];
-if (!ingredients.length) {
-ingredientsEl.innerHTML = "";
-return;
-}
-const baseServings = this._grocyRecipeViewerBaseServings || 1;
-const servings = this._grocyRecipeViewerServings || baseServings;
-const ratio = baseServings > 0 ? servings / baseServings : 1;
-let lastGroup = null;
-ingredientsEl.innerHTML = ingredients
-.map((ing, idx) => {
-let groupHtml = "";
-const group = ing.group || "";
-if (group !== lastGroup) {
-lastGroup = group;
-if (group) groupHtml = `<div class="grocy-recipe-ingredient-group">${group}</div>`;
-}
-const note = ing.note ? ` <span class="grocy-recipe-ingredient-note">(${ing.note})</span>` : "";
-const amountText = this._formatScaledIngredientAmount(ing, ratio);
-// Numbered circular badge (task #251/mockup) in place of the amount
-// leading the row - the amount itself moves down alongside the
-// product name so nothing shown before is lost.
-return `${groupHtml}<div class="grocy-recipe-ingredient-row"><span class="grocy-recipe-ingredient-badge">${idx + 1}</span><span><span class="grocy-recipe-ingredient-amount">${amountText}</span> ${ing.product || ""}${note}</span></div>`;
-})
-.join("");
-}
-// A free-text amount ("to taste") can't be scaled - passed through as-is.
-// Anything without a raw numeric amount_value (an older/partial response)
-// falls back to the pre-formatted "amount" string, matching the exact
-// behavior before this feature existed.
-_formatScaledIngredientAmount(ing, ratio) {
-if (ing.variable_amount) return ing.variable_amount;
-if (typeof ing.amount_value !== "number") return ing.amount || "";
-const scaled = ing.amount_value * ratio;
-const rounded = Math.round(scaled * 100) / 100;
-const unit = (rounded === 1 ? (ing.unit_name || ing.unit_name_plural) : (ing.unit_name_plural || ing.unit_name)) || "";
-return `${rounded} ${unit}`.trim();
-}
-_adjustGrocyRecipeViewerServings(delta) {
-const next = Math.max(1, (this._grocyRecipeViewerServings || 1) + delta);
-if (next === this._grocyRecipeViewerServings) return;
-this._grocyRecipeViewerServings = next;
-const valueEl = this._root.querySelector(".grocy-recipe-viewer-scale-value");
-if (valueEl) valueEl.textContent = String(next);
-this._renderGrocyRecipeIngredients();
-this._renderGrocyRecipeDescription();
-}
+// v1.118.0+: _openGrocyRecipeViewer and its whole supporting cast
+// (_closeGrocyRecipeViewer/_fetchGrocyRecipeDetail(sBatch)/
+// _renderGrocyRecipeDetail/_renderGrocyRecipeDescription/
+// _renderGrocyRecipeIngredients/_adjustGrocyRecipeViewerServings/the
+// quantity-scaling helpers) now live in window.__familyHubRecipeBoxShared
+// above (see that block's own new comment) so family-hub-recipe-box-
+// card.js can use the exact same live viewer - assigned onto this
+// prototype below by the Object.assign call at the bottom of this file,
+// same mechanism as every other shared Recipe Box method.
 _openTemplates() {
 this._templatesSearchTerm = "";
 this._root.querySelector(".templates-search").value = "";
@@ -12935,10 +14872,16 @@ return `<div class="msd-header">
 }
 _renderWeekGrid() {
 const gridEl = this._root.querySelector(".grid");
-gridEl.className = "grid mode-week";
+// v1.110.5+: a 3- or 5-day window gets its own CSS grid-column-count
+// modifier class (.day-count-3/.day-count-5) alongside the existing
+// mode-week - see that rule's own comment for why this is a modifier
+// rather than a fourth view mode. 7 keeps the plain "mode-week" class
+// with no modifier, so nothing about today's default look changes.
+const dayCount = this._weekViewDayCount();
+gridEl.className = dayCount === 7 ? "grid mode-week" : `grid mode-week day-count-${dayCount}`;
 const ctx = this._buildWeekLikeContext();
 let html = "";
-for (let i = 0; i < 7; i++) {
+for (let i = 0; i < dayCount; i++) {
 html += this._buildDayColumnHtml(i, ctx);
 }
 gridEl.innerHTML = html;
@@ -13229,7 +15172,7 @@ return `<div class="event${ev.isReminder ? " reminder-event" : ""}${isPastEvent(
 return `
 <div class="day-col ${isToday ? "today" : ""}">
 <div class="day-header">
-<div class="name-row"><div class="name">${dayNames[i]}</div>${wxIconHtml}</div>
+<div class="name-row"><div class="name">${dayNames[dayStart.getDay()]}</div>${wxIconHtml}</div>
 <div class="num">${dayStart.getDate()}${badges
 .map((b) => `<span class="custody-badge" style="background:${b.color};color:${this._textColorFor(b.color)}">${b.text}</span>`)
 .join("")}${wxTempHtml}</div>
@@ -13550,6 +15493,10 @@ await this._moveMealPlan(this._dateKey(fromDate), fromBlockIndex, this._dateKey(
 }
 }
 if (!customElements.get("family-week-calendar-card")) {
+// v1.110.6+: applies the Recipe Box shared-logic object above onto this
+// card's own prototype - see that object's own comment for why this is
+// real sharing (same Function references), not a copy.
+Object.assign(FamilyWeekCalendarCard.prototype, window.__familyHubRecipeBoxShared);
 customElements.define("family-week-calendar-card", FamilyWeekCalendarCard);
 }
 window.customCards = window.customCards || [];

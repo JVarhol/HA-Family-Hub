@@ -15,15 +15,104 @@
 // it, matching this project's established convention for every Family Hub
 // card.
 
+// Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
+// "When you load a card it tends to load the default theme first then it
+// switches over to the theme you set how can we always make it load the
+// set theme first." Root cause: EVERY themed card's first paint happens
+// with no theme CSS vars set at all (falls back to _defaultTheme()'s own
+// hardcoded palette), because resolving the household's actual theme
+// takes two sequential, awaited websocket round trips after `hass` is
+// first set - family_hub/get_settings (_fetchSettings), THEN
+// theme_builder/list (_fetchGlobalThemes, which is what a Global Theme
+// selection actually needs to resolve into real colors) - both happening
+// well after `_build()` has already rendered the card once. There was no
+// way to know the real colors before those round trips finished.
+//
+// Fix: cache the last set of CSS var values this device actually applied
+// (in memory for the rest of this page load, in localStorage across
+// reloads), and apply that cache SYNCHRONOUSLY in `_build()` - before the
+// very first paint, before any fetch has even started - so a reload shows
+// last-known-good colors immediately instead of _defaultTheme()'s
+// hardcoded ones. Once the real fetches resolve, `_applyThemeVars()` runs
+// as it always has and reconciles - a no-op re-application (no visible
+// change) if nothing changed since last time, which is the overwhelmingly
+// common case on an ordinary refresh; a visible switch only when the
+// household's theme has genuinely changed since this device last saw it,
+// which is unavoidable (nothing can know about a change before asking).
+//
+// Same shared-singleton, "only the first card whose script actually runs
+// this block sets it up" pattern as window.__familyHubFabCoordinator/
+// __familyHubKioskSession/__familyHubScreenSaver/__familyHubTimerAlarm
+// above - copy-pasted byte-identically into every themed card file, since
+// these are independently-loaded Lovelace resources rather than ES
+// modules that could import one shared file (same reasoning as those).
+//
+// Cached under a KEY, not one single blob, because different cards (or
+// even the SAME card on a different dashboard placement) can legitimately
+// resolve to different colors at once - a per-card-placement Theme
+// override (`_config.theme_override`) or a per-device override
+// (`_getDeviceThemeOverride()`) both exist specifically so one card can
+// look different from the household's shared theme. Caching under one
+// shared key would "fix" the flash for the common case but introduce a
+// WRONG flash for an overridden card (briefly showing the household's
+// theme before its own override kicks in) - a strictly worse bug than
+// the one being fixed. The key is derived the same way every time
+// (`_familyHubThemeCacheKey`, called identically from `_build()` before
+// first paint and from `_applyThemeVars()` after resolving for real), so
+// a card with no override at all shares one cache entry with every other
+// un-overridden card/placement (the common case this exists for), while
+// an overridden card/placement gets its own.
+if (!window.__familyHubThemeCache) {
+  window.__familyHubThemeCache = (function () {
+    const STORAGE_PREFIX = "familyHubThemeVarsCache::";
+    const memory = new Map(); // key -> {varName: value}
+
+    function get(key) {
+      if (memory.has(key)) return memory.get(key);
+      try {
+        const raw = localStorage.getItem(STORAGE_PREFIX + key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object") {
+            memory.set(key, parsed);
+            return parsed;
+          }
+        }
+      } catch (e) {
+        // Corrupt/blocked localStorage (private browsing, etc.) - just
+        // means no cache to apply this time, same as a first-ever load.
+      }
+      return null;
+    }
+    function set(key, vars) {
+      memory.set(key, vars);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(vars));
+      } catch (e) {
+        // Best-effort only - the in-memory copy above still helps every
+        // OTHER card mounted later in this same page load even if
+        // localStorage itself is unavailable.
+      }
+    }
+    return { get, set };
+  })();
+}
+
 class FamilyHubPantryCard extends HTMLElement {
   static getStubConfig() {
     return { title: "My Pantry" };
   }
-  static getConfigForm() {
-    return { schema: [{ name: "title", selector: { text: {} } }], computeLabel: (s) => (s.name === "title" ? "Title" : undefined) };
+  // v1.111.0+: switched to getConfigElement (a real custom element) so the
+  // new theme_override field can offer a live-fetched theme list - see
+  // FamilyHubPantryCardEditor at the bottom of this file.
+  static getConfigElement() {
+    return document.createElement("family-hub-pantry-card-editor");
   }
   setConfig(config) {
-    this._config = { title: (config && config.title) || "My Pantry" };
+    this._config = {
+      title: (config && config.title) || "My Pantry",
+      theme_override: (config && typeof config.theme_override === "string") ? config.theme_override : "",
+    };
     if (this._settingsCache === undefined) this._settingsCache = null;
     if (this._globalThemes === undefined) this._globalThemes = [];
     if (this._configured === undefined) this._configured = true;
@@ -55,7 +144,9 @@ class FamilyHubPantryCard extends HTMLElement {
   }
   async _initFirstLoad() {
     await Promise.all([this._fetchSettings(), this._fetchStock(), this._fetchExtras()]);
-    if (this._getSettings().useGlobalTheme) await this._fetchGlobalThemes();
+    // v1.111.0+: always fetched now - a per-card theme_override needs this
+    // list regardless of the household's own useGlobalTheme setting.
+    await this._fetchGlobalThemes();
     this._startPolling();
     this._render();
   }
@@ -119,30 +210,36 @@ class FamilyHubPantryCard extends HTMLElement {
     }
     return raw;
   }
-  _resolveTheme(settings) {
-    const override = this._getDeviceThemeOverride();
-    const useGlobalTheme = override ? override !== "__default__" : settings.useGlobalTheme;
-    const globalThemeId = override ? (override === "__default__" ? "" : override) : settings.globalThemeId;
-    const local = settings.theme || this._defaultTheme();
-    if (!useGlobalTheme || !globalThemeId) return local;
-    const g = (this._globalThemes || []).find((t) => t && t.id === globalThemeId);
-    if (!g) return local;
+  // Shared by both the new per-card override branch and the existing
+  // household-global branch below.
+  _themeFromGlobalEntry(g) {
     const defaultTheme = this._defaultTheme();
     const colors = {};
     Object.keys(defaultTheme.colors).forEach((k) => {
       const v = g.colors && g.colors[k];
       colors[k] = typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v) ? v : defaultTheme.colors[k];
     });
-    // v144.5+: cardOpacity/glassBlur (the "liquid glass" look - see the
-    // Liquid Glass/Liquid Glass Dark built-in presets) aren't part of
-    // defaultTheme (a local/custom theme with neither set just means
-    // "fully opaque, no blur"), so they're read straight off the global
-    // theme rather than validated against a default-theme shape like
-    // colors above - same fix family-week-calendar-card.js's own
-    // _resolveTheme already applies for its own global-theme branch.
     const cardOpacity = typeof g.cardOpacity === "number" ? g.cardOpacity : 100;
     const glassBlur = typeof g.glassBlur === "number" ? g.glassBlur : 0;
     return { colors, cardOpacity, glassBlur };
+  }
+  _resolveTheme(settings) {
+    const local = settings.theme || this._defaultTheme();
+    // v1.111.0+: a per-card-placement Theme override (from this card's own
+    // native "Edit Card" dialog) wins over this device's own override and
+    // the household's Global Theme.
+    const cardOverride = this._config && this._config.theme_override;
+    if (cardOverride) {
+      const g = (this._globalThemes || []).find((t) => t && t.id === cardOverride);
+      if (g) return this._themeFromGlobalEntry(g);
+    }
+    const override = this._getDeviceThemeOverride();
+    const useGlobalTheme = override ? override !== "__default__" : settings.useGlobalTheme;
+    const globalThemeId = override ? (override === "__default__" ? "" : override) : settings.globalThemeId;
+    if (!useGlobalTheme || !globalThemeId) return local;
+    const g = (this._globalThemes || []).find((t) => t && t.id === globalThemeId);
+    if (!g) return local;
+    return this._themeFromGlobalEntry(g);
   }
   _hexToRgba(hex, alpha) {
     const h = (hex || "#000000").replace("#", "");
@@ -153,6 +250,20 @@ class FamilyHubPantryCard extends HTMLElement {
     const a = Math.max(0, Math.min(1, typeof alpha === "number" ? alpha : 1));
     return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
+  // v1.126.0+ - see window.__familyHubThemeCache's own comment above the
+  // class for the full "why a key, not one shared blob" reasoning. Called
+  // identically from here (after resolving the REAL theme) and from
+  // `_build()` (before the real theme is known yet, to look up whatever
+  // was cached last time) - both call sites MUST derive the same key for
+  // a given card/placement, or the cache lookup in `_build()` would never
+  // find what `_applyThemeVars()` just wrote for it.
+  _familyHubThemeCacheKey() {
+    const cardOverride = this._config && this._config.theme_override;
+    if (cardOverride) return `card:${cardOverride}`;
+    const deviceOverride = this._getDeviceThemeOverride();
+    if (deviceOverride) return `device:${deviceOverride}`;
+    return "household";
+  }
   _applyThemeVars() {
     const theme = this._resolveTheme(this._getSettings());
     // v144.5+: same "liquid glass" support family-week-calendar-card.js has
@@ -162,18 +273,43 @@ class FamilyHubPantryCard extends HTMLElement {
     // on this card too, not just the calendar.
     const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
     const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
-    this.style.setProperty("--fc-bg", theme.colors.bg);
-    this.style.setProperty("--fc-card", this._hexToRgba(theme.colors.card, cardOpacity / 100));
-    this.style.setProperty("--fc-border", theme.colors.border);
-    this.style.setProperty("--fc-text", theme.colors.text);
-    this.style.setProperty("--fc-text-secondary", theme.colors.textSecondary);
-    this.style.setProperty("--fc-accent", theme.colors.accent);
-    this.style.setProperty("--fc-accent-text", theme.colors.accentText);
-    this.style.setProperty("--fc-accent2", theme.colors.accent2);
-    this.style.setProperty("--fc-accent3", theme.colors.accent3);
-    this.style.setProperty("--fc-surface-alt", this._hexToRgba(theme.colors.surfaceAlt, cardOpacity / 100));
-    this.style.setProperty("--fc-surface2", this._hexToRgba(theme.colors.surface2, cardOpacity / 100));
-    this.style.setProperty("--fc-glass-blur", `${glassBlur}px`);
+    // v1.126.0+: built as a plain object first (rather than each var going
+    // straight into its own setProperty call, as before) purely so the
+    // exact same values that get applied here also get cached - see
+    // window.__familyHubThemeCache's own comment for why this fixes the
+    // household's reported "loads the default theme first" flash.
+    const vars = {
+      "--fc-bg": theme.colors.bg,
+      "--fc-card": this._hexToRgba(theme.colors.card, cardOpacity / 100),
+      "--fc-border": theme.colors.border,
+      "--fc-text": theme.colors.text,
+      "--fc-text-secondary": theme.colors.textSecondary,
+      "--fc-accent": theme.colors.accent,
+      "--fc-accent-text": theme.colors.accentText,
+      "--fc-accent2": theme.colors.accent2,
+      "--fc-accent3": theme.colors.accent3,
+      "--fc-surface-alt": this._hexToRgba(theme.colors.surfaceAlt, cardOpacity / 100),
+      "--fc-surface2": this._hexToRgba(theme.colors.surface2, cardOpacity / 100),
+      "--fc-glass-blur": `${glassBlur}px`,
+    };
+    Object.keys(vars).forEach((name) => this.style.setProperty(name, vars[name]));
+    if (window.__familyHubThemeCache) window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
+  }
+  // v1.126.0+: applies whatever theme this device/placement last actually
+  // resolved to, SYNCHRONOUSLY, before the real fetches that would
+  // otherwise be the only way to know it - see window.__familyHubTheme
+  // Cache's own comment above the class. Called once from `_build()`,
+  // before the very first `_render()`/paint. A no-op (does nothing,
+  // leaves `_defaultTheme()`'s plain colors as the first paint exactly
+  // like before this fix) on the very first time ANY card resolves this
+  // particular key - there's nothing to have cached yet.
+  _applyCachedThemeVarsIfAny() {
+    if (!window.__familyHubThemeCache) return;
+    const cached = window.__familyHubThemeCache.get(this._familyHubThemeCacheKey());
+    if (!cached) return;
+    Object.keys(cached).forEach((name) => {
+      if (typeof cached[name] === "string") this.style.setProperty(name, cached[name]);
+    });
   }
   async _fetchSettings() {
     if (!this._hass) return;
@@ -187,13 +323,83 @@ class FamilyHubPantryCard extends HTMLElement {
     this._applyThemeVars();
   }
   async _fetchGlobalThemes() {
+    let custom = [];
     try {
       const result = await this._hass.connection.sendMessagePromise({ type: "theme_builder/list" });
-      this._globalThemes = (result && Array.isArray(result.themes)) ? result.themes : [];
+      custom = (result && Array.isArray(result.themes)) ? result.themes : [];
     } catch (e) {
-      this._globalThemes = [];
+      custom = [];
     }
+    // v1.111.0+: also merge in every installed native Home Assistant theme.
+    this._globalThemes = custom.concat(this._nativeHaThemeEntries());
     this._applyThemeVars();
+  }
+  // --- Native HA theme support (duplicated from family-week-calendar-
+  // card.js's identical methods) ---
+  _haVarsToBuilderColors(vars) {
+    const v = vars || {};
+    const accent = v["primary-color"];
+    return {
+      bg: v["primary-background-color"],
+      card: v["card-background-color"] || v["ha-card-background"],
+      border: v["divider-color"],
+      text: v["primary-text-color"],
+      textSecondary: v["secondary-text-color"],
+      accent: accent,
+      accentText: v["text-primary-color"],
+      accent2: v["accent-color"] || accent,
+      accent3: v["warning-color"],
+      surfaceAlt: v["secondary-background-color"],
+      surface2: v["secondary-background-color"],
+    };
+  }
+  _haThemeCssVars(name) {
+    const themes = (this._hass && this._hass.themes && this._hass.themes.themes) || {};
+    const theme = themes[name];
+    if (!theme) return {};
+    const vars = {};
+    for (const key of Object.keys(theme)) {
+      if (key === "modes") continue;
+      vars[key] = theme[key];
+    }
+    if (theme.modes) {
+      const dark = !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
+      const modeVars = theme.modes[dark ? "dark" : "light"] || {};
+      for (const key of Object.keys(modeVars)) vars[key] = modeVars[key];
+    }
+    return vars;
+  }
+  _haDefaultCssVars() {
+    try {
+      if (typeof getComputedStyle !== "function" || !document || !document.documentElement) return {};
+      const style = getComputedStyle(document.documentElement);
+      const keys = [
+        "primary-color", "text-primary-color", "primary-background-color", "secondary-background-color",
+        "card-background-color", "primary-text-color", "secondary-text-color", "divider-color",
+        "accent-color", "warning-color", "ha-card-background",
+      ];
+      const vars = {};
+      keys.forEach((k) => {
+        const val = style.getPropertyValue(`--${k}`);
+        if (val && val.trim()) vars[k] = val.trim();
+      });
+      return vars;
+    } catch (e) {
+      return {};
+    }
+  }
+  _nativeHaThemeEntries() {
+    const entries = [
+      { id: "ha:__default__", name: "Default (Home Assistant)", colors: this._haVarsToBuilderColors(this._haDefaultCssVars()), native: true },
+    ];
+    const themes = (this._hass && this._hass.themes && this._hass.themes.themes) || {};
+    Object.keys(themes)
+      .filter((name) => name.indexOf("Theme Builder - ") !== 0)
+      .sort((a, b) => a.localeCompare(b))
+      .forEach((name) => {
+        entries.push({ id: "ha:" + name, name: name, colors: this._haVarsToBuilderColors(this._haThemeCssVars(name)), native: true });
+      });
+    return entries;
   }
   async _fetchStock() {
     try {
@@ -273,6 +479,11 @@ class FamilyHubPantryCard extends HTMLElement {
 
   _build() {
     this._built = true;
+    // v1.126.0+: applied BEFORE attachShadow/the first innerHTML paint -
+    // see _applyCachedThemeVarsIfAny's own comment and window.__familyHub
+    // ThemeCache's above the class for why this is what actually fixes
+    // the household's reported "loads the default theme first" flash.
+    this._applyCachedThemeVarsIfAny();
     this.attachShadow({ mode: "open" });
     const root = this.shadowRoot;
     // v144.13+: restyled to match the Chores/Rewards board's own chrome
@@ -905,7 +1116,7 @@ class FamilyHubPantryCard extends HTMLElement {
          rules, which these are copied from. */
       ha-card { background: var(--fc-bg); color: var(--fc-text); padding: 12px; height: 100%; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; }
       .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; gap: 8px; }
-      .title { font-size: 20px; font-weight: 800; }
+      .title { font-size: 18px; font-weight: 800; }
       .actions { display: flex; align-items: center; gap: 8px; }
       .add-stock-btn, .add-extra-btn { border: none; border-radius: 12px; padding: 10px 16px; font-size: 14px; font-weight: 700; cursor: pointer; background: var(--fc-accent); color: var(--fc-accent-text); }
       .add-extra-btn { margin: 10px; }
@@ -995,6 +1206,72 @@ class FamilyHubPantryCard extends HTMLElement {
 }
 
 customElements.define("family-hub-pantry-card", FamilyHubPantryCard);
+
+// v1.111.0+: native "Edit Card" config editor - a thin wrapper around
+// Home Assistant's own <ha-form>, needed only because the new
+// theme_override field's option list has to be fetched live.
+class FamilyHubPantryCardEditor extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._render();
+  }
+  set hass(hass) {
+    this._hass = hass;
+    if (!this._themeOptions) this._fetchThemeOptions();
+    else this._render();
+  }
+  async _fetchThemeOptions() {
+    this._themeOptions = [{ value: "", label: "Use device settings (default)" }];
+    if (!this._hass) {
+      this._render();
+      return;
+    }
+    try {
+      const result = await this._hass.connection.sendMessagePromise({ type: "theme_builder/list" });
+      const custom = (result && Array.isArray(result.themes)) ? result.themes : [];
+      custom.forEach((t) => {
+        if (t && t.id) this._themeOptions.push({ value: t.id, label: "Theme Builder: " + (t.name || t.id) });
+      });
+    } catch (e) {
+    }
+    this._themeOptions.push({ value: "ha:__default__", label: "Home Assistant: Default" });
+    const themes = (this._hass && this._hass.themes && this._hass.themes.themes) || {};
+    Object.keys(themes)
+      .filter((name) => name.indexOf("Theme Builder - ") !== 0)
+      .sort((a, b) => a.localeCompare(b))
+      .forEach((name) => this._themeOptions.push({ value: "ha:" + name, label: "Home Assistant: " + name }));
+    this._render();
+  }
+  _schema() {
+    return [
+      { name: "title", selector: { text: {} } },
+      { name: "theme_override", selector: { select: { mode: "dropdown", options: this._themeOptions || [{ value: "", label: "Use device settings (default)" }] } } },
+    ];
+  }
+  _render() {
+    if (!this._form) {
+      this._form = document.createElement("ha-form");
+      this._form.addEventListener("value-changed", (e) => {
+        e.stopPropagation();
+        this._config = e.detail.value;
+        this.dispatchEvent(new CustomEvent("config-changed", { detail: { config: this._config }, bubbles: true, composed: true }));
+      });
+      this.appendChild(this._form);
+    }
+    this._form.hass = this._hass;
+    this._form.data = this._config || {};
+    this._form.schema = this._schema();
+    this._form.computeLabel = (s) => (s.name === "title" ? "Title" : s.name === "theme_override" ? "Theme" : undefined);
+    this._form.computeHelper = (s) => (
+      s.name === "theme_override"
+        ? "Pin this one card to a specific theme, or leave on \"Use device settings\" to follow whatever this device/household normally shows."
+        : undefined
+    );
+  }
+}
+if (!customElements.get("family-hub-pantry-card-editor")) {
+  customElements.define("family-hub-pantry-card-editor", FamilyHubPantryCardEditor);
+}
 
 window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === "family-hub-pantry-card")) {

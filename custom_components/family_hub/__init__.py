@@ -26,6 +26,7 @@ gated only, on purpose.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import difflib
 import hashlib
@@ -48,10 +49,12 @@ from homeassistant.components import panel_custom, websocket_api
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
+from homeassistant.util import slugify
 
 # Chores/Rewards/Permissions - kept in their own modules (see each file's
 # docstring) rather than folded into this already-huge file. The chores
@@ -120,6 +123,7 @@ from .const import (
     SETTINGS_KEY_USER_PROFILES,
     SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED,
     SETTINGS_KEY_MEMBER_USER_IDS,
+    SETTINGS_KEY_WISHLIST_CLAIMS_PERMISSION_MIGRATED,
     SETTINGS_KEY_ROUTINES_ENABLED,
     SETTINGS_KEY_GOALS_IN_CHORES,
     SETTINGS_KEY_GOALS_IN_REWARDS,
@@ -137,6 +141,8 @@ from .const import (
     GOALS_CARD_JS_URL,
     PANTRY_CARD_JS_URL,
     TODO_CARD_JS_URL,
+    ACTIVE_TIMERS_CARD_JS_URL,
+    RECIPE_BOX_CARD_JS_URL,
     SERVICE_CREATE_CHORE,
     SERVICE_COMPLETE_CHORE,
     SERVICE_APPROVE_CHORE,
@@ -153,12 +159,21 @@ from .const import (
     RECIPES_STORAGE_VERSION,
     MENU_SUGGESTIONS_STORAGE_KEY_PREFIX,
     MENU_SUGGESTIONS_STORAGE_VERSION,
+    NATIVE_TIMER_EVENT_CANCELLED,
+    NATIVE_TIMER_EVENT_FINISHED,
+    TIMER_SWEEP_SECONDS,
+    TIMERS_STORAGE_KEY_PREFIX,
+    TIMERS_STORAGE_VERSION,
     PERMISSION_EDIT_MENU,
+    PERMISSION_SEE_WISHLIST_CLAIMS,
     SCREENSAVER_CARD_JS_URL,
     SUGGESTIONS_STORAGE_KEY_PREFIX,
     SUGGESTIONS_STORAGE_VERSION,
     TODO_CARD_CONFIG_STORAGE_KEY_PREFIX,
     TODO_CARD_CONFIG_STORAGE_VERSION,
+    TODO_CARD_MAX_BOARD_ROWS,
+    TODO_WISHLIST_CONFIG_STORAGE_KEY_PREFIX,
+    TODO_WISHLIST_CONFIG_STORAGE_VERSION,
     THEME_SELECTOR_CARD_JS_URL,
     THEME_STORAGE_KEY,
     THEME_STORAGE_VERSION,
@@ -658,6 +673,16 @@ def _default_user_profile() -> dict[str, Any]:
         "digestSections": dict(DEFAULT_DIGEST_SECTIONS),
         "notifyRewardClaimed": False,
         "notifyChoreApproved": False,
+        # v1.119.0+: alarm-style (Android alarm-stream/iOS critical) instead
+        # of the plain push whenever one of THIS person's own timers goes
+        # off - see chores_websocket_api.py's _send_alarm_notification.
+        "notifyTimerAlarm": False,
+        # v1.131.0+: see SETTINGS_KEY_USER_PROFILES's own comment in
+        # const.py for the full picture of why these three exist alongside
+        # the older primaryCalendar/people[]-based setup.
+        "remindersEntity": "",
+        "wishlistEntity": "",
+        "badges": [],
     }
 
 
@@ -681,6 +706,9 @@ def _get_user_profiles(settings: dict[str, Any] | None) -> dict[str, dict[str, A
         sections = profile.get("digestSections")
         primary_calendar = profile.get("primaryCalendar")
         reminder_subs = profile.get("remindersSubscriptions")
+        reminders_entity = profile.get("remindersEntity")
+        wishlist_entity = profile.get("wishlistEntity")
+        badges_raw = profile.get("badges")
         profiles[str(user_id)] = {
             "notifyTargets": [str(t).strip() for t in targets if str(t).strip()] if isinstance(targets, list) else [],
             "subscribedCalendars": [str(c).strip() for c in calendars if str(c).strip()] if isinstance(calendars, list) else [],
@@ -709,8 +737,63 @@ def _get_user_profiles(settings: dict[str, Any] | None) -> dict[str, dict[str, A
                 for person_entity, level in reminder_subs.items()
                 if isinstance(reminder_subs, dict) and str(person_entity).strip() and level in REMINDER_SUBSCRIPTION_LEVELS
             } if isinstance(reminder_subs, dict) else {},
+            # v1.131.0+: see SETTINGS_KEY_USER_PROFILES's own comment in
+            # const.py. Same defensive-list-of-dicts normalization as
+            # _get_people's own "badges" handling on a settings.people[] row.
+            "remindersEntity": reminders_entity.strip() if isinstance(reminders_entity, str) else "",
+            "wishlistEntity": wishlist_entity.strip() if isinstance(wishlist_entity, str) else "",
+            "badges": [
+                {
+                    "text": str(b.get("text", "")).strip(),
+                    "match": str(b.get("match", "")).strip(),
+                    "hideMatch": str(b.get("hideMatch", "")).strip(),
+                }
+                for b in badges_raw
+                if isinstance(b, dict)
+            ] if isinstance(badges_raw, list) else [],
         }
     return profiles
+
+
+async def _user_display_names(hass: HomeAssistant) -> dict[str, str]:
+    """{user_id: name} for every real (non-system-generated) Home Assistant
+    user - used to give a profile-only individual reminders list (v1.131.0+,
+    no settings.people[] row involved) a human list_label in its
+    notifications, the same way _poll_reminders_todo's older people[]-based
+    path already gets one from that row's own "name" field. Best-effort:
+    hass.auth is always available once Home Assistant itself is running, so
+    this only ever comes back empty in a test harness that doesn't stub it -
+    same defensiveness as _detect_user_notify_targets."""
+    try:
+        users = await hass.auth.async_get_users()
+    except Exception:  # noqa: BLE001 - never block a poll tick over a display name
+        return {}
+    return {u.id: (u.name or u.id) for u in users if not getattr(u, "system_generated", False)}
+
+
+def _resolve_profile_reminders_entity(profile: dict[str, Any] | None, people: list[dict[str, str]]) -> str:
+    """The one place "this profile's own individual Reminders list" gets
+    resolved, for every backend call site that needs it (reminders polling,
+    Daily Digest) - see SETTINGS_KEY_USER_PROFILES's own comment in const.py
+    for why there are two possible sources. Prefers the profile's own
+    remindersEntity (v1.131.0+, set/created directly from the Users tab);
+    falls back to the legacy settings.people[i].remindersEntity belonging to
+    whichever people[] row this profile's primaryCalendar points at, so a
+    household that set things up the old way before this version keeps
+    working unchanged. Returns "" (never None) when neither source has one -
+    "this person has no individual reminders list," same as always."""
+    if not isinstance(profile, dict):
+        return ""
+    own = profile.get("remindersEntity")
+    if isinstance(own, str) and own.strip():
+        return own.strip()
+    primary_calendar = profile.get("primaryCalendar")
+    if not isinstance(primary_calendar, str) or not primary_calendar.strip():
+        return ""
+    for person in people:
+        if person.get("entity") == primary_calendar and person.get("remindersEntity"):
+            return person["remindersEntity"]
+    return ""
 
 
 def _get_people(settings: dict[str, Any] | None) -> list[dict[str, str]]:
@@ -850,6 +933,66 @@ async def _maybe_migrate_member_user_ids(
     profile_ids = set(profiles.keys()) if isinstance(profiles, dict) else set()
     permission_ids = set(permissions.keys()) if isinstance(permissions, dict) else set()
     settings[SETTINGS_KEY_MEMBER_USER_IDS] = sorted(profile_ids | permission_ids)
+    await settings_store.async_save(settings)
+    await _backup_settings(hass, settings)
+
+
+async def _maybe_migrate_wishlist_claims_permission_default(
+    hass: HomeAssistant,
+    settings_store: Store,
+    permissions_store: Store,
+    permissions: dict[str, Any],
+) -> None:
+    """One-time grandfathering of PERMISSION_SEE_WISHLIST_CLAIMS (see its
+    docstring in const.py) for every household member who already existed
+    at upgrade time.
+
+    Every other entry in CHORE_PERMISSIONS correctly defaults to False
+    (nobody has the capability until an admin grants it) - that's the right
+    default for something nobody had before. This permission is the
+    opposite: before it existed, every signed-in household member could
+    already see wish-list claim status with zero restriction, so treating
+    it like every other permission would silently take that away from
+    everyone's own phone/tablet the moment this version installs, not just
+    close the gap on an unidentified shared kiosk login (which is the
+    actual problem this permission exists to solve).
+
+    Guarded by its OWN flag (SETTINGS_KEY_WISHLIST_CLAIMS_PERMISSION_MIGRATED)
+    rather than key-presence in the permissions dict, unlike
+    _maybe_migrate_member_user_ids above - a permission being explicitly
+    False for a user is indistinguishable from "never touched" by presence
+    alone, so a dedicated flag is the only reliable one-time guard here.
+
+    Must run after settings_store's memberUserIds has already been
+    finalized (i.e. after _maybe_migrate_member_user_ids has already run
+    for this setup) and after the Permissions store is loaded - see the
+    call site in async_setup_entry, immediately after
+    _maybe_migrate_member_user_ids. Only members already in that finalized
+    roster are grandfathered; anyone added to the household afterward
+    correctly starts without the grant, same as any other permission.
+    """
+    settings = await settings_store.async_load() or {}
+    if settings.get(SETTINGS_KEY_WISHLIST_CLAIMS_PERMISSION_MIGRATED):
+        return
+
+    member_ids = settings.get(SETTINGS_KEY_MEMBER_USER_IDS)
+    member_ids = member_ids if isinstance(member_ids, list) else []
+
+    changed = False
+    for user_id in member_ids:
+        entry = permissions.get(user_id)
+        if not isinstance(entry, dict):
+            entry = {}
+            permissions[user_id] = entry
+        if entry.get(PERMISSION_SEE_WISHLIST_CLAIMS) is not True:
+            entry[PERMISSION_SEE_WISHLIST_CLAIMS] = True
+            changed = True
+
+    if changed:
+        await permissions_store.async_save(permissions)
+        await chores_store.backup_permissions(hass, permissions)
+
+    settings[SETTINGS_KEY_WISHLIST_CLAIMS_PERMISSION_MIGRATED] = True
     await settings_store.async_save(settings)
     await _backup_settings(hass, settings)
 
@@ -1358,6 +1501,74 @@ async def _ws_set_notification_click_path(
     connection.send_result(msg["id"], {"path": path})
 
 
+def _migrate_people_reminders_into_profiles(settings: dict[str, Any]) -> bool:
+    """v1.132.0+: household ask, verbatim: *"move the linked reminders off
+    of the calendar accordion... make sure that if there is a currently
+    linked todo list on a calendar and a user that selected a calendar as
+    theirs it transfers over to the new calendars and reminders area."*
+
+    The Calendars tab's per-calendar "their own Reminders list" field
+    (settings.people[i].remindersEntity) is gone from the card's UI as of
+    this version - a person's individual Reminders list now lives ONLY
+    under their own Users tab profile (settings.userProfiles[user_id].
+    remindersEntity, added in v1.131.0). This is the migration that moves
+    data forward: for every people[] row that still has its own
+    remindersEntity set, find every userProfile whose primaryCalendar
+    points at that same calendar entity (v1.131.0's "this is my calendar"
+    star button) and - if that profile doesn't already have its own
+    remindersEntity - copy the people[] row's value onto it. The people[]
+    row's remindersEntity is then cleared, since the whole point is to MOVE
+    it, not duplicate it, and the Calendars tab has no UI left to edit or
+    clear it by hand.
+
+    A people[] row whose calendar entity isn't anybody's primaryCalendar is
+    left completely untouched (there's nowhere to move it TO) - it keeps
+    working exactly as it does today for the "Other people's reminder
+    lists" subscription picker in the Users tab (see
+    _renderNotifyProfileRemindersLists in the card's JS), just without any
+    remaining way to set one up for a brand new calendar that way.
+
+    Idempotent and cheap to call unconditionally: once every matched row
+    has been cleared, every later call is a no-op (nothing left to find).
+    Called both when settings are loaded (so existing installs self-heal
+    the very first time they're read after upgrading) and when they're
+    saved (so a stale, not-yet-reloaded browser tab that still posts an old
+    people[] row's remindersEntity gets folded in immediately rather than
+    silently sitting there unused). Mutates `settings` in place (people[]
+    entries and userProfiles entries alike) and returns True if it changed
+    anything, so the caller knows whether the mutated dict needs saving.
+    """
+    people = settings.get("people")
+    profiles = settings.get(SETTINGS_KEY_USER_PROFILES)
+    if not isinstance(people, list) or not isinstance(profiles, dict):
+        return False
+    changed = False
+    for person in people:
+        if not isinstance(person, dict):
+            continue
+        entity = person.get("entity")
+        reminders_entity = person.get("remindersEntity")
+        if not isinstance(entity, str) or not entity.strip():
+            continue
+        if not isinstance(reminders_entity, str) or not reminders_entity.strip():
+            continue
+        entity = entity.strip()
+        reminders_entity = reminders_entity.strip()
+        matched = False
+        for profile in profiles.values():
+            if not isinstance(profile, dict) or profile.get("primaryCalendar") != entity:
+                continue
+            matched = True
+            existing = profile.get("remindersEntity")
+            if not (isinstance(existing, str) and existing.strip()):
+                profile["remindersEntity"] = reminders_entity
+                changed = True
+        if matched:
+            person["remindersEntity"] = ""
+            changed = True
+    return changed
+
+
 @websocket_api.websocket_command({vol.Required("type"): "family_hub/get_settings"})
 @websocket_api.async_response
 async def _ws_get_settings(
@@ -1374,6 +1585,13 @@ async def _ws_get_settings(
     result, falls back to reading the legacy to-do item itself, and calls
     family_hub/set_settings once to migrate it in - after that, every future
     call here returns the real thing directly.
+
+    v1.132.0+: also runs _migrate_people_reminders_into_profiles on
+    whatever comes back from the store, and persists the result if it
+    changed anything - so an install that saved data under the old
+    people[i].remindersEntity scheme self-heals into the new
+    userProfiles[...].remindersEntity scheme the very first time Settings
+    are read after upgrading, with no separate migration step needed.
     """
     entry_data = _get_family_hub_entry_data(hass)
     if entry_data is None:
@@ -1381,6 +1599,8 @@ async def _ws_get_settings(
         return
     store: Store = entry_data["settings_store"]
     settings = await store.async_load()
+    if isinstance(settings, dict) and _migrate_people_reminders_into_profiles(settings):
+        await store.async_save(settings)
     connection.send_result(msg["id"], {"settings": settings})
 
 
@@ -1477,30 +1697,141 @@ async def _ws_set_settings(
                 if "pinHash" not in incoming_profile and "pinSalt" not in incoming_profile:
                     incoming_profile["pinHash"] = pin_hash
                     incoming_profile["pinSalt"] = pin_salt
+        if isinstance(new_profiles, dict):
+            await _sync_profile_wishlist_flags(
+                hass, entry_data, existing_profiles if isinstance(existing_profiles, dict) else {}, new_profiles
+            )
+    # v1.132.0+: also self-heal on every save, not just on load (see
+    # _migrate_people_reminders_into_profiles's own docstring) - covers a
+    # stale, not-yet-reloaded browser tab that still posts an old people[]
+    # row's remindersEntity alongside an otherwise-current save.
+    _migrate_people_reminders_into_profiles(new_settings)
     await store.async_save(new_settings)
     await _backup_settings(hass, new_settings)
     connection.send_result(msg["id"], {"success": True})
 
 
-@websocket_api.websocket_command({vol.Required("type"): "family_hub/get_todo_card_config"})
+async def _sync_profile_wishlist_flags(
+    hass: HomeAssistant,
+    entry_data: dict[str, Any],
+    old_profiles: dict[str, Any],
+    new_profiles: dict[str, Any],
+) -> None:
+    """Keep the wish-list flag store (see _ws_set_wishlist_flag's own
+    docstring for its shape) in sync with each profile's own wishlistEntity
+    field (v1.131.0+ - see SETTINGS_KEY_USER_PROFILES's comment in
+    const.py), every time family_hub/set_settings saves a change to
+    userProfiles.
+
+    For each user_id whose wishlistEntity actually CHANGED between the old
+    and new saved profile: flags the new entity (ownerUserId = that same
+    user_id, same stamping _ws_set_wishlist_flag itself would do) and
+    un-flags the old one - but ONLY if the old entity isn't the new value
+    for some OTHER profile too (nothing here should un-flag a list a
+    household member just took over from someone else in the very same
+    save, however unlikely). Clearing a profile's wishlistEntity back to ""
+    un-flags its old entity and flags nothing new. A profile whose
+    wishlistEntity is unchanged is left alone entirely - this never touches
+    a wish-list flag set the OLD way, directly from the To-Do Lists card,
+    with no profile pointing at it at all.
+    """
+    store: Store | None = entry_data.get("todo_wishlist_config_store")
+    if store is None:
+        return
+    changes: list[tuple[str, str, str]] = []  # (user_id, old_entity, new_entity)
+    for user_id, new_profile in new_profiles.items():
+        if not isinstance(new_profile, dict):
+            continue
+        new_entity = new_profile.get("wishlistEntity")
+        new_entity = new_entity.strip() if isinstance(new_entity, str) else ""
+        old_profile = old_profiles.get(user_id)
+        old_entity = old_profile.get("wishlistEntity") if isinstance(old_profile, dict) else ""
+        old_entity = old_entity.strip() if isinstance(old_entity, str) else ""
+        if old_entity != new_entity:
+            changes.append((str(user_id), old_entity, new_entity))
+    if not changes:
+        return
+    still_wanted_entities = {new_profiles[uid].get("wishlistEntity", "").strip() for uid in new_profiles if isinstance(new_profiles.get(uid), dict)}
+    saved = await store.async_load()
+    wishlists = dict(saved) if isinstance(saved, dict) else {}
+    changed_store = False
+    for user_id, old_entity, new_entity in changes:
+        if old_entity and old_entity not in still_wanted_entities and old_entity in wishlists:
+            del wishlists[old_entity]
+            changed_store = True
+        if new_entity:
+            wishlists[new_entity] = {"ownerUserId": user_id}
+            changed_store = True
+    if changed_store:
+        await store.async_save(wishlists)
+
+
+def _todo_card_cards_map(saved: dict, card_id: str | None) -> tuple[dict, bool]:
+    """Return (cards_dict, did_migrate) from the raw store payload.
+
+    v1.110.5+: `saved` is normally already shaped `{"cards": {card_id:
+    {...}}}`. A store saved before that version instead has the old flat
+    record directly at the top level ({"entities": ..., "grocy_list_ids":
+    ..., "rows": ...}, no "cards" key at all). When that legacy shape is
+    found AND a card_id was given, migrate it in-place into
+    cards[card_id] and report did_migrate=True so the caller persists the
+    migrated shape immediately (see TODO_CARD_CONFIG_STORAGE_KEY_PREFIX's
+    own comment in const.py for the full rationale). Without a card_id
+    there is nothing to migrate INTO, so the legacy data is left untouched
+    in `saved` for a later call that does supply one.
+    """
+    if not isinstance(saved, dict):
+        return {}, False
+    cards = saved.get("cards")
+    if isinstance(cards, dict):
+        return cards, False
+    legacy_entities = saved.get("entities")
+    legacy_grocy = saved.get("grocy_list_ids")
+    legacy_rows = saved.get("rows")
+    has_legacy = (
+        isinstance(legacy_entities, list) or isinstance(legacy_grocy, list) or isinstance(legacy_rows, int)
+    )
+    if has_legacy and card_id:
+        return {
+            card_id: {
+                "entities": legacy_entities if isinstance(legacy_entities, list) else None,
+                "grocy_list_ids": legacy_grocy if isinstance(legacy_grocy, list) else None,
+                "rows": legacy_rows if isinstance(legacy_rows, int) else None,
+            }
+        }, True
+    return {}, False
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/get_todo_card_config",
+        # v1.110.5+: identifies WHICH To-Do Lists card instance is asking,
+        # so two cards on two different views no longer share one record.
+        # Optional purely for defensiveness (a stale cached script from
+        # before this version wouldn't send it); see _todo_card_cards_map.
+        vol.Optional("card_id"): str,
+    }
+)
 @websocket_api.async_response
 async def _ws_get_todo_card_config(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
 ) -> None:
-    """Return the To-Do Lists card's own list selection (v146.5+) - which
-    todo.* entities and which Grocy shopping lists the FAB's List(s) tab has
-    picked. Backed by its own small Store (TODO_CARD_CONFIG_STORAGE_KEY_
-    PREFIX - see that constant's own comment for why this is a SEPARATE
-    store rather than folded into the shared family_hub/get_settings blob).
+    """Return ONE To-Do Lists card instance's own list selection (v146.5+,
+    per-instance since v1.110.5) - which todo.* entities and which Grocy
+    shopping lists that card's FAB List(s) tab has picked. Backed by its
+    own small Store (TODO_CARD_CONFIG_STORAGE_KEY_PREFIX - see that
+    constant's own comment for why this is a SEPARATE store rather than
+    folded into the shared family_hub/get_settings blob, and for the full
+    per-card-id migration story).
 
     Returns `{"entities": null, "grocy_list_ids": null}` (both null, not an
-    empty list) when nothing has ever been saved here yet - the card's own
-    JS (_fetchTodoCardConfig) treats null as "nothing saved to the backend
-    yet, fall back to whatever the card's own YAML/dashboard config still
-    carries" (the legacy source, from before this store existed), and only
-    once the household saves through the List(s) tab does this become the
-    one source of truth from then on, even an explicitly empty selection
-    (`[]`, not null).
+    empty list) when nothing has ever been saved for this card_id yet - the
+    card's own JS (_fetchTodoCardConfig) treats null as "nothing saved to
+    the backend yet, fall back to whatever the card's own YAML/dashboard
+    config still carries" (the legacy source, from before this store
+    existed), and only once the household saves through the List(s) tab
+    does this become the one source of truth from then on, even an
+    explicitly empty selection (`[]`, not null).
     """
     entry_data = _get_family_hub_entry_data(hass)
     if entry_data is None:
@@ -1508,13 +1839,57 @@ async def _ws_get_todo_card_config(
         return
     store: Store = entry_data["todo_card_config_store"]
     saved = await store.async_load()
-    entities = saved.get("entities") if isinstance(saved, dict) else None
-    grocy_list_ids = saved.get("grocy_list_ids") if isinstance(saved, dict) else None
+    card_id = msg.get("card_id")
+    cards, did_migrate = _todo_card_cards_map(saved, card_id)
+    if did_migrate:
+        await store.async_save({"cards": cards})
+    record = cards.get(card_id) if card_id else None
+    if not isinstance(record, dict):
+        record = {}
+    entities = record.get("entities")
+    grocy_list_ids = record.get("grocy_list_ids")
+    rows = record.get("rows")
+    valid_rows = rows if isinstance(rows, int) and 1 <= rows <= TODO_CARD_MAX_BOARD_ROWS else None
+    fit_to_screen = record.get("fit_to_screen")
+    row_heights = record.get("row_heights")
+    # v1.130.0+: per-row height weights for the "fit to screen" layout - see
+    # _ws_set_todo_card_config's own comment on why these are only ever
+    # returned when they still line up with the CURRENTLY stored row count.
+    # A stale array (left over from a row count the household has since
+    # changed) is worse than useless here - handing the card a 3-entry
+    # weights array for a 2-row board would either be silently truncated or
+    # misapplied - so this only ever hands back weights that describe the
+    # board exactly as it exists right now; the card falls back to equal
+    # weights (null) in every other case, indistinguishable from "never
+    # resized" - which, for this purpose, it effectively is.
+    effective_rows = valid_rows if valid_rows is not None else 1
+    valid_row_heights = (
+        row_heights
+        if isinstance(row_heights, list)
+        and len(row_heights) == effective_rows
+        and all(isinstance(v, (int, float)) and v > 0 for v in row_heights)
+        else None
+    )
     connection.send_result(
         msg["id"],
         {
             "entities": entities if isinstance(entities, list) else None,
             "grocy_list_ids": grocy_list_ids if isinstance(grocy_list_ids, list) else None,
+            # v1.109.9+: how many stacked rows the board arranges its list
+            # columns across - "so you can have your lists shown how you
+            # want a line of lists, 2 stacks, 3 stacks etc." null means
+            # "never chosen," which the card treats as 1 (its original
+            # single-row layout), so nobody's board changes on upgrade.
+            # Clamped on the way IN (see _ws_set_todo_card_config); clamped
+            # again here so a hand-edited store file can't hand the card a
+            # nonsense row count either.
+            "rows": valid_rows,
+            # v1.130.0+: "fit to screen" - the board fills the remaining
+            # viewport height instead of growing the page, with each column
+            # scrolling its own items. null/missing means "never chosen",
+            # which the card treats as off (today's behavior, unchanged).
+            "fit_to_screen": fit_to_screen if isinstance(fit_to_screen, bool) else None,
+            "row_heights": valid_row_heights,
         },
     )
 
@@ -1524,25 +1899,310 @@ async def _ws_get_todo_card_config(
         vol.Required("type"): "family_hub/set_todo_card_config",
         vol.Required("entities"): [str],
         vol.Required("grocy_list_ids"): [vol.Coerce(int)],
+        # v1.110.5+: see _ws_get_todo_card_config - which card instance's
+        # record this save belongs to. Optional for the same stale-script
+        # defensiveness; a save with no card_id lands in a shared
+        # "__default__" bucket rather than crashing, though every current
+        # card build always sends one (generated once in setConfig).
+        vol.Optional("card_id"): str,
+        # v1.109.9+: optional, NOT required - an older card build (or any
+        # other caller) that predates the board-layout control still saves
+        # its list selection through this same command without knowing this
+        # field exists, and must not be rejected for it. See the handler
+        # for why omitting it PRESERVES whatever is already stored rather
+        # than resetting the layout to one row.
+        vol.Optional("rows"): vol.Coerce(int),
+        # v1.130.0+: same merge-on-omit reasoning as `rows` above - a card
+        # build that predates "fit to screen"/row resizing still saves
+        # through this same command without knowing either field exists.
+        vol.Optional("fit_to_screen"): bool,
+        # A drag-resize save sends ONLY this (plus the required entities/
+        # grocy_list_ids/rows the endpoint always needs) - see the card's
+        # own _persistRowHeights.
+        vol.Optional("row_heights"): [vol.Coerce(float)],
     }
 )
 @websocket_api.async_response
 async def _ws_set_todo_card_config(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
 ) -> None:
-    """Persist the To-Do Lists card's list selection (v146.5+) - see
-    _ws_get_todo_card_config's own docstring. This store holds ONLY these
-    two fields and only this card ever writes to it, so - unlike
-    family_hub/set_settings - a plain full replace on every save is safe:
-    there's no other party's own save that could clobber a field it
-    doesn't know about.
+    """Persist ONE To-Do Lists card instance's list selection (v146.5+,
+    per-instance since v1.110.5) - see _ws_get_todo_card_config's own
+    docstring. Each card_id's record holds only these three fields and
+    only that card instance ever writes to it, so - unlike
+    family_hub/set_settings - a plain full replace of that one record on
+    every save is safe: there's no other party's own save that could
+    clobber a field it doesn't know about.
     """
     entry_data = _get_family_hub_entry_data(hass)
     if entry_data is None:
         connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
         return
     store: Store = entry_data["todo_card_config_store"]
-    await store.async_save({"entities": msg["entities"], "grocy_list_ids": msg["grocy_list_ids"]})
+    card_id = msg.get("card_id") or "__default__"
+    saved = await store.async_load()
+    cards, _did_migrate = _todo_card_cards_map(saved, card_id)
+    existing = cards.get(card_id)
+    if not isinstance(existing, dict):
+        existing = {}
+    # v1.109.9+: `rows` is merge-on-omit, unlike the two list fields, which
+    # stay a plain full replace. The reason is the docstring's own
+    # "only this card ever writes to it" assumption weakening slightly:
+    # an OLDER card build saving its list selection doesn't know `rows`
+    # exists and won't send it, and a full replace would silently reset a
+    # household's chosen layout back to one row every time someone on a
+    # stale browser tab changed which lists they show. Reading the stored
+    # value first and keeping it when the message omits the field costs one
+    # load and removes that whole class of surprise.
+    previous_rows = existing.get("rows")
+    if "rows" in msg:
+        rows = max(1, min(TODO_CARD_MAX_BOARD_ROWS, int(msg["rows"])))
+    elif isinstance(previous_rows, int):
+        rows = max(1, min(TODO_CARD_MAX_BOARD_ROWS, previous_rows))
+    else:
+        rows = None
+    # v1.130.0+: `fit_to_screen`/`row_heights` are merge-on-omit too, same
+    # reasoning as `rows` just above. `row_heights` is stored verbatim
+    # whenever sent - it isn't cross-checked against `rows` here (a resize
+    # drag and a List(s) tab Save that changes the row count could land in
+    # either order); _ws_get_todo_card_config is what only ever hands back
+    # a `row_heights` array that still matches the CURRENTLY stored row
+    # count, so a mismatched leftover here is simply invisible rather than
+    # something this handler needs to reconcile.
+    if "fit_to_screen" in msg:
+        fit_to_screen = bool(msg["fit_to_screen"])
+    elif isinstance(existing.get("fit_to_screen"), bool):
+        fit_to_screen = existing["fit_to_screen"]
+    else:
+        fit_to_screen = None
+    if "row_heights" in msg:
+        row_heights = list(msg["row_heights"])
+    else:
+        row_heights = existing.get("row_heights")
+    record = {"entities": msg["entities"], "grocy_list_ids": msg["grocy_list_ids"]}
+    if rows is not None:
+        record["rows"] = rows
+    if fit_to_screen is not None:
+        record["fit_to_screen"] = fit_to_screen
+    if isinstance(row_heights, list):
+        record["row_heights"] = row_heights
+    cards[card_id] = record
+    await store.async_save({"cards": cards})
+    connection.send_result(msg["id"], {"success": True})
+
+
+# Deliberately the literal string rather than
+# `homeassistant.components.local_todo.const.CONF_TODO_LIST_NAME` - local_todo
+# is a whole separate integration, and importing straight from its innards
+# would mean Family Hub's own setup breaks (ImportError, not just a missing
+# feature) on any Home Assistant build where local_todo has moved or isn't
+# loaded yet. The string itself ("todo_list_name") is part of local_todo's
+# config flow's data schema and about as unlikely to change as a domain name.
+#
+# v1.131.0+: moved here from config_flow.py (which originally had the only
+# caller - the first-run wizard's "create the lists I don't have yet"
+# checkbox) so family-week-calendar-card.js's own per-person Reminders/Wish
+# List "+ Add list" buttons (see _ws_create_todo_list just below) can reuse
+# the exact same creation path at runtime, not just during setup.
+# config_flow.py already imports FROM this module (`from . import ...`), so
+# the helper had to live on THIS side of that relationship to avoid a
+# circular import - config_flow.py now imports it back from here instead of
+# defining its own copy.
+_LOCAL_TODO_DOMAIN = "local_todo"
+_LOCAL_TODO_LIST_NAME_FIELD = "todo_list_name"
+
+
+async def _create_local_todo_list(hass: HomeAssistant, name: str) -> str | None:
+    """Create a new to-do list via the built-in Local To-do integration and
+    return the entity_id it ends up with, e.g. "todo.family_meal_plan".
+
+    Home Assistant's own async_init for a config flow is fully awaited end
+    to end - by the time it returns a create_entry result, local_todo's
+    async_setup_entry (and the todo.* entity it registers) has already run,
+    not just been scheduled - so the entity registry is looked up directly
+    rather than guessed at. This used to just predict the entity_id as
+    f"todo.{slugify(name)}" and stop there; that prediction is *usually*
+    right (local_todo does slugify the name for its own storage key) but
+    isn't guaranteed - Home Assistant silently appends _2/_3 to the object_id
+    on a collision with any *other* integration's existing todo.* entity
+    (local_todo's own create_entry only guards against colliding with
+    another local_todo list, not a global entity_id collision), which used
+    to mean this could hand back an entity_id that doesn't actually exist,
+    silently pointing the caller at nothing. Now the registry is the source
+    of truth - local_todo's entity sets its unique_id to the new config
+    entry's entry_id, so async_get_entity_id("todo", "local_todo", entry_id)
+    resolves the *real* entity_id every time. The slugify prediction is kept
+    only as a last-resort fallback for the unlikely case the registry lookup
+    itself comes back empty.
+
+    Best-effort: if the flow doesn't come back as a fresh create_entry for
+    any reason (local_todo isn't available, a future Home Assistant release
+    changes its config flow shape), this returns None and the caller falls
+    back to leaving that entity unset - never raises.
+
+    Self-heals the "list already exists" case (v1.131.1+): local_todo's own
+    config flow guards against a second list with the same storage key
+    (slugify(name)) by *aborting* rather than returning create_entry - which
+    happens whenever the "+ Add list" button on a person's profile is
+    clicked twice (e.g. the household clicked it, the modal was closed
+    without hitting Save, and they opened it again later and clicked it a
+    second time). The list from the first click is genuinely sitting there
+    the whole time; treating the second click's abort as a hard failure told
+    the household to go create it by hand when it already existed. Now, on
+    anything other than create_entry, this looks for an existing local_todo
+    config entry whose storage_key matches slugify(name) and, if found,
+    resolves and returns *that* entry's entity_id instead of giving up.
+    """
+    try:
+        result = await hass.config_entries.flow.async_init(
+            _LOCAL_TODO_DOMAIN,
+            context={"source": "user"},
+            data={_LOCAL_TODO_LIST_NAME_FIELD: name},
+        )
+    except Exception:  # noqa: BLE001 - local_todo missing/unavailable is not fatal here
+        return None
+    if isinstance(result, dict) and result.get("type") == "create_entry":
+        entry = result.get("result")
+    else:
+        storage_key = slugify(name)
+        entry = next(
+            (
+                existing
+                for existing in hass.config_entries.async_entries(_LOCAL_TODO_DOMAIN)
+                if existing.data.get("storage_key") == storage_key
+            ),
+            None,
+        )
+        if entry is None:
+            return None
+    entry_id = getattr(entry, "entry_id", None)
+    if entry_id:
+        try:
+            registry = er.async_get(hass)
+            entity_id = registry.async_get_entity_id("todo", _LOCAL_TODO_DOMAIN, entry_id)
+        except Exception:  # noqa: BLE001 - the registry lookup is a nice-to-have, not required
+            entity_id = None
+        if entity_id:
+            return entity_id
+    return f"todo.{slugify(name)}"
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/create_todo_list",
+        vol.Required("name"): str,
+    }
+)
+@websocket_api.async_response
+async def _ws_create_todo_list(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """v1.131.0+: the "+ Add list" button behind a person's own Reminders
+    list / Wish List fields on the Users tab (family-week-calendar-card.js's
+    _openNotifyProfileModal) - household ask, verbatim: *"if there isn't a
+    todo list for reminders or for wish list make the button say 'add list'
+    and create it as username_Listname."* The card builds that
+    `<name>_<Reminders|Wish List>` string itself and sends it here verbatim;
+    this handler is just a thin websocket wrapper around
+    _create_local_todo_list; it does not persist the resulting entity_id
+    anywhere itself - the card does that via its normal family_hub/
+    set_settings save, exactly as if the household had typed an existing
+    entity id into that same field by hand.
+
+    A blank/whitespace-only name is rejected outright (nothing sensible to
+    create); any other failure (local_todo unavailable, a future config flow
+    shape change) comes back as entity_id: null rather than a hard error -
+    the card falls back to leaving the field empty and telling the
+    household to add a list by hand, same as today's Settings wizard does
+    for Meal Plan/Reminders.
+    """
+    name = msg["name"].strip()
+    if not name:
+        connection.send_error(msg["id"], "invalid_name", "A list name is required")
+        return
+    entity_id = await _create_local_todo_list(hass, name)
+    connection.send_result(msg["id"], {"entity_id": entity_id})
+
+
+# ---------------------------------------------------------------------------
+# Wish Lists (v1.122.0+) - see TODO_WISHLIST_CONFIG_STORAGE_KEY_PREFIX's own
+# comment in const.py for the full design/rationale. This store only ever
+# holds the flag + owner; the wish-list ITEM data (link/image/claim) lives
+# entirely inside each native todo item's own `description` field, encoded
+# and decoded entirely on the frontend (family-hub-todo-card.js's
+# _parseWishlistDescription/_buildWishlistDescription) - the backend never
+# needs to understand that encoding at all.
+# ---------------------------------------------------------------------------
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/get_wishlist_config"})
+@websocket_api.async_response
+async def _ws_get_wishlist_config(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Return every todo.* entity currently flagged as a wish list,
+    household-wide (v1.122.0+ - "Global, per todo entity" was the
+    household's own explicit choice), as `{"wishlists": {entity_id:
+    {"owner_user_id": "..."}}}`. An entity with no key in the result is not
+    a wish list - see TODO_WISHLIST_CONFIG_STORAGE_KEY_PREFIX's own
+    "absent key = default" comment in const.py.
+    """
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    store: Store = entry_data["todo_wishlist_config_store"]
+    saved = await store.async_load()
+    wishlists = saved if isinstance(saved, dict) else {}
+    result: dict[str, dict] = {}
+    for entity_id, record in wishlists.items():
+        if not isinstance(entity_id, str) or not entity_id.startswith("todo."):
+            continue
+        owner_user_id = record.get("ownerUserId") if isinstance(record, dict) else None
+        result[entity_id] = {"owner_user_id": owner_user_id if isinstance(owner_user_id, str) else None}
+    connection.send_result(msg["id"], {"wishlists": result})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/set_wishlist_flag",
+        vol.Required("entity_id"): str,
+        vol.Required("is_wishlist"): bool,
+    }
+)
+@websocket_api.async_response
+async def _ws_set_wishlist_flag(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Flip one todo.* entity's wish-list flag on or off (v1.122.0+, from
+    the To-Do Lists card's List(s) tab - see _renderListsTab's wishlist
+    checkbox). Turning it OFF simply removes the entity's key entirely -
+    nothing else in this store is per-entity data worth keeping around for
+    a list that isn't a wish list anymore. Turning it ON (re-)stamps
+    `ownerUserId` as the CALLING websocket connection's own signed-in user
+    (`connection.user.id`, never a value the frontend supplies - the whole
+    point of the hide-claims-from-owner feature is that the frontend can't
+    just lie about who the owner is) - so re-flagging a list, even by a
+    different household member, always assigns ownership to whoever
+    actually did it, same as toggling it off and back on again would.
+    """
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    entity_id = msg["entity_id"]
+    if not entity_id.startswith("todo."):
+        connection.send_error(msg["id"], "invalid_format", "entity_id must be a todo.* entity")
+        return
+    store: Store = entry_data["todo_wishlist_config_store"]
+    saved = await store.async_load()
+    wishlists = dict(saved) if isinstance(saved, dict) else {}
+    if msg["is_wishlist"]:
+        owner_user_id = connection.user.id if getattr(connection, "user", None) else None
+        wishlists[entity_id] = {"ownerUserId": owner_user_id}
+    else:
+        wishlists.pop(entity_id, None)
+    await store.async_save(wishlists)
     connection.send_result(msg["id"], {"success": True})
 
 
@@ -2460,71 +3120,60 @@ _RECIPE_PREP_TIME_RE = re.compile(r"<strong>Prep:</strong>\s*([^<&]+)", re.IGNOR
 _RECIPE_COOK_TIME_RE = re.compile(r"<strong>Cook:</strong>\s*([^<&]+)", re.IGNORECASE)
 
 
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): "family_hub/get_grocy_recipe_detail",
-        vol.Required("recipe_id"): vol.Coerce(int),
-    }
-)
-@websocket_api.async_response
-async def _ws_get_grocy_recipe_detail(
-    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
-) -> None:
-    """Fetch a single recipe's full detail - instructions and a resolved
-    ingredients list - for the card's Recipe Viewer, so opening a
-    Grocy-imported suggestion shows the recipe right there instead of
-    sending someone to Grocy's own website. Grocy's website needs its own
-    separate login (the API key only authorizes API calls, not a browser
-    session), which is exactly the login-wall problem this exists to avoid.
+async def _fetch_one_grocy_recipe_detail(
+    session, url: str, api_key: str, recipe_id: int, get_products_units
+) -> tuple[dict | None, str | None]:
+    """Fetches and assembles ONE recipe's full detail - instructions and a
+    resolved ingredients list - shared by both `_ws_get_grocy_recipe_detail`
+    (a single recipe, the original Recipe Viewer call) and
+    `_ws_get_grocy_recipe_details` (v1.114.0+, a batch of recipe ids for the
+    multi-recipe tabbed Recipe Viewer - see that handler's own docstring).
+    Extracted out of the single-recipe handler rather than duplicated so the
+    two response shapes can never quietly drift apart.
 
-    Ingredients live in Grocy's recipes_pos table as product_id/qu_id
-    references rather than plain text, so this also fetches the full
-    products and quantity_units lists once per call and resolves each
-    ingredient locally - simpler and more robust than relying on Grocy's
-    query-filter syntax for a "just these products" call, and small enough
-    for a household-scale Grocy instance either way.
+    `get_products_units` is an async `() -> (products_by_id, units_by_id)`
+    callable rather than the two dicts directly, and is only ever called
+    AFTER the recipe itself is confirmed to exist (see the comment below) -
+    both callers already need the household's full products/quantity_units
+    lists (Grocy's recipes_pos table stores ingredients as product_id/qu_id
+    references, not plain text), but a nonexistent recipe id shouldn't cost
+    2 extra Grocy requests just to resolve ingredients for a recipe that
+    isn't there. The single-recipe caller passes a plain fetch-on-call
+    closure; the batch caller passes a memoized one (see
+    `_make_grocy_products_units_loader`) so a batch of several recipe ids
+    still only ever fetches those two lists ONCE, not once per id.
 
-    Result shape is always `{"configured": bool, "recipe": {...}|None,
-    "error"?: str}` - never a raised error - so the card can render a
-    friendly state either way instead of a broken modal.
+    Returns `(detail_dict, None)` on success or `(None, error_message)` on
+    failure - never raises - so both callers can turn either outcome into
+    their own response shape without a try/except of their own.
     """
-    entry = _get_family_hub_entry(hass)
-    url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
-    api_key = (entry.options.get(CONF_GROCY_API_KEY) if entry else "") or ""
-    if not url or not api_key:
-        connection.send_result(msg["id"], {"configured": False, "recipe": None})
-        return
-
-    recipe_id = msg["recipe_id"]
-    session = async_get_clientsession(hass)
     try:
         recipe = await _grocy_api_get(session, url, api_key, f"/api/objects/recipes/{recipe_id}")
     except Exception as err:  # noqa: BLE001 - surface a friendly error, don't crash the dashboard
-        connection.send_result(msg["id"], {"configured": True, "recipe": None, "error": str(err)})
-        return
+        return None, str(err)
 
     if not isinstance(recipe, dict) or not recipe.get("name"):
-        connection.send_result(
-            msg["id"], {"configured": True, "recipe": None, "error": "Recipe not found in Grocy"}
-        )
-        return
+        return None, "Recipe not found in Grocy"
 
     # Only fetch the rest once the recipe itself is confirmed to exist -
-    # no point spending 3 more requests resolving ingredients for a recipe
-    # that isn't there.
+    # no point spending a request resolving ingredients for a recipe that
+    # isn't there.
     try:
         positions = await _grocy_api_get(
             session, url, api_key, f"/api/objects/recipes_pos?query[]=recipe_id={recipe_id}"
         )
-        products = await _grocy_api_get(session, url, api_key, "/api/objects/products")
-        quantity_units = await _grocy_api_get(session, url, api_key, "/api/objects/quantity_units")
+        products_by_id, units_by_id = await get_products_units()
     except Exception as err:  # noqa: BLE001 - surface a friendly error, don't crash the dashboard
-        connection.send_result(msg["id"], {"configured": True, "recipe": None, "error": str(err)})
-        return
+        return None, str(err)
 
-    products_by_id = {p["id"]: p for p in products if isinstance(p, dict) and "id" in p}
-    units_by_id = {u["id"]: u for u in quantity_units if isinstance(u, dict) and "id" in u}
-
+    # v1.110.5+ bug report: "when adding a recipe to grocy, if you click
+    # do not include in amounts the ingredient doesnt show on the top of
+    # the recipe viewer. It should." Every row in `positions` becomes an
+    # entry in `ingredients` below UNCONDITIONALLY - "don't count toward
+    # stock" only ever changes what's written into not_check_stock_
+    # fulfillment above (a Grocy stock-math flag), it must never be used
+    # here (or in the card's own _renderGrocyRecipeIngredients) to decide
+    # whether an ingredient is even INCLUDED in this list.
     ingredients = []
     for pos in positions if isinstance(positions, list) else []:
         if not isinstance(pos, dict):
@@ -2554,6 +3203,19 @@ async def _ws_get_grocy_recipe_detail(
             "unit_name": str(unit.get("name") or "").strip(),
             "unit_name_plural": str(unit.get("name_plural") or unit.get("name") or "").strip(),
             "variable_amount": variable_amount,
+            # v1.110.5+: surfaced purely as informational metadata - "don't
+            # count toward stock" (_ws_create_grocy_recipe's not_check_stock,
+            # written onto the recipes_pos row itself in Grocy) is a
+            # STOCK-MATH concern (should this ingredient's amount count
+            # against fulfillment/shopping-list math), not a DISPLAY
+            # concern. Every ingredient in `positions` above is included in
+            # this list unconditionally regardless of this flag - see the
+            # loop's own top comment - and the card's own
+            # _renderGrocyRecipeIngredients must keep it that way: this
+            # field exists so a future feature can show a "not counted
+            # toward stock" hint next to the ingredient if wanted, NOT so
+            # anything can filter the ingredient list by it.
+            "not_check_stock_fulfillment": bool(pos.get("not_check_stock_fulfillment")),
         })
 
     # The recipe's photo (see _ws_create_grocy_recipe's picture upload and
@@ -2643,7 +3305,160 @@ async def _ws_get_grocy_recipe_detail(
         "ingredients": ingredients,
         "image": image_data_url,
     }
+    return detail, None
+
+
+def _make_grocy_products_units_loader(session, url: str, api_key: str):
+    """Returns an async `() -> (products_by_id, units_by_id)` closure that
+    fetches Grocy's products/quantity_units lists on its FIRST call and
+    caches the result for every call after that, for the rest of this one
+    websocket handler invocation only (a fresh closure is made per call,
+    nothing is cached across requests). An `asyncio.Lock` guards the fetch
+    itself so concurrent callers (`_ws_get_grocy_recipe_details` awaits
+    several `_fetch_one_grocy_recipe_detail` calls at once via
+    `asyncio.gather`) can't each kick off their own redundant fetch before
+    the first one finishes and populates the cache - without it, several
+    recipes resolving concurrently would each see an empty cache and fetch
+    both lists all over again, defeating the whole point of sharing one
+    loader across the batch.
+    """
+    cache: list = []
+    lock = asyncio.Lock()
+
+    async def load():
+        if not cache:
+            async with lock:
+                if not cache:  # re-check: another task may have filled it while this one waited on the lock
+                    products = await _grocy_api_get(session, url, api_key, "/api/objects/products")
+                    quantity_units = await _grocy_api_get(session, url, api_key, "/api/objects/quantity_units")
+                    products_by_id = {p["id"]: p for p in products if isinstance(p, dict) and "id" in p}
+                    units_by_id = {u["id"]: u for u in quantity_units if isinstance(u, dict) and "id" in u}
+                    cache.append((products_by_id, units_by_id))
+        return cache[0]
+
+    return load
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/get_grocy_recipe_detail",
+        vol.Required("recipe_id"): vol.Coerce(int),
+    }
+)
+@websocket_api.async_response
+async def _ws_get_grocy_recipe_detail(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Fetch a single recipe's full detail - instructions and a resolved
+    ingredients list - for the card's Recipe Viewer, so opening a
+    Grocy-imported suggestion shows the recipe right there instead of
+    sending someone to Grocy's own website. Grocy's website needs its own
+    separate login (the API key only authorizes API calls, not a browser
+    session), which is exactly the login-wall problem this exists to avoid.
+
+    The actual fetch/assembly now lives in `_fetch_one_grocy_recipe_detail`
+    (shared with the batch handler below) - this wrapper just resolves the
+    household's Grocy connection and translates that shared helper's
+    `(detail, error)` tuple into this call's own response shape.
+
+    Result shape is always `{"configured": bool, "recipe": {...}|None,
+    "error"?: str}` - never a raised error - so the card can render a
+    friendly state either way instead of a broken modal.
+    """
+    entry = _get_family_hub_entry(hass)
+    url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
+    api_key = (entry.options.get(CONF_GROCY_API_KEY) if entry else "") or ""
+    if not url or not api_key:
+        connection.send_result(msg["id"], {"configured": False, "recipe": None})
+        return
+
+    session = async_get_clientsession(hass)
+    detail, error = await _fetch_one_grocy_recipe_detail(
+        session, url, api_key, msg["recipe_id"], _make_grocy_products_units_loader(session, url, api_key)
+    )
+    if error is not None:
+        connection.send_result(msg["id"], {"configured": True, "recipe": None, "error": error})
+        return
     connection.send_result(msg["id"], {"configured": True, "recipe": detail})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/get_grocy_recipe_details",
+        vol.Required("recipe_ids"): [vol.Coerce(int)],
+    }
+)
+@websocket_api.async_response
+async def _ws_get_grocy_recipe_details(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """v1.114.0+ batch counterpart to `_ws_get_grocy_recipe_detail` above,
+    for the Recipe Viewer's multi-recipe tabs (task: a meal block whose
+    `grocyRecipeId` plus `additionalRecipes` together resolve to more than
+    one real Grocy recipe now shows every one of them as a tab in the same
+    Recipe Viewer overlay, instead of only ever showing the meal's main
+    recipe). Rather than have the card fire N separate
+    `get_grocy_recipe_detail` calls (one per tab, each redundantly
+    re-fetching the household's full products/quantity_units lists), this
+    fetches those two lists ONCE and resolves every requested recipe id
+    against them, reusing the same `_fetch_one_grocy_recipe_detail` helper
+    the single-recipe handler uses - so the two calls can never disagree
+    about what a recipe's detail looks like.
+
+    Fetches every recipe concurrently (`asyncio.gather`) rather than one at
+    a time - a meal's tabs are a handful of recipes at most, and each one
+    is already its own multi-request round trip (recipe + positions +
+    photo), so doing them serially would make opening a multi-recipe meal
+    visibly slower than opening a single-recipe one for no reason.
+
+    Result shape: `{"configured": bool, "recipes": {"<id>": {...}|null},
+    "errors": {"<id>": "message"}}` - `recipes` only ever contains ids that
+    resolved successfully (as string keys, since JSON object keys are
+    always strings and the card looks these up by id either way); any id
+    that failed shows up in `errors` instead, not as a null entry mixed
+    into `recipes`, so the card can tell "no such tab" apart from "this tab
+    failed to load" without inspecting every value. Never raises - same
+    "always a friendly, renderable result" contract as the single-recipe
+    handler.
+    """
+    entry = _get_family_hub_entry(hass)
+    url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
+    api_key = (entry.options.get(CONF_GROCY_API_KEY) if entry else "") or ""
+    if not url or not api_key:
+        connection.send_result(msg["id"], {"configured": False, "recipes": {}, "errors": {}})
+        return
+
+    # De-duplicate while preserving first-seen order - a meal block could
+    # in principle list the same recipe id twice (main + an additional-
+    # recipe entry pointing at the same dish), and there's no reason to
+    # fetch it twice.
+    recipe_ids: list[int] = []
+    for rid in msg["recipe_ids"]:
+        if rid not in recipe_ids:
+            recipe_ids.append(rid)
+
+    session = async_get_clientsession(hass)
+    # One shared, lazily-fetched-once loader for every recipe in this
+    # batch (see `_make_grocy_products_units_loader`'s own docstring) - a
+    # recipe id that turns out not to exist never triggers it at all, and
+    # the products/quantity_units lists themselves are fetched at most
+    # once total no matter how many of the batch's recipes DO exist.
+    get_products_units = _make_grocy_products_units_loader(session, url, api_key)
+    results = await asyncio.gather(
+        *(
+            _fetch_one_grocy_recipe_detail(session, url, api_key, rid, get_products_units)
+            for rid in recipe_ids
+        )
+    )
+
+    recipes: dict[str, dict] = {}
+    errors: dict[str, str] = {}
+    for rid, (detail, error) in zip(recipe_ids, results):
+        if error is not None:
+            errors[str(rid)] = error
+        else:
+            recipes[str(rid)] = detail
+    connection.send_result(msg["id"], {"configured": True, "recipes": recipes, "errors": errors})
 
 
 @websocket_api.websocket_command(
@@ -5427,6 +6242,44 @@ def _strip_oil_grade_words(text: str) -> str:
     return " ".join(words).strip()
 
 
+# A real household reported "boneless skinless chicken breasts" not tying
+# to their existing "Chicken Breast" product at all - the phrase scores
+# 0.596 against it, just under the 0.6 cutoff, purely because of the two
+# cut/trim words. Same shape as _OIL_GRADE_WORDS above: these words never
+# change what the product actually IS (a "boneless skinless chicken
+# breast" and a "chicken breast" are the same grocery item almost every
+# household stocks as one product), so - unlike the broader, deliberately
+# NOT-reused-here _clean_ingredient_reference_text stripping (see
+# _strip_ingredient_asides' docstring for why "or"/"and" have to stay) -
+# stripping just these is safe. Deliberately narrow and meat-specific, not
+# a general cut/prep-word stripper, per this file's "simple over clever,
+# evidence-backed word lists" convention.
+_MEAT_CUT_WORDS = {"boneless", "skinless", "bone-in", "skin-on", "skin-off"}
+
+
+def _strip_meat_cut_words(text: str) -> str:
+    words = [w for w in text.split() if w.lower().strip("-") not in _MEAT_CUT_WORDS]
+    return " ".join(words).strip()
+
+
+# _ingredient_form_kind (above) treats an unqualified product name as
+# neither "processed" nor "whole" - correct for garlic/onion/herbs, where
+# a household's plain "Garlic" really is most often the fresh/whole form
+# and a genuinely different "Garlic Powder" product may also exist. That
+# assumption is wrong for these specific words: a household reported
+# "1 teaspoon ground mustard" / "dry mustard" failing to match their
+# existing plain "Mustard" product, even though the ratio itself passes
+# (0.667/0.778) - the _ingredient_form_kind guard rejected it because the
+# ingredient names the processed form and "Mustard" carries no qualifier.
+# In practice a bare "Mustard" grocery product IS already the
+# ground/prepared condiment in virtually every household - there's no
+# realistic competing "whole mustard seed" product it could be confused
+# with the way garlic/onion/herbs can be confused with their fresh form.
+# So a bare, unqualified match on one of these specific words is treated
+# as satisfying "processed" too, rather than blocking it.
+_BARE_PRODUCT_IS_PROCESSED_WORDS = {"mustard"}
+
+
 def _clean_ingredient_reference_text(text: str) -> str:
     """Strips the descriptive noise real recipes put around a grocery item
     before reference-matching: a parenthetical aside
@@ -5635,20 +6488,6 @@ async def _ws_match_recipe_ingredients(
     matches = []
     for raw in expanded_ingredients:
         parsed = _parse_ingredient_line(str(raw))
-        # Raised from the plain _best_text_match default (0.5) - a real
-        # household reported "2 1/2 cups chicken or vegetable stock"
-        # silently matching an existing "Vegetable Oil" product (ratio
-        # 0.56): the shared word "vegetable" is a big enough fraction of
-        # both short strings to clear 0.5 even though the products are
-        # nothing alike. This is a genuinely different failure than messy
-        # prep-word text (see _clean_ingredient_reference_text) - the raw
-        # text here was already clean, the match was just wrong - so a
-        # stricter cutoff is the fix, not more cleaning. 0.6 still finds
-        # everyday near-exact matches (plurals, minor typos) while no
-        # longer accepting a match built on one shared word out of several
-        # unrelated ones; anything it now misses still gets the reference
-        # suggestion below, or the manual picker on the review screen.
-        product_match = _best_text_match(parsed["product_text"], product_candidates, cutoff=0.6)
         # A real household reported an existing "Deli Ham" product not
         # being matched at all for an ingredient line like "cooked deli
         # ham (thinly sliced)" - the parenthetical alone was enough to
@@ -5660,74 +6499,207 @@ async def _ws_match_recipe_ingredients(
         # _clean_ingredient_reference_text the reference matcher uses
         # below - that one also drops individual words like "or"/"and",
         # which shortens the string enough to reintroduce the exact false
-        # "vegetable stock" -> "Vegetable Oil" match the 0.6 cutoff was
-        # raised to stop (see that regression test). Only tried as a
-        # fallback, and only kept if it actually scores better, so this
-        # can never make an already-good raw-text match worse - it just
-        # gives a legitimately messy line a second, cleaner shot.
+        # "vegetable stock" -> "Vegetable Oil" match the 0.6 cutoff below
+        # was raised to stop (see that regression test).
         cleaned_product_text = _strip_ingredient_asides(parsed["product_text"])
-        if cleaned_product_text and cleaned_product_text.lower() != parsed["product_text"].strip().lower():
-            cleaned_match = _best_text_match(cleaned_product_text, product_candidates, cutoff=0.6)
-            if cleaned_match and (product_match is None or cleaned_match[2] > product_match[2]):
-                product_match = cleaned_match
-        # A third, even narrower second chance for oil-grade noise words
-        # ("extra virgin olive oil" -> "olive oil") - see
-        # _strip_oil_grade_words for why this is safe alongside the
-        # broader-noise caution above. Tried against whichever of the raw
-        # or asides-stripped text is currently winning, same
-        # only-if-better guard as the tier above.
-        oil_grade_stripped = _strip_oil_grade_words(cleaned_product_text or parsed["product_text"])
-        if oil_grade_stripped and oil_grade_stripped.lower() != (cleaned_product_text or parsed["product_text"]).strip().lower():
-            oil_grade_match = _best_text_match(oil_grade_stripped, product_candidates, cutoff=0.6)
-            if oil_grade_match and (product_match is None or oil_grade_match[2] > product_match[2]):
-                product_match = oil_grade_match
-        # Still nothing? A short, generic single-word ingredient like
-        # "Salt" or "pepper" (very often what's left after
-        # _split_combined_salt_pepper_line above) needs a different kind
-        # of second chance than the cleaning above - the household's real
-        # product is usually named more specifically ("Table Salt", "Black
-        # Pepper"), and being short is exactly what sinks it under the
-        # ratio-based cutoff. See _whole_word_product_match for why this
-        # is safe to try unconditionally: it only fires for single-word
-        # queries, so it can't reintroduce the multi-word false-match
-        # problem the 0.6 cutoff above exists to prevent.
+        if cleaned_product_text.lower() == parsed["product_text"].strip().lower():
+            cleaned_product_text = ""
+        # A narrower second chance for oil-grade noise words ("extra
+        # virgin olive oil" -> "olive oil") - see _strip_oil_grade_words -
+        # and, separately, for meat cut/trim words ("boneless skinless
+        # chicken breasts" -> "chicken breasts") - see _strip_meat_cut_
+        # words. Both are deliberately tiny, evidence-backed word lists
+        # rather than the broader descriptor stripping used below for the
+        # reference-list suggestion, for the same reason _strip_ingredient_
+        # asides above stays narrow.
+        _base_text = cleaned_product_text or parsed["product_text"]
+        oil_grade_stripped = _strip_oil_grade_words(_base_text)
+        if oil_grade_stripped.lower() == _base_text.strip().lower():
+            oil_grade_stripped = ""
+        meat_cut_stripped = _strip_meat_cut_words(_base_text)
+        if meat_cut_stripped.lower() == _base_text.strip().lower():
+            meat_cut_stripped = ""
+        variant_texts = [
+            t for t in (parsed["product_text"], cleaned_product_text, oil_grade_stripped, meat_cut_stripped) if t
+        ]
+
+        # An ingredient whose (possibly cleaned) text is an EXACT,
+        # case-insensitive name match for one of this household's own real
+        # Grocy products always wins outright, bypassing every fuzzy tier
+        # and the pepper-kind/ingredient-form-kind guards below entirely.
+        # Those guards exist purely to stop a *fuzzy, similar-but-
+        # different* candidate from being picked over a better one ("bell
+        # pepper" outscoring "black pepper") - they have nothing to reject
+        # when the ingredient names the exact same product by name, which
+        # by definition can't be the wrong kind or the wrong form. This is
+        # exactly the shape a household reported as "really frustrating":
+        # the lookup table recognized ingredients like "pepper", "mustard",
+        # "paprika" and "boneless chicken" that ALSO already existed in
+        # their Grocy under that very name, yet the two never got tied
+        # together.
+        product_match = None
+        for text in variant_texts:
+            hit = next(
+                (c for c in product_candidates if (c[1] or "").strip().lower() == text.strip().lower()), None
+            )
+            if hit:
+                product_match = (hit[0], hit[1], 1.0)
+                break
+
         if product_match is None:
-            product_match = _whole_word_product_match(cleaned_product_text or parsed["product_text"], product_candidates)
-        # Whatever tier found it, reject a match where the ingredient and
-        # the matched product are talking about different kinds of pepper
-        # (the vegetable vs. the ground spice - see _pepper_kind) rather
-        # than accept a wrong-but-high-scoring match like "bell pepper" ->
-        # "Black Pepper". No match here is strictly safer than a
-        # confidently wrong one - it just falls through to the reference
-        # suggestion or the manual picker, same as any other miss.
-        if product_match is not None:
-            query_pepper_kind = _pepper_kind(cleaned_product_text or parsed["product_text"])
-            match_pepper_kind = _pepper_kind(product_match[1])
-            if query_pepper_kind and match_pepper_kind and query_pepper_kind != match_pepper_kind:
-                product_match = None
-        # Same idea, one guard down, but for the broader fresh/whole-vs-
-        # processed collision (garlic powder vs. Garlic, dried oregano
-        # vs. Oregano, ground chicken vs. a whole chicken, ...) - see
-        # _ingredient_form_kind for the full list and why it's scoped the
-        # way it is. Blocks the dominant real case - the ingredient names
-        # the processed form and the matched product's name carries no
-        # processed-form qualifier at all, since a household's fresh/
-        # whole product is essentially never actually named "Fresh
-        # Garlic", it's just "Garlic" - and the rarer reverse case, where
-        # the ingredient explicitly says "whole"/"fresh" and the matched
-        # product name is itself the processed form (e.g. "whole cloves"
-        # matching an existing "Ground Cloves" product). An ingredient
-        # that names one of these words with NO qualifier at all is left
-        # alone either way - that's the normal, desired case of a bare
-        # "basil"/"cinnamon"/"chicken" ingredient matching whatever
-        # single product a household actually stocks for it.
-        if product_match is not None:
-            query_form = _ingredient_form_kind(cleaned_product_text or parsed["product_text"])
-            match_form = _ingredient_form_kind(product_match[1])
-            if query_form == "processed" and match_form != "processed":
-                product_match = None
-            elif query_form == "whole" and match_form == "processed":
-                product_match = None
+            # Fuzzy tiers, retried against the next-best remaining
+            # candidate whenever the pepper-kind/ingredient-form-kind
+            # guards below reject the current top pick, instead of simply
+            # giving up on the ingredient entirely. A real household hit
+            # exactly this: a bare "pepper" scores higher against their
+            # "Bell Pepper" product (0.706) than their "Black Pepper"
+            # product (0.667), so _best_text_match's single-highest-score
+            # pick chose the vegetable, correctly got rejected by
+            # _pepper_kind below - and the correct "Black Pepper" match,
+            # sitting right behind it, was never tried.
+            excluded_ids: set[int] = set()
+            while True:
+                candidates = [c for c in product_candidates if c[0] not in excluded_ids]
+                if not candidates:
+                    break
+                # Raised from the plain _best_text_match default (0.5) - a
+                # real household reported "2 1/2 cups chicken or vegetable
+                # stock" silently matching an existing "Vegetable Oil"
+                # product (ratio 0.56): the shared word "vegetable" is a
+                # big enough fraction of both short strings to clear 0.5
+                # even though the products are nothing alike. 0.6 still
+                # finds everyday near-exact matches (plurals, minor typos)
+                # while no longer accepting a match built on one shared
+                # word out of several unrelated ones; anything it now
+                # misses still gets the reference suggestion below, or the
+                # manual picker on the review screen.
+                candidate = None
+                for text in variant_texts:
+                    text_match = _best_text_match(text, candidates, cutoff=0.6)
+                    if text_match and (candidate is None or text_match[2] > candidate[2]):
+                        candidate = text_match
+                # Still nothing? A short, generic single-word ingredient
+                # like "Salt" or "pepper" (very often what's left after
+                # _split_combined_salt_pepper_line above) needs a
+                # different kind of second chance than the cleaning above
+                # - see _whole_word_product_match. Safe to try
+                # unconditionally: it only fires for single-word queries,
+                # so it can't reintroduce the multi-word false-match
+                # problem the 0.6 cutoff above exists to prevent.
+                if candidate is None:
+                    candidate = _whole_word_product_match(cleaned_product_text or parsed["product_text"], candidates)
+                if candidate is None:
+                    break
+                # Reject a match where the ingredient and the matched
+                # product are talking about different kinds of pepper (the
+                # vegetable vs. the ground spice - see _pepper_kind) rather
+                # than accept a wrong-but-high-scoring match like "bell
+                # pepper" -> "Black Pepper" - but, unlike before, retry
+                # against the next-best remaining candidate instead of
+                # giving up on the ingredient entirely.
+                rejected = False
+                query_pepper_kind = _pepper_kind(cleaned_product_text or parsed["product_text"])
+                match_pepper_kind = _pepper_kind(candidate[1])
+                if query_pepper_kind and match_pepper_kind and query_pepper_kind != match_pepper_kind:
+                    rejected = True
+                # Same idea, one guard down, but for the broader fresh/
+                # whole-vs-processed collision (garlic powder vs. Garlic,
+                # dried oregano vs. Oregano, ground chicken vs. a whole
+                # chicken, ...) - see _ingredient_form_kind for the full
+                # list and why it's scoped the way it is. An unqualified
+                # match on one of _BARE_PRODUCT_IS_PROCESSED_WORDS (e.g.
+                # plain "Mustard") is treated as already satisfying
+                # "processed" rather than rejected, since a household's
+                # bare product there IS the processed/prepared form in
+                # practice - see that set's own comment.
+                if not rejected:
+                    query_form = _ingredient_form_kind(cleaned_product_text or parsed["product_text"])
+                    match_form = _ingredient_form_kind(candidate[1])
+                    match_words = set(re.findall(r"[a-zA-Z']+", candidate[1].lower()))
+                    bare_counts_as_processed = match_form is None and bool(
+                        match_words & _BARE_PRODUCT_IS_PROCESSED_WORDS
+                    )
+                    if query_form == "processed" and match_form != "processed" and not bare_counts_as_processed:
+                        rejected = True
+                    elif query_form == "whole" and match_form == "processed":
+                        rejected = True
+                if rejected:
+                    excluded_ids.add(candidate[0])
+                    continue
+                product_match = candidate
+                break
+
+        # v1.113.0+: the direct fix for "the lookup table recognizes this
+        # ingredient AND it already exists in Grocy under that exact name,
+        # but the two never get tied together." Every tier above only
+        # ever compares the ingredient's own raw/cleaned TEXT against real
+        # product names - it never once looks at what the curated
+        # GROCERY_REFERENCE table itself already knows this ingredient's
+        # real name/aliases are. A household reported this gap persisting
+        # for "paprika" even after the pepper/mustard/meat-cut fixes
+        # above: their Grocy already has a "Paprika" product (it shows up
+        # fine in the manual picker), but real recipes almost never say
+        # bare "paprika" - "sweet paprika"/"smoked paprika"/"Hungarian
+        # paprika" are all common, and multi-word phrasing like "sweet
+        # Hungarian paprika" (ratio 0.467) or even just "Hungarian
+        # paprika" (0.583) falls well under the 0.6 real-product cutoff,
+        # and isn't single-word so _whole_word_product_match can't rescue
+        # it either - meanwhile _match_grocery_reference below, built
+        # specifically to recognize messy ingredient text via its own
+        # descriptor-word cleaning and per-leftover-word fallback, still
+        # confirms the lookup table knows exactly what this ingredient's
+        # real name is ("Paprika"). So: whenever nothing above found a
+        # real product, but the lookup table recognizes the ingredient,
+        # cross-check that lookup table entry's own canonical name AND
+        # aliases directly against this household's real Grocy products -
+        # for an EXACT (case-insensitive) name match only. Deliberately no
+        # fuzzy fallback here: a first attempt at one (cutoff 0.75) let
+        # "Vegetable Broth" - correctly recognized via the curated table's
+        # "vegetable stock" alias for the "chicken or vegetable stock"
+        # regression test below - fuzzy-match an unrelated real "Vegetable
+        # Oil" product at 0.786, reintroducing the exact "shared word
+        # inflates a short-string ratio" false match the 0.6 real-product
+        # cutoff was raised to stop in the first place, just one level
+        # removed (comparing a clean reference name instead of raw
+        # ingredient text). An exact match has no such failure mode - it
+        # can't be the wrong kind or form by definition - so it's the only
+        # crosscheck kept. Still runs through the same pepper-kind/
+        # ingredient-form-kind guards as a defense-in-depth measure in
+        # case a future reference-table entry's name/alias ever collides
+        # in a way an exact string match alone wouldn't catch.
+        if product_match is None:
+            reference_entry = _match_grocery_reference(parsed["product_text"])
+            if reference_entry:
+                reference_names = [reference_entry["name"], *(reference_entry.get("aliases") or [])]
+                crosscheck_match = None
+                for name in reference_names:
+                    hit = next(
+                        (c for c in product_candidates if (c[1] or "").strip().lower() == name.strip().lower()),
+                        None,
+                    )
+                    if hit:
+                        crosscheck_match = (hit[0], hit[1], 1.0)
+                        break
+                if crosscheck_match is not None:
+                    rejected = False
+                    query_pepper_kind = _pepper_kind(cleaned_product_text or parsed["product_text"])
+                    match_pepper_kind = _pepper_kind(crosscheck_match[1])
+                    if query_pepper_kind and match_pepper_kind and query_pepper_kind != match_pepper_kind:
+                        rejected = True
+                    if not rejected:
+                        query_form = _ingredient_form_kind(cleaned_product_text or parsed["product_text"])
+                        match_form = _ingredient_form_kind(crosscheck_match[1])
+                        match_words = set(re.findall(r"[a-zA-Z']+", crosscheck_match[1].lower()))
+                        bare_counts_as_processed = match_form is None and bool(
+                            match_words & _BARE_PRODUCT_IS_PROCESSED_WORDS
+                        )
+                        if query_form == "processed" and match_form != "processed" and not bare_counts_as_processed:
+                            rejected = True
+                        elif query_form == "whole" and match_form == "processed":
+                            rejected = True
+                    if not rejected:
+                        product_match = crosscheck_match
+
         # v143+: was a plain _best_text_match call - see
         # _match_unit_text_against_existing's own docstring for the real
         # household abbreviation cases (tsp/Tsp/TSPs, etc.) that missed
@@ -7584,15 +8556,43 @@ async def _poll_reminders_todo(
         if await _poll_one_reminders_todo_list(hass, entry, notified, family_entity, family_targets):
             changed = True
 
-    for person in _get_people(settings):
+    covered_entities = {family_entity} if family_entity else set()
+    people = _get_people(settings)
+    for person in people:
         person_reminders_entity = person["remindersEntity"]
-        if not person_reminders_entity or person_reminders_entity == family_entity:
+        if not person_reminders_entity or person_reminders_entity in covered_entities:
             continue
+        covered_entities.add(person_reminders_entity)
         person_targets = _targets_for_individual_reminders(profiles, person["entity"])
         if await _poll_one_reminders_todo_list(
             hass, entry, notified, person_reminders_entity, person_targets, list_label=person["name"]
         ):
             changed = True
+
+    # v1.131.0+: a profile can now set its own remindersEntity directly (see
+    # SETTINGS_KEY_USER_PROFILES's own comment in const.py), with no
+    # settings.people[] row involved at all - poll those too, skipping any
+    # entity already covered by the family list or a people[] row just
+    # above (_resolve_profile_reminders_entity prefers the profile's own
+    # field, but a household that set the SAME entity both ways must still
+    # only ever be polled/notified once). Targets are owner-only here
+    # (their own notifyTargets, gated by remindersEnabled) - the
+    # cross-person "subscribe to someone else's list" model
+    # (remindersSubscriptions) is keyed by calendar entity id via
+    # primaryCalendar, which a profile-only list with no linked calendar
+    # has no way to be referenced by yet.
+    if profiles and settings_store is not None:
+        user_names = await _user_display_names(hass)
+        for user_id, profile in profiles.items():
+            resolved_entity = _resolve_profile_reminders_entity(profile, people)
+            if not resolved_entity or resolved_entity in covered_entities:
+                continue
+            covered_entities.add(resolved_entity)
+            owner_targets = list(profile.get("notifyTargets", [])) if profile.get("remindersEnabled") else []
+            if await _poll_one_reminders_todo_list(
+                hass, entry, notified, resolved_entity, owner_targets, list_label=user_names.get(user_id, user_id)
+            ):
+                changed = True
 
     if _prune_notified(notified, dt_util.utcnow()):
         changed = True
@@ -7860,8 +8860,48 @@ async def _build_daily_digest_message(
     lines: list[str] = []
 
     # --- Today's calendar events ---
+    #
+    # v1.132.2+: de-duplicated, both at the calendar-entity level and the
+    # individual-event level. Household report: "a double event appearing
+    # on the daily digest." Traced live against the household's own Home
+    # Assistant: options[CONF_CALENDARS] ("Calendars to monitor," set in
+    # Configure and auto-extended by _ws_set_notify_overrides/the calendar
+    # quick-add path) is just a flat list of calendar.* entity ids, fetched
+    # and concatenated here with no de-duplication at either level - so
+    # this loop always assumed each configured entity was a distinct
+    # calendar contributing distinct events, which doesn't hold for this
+    # household. `states.calendar` there includes calendar.noelle AND
+    # calendar.noelle_2 - two SEPARATE entities (most likely one Google
+    # account's calendar shared into, and separately re-synced by, a
+    # second connected account - the same well-known cause behind that
+    # install's duplicate calendar.holidays_in_united_states /
+    # calendar.holidays_in_united_states_2 and its three calendar.birthdays*
+    # entities, all auto-generated per-Google-account "shared" calendars)
+    # that return IDENTICAL events for the same range - confirmed live via
+    # calendar.get_events, both returning the exact same "Tom's Week"/"Jess
+    # Week" entries. If more than one of a duplicate pair ends up in
+    # CONF_CALENDARS, every event on it was always going to be fetched and
+    # printed once per entity - working exactly as written, just not as
+    # intended once two entities describe the same calendar. Two
+    # independent guards, since either alone would miss a real household
+    # setup: `seen_calendar_entities` skips a literal repeated entity id
+    # within CONF_CALENDARS itself (possible if it was ever hand-edited, or
+    # a future bug reintroduces one - _add_monitored_calendars already
+    # guards its own two call sites, but nothing enforced it further
+    # upstream); `seen_events` catches the actual household scenario above
+    # - the same (summary, start, end) appearing from two DIFFERENT
+    # entities - keyed on event content rather than entity, which is
+    # exactly why it also catches this case that an entity-only guard
+    # can't. Two genuinely different events sharing all three of summary/
+    # start/end by coincidence is not a real-world concern for a single
+    # day's window.
     event_lines: list[str] = []
+    seen_calendar_entities: set[str] = set()
+    seen_events: set[tuple[str, str, str]] = set()
     for calendar_entity in (options.get(CONF_CALENDARS, []) if sections.get("calendar", True) else []):
+        if calendar_entity in seen_calendar_entities:
+            continue
+        seen_calendar_entities.add(calendar_entity)
         try:
             response = await hass.services.async_call(
                 "calendar",
@@ -7882,6 +8922,10 @@ async def _build_daily_digest_message(
         events = ((response or {}).get(calendar_entity) or {}).get("events", [])
         for event in events:
             summary = event.get("summary") or "(untitled)"
+            event_key = (summary, str(event.get("start") or ""), str(event.get("end") or ""))
+            if event_key in seen_events:
+                continue
+            seen_events.add(event_key)
             start_raw = event.get("start")
             if start_raw and "T" in str(start_raw):
                 start_dt = dt_util.parse_datetime(str(start_raw))
@@ -7913,17 +8957,38 @@ async def _build_daily_digest_message(
         # family list above is never labeled, same as it always looked.
         own_calendar = (profile_for_digest or {}).get("primaryCalendar") or ""
         subs = (profile_for_digest or {}).get("remindersSubscriptions") or {}
+        digest_covered_entities = {reminders_entity} if reminders_entity else set()
         for person in people or []:
             person_entity = person.get("entity", "")
             person_reminders_entity = person.get("remindersEntity", "")
-            if not person_reminders_entity or person_reminders_entity == reminders_entity:
+            if not person_reminders_entity or person_reminders_entity in digest_covered_entities:
                 continue
             is_own = person_entity == own_calendar
             if not is_own and person_entity not in subs:
                 continue
+            digest_covered_entities.add(person_reminders_entity)
             person_lines = await _todo_summaries_due_today(hass, person_reminders_entity, today_start_utc, today_end_utc)
             label = person.get("name") or person_entity
             reminder_lines.extend(f"{line} ({label})" for line in person_lines)
+        # v1.131.0+: this recipient's own reminders list may now be set
+        # DIRECTLY on their profile with no settings.people[] row at all
+        # (see _resolve_profile_reminders_entity/SETTINGS_KEY_USER_PROFILES).
+        # Skipped when already covered above (a household that set the same
+        # entity both ways, or whose profile.remindersEntity was resolved
+        # via the very people[] row the loop above already walked).
+        own_resolved_entity = _resolve_profile_reminders_entity(profile_for_digest, people or [])
+        if own_resolved_entity and own_resolved_entity not in digest_covered_entities:
+            digest_covered_entities.add(own_resolved_entity)
+            own_lines = await _todo_summaries_due_today(hass, own_resolved_entity, today_start_utc, today_end_utc)
+            own_label = "Me"
+            if user_id:
+                try:
+                    ha_user = await hass.auth.async_get_user(user_id)
+                except Exception:  # noqa: BLE001 - a display-name lookup must never break the digest
+                    ha_user = None
+                if ha_user is not None and getattr(ha_user, "name", None):
+                    own_label = ha_user.name
+            reminder_lines.extend(f"{line} ({own_label})" for line in own_lines)
     if reminder_lines:
         lines.append("Due today:")
         lines.extend(f"  - {line}" for line in sorted(reminder_lines))
@@ -8726,6 +9791,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     websocket_api.async_register_command(hass, _ws_set_notification_click_path)
     websocket_api.async_register_command(hass, _ws_get_grocy_recipes)
     websocket_api.async_register_command(hass, _ws_get_grocy_recipe_detail)
+    websocket_api.async_register_command(hass, _ws_get_grocy_recipe_details)
     websocket_api.async_register_command(hass, _ws_delete_grocy_recipe)
     websocket_api.async_register_command(hass, _ws_get_grocery_list_status)
     websocket_api.async_register_command(hass, _ws_push_grocery_list)
@@ -8774,6 +9840,11 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     websocket_api.async_register_command(hass, _ws_set_settings)
     websocket_api.async_register_command(hass, _ws_get_todo_card_config)
     websocket_api.async_register_command(hass, _ws_set_todo_card_config)
+    # v1.131.0+: on-demand Local To-do list creation - see its own docstring.
+    websocket_api.async_register_command(hass, _ws_create_todo_list)
+    # Wish Lists (v1.122.0+) - see _ws_get_wishlist_config's own docstring.
+    websocket_api.async_register_command(hass, _ws_get_wishlist_config)
+    websocket_api.async_register_command(hass, _ws_set_wishlist_flag)
     # v1.109.6+: menu suggestions / can_edit_menu - see the design note
     # above _encode_dish_description for which of these is genuinely
     # backend-enforced and which stays frontend-gated.
@@ -8827,6 +9898,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # websocket commands to register alongside it since this card has no
     # backend storage of its own.
     todo_card_path = f"{integration_dir}/card/family-hub-todo-card.js"
+    # v1.110.1+ - the Active Timers card (see that file's own module
+    # docstring / const.py's ACTIVE_TIMERS_CARD_JS_URL comment). Same
+    # four-step pattern as every card above. Its backend is the timers
+    # store and the family_hub/timers/* commands that already exist from
+    # v1.110.0, plus the one new start_standalone command - no storage of
+    # its own.
+    active_timers_card_path = f"{integration_dir}/card/family-hub-active-timers-card.js"
+    # v1.110.6+ - the standalone Recipe Box card (see
+    # family-hub-recipe-box-card.js's own module docstring / const.py's
+    # RECIPE_BOX_CARD_JS_URL comment). Same four-step pattern as every card
+    # above - no new websocket commands, it reads/writes the exact same
+    # family_hub/get_recipes|set_recipes and get_suggestions|set_suggestions
+    # commands the calendar card's own Recipe Box modal already uses.
+    recipe_box_card_path = f"{integration_dir}/card/family-hub-recipe-box-card.js"
     icon_path = f"{integration_dir}/icon.png"
 
     static_paths = [
@@ -8841,6 +9926,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         StaticPathConfig(GOALS_CARD_JS_URL, goals_card_path, False),
         StaticPathConfig(PANTRY_CARD_JS_URL, pantry_card_path, False),
         StaticPathConfig(TODO_CARD_JS_URL, todo_card_path, False),
+        StaticPathConfig(ACTIVE_TIMERS_CARD_JS_URL, active_timers_card_path, False),
+        StaticPathConfig(RECIPE_BOX_CARD_JS_URL, recipe_box_card_path, False),
     ]
     icon_exists = await hass.async_add_executor_job(os.path.isfile, icon_path)
     if icon_exists:
@@ -8861,6 +9948,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     goals_card_hash = await hass.async_add_executor_job(_file_content_hash, goals_card_path)
     pantry_card_hash = await hass.async_add_executor_job(_file_content_hash, pantry_card_path)
     todo_card_hash = await hass.async_add_executor_job(_file_content_hash, todo_card_path)
+    active_timers_card_hash = await hass.async_add_executor_job(_file_content_hash, active_timers_card_path)
+    recipe_box_card_hash = await hass.async_add_executor_job(_file_content_hash, recipe_box_card_path)
     panel_url_versioned = f"{PANEL_JS_URL}?v={panel_hash}"
     card_url_versioned = f"{CARD_JS_URL}?v={card_hash}"
     theme_selector_url_versioned = f"{THEME_SELECTOR_CARD_JS_URL}?v={theme_selector_hash}"
@@ -8872,6 +9961,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     goals_card_url_versioned = f"{GOALS_CARD_JS_URL}?v={goals_card_hash}"
     pantry_card_url_versioned = f"{PANTRY_CARD_JS_URL}?v={pantry_card_hash}"
     todo_card_url_versioned = f"{TODO_CARD_JS_URL}?v={todo_card_hash}"
+    active_timers_card_url_versioned = f"{ACTIVE_TIMERS_CARD_JS_URL}?v={active_timers_card_hash}"
+    recipe_box_card_url_versioned = f"{RECIPE_BOX_CARD_JS_URL}?v={recipe_box_card_hash}"
     icon_url_versioned = ""
     if icon_exists:
         icon_hash = await hass.async_add_executor_job(_file_content_hash, icon_path)
@@ -8904,6 +9995,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _register_dashboard_resource(hass, goals_card_url_versioned)
     _register_dashboard_resource(hass, pantry_card_url_versioned)
     _register_dashboard_resource(hass, todo_card_url_versioned)
+    _register_dashboard_resource(hass, active_timers_card_url_versioned)
+    _register_dashboard_resource(hass, recipe_box_card_url_versioned)
 
     themes = await _load_themes(hass)
     _register_ha_themes(hass, themes)
@@ -8955,9 +10048,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass, TODO_CARD_CONFIG_STORAGE_VERSION, f"{TODO_CARD_CONFIG_STORAGE_KEY_PREFIX}_{entry.entry_id}"
     )
 
+    # Wish Lists (v1.122.0+) - see TODO_WISHLIST_CONFIG_STORAGE_KEY_PREFIX's
+    # own comment in const.py for the full shape/rationale.
+    todo_wishlist_config_store: Store = Store(
+        hass, TODO_WISHLIST_CONFIG_STORAGE_VERSION, f"{TODO_WISHLIST_CONFIG_STORAGE_KEY_PREFIX}_{entry.entry_id}"
+    )
+
     # v1.109.6+: pending menu suggestions ("anyone can suggest, only
     # can_edit_menu can apply") - see MENU_SUGGESTIONS_STORAGE_KEY_PREFIX's
     # own comment in const.py for why this is its own store.
+    # v1.110.0+: chore/reward countdown timers - see const.py's
+    # TIMERS_STORAGE_KEY_PREFIX for the record shape, and timer_engine.py
+    # for the logic. Loaded into entry_data["timers"] alongside its Store
+    # the same way chores/rewards are, so a timer survives a Home Assistant
+    # restart mid-countdown and resumes with the correct remaining time
+    # (it is stored as started_at + duration, not as a ticking number).
+    timers_store: Store = Store(
+        hass, TIMERS_STORAGE_VERSION, f"{TIMERS_STORAGE_KEY_PREFIX}_{entry.entry_id}"
+    )
+    timers_state = await timers_store.async_load()
+    if not isinstance(timers_state, dict):
+        timers_state = {"timers": []}
+
     menu_suggestions_store: Store = Store(
         hass, MENU_SUGGESTIONS_STORAGE_VERSION, f"{MENU_SUGGESTIONS_STORAGE_KEY_PREFIX}_{entry.entry_id}"
     )
@@ -9022,6 +10134,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # already visible" state can be backfilled into the new opt-in
     # memberUserIds list exactly once - see its own docstring.
     await _maybe_migrate_member_user_ids(hass, settings_store, permissions)
+    # Must run after memberUserIds has just been finalized above - see its
+    # own docstring for why this permission needs its own one-time
+    # grandfathering, unlike every other entry in CHORE_PERMISSIONS.
+    await _maybe_migrate_wishlist_claims_permission_default(
+        hass, settings_store, permissions_store_obj, permissions
+    )
 
     async def _poll(_now=None) -> None:
         await _run_poll(hass, entry, reminders_store, notified, reminder_overrides, settings_store)
@@ -9048,8 +10166,61 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     poll_minutes = entry.options.get(CONF_POLL_MINUTES, DEFAULT_POLL_MINUTES)
     cancel = async_track_time_interval(hass, _poll, timedelta(minutes=poll_minutes))
 
+    # v1.110.0+: chore/reward timers get their own, much tighter sweep
+    # rather than riding _poll above. _poll runs every CONF_POLL_MINUTES
+    # (default 5), which is right for "remind me 30 minutes before an
+    # event" but wrong for a countdown somebody is watching hit zero - a
+    # 30-minute chore timer firing up to 5 minutes late reads as broken.
+    # This sweep is pure in-memory (compare each running timer's end time
+    # to now, and do nothing at all when none have expired - the common
+    # case by far, since most of the time no timer is running), with no
+    # network calls and no entity writes, so TIMER_SWEEP_SECONDS costs
+    # effectively nothing. It is deliberately NOT a second general-purpose
+    # poller: it shares no work with _poll and only ever touches the timers
+    # store. See _expire_due_timers in chores_websocket_api.py.
+    async def _sweep_timers(_now=None) -> None:
+        entry_data = hass.data.get(DOMAIN, {}).get("entries", {}).get(entry.entry_id)
+        if not entry_data:
+            return
+        try:
+            fired = await chores_ws_api._expire_due_timers(hass, entry_data)
+        except Exception as err:  # noqa: BLE001 - a sweep failure must never kill the interval
+            _LOGGER.warning("Family Hub: timer sweep failed: %s", err)
+            return
+        if fired:
+            todo_entity = entry_data.get("chores_todo_entity")
+            if todo_entity is not None:
+                todo_entity.async_write_ha_state()
+
+    cancel_timer_sweep = async_track_time_interval(
+        hass, _sweep_timers, timedelta(seconds=TIMER_SWEEP_SECONDS)
+    )
+
+    # v1.110.2+: "this should use the home assistant native timer.*". When a
+    # Family Hub timer is running on an adopted native timer helper, HOME
+    # ASSISTANT decides it is done and says so on its own event bus - these
+    # two listeners are what turn that into the completion action, so the
+    # sweep above becomes a backstop rather than the primary mechanism. See
+    # const.py's TIMER_ENTITY_PREFIX for the full research note on why
+    # Family Hub adopts native timer entities rather than creating them
+    # (the `timer` domain is a helper, not an entity platform - there is no
+    # supported way for an integration to add one).
+    #
+    # Listening for timer.cancelled as well means stopping a Family Hub
+    # countdown from Home Assistant's OWN UI - Developer Tools, a dashboard
+    # timer card, an automation - correctly clears it from the Active
+    # Timers board too, instead of leaving a ghost behind.
+    async def _on_native_timer_event(event) -> None:
+        await chores_ws_api.handle_native_timer_event(hass, event)
+
+    cancel_timer_finished = hass.bus.async_listen(NATIVE_TIMER_EVENT_FINISHED, _on_native_timer_event)
+    cancel_timer_cancelled = hass.bus.async_listen(NATIVE_TIMER_EVENT_CANCELLED, _on_native_timer_event)
+
     hass.data[DOMAIN]["entries"][entry.entry_id] = {
         "cancel": cancel,
+        "cancel_timer_sweep": cancel_timer_sweep,
+        "cancel_timer_finished": cancel_timer_finished,
+        "cancel_timer_cancelled": cancel_timer_cancelled,
         "notified": notified,
         "reminders_store": reminders_store,
         "reminder_overrides": reminder_overrides,
@@ -9062,7 +10233,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "recipes_store": recipes_store,
         "suggestions_store": suggestions_store,
         "todo_card_config_store": todo_card_config_store,
+        "todo_wishlist_config_store": todo_wishlist_config_store,
         "menu_suggestions_store": menu_suggestions_store,
+        "timers_store": timers_store,
+        "timers": timers_state,
         "grocery_pushed_store": grocery_pushed_store,
         "chores_store": chores_store_obj,
         "chores": chores,
@@ -9083,7 +10257,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     hass.data[DOMAIN]["entries"][entry.entry_id]["cancel_chore_sensor_listener"] = cancel_chore_sensor_listener
     await _async_register_chore_services(hass)
-    await hass.config_entries.async_forward_entry_setups(entry, ["todo"])
+    # v1.110.3+ - "sensor" alongside "todo": one FamilyHubTimerSensor per
+    # currently-running timer, see sensor.py's own docstring for why (the
+    # automation-visibility gap a native timer.* helper's fixed schema
+    # can't fill on its own).
+    await hass.config_entries.async_forward_entry_setups(entry, ["todo", "sensor"])
 
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
@@ -9106,11 +10284,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Cancel polling and remove the sidebar panel + any native themes we registered."""
-    await hass.config_entries.async_unload_platforms(entry, ["todo"])
+    await hass.config_entries.async_unload_platforms(entry, ["todo", "sensor"])
 
     entry_data = hass.data.get(DOMAIN, {}).get("entries", {}).pop(entry.entry_id, None)
     if entry_data and entry_data.get("cancel"):
         entry_data["cancel"]()
+    # v1.110.0+: the timers sweep is its own interval and needs its own
+    # cancel, or it keeps firing against a torn-down entry after unload.
+    if entry_data and entry_data.get("cancel_timer_sweep"):
+        entry_data["cancel_timer_sweep"]()
+    # v1.110.2+: the two native timer.* bus listeners need their own
+    # unsubscribes, or they keep firing against a torn-down entry.
+    for key in ("cancel_timer_finished", "cancel_timer_cancelled"):
+        if entry_data and entry_data.get(key):
+            entry_data[key]()
     if entry_data and entry_data.get("cancel_chore_sensor_listener"):
         entry_data["cancel_chore_sensor_listener"]()
 

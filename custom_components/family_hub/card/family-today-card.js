@@ -20,6 +20,89 @@ const TODAY_REMINDER_COLOR = "#b58cd9";
 // as the full card, so it automatically matches its theme, calendars, meal
 // blocks, and entities - there is nothing new to configure if you're
 // already running the full card.
+// Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
+// "When you load a card it tends to load the default theme first then it
+// switches over to the theme you set how can we always make it load the
+// set theme first." Root cause: EVERY themed card's first paint happens
+// with no theme CSS vars set at all (falls back to _defaultTheme()'s own
+// hardcoded palette), because resolving the household's actual theme
+// takes two sequential, awaited websocket round trips after `hass` is
+// first set - family_hub/get_settings (_fetchSettings), THEN
+// theme_builder/list (_fetchGlobalThemes, which is what a Global Theme
+// selection actually needs to resolve into real colors) - both happening
+// well after `_build()` has already rendered the card once. There was no
+// way to know the real colors before those round trips finished.
+//
+// Fix: cache the last set of CSS var values this device actually applied
+// (in memory for the rest of this page load, in localStorage across
+// reloads), and apply that cache SYNCHRONOUSLY in `_build()` - before the
+// very first paint, before any fetch has even started - so a reload shows
+// last-known-good colors immediately instead of _defaultTheme()'s
+// hardcoded ones. Once the real fetches resolve, `_applyThemeVars()` runs
+// as it always has and reconciles - a no-op re-application (no visible
+// change) if nothing changed since last time, which is the overwhelmingly
+// common case on an ordinary refresh; a visible switch only when the
+// household's theme has genuinely changed since this device last saw it,
+// which is unavoidable (nothing can know about a change before asking).
+//
+// Same shared-singleton, "only the first card whose script actually runs
+// this block sets it up" pattern as window.__familyHubFabCoordinator/
+// __familyHubKioskSession/__familyHubScreenSaver/__familyHubTimerAlarm
+// above - copy-pasted byte-identically into every themed card file, since
+// these are independently-loaded Lovelace resources rather than ES
+// modules that could import one shared file (same reasoning as those).
+//
+// Cached under a KEY, not one single blob, because different cards (or
+// even the SAME card on a different dashboard placement) can legitimately
+// resolve to different colors at once - a per-card-placement Theme
+// override (`_config.theme_override`) or a per-device override
+// (`_getDeviceThemeOverride()`) both exist specifically so one card can
+// look different from the household's shared theme. Caching under one
+// shared key would "fix" the flash for the common case but introduce a
+// WRONG flash for an overridden card (briefly showing the household's
+// theme before its own override kicks in) - a strictly worse bug than
+// the one being fixed. The key is derived the same way every time
+// (`_familyHubThemeCacheKey`, called identically from `_build()` before
+// first paint and from `_applyThemeVars()` after resolving for real), so
+// a card with no override at all shares one cache entry with every other
+// un-overridden card/placement (the common case this exists for), while
+// an overridden card/placement gets its own.
+if (!window.__familyHubThemeCache) {
+  window.__familyHubThemeCache = (function () {
+    const STORAGE_PREFIX = "familyHubThemeVarsCache::";
+    const memory = new Map(); // key -> {varName: value}
+
+    function get(key) {
+      if (memory.has(key)) return memory.get(key);
+      try {
+        const raw = localStorage.getItem(STORAGE_PREFIX + key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object") {
+            memory.set(key, parsed);
+            return parsed;
+          }
+        }
+      } catch (e) {
+        // Corrupt/blocked localStorage (private browsing, etc.) - just
+        // means no cache to apply this time, same as a first-ever load.
+      }
+      return null;
+    }
+    function set(key, vars) {
+      memory.set(key, vars);
+      try {
+        localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(vars));
+      } catch (e) {
+        // Best-effort only - the in-memory copy above still helps every
+        // OTHER card mounted later in this same page load even if
+        // localStorage itself is unavailable.
+      }
+    }
+    return { get, set };
+  })();
+}
+
 class FamilyTodayCard extends HTMLElement {
   // Lets the card be added via the dashboard's "+ Add Card" picker with
   // working defaults straight away - these match the entity ids the full
@@ -42,39 +125,49 @@ class FamilyTodayCard extends HTMLElement {
   // settings_entity's own Settings (see _getPeople) and only needs to be
   // set here directly for a rare standalone override, which is still fully
   // supported by hand-editing the YAML.
-  static getConfigForm() {
-    return {
-      schema: [
-        { name: "title", selector: { text: {} } },
-        { name: "settings_entity", selector: { entity: { domain: "todo" } } },
-        { name: "meal_plan_entity", selector: { entity: { domain: "todo" } } },
-        { name: "reminders_entity", selector: { entity: { domain: "todo" } } },
-        { name: "weather_entity", selector: { entity: { domain: "weather" } } },
-        { name: "calendar_dashboard_path", selector: { text: {} } },
-        { name: "calendar_button_label", selector: { text: {} } },
-      ],
-      computeLabel: (schema) => {
-        const labels = {
-          title: "Title",
-          settings_entity: "Settings to-do list (shared with the full card)",
-          meal_plan_entity: "Meal plan to-do list",
-          reminders_entity: "Reminders to-do list",
-          weather_entity: "Weather entity",
-          calendar_dashboard_path: "Calendar dashboard path",
-          calendar_button_label: "Calendar button label",
-        };
-        return labels[schema.name] || undefined;
-      },
-      computeHelper: (schema) => {
-        if (schema.name === "settings_entity") {
-          return "Same to-do entity configured on the full Family Week Calendar card - reused here so the theme, people, and meal blocks automatically match.";
-        }
-        if (schema.name === "calendar_dashboard_path") {
-          return "Optional. Set a relative path (e.g. /lovelace-family/0) and a 'Go to Calendar' button appears at the bottom of the card, jumping straight to your full calendar dashboard/view.";
-        }
-        return undefined;
-      },
+  // v1.111.0+: static getConfigForm can't offer a live-fetched theme list
+  // (no hass in scope when it's called), so this card now provides its own
+  // config editor element instead - see FamilyTodayCardEditor at the
+  // bottom of this file, which renders the exact same fields (via the
+  // shared statics below) plus the new theme_override field.
+  static _configSchema() {
+    return [
+      { name: "title", selector: { text: {} } },
+      { name: "settings_entity", selector: { entity: { domain: "todo" } } },
+      { name: "meal_plan_entity", selector: { entity: { domain: "todo" } } },
+      { name: "reminders_entity", selector: { entity: { domain: "todo" } } },
+      { name: "weather_entity", selector: { entity: { domain: "weather" } } },
+      { name: "calendar_dashboard_path", selector: { text: {} } },
+      { name: "calendar_button_label", selector: { text: {} } },
+    ];
+  }
+  static _computeLabel(schema) {
+    const labels = {
+      title: "Title",
+      settings_entity: "Settings to-do list (shared with the full card)",
+      meal_plan_entity: "Meal plan to-do list",
+      reminders_entity: "Reminders to-do list",
+      weather_entity: "Weather entity",
+      calendar_dashboard_path: "Calendar dashboard path",
+      calendar_button_label: "Calendar button label",
+      theme_override: "Theme",
     };
+    return labels[schema.name] || undefined;
+  }
+  static _computeHelper(schema) {
+    if (schema.name === "settings_entity") {
+      return "Same to-do entity configured on the full Family Week Calendar card - reused here so the theme, people, and meal blocks automatically match.";
+    }
+    if (schema.name === "calendar_dashboard_path") {
+      return "Optional. Set a relative path (e.g. /lovelace-family/0) and a 'Go to Calendar' button appears at the bottom of the card, jumping straight to your full calendar dashboard/view.";
+    }
+    if (schema.name === "theme_override") {
+      return "Pin this one card to a specific theme, or leave on \"Use device settings\" to follow the household's own Global Theme.";
+    }
+    return undefined;
+  }
+  static getConfigElement() {
+    return document.createElement("family-today-card-editor");
   }
   setConfig(config) {
     config = config || {};
@@ -105,6 +198,11 @@ class FamilyTodayCard extends HTMLElement {
       meal_templates_entity: config.meal_templates_entity || "todo.meal_plan_templates",
       suggestions_entity: config.suggestions_entity || "todo.meal_suggestions",
       birthdays_entity: config.birthdays_entity || "calendar.birthdays",
+      // v1.111.0+: "" (default, untouched by every existing dashboard) =
+      // "Use device settings" - falls straight through to the exact
+      // pre-1.111.0 behavior (household Global Theme, else local). See
+      // _resolveTheme below for where this takes priority.
+      theme_override: typeof config.theme_override === "string" ? config.theme_override : "",
     };
     if (this._settingsCache === undefined) this._settingsCache = null;
     if (this._globalThemes === undefined) this._globalThemes = [];
@@ -128,7 +226,10 @@ class FamilyTodayCard extends HTMLElement {
   }
   async _initFirstLoad() {
     await this._fetchSettings();
-    if ((this._getSettings().useGlobalTheme)) await this._fetchGlobalThemes();
+    // v1.111.0+: always fetched now, not just when the household has
+    // useGlobalTheme on - a per-card theme_override needs this list
+    // regardless of the household's own Global Theme setting.
+    await this._fetchGlobalThemes();
     this._refreshAll();
     this._startPolling();
   }
@@ -313,12 +414,10 @@ class FamilyTodayCard extends HTMLElement {
     }
     return blocks;
   }
-  _resolveTheme(settings) {
-    const local = settings.theme || this._defaultTheme();
-    if (!settings.useGlobalTheme || !settings.globalThemeId) return local;
-    const list = Array.isArray(this._globalThemes) ? this._globalThemes : [];
-    const g = list.find((t) => t && t.id === settings.globalThemeId);
-    if (!g) return local;
+  // Shared by both the new per-card override branch below and the
+  // existing household-global branch, so the color/font validation only
+  // needs to exist once in this file.
+  _themeFromGlobalEntry(g) {
     const defaultTheme = this._defaultTheme();
     const colors = {};
     Object.keys(defaultTheme.colors).forEach((k) => {
@@ -332,6 +431,27 @@ class FamilyTodayCard extends HTMLElement {
       fonts[k] = Number.isFinite(n) && n >= 6 && n <= 72 ? n : defaultTheme.fonts[k];
     });
     return { colors, fonts, effects: g.effects || null, background: g.background || null };
+  }
+  _resolveTheme(settings) {
+    const local = settings.theme || this._defaultTheme();
+    // v1.111.0+: a per-card-placement Theme override (set from this card's
+    // own native "Edit Card" dialog) wins over the household's own Global
+    // Theme setting - the most specific choice available. "" (the
+    // untouched default) falls straight through to the exact pre-1.111.0
+    // behavior below.
+    const cardOverride = this._config && this._config.theme_override;
+    if (cardOverride) {
+      const list = Array.isArray(this._globalThemes) ? this._globalThemes : [];
+      const g = list.find((t) => t && t.id === cardOverride);
+      if (g) return this._themeFromGlobalEntry(g);
+      // A stale override (theme since deleted/renamed) falls through to
+      // normal resolution below rather than going blank.
+    }
+    if (!settings.useGlobalTheme || !settings.globalThemeId) return local;
+    const list = Array.isArray(this._globalThemes) ? this._globalThemes : [];
+    const g = list.find((t) => t && t.id === settings.globalThemeId);
+    if (!g) return local;
+    return this._themeFromGlobalEntry(g);
   }
   _hexToRgba(hex, alpha) {
     const h = (hex || "#000000").replace("#", "");
@@ -356,6 +476,17 @@ class FamilyTodayCard extends HTMLElement {
       layers.push(`0 0 ${glow.blurRadius || 0}px 0 ${this._hexToRgba(glow.color || "#ffd21a", typeof glow.opacity === "number" ? glow.opacity : 0.6)}`);
     }
     return layers.length ? layers.join(", ") : null;
+  }
+  // v1.126.0+ - see window.__familyHubThemeCache's own comment above the
+  // class for the full "why a key, not one shared blob" reasoning. This
+  // card has no per-device theme override concept (that lives only on the
+  // full calendar/chores/rewards/goals/pantry/my-chores cards), so the key
+  // is only ever this card-placement's own theme_override, or the shared
+  // "household" bucket every un-overridden card/placement uses.
+  _familyHubThemeCacheKey() {
+    const cardOverride = this._config && this._config.theme_override;
+    if (cardOverride) return `card:${cardOverride}`;
+    return "household";
   }
   _applyThemeVars() {
     const settings = this._getSettings();
@@ -397,6 +528,62 @@ class FamilyTodayCard extends HTMLElement {
       this.style.removeProperty("--fc-bg-image-opacity");
       this.style.removeProperty("--fc-bg-overlay-image");
     }
+    // v1.126.0+: snapshot exactly what was just set/removed above into the
+    // shared cache under this card/placement's key, so a future _build() can
+    // apply the same values before the real fetches resolve - see
+    // window.__familyHubThemeCache's own comment for the full reasoning. A
+    // var not currently set on the host (e.g. --fc-bg-image when there is no
+    // background image right now) is simply skipped rather than cached as an
+    // empty string, so applying the cache later never clobbers a var that
+    // should stay unset.
+    if (window.__familyHubThemeCache) {
+      const __familyHubCacheVarNames = [
+      "--fc-bg",
+      "--fc-card",
+      "--fc-border",
+      "--fc-text",
+      "--fc-text-secondary",
+      "--fc-accent",
+      "--fc-accent-text",
+      "--fc-accent2",
+      "--fc-accent3",
+      "--fc-surface-alt",
+      "--fc-surface2",
+      "--fs-header-title",
+      "--fs-event",
+      "--fs-chip",
+      "--fs-wx-temp",
+      "--fc-shadow",
+      "--fc-bg-image",
+      "--fc-bg-size",
+      "--fc-bg-position",
+      "--fc-bg-blur",
+      "--fc-bg-image-opacity",
+      "--fc-bg-overlay-image",
+      ];
+      const vars = {};
+      __familyHubCacheVarNames.forEach((name) => {
+        const v = this.style.getPropertyValue(name);
+        if (v) vars[name] = v;
+      });
+      window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
+    }
+  }
+  // v1.126.0+: applies whatever theme this device/placement last actually
+  // resolved to, SYNCHRONOUSLY, before the real fetches that would
+  // otherwise be the only way to know it - see window.__familyHubTheme
+  // Cache's own comment above the class. Called once from `_build()`,
+  // before the very first `_render()`/paint. A no-op (does nothing,
+  // leaves `_defaultTheme()`'s plain colors as the first paint exactly
+  // like before this fix) on the very first time ANY card resolves this
+  // particular key - there's nothing to have cached yet.
+  _applyCachedThemeVarsIfAny() {
+    if (!window.__familyHubThemeCache) return;
+    const cached = window.__familyHubThemeCache.get(this._familyHubThemeCacheKey());
+    if (!cached) return;
+    Object.keys(cached).forEach((name) => {
+      if (typeof cached[name] === "string") this.style.setProperty(name, cached[name]);
+    });
   }
   async _fetchSettings() {
     if (!this._hass) return;
@@ -429,13 +616,104 @@ class FamilyTodayCard extends HTMLElement {
   }
   async _fetchGlobalThemes() {
     if (!this._hass) return;
+    let custom = [];
     try {
       const result = await this._hass.connection.sendMessagePromise({ type: "theme_builder/list" });
-      this._globalThemes = (result && Array.isArray(result.themes)) ? result.themes : [];
+      custom = (result && Array.isArray(result.themes)) ? result.themes : [];
     } catch (e) {
-      this._globalThemes = [];
+      custom = [];
     }
+    // v1.111.0+: also merge in every installed native Home Assistant theme
+    // - duplicated (not shared/imported) from family-week-calendar-card.js's
+    // own _fetchGlobalThemes/_nativeHaThemeEntries, same "independently
+    // loaded Lovelace resources duplicate small helpers" convention used
+    // throughout this project.
+    this._globalThemes = custom.concat(this._nativeHaThemeEntries());
     this._applyThemeVars();
+  }
+  // --- Native HA theme support (duplicated from family-week-calendar-
+  // card.js's identical methods - see that file's own comments) ---
+  _haVarsToBuilderColors(vars) {
+    const v = vars || {};
+    const accent = v["primary-color"];
+    return {
+      bg: v["primary-background-color"],
+      card: v["card-background-color"] || v["ha-card-background"],
+      border: v["divider-color"],
+      text: v["primary-text-color"],
+      textSecondary: v["secondary-text-color"],
+      accent: accent,
+      accentText: v["text-primary-color"],
+      accent2: v["accent-color"] || accent,
+      accent3: v["warning-color"],
+      surfaceAlt: v["secondary-background-color"],
+      surface2: v["secondary-background-color"],
+    };
+  }
+  _haThemeCssVars(name) {
+    const themes = (this._hass && this._hass.themes && this._hass.themes.themes) || {};
+    const theme = themes[name];
+    if (!theme) return {};
+    const vars = {};
+    for (const key of Object.keys(theme)) {
+      if (key === "modes") continue;
+      vars[key] = theme[key];
+    }
+    if (theme.modes) {
+      const dark = !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
+      const modeVars = theme.modes[dark ? "dark" : "light"] || {};
+      for (const key of Object.keys(modeVars)) vars[key] = modeVars[key];
+    }
+    return vars;
+  }
+  _haDefaultCssVars() {
+    try {
+      if (typeof getComputedStyle !== "function" || !document || !document.documentElement) return {};
+      const style = getComputedStyle(document.documentElement);
+      const keys = [
+        "primary-color", "text-primary-color", "primary-background-color", "secondary-background-color",
+        "card-background-color", "primary-text-color", "secondary-text-color", "divider-color",
+        "accent-color", "warning-color", "ha-card-background",
+      ];
+      const vars = {};
+      keys.forEach((k) => {
+        const val = style.getPropertyValue(`--${k}`);
+        if (val && val.trim()) vars[k] = val.trim();
+      });
+      return vars;
+    } catch (e) {
+      return {};
+    }
+  }
+  _nativeHaThemeEntries() {
+    const defaultFonts = this._defaultTheme().fonts;
+    const entries = [
+      {
+        id: "ha:__default__",
+        name: "Default (Home Assistant)",
+        colors: this._haVarsToBuilderColors(this._haDefaultCssVars()),
+        fonts: defaultFonts,
+        effects: null,
+        background: null,
+        native: true,
+      },
+    ];
+    const themes = (this._hass && this._hass.themes && this._hass.themes.themes) || {};
+    Object.keys(themes)
+      .filter((name) => name.indexOf("Theme Builder - ") !== 0)
+      .sort((a, b) => a.localeCompare(b))
+      .forEach((name) => {
+        entries.push({
+          id: "ha:" + name,
+          name: name,
+          colors: this._haVarsToBuilderColors(this._haThemeCssVars(name)),
+          fonts: defaultFonts,
+          effects: null,
+          background: null,
+          native: true,
+        });
+      });
+    return entries;
   }
   async _getItems(entityId) {
     const result = await this._hass.connection.sendMessagePromise({
@@ -778,6 +1056,11 @@ class FamilyTodayCard extends HTMLElement {
   }
   _build() {
     this._built = true;
+    // v1.126.0+: applied BEFORE attachShadow/the first innerHTML paint -
+    // see _applyCachedThemeVarsIfAny's own comment and window.__familyHub
+    // ThemeCache's above the class for why this is what actually fixes
+    // the household's reported "loads the default theme first" flash.
+    this._applyCachedThemeVarsIfAny();
     const root = this.attachShadow ? this.attachShadow({ mode: "open" }) : this;
     this._root = root;
     root.innerHTML = `
@@ -1059,6 +1342,70 @@ background-image: var(--fc-bg-overlay-image, none);
 if (!customElements.get("family-today-card")) {
   customElements.define("family-today-card", FamilyTodayCard);
 }
+
+// v1.111.0+: native "Edit Card" config editor - a thin wrapper around
+// Home Assistant's own <ha-form>, needed only because the new
+// theme_override field's option list has to be fetched live. See
+// FamilyTodayCard.getConfigElement above and FamilyHubGoalsCardEditor in
+// family-hub-goals-card.js for the identical pattern/reasoning.
+class FamilyTodayCardEditor extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._render();
+  }
+  set hass(hass) {
+    this._hass = hass;
+    if (!this._themeOptions) this._fetchThemeOptions();
+    else this._render();
+  }
+  async _fetchThemeOptions() {
+    this._themeOptions = [{ value: "", label: "Use device settings (default)" }];
+    if (!this._hass) {
+      this._render();
+      return;
+    }
+    try {
+      const result = await this._hass.connection.sendMessagePromise({ type: "theme_builder/list" });
+      const custom = (result && Array.isArray(result.themes)) ? result.themes : [];
+      custom.forEach((t) => {
+        if (t && t.id) this._themeOptions.push({ value: t.id, label: "Theme Builder: " + (t.name || t.id) });
+      });
+    } catch (e) {
+    }
+    this._themeOptions.push({ value: "ha:__default__", label: "Home Assistant: Default" });
+    const themes = (this._hass && this._hass.themes && this._hass.themes.themes) || {};
+    Object.keys(themes)
+      .filter((name) => name.indexOf("Theme Builder - ") !== 0)
+      .sort((a, b) => a.localeCompare(b))
+      .forEach((name) => this._themeOptions.push({ value: "ha:" + name, label: "Home Assistant: " + name }));
+    this._render();
+  }
+  _schema() {
+    return FamilyTodayCard._configSchema().concat([
+      { name: "theme_override", selector: { select: { mode: "dropdown", options: this._themeOptions || [{ value: "", label: "Use device settings (default)" }] } } },
+    ]);
+  }
+  _render() {
+    if (!this._form) {
+      this._form = document.createElement("ha-form");
+      this._form.addEventListener("value-changed", (e) => {
+        e.stopPropagation();
+        this._config = e.detail.value;
+        this.dispatchEvent(new CustomEvent("config-changed", { detail: { config: this._config }, bubbles: true, composed: true }));
+      });
+      this.appendChild(this._form);
+    }
+    this._form.hass = this._hass;
+    this._form.data = this._config || {};
+    this._form.schema = this._schema();
+    this._form.computeLabel = FamilyTodayCard._computeLabel;
+    this._form.computeHelper = FamilyTodayCard._computeHelper;
+  }
+}
+if (!customElements.get("family-today-card-editor")) {
+  customElements.define("family-today-card-editor", FamilyTodayCardEditor);
+}
+
 window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === "family-today-card")) {
   window.customCards.push({

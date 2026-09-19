@@ -47,21 +47,11 @@
           "grocy_api_key": "Grocy API key"
         }
       },
-      "todo_lists": {
-        "title": "Meal Plan & Reminders lists",
-        "description": "The meal planner and standalone reminders each need a Home Assistant to-do list to store their items on. Pick existing lists below, or leave either field blank and check 'Create missing lists for me' to have Family Hub create a fresh Local To-do list automatically. Either way, once a list exists you'll still need to enter its entity id in the calendar card's own meal_plan_entity/reminders_entity config fields the first time you add the card to a dashboard.",
-        "data": {
-          "meal_plan_todo_entity": "Meal Plan list (optional)",
-          "reminders_todo_entity": "Reminders list (optional)",
-          "auto_create_todo_lists": "Create missing lists for me"
-        }
-      },
       "notifications": {
         "title": "Notifications",
-        "description": "Who should get notified? Pick a default target for calendar event reminders (used whenever a calendar doesn't have its own override) and, separately, which device(s) should get standalone Reminders (the Add Event modal's Reminder tab). Either can be left blank and set later from the card's own Settings or Configure > Calendar reminders.",
+        "description": "Pick a default target for calendar event reminders (used whenever a calendar doesn't have its own override). Can be left blank and set later from the card's own Settings or Configure > Calendar reminders.",
         "data": {
-          "default_notify_target": "Default target for calendar reminders (e.g. notify.mobile_app_pixel_6a)",
-          "reminders_notify_targets": "Reminders notify target(s)"
+          "default_notify_target": "Default target for calendar reminders (e.g. notify.mobile_app_pixel_6a)"
         }
       },
       "digest": {
@@ -82,7 +72,7 @@
       },
       "finish": {
         "title": "All set",
-        "description": "Meal Plan list: {meal_plan_entity}\nReminders list: {reminders_entity}\nDefault reminder notify target: {default_notify}\nDaily Digest: {daily_digest}\n\nDashboard YAML (Settings > Dashboards > Add Dashboard > Edit in YAML, paste this in and save):\n{dashboard_yaml}\n\nSetup is done - add the Family Week Calendar card to a dashboard to get started, or click Configure any time to change reminders, Grocy, or these to-do lists."
+        "description": "Default reminder notify target: {default_notify}\nDaily Digest: {daily_digest}\n\nDashboard YAML (Settings > Dashboards > Add Dashboard > Edit in YAML, paste this in and save):\n{dashboard_yaml}\n\nSetup is done - add the Family Week Calendar card to a dashboard to get started, or click Configure any time to change reminders or Grocy."
       }
     },
     "abort": {
