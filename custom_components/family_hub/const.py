@@ -679,8 +679,8 @@ REMINDER_NOTIFY_KEY = "__family_hub_reminders__"
 # reminder to be silently skipped entirely.
 POLL_QUERY_GRACE_MINUTES = 15
 
-PANEL_URL = "theme-builder"
-PANEL_TITLE = "Theme Builder"
+PANEL_URL = "family-hub-theme-builder"
+PANEL_TITLE = "Family Hub Theme Builder"
 PANEL_ICON = "mdi:palette"
 PANEL_JS_URL = "/family_hub_panel/theme-builder-panel.js"
 
