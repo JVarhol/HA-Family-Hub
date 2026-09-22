@@ -2,7 +2,7 @@
   "domain": "family_hub",
   "name": "Family Hub",
   "codeowners": [
-    "@JVARHOL"
+    "@bordello_labs"
   ],
   "config_flow": true,
   "dependencies": [
@@ -16,6 +16,7 @@
     "timer"
   ],
   "documentation": "https://github.com/JVarhol/HA-Family-Hub",
+  "issue_tracker": "https://github.com/JVarhol/HA-Family-Hub/issues",
   "iot_class": "local_polling",
   "version": "1.132.10"
 }
