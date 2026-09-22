@@ -1676,11 +1676,38 @@ async def _ws_set_settings(
         return
     store: Store = entry_data["settings_store"]
     new_settings = dict(msg["settings"])
-    needs_existing = SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED not in new_settings or "userProfiles" in new_settings
+    needs_existing = (
+        SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED not in new_settings
+        or SETTINGS_KEY_WISHLIST_CLAIMS_PERMISSION_MIGRATED not in new_settings
+        or "userProfiles" in new_settings
+    )
     if needs_existing:
         existing = await store.async_load() or {}
         if SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED not in new_settings and existing.get(SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED):
             new_settings[SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED] = True
+        # v1.132.10+: household report, verbatim: "the see claim status
+        # permission is not persistent on updates." Root cause: the exact
+        # same class of bug this handler's own docstring already describes
+        # for SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED and kiosk PIN hashes -
+        # wishlistClaimsPermissionMigrated (see
+        # _maybe_migrate_wishlist_claims_permission_default's docstring) is
+        # backend-only bookkeeping the card's JS has never known about, so
+        # it was never in settingsObj/_saveSettings's payload and was
+        # getting silently dropped from the store on every single ordinary
+        # Settings save (changing a color, a notify target, anything) -
+        # same as notifyProfilesMigrated did before that fix. With the flag
+        # gone, the NEXT Home Assistant restart (most noticeable right
+        # after installing an update, since that's when people usually
+        # restart) saw it as "never migrated" and re-ran the one-time
+        # grandfathering, unconditionally re-granting can_see_wishlist_claims
+        # True to every current household member - silently undoing any
+        # explicit False an admin had set for someone. Fixed the same way:
+        # carry the flag forward whenever the incoming payload doesn't
+        # already include it.
+        if SETTINGS_KEY_WISHLIST_CLAIMS_PERMISSION_MIGRATED not in new_settings and existing.get(
+            SETTINGS_KEY_WISHLIST_CLAIMS_PERMISSION_MIGRATED
+        ):
+            new_settings[SETTINGS_KEY_WISHLIST_CLAIMS_PERMISSION_MIGRATED] = True
         existing_profiles = existing.get("userProfiles")
         new_profiles = new_settings.get("userProfiles")
         if isinstance(existing_profiles, dict) and isinstance(new_profiles, dict):
