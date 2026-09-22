@@ -2,7 +2,7 @@
   "domain": "family_hub",
   "name": "Family Hub",
   "codeowners": [
-    "@jaretvarholick"
+    "@JVARHOL"
   ],
   "config_flow": true,
   "dependencies": [
