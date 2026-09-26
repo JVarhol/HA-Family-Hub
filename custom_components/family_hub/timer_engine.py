@@ -46,6 +46,21 @@ RUNNING timer:
                           alarm-stream channel / iOS critical alert)
                           instead of the plain one - see
                           chores_websocket_api.py's _send_alarm_notification.
+      "alarm_audience":   v1.132.55+ - snapshot of the chore's/reward's own
+                          alarm_audience field at start time (chore/reward
+                          timers only - a standalone timer always gets
+                          "self", see ws_start_standalone_timer). Governs
+                          SCOPE (who/what else rings beyond the owner's own
+                          phone) the same way "alarm" above governs STYLE -
+                          see const.py's CHORE_KEY_ALARM_AUDIENCE for the
+                          full picture and chores_websocket_api.py's
+                          _dispatch_timer_alarm for where it's actually
+                          used, at FIRE time rather than here (unlike every
+                          other snapshotted field, WHO currently counts as
+                          a registered alarm device/kiosk is deliberately
+                          read live when the timer fires, not frozen at
+                          start - a speaker or kiosk login added mid-
+                          countdown should still ring).
       "origin_client_id": v1.119.0+ - an opaque per-browser-tab id the
                           frontend generates once (sessionStorage-backed,
                           so it's stable across a reload but gone once that
@@ -93,6 +108,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from .const import (
+    TIMER_ALARM_AUDIENCE_SELF,
+    TIMER_ALARM_AUDIENCES,
     TIMER_KIND_CHORE,
     TIMER_KIND_REWARD,
     TIMER_KIND_STANDALONE,
@@ -100,6 +117,7 @@ from .const import (
     TIMER_LABEL_MAX_LENGTH,
     TIMER_MAX_MINUTES,
     TIMER_MIN_MINUTES,
+    TIMER_MIN_SECONDS,
 )
 
 
@@ -121,24 +139,40 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def normalize_timer_minutes(value: Any) -> Optional[int]:
-    """A chore's/reward's configured timer length, or None for "no timer."
+def normalize_timer_minutes(value: Any) -> Optional[float]:
+    """A chore's/reward's/standalone timer's configured length in minutes,
+    or None for "no timer."
 
     None, "", 0 and anything unparseable all mean "no timer" rather than
     raising - these arrive from a text input on two different cards, and an
     empty box is the overwhelmingly common case, not an error. A real but
     out-of-range number IS clamped rather than dropped, since someone who
     typed 5000 clearly wanted "a long time," not "no timer at all."
+
+    v1.132.59+: household ask, verbatim - "can we make the timer accept
+    seconds." `value` may now be fractional (e.g. 0.5 == 30 seconds) - the
+    standalone quick-timer modal combines a minutes field and a seconds
+    field into one fractional-minutes number before calling this. A
+    fractional/sub-minute request is floored at TIMER_MIN_SECONDS (1
+    second) instead of the usual TIMER_MIN_MINUTES (1 whole minute), which
+    only matters for a "seconds only, no minutes" timer - chore/reward
+    timer lengths are still whole minutes in practice, since neither of
+    those settings fields offers a seconds input, so this never changes
+    what they produce. A whole-number result is returned as a plain int
+    (not e.g. 30.0) so every existing caller that expects an int for a
+    normal whole-minute timer keeps getting exactly that.
     """
     if value is None or value == "":
         return None
     try:
-        minutes = int(value)
+        minutes = float(value)
     except (TypeError, ValueError):
         return None
     if minutes <= 0:
         return None
-    return max(TIMER_MIN_MINUTES, min(TIMER_MAX_MINUTES, minutes))
+    floor = TIMER_MIN_MINUTES if minutes >= TIMER_MIN_MINUTES else (TIMER_MIN_SECONDS / 60)
+    clamped = max(floor, min(TIMER_MAX_MINUTES, minutes))
+    return int(clamped) if clamped == int(clamped) else round(clamped, 4)
 
 
 def normalize_timer_label(value: Any) -> str:
@@ -147,6 +181,16 @@ def normalize_timer_label(value: Any) -> str:
     a plain "Timer" when there is none - naming it is a convenience, not a
     requirement, since a lot of quick timers are started in a hurry."""
     return str(value or "").strip()[:TIMER_LABEL_MAX_LENGTH]
+
+
+def normalize_alarm_audience(value: Any) -> str:
+    """A chore's/reward's alarm_audience field (see const.py's
+    CHORE_KEY_ALARM_AUDIENCE for the full "who/what rings" picture) -
+    anything not one of the three known tiers (missing, None, a stale/typo'd
+    string) falls back to TIMER_ALARM_AUDIENCE_SELF, the same "changes
+    nothing for anyone who's never touched this field" default every other
+    optional field in this project uses."""
+    return value if value in TIMER_ALARM_AUDIENCES else TIMER_ALARM_AUDIENCE_SELF
 
 
 def _timers(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -215,8 +259,11 @@ def ends_at(timer: dict[str, Any]) -> Optional[datetime]:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     minutes = timer.get("duration_minutes")
+    # v1.132.59+: this used to truncate via int(minutes), which silently
+    # dropped a sub-minute timer's seconds (0.5 -> 0). timedelta() accepts
+    # a float minutes value directly, so keep it as one.
     try:
-        minutes = int(minutes)
+        minutes = float(minutes)
     except (TypeError, ValueError):
         minutes = 0
     return dt + timedelta(minutes=max(0, minutes))
@@ -255,6 +302,7 @@ def start_timer(
     item_id: Optional[str] = None,
     notify_targets: Optional[list[str]] = None,
     alarm: bool = False,
+    alarm_audience: Any = TIMER_ALARM_AUDIENCE_SELF,
     client_id: Optional[str] = None,
     now: Optional[datetime] = None,
 ) -> dict[str, Any]:
@@ -300,6 +348,7 @@ def start_timer(
         "duration_minutes": minutes,
         "notify_targets": list(notify_targets or []),
         "alarm": bool(alarm),
+        "alarm_audience": normalize_alarm_audience(alarm_audience),
         "origin_client_id": str(client_id or "").strip(),
     }
     if kind == TIMER_KIND_CHORE:

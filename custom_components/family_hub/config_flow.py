@@ -242,11 +242,18 @@ def _build_member_profile_schema(default_color: str) -> vol.Schema:
 # async_step_chores_features' own three field names - the same Routines/
 # Goals-on-Chores/Goals-on-Rewards toggles Settings' "Chores, Rewards &
 # Routines" accordion has (see family-week-calendar-card.js), just asked
-# once up front here too. Off by default, same as they've always defaulted
-# to in Settings - picking "Chores, Rewards, Routines & Goals" on the
-# Features step only guarantees Chores/Rewards themselves (membership,
-# board, catalog) are ready to go; Routines/Goals are each their own
-# separate opt-in on top of that, same as they've always been.
+# once up front here too. Goals-on-Chores/Goals-on-Rewards stay off by
+# default, same as they've always defaulted to in Settings. Routines
+# defaults ON as of v1.132.54+ (household ask, verbatim: "Default to
+# routines enabled") - see family-week-calendar-card.js's own
+# routinesEnabled:true default for the matching change to an existing/
+# upgraded install that never went through this wizard (or skipped the
+# Features step's "Chores, Rewards, Routines & Goals" option) and so falls
+# back to that frontend default instead. Picking "Chores, Rewards, Routines
+# & Goals" on the Features step only guarantees Chores/Rewards themselves
+# (membership, board, catalog) are ready to go; Routines/Goals are each
+# their own separate opt-in on top of that - Routines' own opt-in is now
+# just pre-checked here rather than starting unchecked.
 _ROUTINES_FIELD = "routines_enabled"
 _GOALS_IN_CHORES_FIELD = "goals_in_chores"
 _GOALS_IN_REWARDS_FIELD = "goals_in_rewards"
@@ -255,7 +262,7 @@ _GOALS_IN_REWARDS_FIELD = "goals_in_rewards"
 def _build_chores_features_schema() -> vol.Schema:
     return vol.Schema(
         {
-            vol.Optional(_ROUTINES_FIELD, default=False): selector.BooleanSelector(),
+            vol.Optional(_ROUTINES_FIELD, default=True): selector.BooleanSelector(),
             vol.Optional(_GOALS_IN_CHORES_FIELD, default=False): selector.BooleanSelector(),
             vol.Optional(_GOALS_IN_REWARDS_FIELD, default=False): selector.BooleanSelector(),
         }
@@ -771,16 +778,35 @@ def _build_test_notify_schema(hass) -> vol.Schema:
 
 
 class FamilyHubOptionsFlow(config_entries.OptionsFlow):
-    """Configure reminders, send a test notification, or install an update -
-    all three live here since this is where an admin would already be
-    looking (Settings > Devices & Services > Family Hub > Configure), not a
-    separate sidebar panel."""
+    """Configure reminders, send a test notification, install an update, or
+    (v201+) get pointed at the card's own Settings modal - all live here
+    since this is where an admin would already be looking (Settings >
+    Devices & Services > Family Hub > Configure), not a separate sidebar
+    panel."""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         return self.async_show_menu(
             step_id="init",
-            menu_options=["reminders", "grocy", "test_notify", "upcoming", "update"],
+            menu_options=["settings", "reminders", "grocy", "test_notify", "upcoming", "update"],
         )
+
+    # v201+: household ask, verbatim - "add a settings button to the
+    # integration settings page." Home Assistant's own "Configure" button
+    # (Settings -> Devices & Services -> Family Hub -> Configure) already
+    # opens this options flow's menu, but the actual day-to-day Family Hub
+    # settings (theme, per-person notifications, chores/rewards toggles,
+    # screensaver, etc.) all live inside the calendar card's own in-
+    # dashboard Settings modal (family-week-calendar-card.js's
+    # _openSettings/.settings-btn) - a config flow step can't reach into a
+    # Lovelace card's JS to open that modal directly (they're two
+    # completely separate surfaces: this flow renders as its own dialog in
+    # the Settings page, the card's modal lives inside a dashboard view),
+    # so this is a plain informational step, same shape as async_step_
+    # upcoming's read-only summary just below - it just tells someone
+    # where to actually find that gear icon, rather than pretending to be
+    # a shortcut into it.
+    async def async_step_settings(self, user_input: dict[str, Any] | None = None):
+        return self.async_show_form(step_id="settings", data_schema=vol.Schema({}))
 
     async def async_step_reminders(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:

@@ -40,7 +40,17 @@ if (!window.__familyHubScreenSaver) {
     let settingsSnapshot = null;
 
     function defaultSettings() {
-      return { screenSaver: { sourceType: "video", videoUrl: "", cameraEntity: "", idleSeconds: 180, usersEnabled: {} } };
+      return { screenSaver: { sourceType: "video", videoUrl: "", cameraEntity: "", idleSeconds: 180, usersEnabled: {}, returnDashboardPath: "" } };
+    }
+    // v1.132.36+: same helper as the calendar card's/standalone screensaver
+    // card's own _normalizeDashboardPath - a value missing its leading "/"
+    // resolves as relative to whatever's currently showing rather than
+    // root-relative, silently breaking navigation.
+    function normalizeDashboardPath(raw) {
+      const val = (raw || "").toString().trim();
+      if (!val) return "";
+      if (val.startsWith("/") || /^https?:\/\//i.test(val)) return val;
+      return "/" + val;
     }
     function normalizeSettings(parsed) {
       const defaults = defaultSettings();
@@ -58,7 +68,8 @@ if (!window.__familyHubScreenSaver) {
           if (ss.usersEnabled[uid]) usersEnabled[uid] = true;
         });
       }
-      return { screenSaver: { sourceType, videoUrl, cameraEntity, idleSeconds, usersEnabled } };
+      const returnDashboardPath = normalizeDashboardPath(ss.returnDashboardPath);
+      return { screenSaver: { sourceType, videoUrl, cameraEntity, idleSeconds, usersEnabled, returnDashboardPath } };
     }
     function getSettings() {
       return settingsCache || defaultSettings();
@@ -180,6 +191,21 @@ if (!window.__familyHubScreenSaver) {
       }
       overlay.style.display = "flex";
     }
+    // v1.132.36+: household bug report, verbatim - "the navigate back to
+    // page workes on the calendar page the card that has the actual
+    // settings button but it doesnt work when the screen saver is called
+    // by like chores or rewards card." Root cause: this shared singleton
+    // (the screensaver that actually runs when a Chores/Rewards/My Chores
+    // card - not the calendar card - is what's on screen when it's idle)
+    // never had ANY return-dashboard navigation at all - the calendar
+    // card's and standalone screensaver card's _goToReturnDashboard fixes
+    // (v193 onward) were never ported here, so waking from this copy
+    // always just hid the overlay and left you wherever you already were.
+    // Now mirrors the other two copies exactly: read screenSaver.
+    // returnDashboardPath off the same shared settings blob, and navigate
+    // via the same smooth soft-route-with-hard-fallback helper (see
+    // family-week-calendar-card.js's own _navigateWithFallback for the
+    // full mechanism/history).
     function hideScreenSaver() {
       const overlay = overlayEl;
       if (!overlay || overlay.style.display === "none") return;
@@ -191,6 +217,45 @@ if (!window.__familyHubScreenSaver) {
         cameraInterval = null;
       }
       resetIdleTimer();
+      goToReturnDashboard();
+    }
+    function goToReturnDashboard() {
+      const ss = getSettings().screenSaver;
+      const path = normalizeDashboardPath(ss && ss.returnDashboardPath);
+      if (!path) return;
+      navigateWithFallback(path);
+    }
+    // v1.132.63+: household bug report, verbatim - "Need to make it if
+    // screensaver is set to return to the dashboard page it's currently
+    // on it does nothing." See family-week-calendar-card.js's own
+    // identical copy of this method for the full root-cause note - v193
+    // onward's soft-route-with-hard-fallback mechanism, v1.132.61's own
+    // attempted fix of skipping this function entirely when already on
+    // the target page (which wrongly also skipped the hard-navigate
+    // fallback for a genuinely broken soft route, not just the harmless
+    // same-page no-op it meant to fix), and this version's actual fix -
+    // still attempt the soft navigation unconditionally, only skip the
+    // ambiguous before/after fallback check when nothing needed to
+    // change AND pushState didn't throw.
+    function navigateWithFallback(path) {
+      const before = window.location.href;
+      const alreadyThere = path === before || path === window.location.pathname + window.location.search;
+      let threw = false;
+      try {
+        window.history.pushState(null, "", path);
+        window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
+      } catch (e) {
+        // Fall through - the setTimeout below will see window.location
+        // unchanged and hard-navigate instead.
+        threw = true;
+      }
+      if (alreadyThere && !threw) return;
+      setTimeout(() => {
+        if (window.location.href === before) hardNavigate(path);
+      }, 300);
+    }
+    function hardNavigate(path) {
+      window.location.assign(path);
     }
     function updateCameraImage() {
       if (!hass) return;
@@ -286,6 +351,27 @@ if (!window.__familyHubScreenSaver) {
       // don't talk to each other.
       updateHass(clientHass) {
         if (clientHass) hass = clientHass;
+      },
+      // Test-only hooks - not used by any real card. Lets a jsdom test
+      // drive this shared controller directly (no full card element
+      // needed) and stub the actual browser navigation, same reason every
+      // class-based card's own _hardNavigate is a stubbable method rather
+      // than calling window.location.assign inline (that API is non-
+      // writable/non-configurable in jsdom).
+      _test: {
+        showScreenSaver,
+        hideScreenSaver,
+        getSettings,
+        normalizeSettings,
+        setHardNavigate(fn) {
+          hardNavigate = fn;
+        },
+        get overlayEl() {
+          return overlayEl;
+        },
+        set settingsCacheForTest(v) {
+          settingsCache = v;
+        },
       },
     };
   })();
@@ -689,51 +775,119 @@ if (!window.__familyHubTimerAlarm) {
     // A plain oscillator beep via the Web Audio API - deliberately not a
     // bundled sound file: no extra media asset for HACS/manual installs to
     // ship or for a self-hosted install's network policy to worry about,
-    // and it sounds identical on every install. Repeated on an interval
-    // (not one long tone) so it reads as an alarm rather than a single
-    // chime, and so a tab that's autoplay-blocked the very first beep
-    // (some browsers require a prior user gesture) gets another chance
-    // shortly after - the very next tap ANYWHERE on the page (including
-    // Stop itself) unblocks it going forward for the rest of this tab's
-    // life, same as any other Web Audio use.
+    // and it sounds identical on every install.
+    //
+    // Household ask, verbatim: "can we make it sound more like an alarm
+    // and less like a ticking bomb." The original v1.119.0+ sound was one
+    // flat square-wave tone repeated once a second - metronomic, which is
+    // exactly what read as a countdown-bomb tick rather than an alarm. This
+    // plays a quick alternating two-pitch TRIPLET (a classic digital-alarm-
+    // clock trill) each cycle instead of a single tone, which is what
+    // actually reads as "alarm" to the ear - the alternating pitch is what
+    // a lone repeated tone can't give you, no matter how loud.
+    function playBeep(atTime, freq) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "square";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, atTime);
+      gain.gain.exponentialRampToValueAtTime(0.3, atTime + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, atTime + 0.13);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(atTime);
+      osc.stop(atTime + 0.15);
+    }
+    // Scheduled via Web Audio's own clock (osc.start(atTime)) rather than
+    // three back-to-back setTimeout calls, so the triplet's timing stays
+    // tight even if the main JS thread is briefly busy - it's the crisp,
+    // even spacing that makes it read as a trill instead of a stutter.
     function beepOnce() {
       try {
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         if (audioCtx.state === "suspended") audioCtx.resume();
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.type = "square";
-        osc.frequency.value = 880;
-        gain.gain.value = 0.0001;
-        gain.gain.exponentialRampToValueAtTime(0.28, audioCtx.currentTime + 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.32);
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-        osc.start();
-        osc.stop(audioCtx.currentTime + 0.34);
+        const now = audioCtx.currentTime;
+        [[0, 1046], [0.15, 1318], [0.3, 1046]].forEach(([offset, freq]) => playBeep(now + offset, freq));
       } catch (e) {
         // Autoplay blocked, or no Web Audio at all - the modal is still
         // the primary alarm; sound is a bonus on top of it, not required.
       }
     }
+    // v1.132.55+: which hass connection to tell "dismiss this everywhere"
+    // when Stop is tapped - set by whichever card most recently called
+    // ring()/check() with one, since this singleton is shared across every
+    // card on the dashboard and any of them may have `hass` by now. Best-
+    // effort only (see stop() below): a same-tab-only local alarm (the
+    // original v1.119.0+ behavior this singleton already had) never had a
+    // server-side record to begin with, so the dismiss call below simply
+    // no-ops for it (ws_dismiss_timer_alarm pops a uid that was never
+    // registered - see its own docstring for why that's silent, not an
+    // error).
+    let lastHass = null;
     function stop() {
       if (activeUid) dismissedUids.add(activeUid);
+      const uid = activeUid;
       activeUid = null;
       if (beepHandle) {
         clearInterval(beepHandle);
         beepHandle = null;
       }
       if (modalEl) modalEl.style.display = "none";
+      // v1.132.55+: household's explicit choice - "first tap wins, from
+      // anyone" - so tapping Stop here also clears the alarm everywhere
+      // else (other kiosks, other people's phones-that-are-dashboards)
+      // rather than just silencing this one tab. No permission gate, by
+      // design.
+      if (uid && lastHass && lastHass.connection && lastHass.connection.sendMessagePromise) {
+        lastHass.connection.sendMessagePromise({ type: "family_hub/timers/dismiss_alarm", uid }).catch(() => {});
+      }
     }
-    function start(timer) {
+    // Household bug report, verbatim: "a household alarm or an assigned
+    // alarm set to them plus kiosk doesnt alarm on the kiosk, it should end
+    // the screen saver and pop up the timer ended modal and make noise."
+    // This modal already outranks the screensaver's own overlay (z-index
+    // 2147483647 vs 2147483000, set in ensureModal() above), so it was
+    // always painting on top of it - but a screensaver left running
+    // underneath still means its video/camera poll keeps going, and the
+    // household asked for it to actually END, not just be covered up.
+    // There are THREE independent screensaver implementations in this
+    // project (the calendar card's own, the shared window.__familyHub
+    // ScreenSaver controller used by Chores/Rewards/My Chores/etc., and the
+    // standalone family-screensaver-card.js) and this singleton has no
+    // reference to whichever one might be running on this particular
+    // dashboard. Rather than importing all three, every one of them marks
+    // its overlay element with the same data-family-hub-screensaver
+    // attribute and already dismisses itself (hides, stops video/camera
+    // polling, navigates to its configured return dashboard) on its own
+    // overlay's "pointerdown" listener - so a synthetic pointerdown on
+    // whichever overlay is actually showing reuses each implementation's
+    // own real dismiss path for free, with zero coupling to which one it
+    // is.
+    function wakeAnyScreenSaver() {
+      try {
+        const overlay = document.querySelector("[data-family-hub-screensaver]");
+        if (overlay && overlay.style.display !== "none") {
+          overlay.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        }
+      } catch (e) {
+        // Best-effort - worst case the alarm modal still shows ON TOP of a
+        // running screensaver rather than ending it outright.
+      }
+    }
+    function start(timer, hass) {
+      if (hass) lastHass = hass;
       if (activeUid === timer.uid) return;
       activeUid = timer.uid;
+      wakeAnyScreenSaver();
       const el = ensureModal();
       el.querySelector(".fh-timer-alarm-title").textContent = timer.title || "Timer";
       el.style.display = "flex";
       beepOnce();
       if (beepHandle) clearInterval(beepHandle);
-      beepHandle = setInterval(beepOnce, 1200);
+      // Shorter gap than the old single-tone version (1200ms) since each
+      // cycle is now a ~450ms triplet, not a single ~340ms tone - this
+      // keeps the alarm feeling urgent/continuous rather than sparse.
+      beepHandle = setInterval(beepOnce, 950);
     }
     return {
       // Call once a second from a card's own countdown ticker (the same
@@ -750,11 +904,41 @@ if (!window.__familyHubTimerAlarm) {
       // else started, or one this same tab started but didn't opt into
       // alarms for, is silently ignored here exactly as before this
       // feature existed.
-      check(timers, clientId, remainingSecondsFn) {
+      check(timers, clientId, remainingSecondsFn, hass) {
         if (!clientId) return;
         const mine = (timers || []).find((t) => t.alarm && t.origin_client_id && t.origin_client_id === clientId);
         if (!mine || dismissedUids.has(mine.uid)) return;
-        if (remainingSecondsFn(mine) <= 0) start(mine);
+        if (remainingSecondsFn(mine) <= 0) start(mine, hass);
+      },
+      // v1.132.55+: the WIDENED half - a household_timer_alarm_ring bus
+      // event (fired by chores_websocket_api.py's _dispatch_timer_alarm/
+      // _reannounce_active_alarms) that THIS login should also ring for,
+      // because it's either the timer's own owner, a login flagged as an
+      // always-on alarm kiosk, or the tier was "everyone." Unlike check()
+      // above (which only ever recognizes the ONE tab that started the
+      // timer, by origin_client_id), this recognizes a login/account -
+      // every open tab logged in as a matching user rings, on every
+      // dashboard, which is the whole point of the widened tiers. Re-fired
+      // on every re-announcement (see _reannounce_active_alarms), so
+      // calling this again for an already-ringing uid is a deliberate
+      // no-op (start() already short-circuits on activeUid === timer.uid).
+      ringBroadcast(payload, hass, myUserId) {
+        if (!payload || !payload.uid || dismissedUids.has(payload.uid)) return;
+        const targets = payload.target_user_ids || [];
+        const shouldRing = !!payload.broadcast_all || (myUserId && targets.includes(myUserId));
+        if (!shouldRing) return;
+        start({ uid: payload.uid, title: payload.title }, hass);
+      },
+      // The STOP half of the same broadcast pair - fired the instant
+      // ANY device dismisses (see ws_dismiss_timer_alarm's own "first tap
+      // wins" docstring), including a dismiss that originated from THIS
+      // singleton's own stop() above (that call's own dismiss already
+      // covers this tab; the event still arrives here a moment later and
+      // is a harmless no-op via stop()'s own activeUid !== uid guard, or
+      // via dismissedUids already containing it).
+      stopFromServer(uid) {
+        if (uid) dismissedUids.add(uid);
+        if (activeUid === uid) stop();
       },
     };
   })();
@@ -925,7 +1109,64 @@ class FamilyHubRewardsCard extends HTMLElement {
     this._registerScreenSaver();
     this._registerFabCoordinator();
     this._registerKioskSession();
+    // Household bug report, verbatim: "a household alarm or an assigned
+    // alarm set to them plus kiosk doesnt alarm on the kiosk" - a widened
+    // (kiosks/everyone) timer alarm only ever reached a dashboard through
+    // this subscription, and until now only family-hub-active-timers-
+    // card.js ever set it up. A kiosk whose dashboard shows Rewards instead
+    // of (or as well as) Active Timers never caught the broadcast at all.
+    // See family-hub-active-timers-card.js's own copy of this method for
+    // the full design note - kept byte-identical on purpose.
+    this._subscribeAlarmEvents();
     this._render();
+  }
+  // v1.132.55+: household-wide timer alarms - subscribe to the two bus
+  // events chores_websocket_api.py's _dispatch_timer_alarm/
+  // _reannounce_active_alarms fire (see const.py's
+  // EVENT_FAMILY_HUB_TIMER_ALARM_RING/_STOP), and hand each one to the
+  // shared window.__familyHubTimerAlarm singleton above - same "one modal/
+  // audio loop shared by every card on the dashboard" convention its own
+  // top comment describes. Subscribed once per card instance (guarded by
+  // _alarmUnsub so a re-run of _initFirstLoad, which shouldn't happen but
+  // costs nothing to guard against, never double-subscribes).
+  async _subscribeAlarmEvents() {
+    if (this._alarmUnsub || !this._hass || !this._hass.connection) return;
+    const myUserId = this._myUserId();
+    try {
+      const unsubRing = await this._hass.connection.subscribeEvents((event) => {
+        if (window.__familyHubTimerAlarm) {
+          window.__familyHubTimerAlarm.ringBroadcast(event.data, this._hass, myUserId);
+        }
+      }, "family_hub_timer_alarm_ring");
+      const unsubStop = await this._hass.connection.subscribeEvents((event) => {
+        if (window.__familyHubTimerAlarm && event.data) {
+          window.__familyHubTimerAlarm.stopFromServer(event.data.uid);
+        }
+      }, "family_hub_timer_alarm_stop");
+      this._alarmUnsub = () => {
+        try { unsubRing(); } catch (e) { /* no-op */ }
+        try { unsubStop(); } catch (e) { /* no-op */ }
+      };
+    } catch (e) {
+      // Best-effort - a dashboard that can't subscribe (e.g. a very old
+      // frontend build) simply never gets the WIDENED alarm reach; the
+      // same-tab-only local alarm (window.__familyHubTimerAlarm.check,
+      // unaffected by any of this) still works exactly as before.
+    }
+    // Catch up on anything already ringing before this tab opened, rather
+    // than waiting up to ALARM_REANNOUNCE_SECONDS for the next re-
+    // announcement's RING event.
+    if (this._hass.connection.sendMessagePromise) {
+      try {
+        const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/timers/list_active_alarms" });
+        for (const alarm of (result && result.alarms) || []) {
+          if (window.__familyHubTimerAlarm) window.__familyHubTimerAlarm.ringBroadcast(alarm, this._hass, myUserId);
+        }
+      } catch (e) {
+        // Best-effort catch-up only - the next re-announcement still
+        // covers it.
+      }
+    }
   }
   // v1.110.8+: joins the shared kiosk-login session (see
   // family-hub-chores-card.js's identical _registerKioskSession/singleton
@@ -1014,6 +1255,14 @@ class FamilyHubRewardsCard extends HTMLElement {
     if (window.__familyHubScreenSaver) window.__familyHubScreenSaver.unregisterClient(this);
     if (window.__familyHubFabCoordinator) window.__familyHubFabCoordinator.unregisterClient(this);
     if (window.__familyHubKioskSession) window.__familyHubKioskSession.unregisterClient(this);
+    // v1.132.37+: same "force-remove a still-animating portal" cleanup as
+    // family-hub-chores-card.js's own disconnectedCallback - see
+    // _fireConfetti's own comment for why this lives in document.body
+    // rather than this card's shadow root.
+    if (this._confettiPortals && this._confettiPortals.length) {
+      this._confettiPortals.forEach((portal) => portal.remove());
+      this._confettiPortals = [];
+    }
   }
   getCardSize() {
     return 6;
@@ -1443,14 +1692,16 @@ class FamilyHubRewardsCard extends HTMLElement {
     const overlay = this._root.querySelector(".reject-modal");
     const box = overlay.querySelector(".modal-box");
     box.innerHTML = `
-      <h3>Send back "${this._esc(goal.title)}"</h3>
-      <label>Anything you want to tell them about why? (optional)<textarea class="f-reject-reason" rows="3" placeholder="Not quite - try again"></textarea></label>
+      <button type="button" class="modal-close reject-modal-close" aria-label="Close">&#10005;</button>
+      <h2>Send back "${this._esc(goal.title)}"</h2>
+      <div class="field"><label>Anything you want to tell them about why? (optional)</label><textarea class="f-reject-reason" rows="3" placeholder="Not quite - try again"></textarea></div>
       <div class="modal-actions">
         <button class="cancel-btn">Cancel</button>
         <button class="save-btn">Send back</button>
       </div>
       <div class="form-error"></div>
     `;
+    box.querySelector(".reject-modal-close").addEventListener("click", () => overlay.classList.remove("open"));
     box.querySelector(".cancel-btn").addEventListener("click", () => overlay.classList.remove("open"));
     box.querySelector(".save-btn").addEventListener("click", () => this._submitRejectGoal(id, overlay, box));
     overlay.classList.add("open");
@@ -1476,6 +1727,9 @@ class FamilyHubRewardsCard extends HTMLElement {
   async _archiveGoal(id) {
     try {
       await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/goals/archive", goal_id: id }));
+      // v1.132.37+: same confetti celebration as family-hub-chores-card.js's
+      // own _archiveGoal - see that method's comment.
+      if (this._confettiOnCompleteEnabled()) this._fireConfetti();
     } catch (e) {
       /* no-op */
     }
@@ -1519,10 +1773,77 @@ class FamilyHubRewardsCard extends HTMLElement {
     };
   }
   _defaultSettings() {
-    return { theme: this._defaultTheme(), useGlobalTheme: false, globalThemeId: "" };
+    // v1.132.37+: defaults ON, matching family-hub-chores-card.js's own
+    // _defaultSettings (see that file's comment for why this has to be
+    // listed here too, not just in the calendar card's own Settings-form
+    // default - a household that's never (re-)saved Settings since this
+    // shipped ON by default would otherwise silently get no confetti at
+    // all from this card).
+    return { theme: this._defaultTheme(), useGlobalTheme: true, globalThemeId: "liquidglass", choresConfettiOnComplete: true };
   }
   _getSettings() {
     return this._settingsCache || this._defaultSettings();
+  }
+  // v1.132.37+: household ask, verbatim - "Confetti for completing chores,
+  // can we also apply it to goals and when you complete all tasks in a
+  // routine." This card has no chores/routines of its own, but it does
+  // embed the same Goals board every other card embeds (see _archiveGoal
+  // below) - reuses the exact same choresConfettiOnComplete setting/
+  // _fireConfetti/_confettiCss trio as family-hub-chores-card.js's own
+  // (byte-identical, same "independently-loaded Lovelace resource, not an
+  // ES module that could share one file" convention as everything else
+  // copy-pasted across these card files).
+  _confettiOnCompleteEnabled() {
+    return !!(this._settingsCache && this._settingsCache.choresConfettiOnComplete);
+  }
+  _confettiCss() {
+    return `
+      .chore-confetti-overlay { position: fixed; top: 0; right: 0; bottom: 0; left: 0; pointer-events: none; z-index: 9999; overflow: hidden; }
+      .chore-confetti-piece { position: absolute; top: -12px; width: 8px; height: 14px; opacity: 0.95; animation-name: chore-confetti-fall; animation-timing-function: cubic-bezier(0.35, 0, 0.65, 1); animation-fill-mode: forwards; }
+      @keyframes chore-confetti-fall {
+        0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+        85% { opacity: 1; }
+        100% { transform: translateY(110vh) rotate(var(--chore-confetti-rot)); opacity: 0; }
+      }
+    `;
+  }
+  _fireConfetti() {
+    const COLORS = ["#f94144", "#f3722c", "#f9c74f", "#90be6d", "#43aa8b", "#577590", "#f8961e", "#f9844a"];
+    const portal = document.createElement("div");
+    portal.className = "fh-chore-confetti-portal";
+    const style = document.createElement("style");
+    style.textContent = this._confettiCss();
+    portal.appendChild(style);
+    const overlay = document.createElement("div");
+    overlay.className = "chore-confetti-overlay";
+    portal.appendChild(overlay);
+    const PIECE_COUNT = 70;
+    let maxLifetimeMs = 0;
+    for (let i = 0; i < PIECE_COUNT; i++) {
+      const piece = document.createElement("span");
+      piece.className = "chore-confetti-piece";
+      const durationS = 1.5 + Math.random() * 1.2;
+      const delayS = Math.random() * 0.35;
+      const rotationDeg = (360 + Math.random() * 720) * (Math.random() < 0.5 ? -1 : 1);
+      piece.style.left = `${Math.random() * 100}%`;
+      piece.style.background = COLORS[Math.floor(Math.random() * COLORS.length)];
+      piece.style.animationDuration = `${durationS}s`;
+      piece.style.animationDelay = `${delayS}s`;
+      piece.style.setProperty("--chore-confetti-rot", `${rotationDeg}deg`);
+      if (Math.random() < 0.5) piece.style.borderRadius = "50%";
+      overlay.appendChild(piece);
+      maxLifetimeMs = Math.max(maxLifetimeMs, (durationS + delayS) * 1000);
+    }
+    document.body.appendChild(portal);
+    if (!this._confettiPortals) this._confettiPortals = [];
+    this._confettiPortals.push(portal);
+    setTimeout(() => {
+      portal.remove();
+      if (this._confettiPortals) {
+        const idx = this._confettiPortals.indexOf(portal);
+        if (idx !== -1) this._confettiPortals.splice(idx, 1);
+      }
+    }, maxLifetimeMs + 200);
   }
   // v144.6+: "This device's theme" - a device-local override of the shared
   // Settings > Appearance theme choice, same key/mechanism
@@ -2166,32 +2487,33 @@ class FamilyHubRewardsCard extends HTMLElement {
     const showGoalTab = !isEdit && this._canAssignGoals();
     const memberUsersHtml = this._memberUsers().map((u) => `<option value="${u.id}">${this._esc(u.name)}</option>`).join("");
     box.innerHTML = `
+      <button type="button" class="modal-close reward-modal-close" aria-label="Close">&#10005;</button>
+      <h2>&#127873; ${isEdit ? "Edit reward" : canPrice ? "Add a reward" : "Suggest a reward"}</h2>
       ${showGoalTab ? `
       <div class="modal-tabs">
         <button type="button" class="modal-tab active" data-tab="reward">Reward</button>
         <button type="button" class="modal-tab" data-tab="goal">Goal</button>
       </div>` : ""}
       <div class="tab-pane reward-pane">
-      <h3>${isEdit ? "Edit reward" : canPrice ? "Add a reward" : "Suggest a reward"}</h3>
       ${!isEdit && !canPrice ? `<div class="m-hint">You can suggest a new reward, but only an admin (or someone granted reward-add/reward-override permission) can set its star cost - this'll wait in Suggested Rewards until they price and approve it.</div>` : ""}
-      <label>Title<input type="text" class="m-title" placeholder="Movie night"></label>
-      ${canPrice ? `<label>Cost (stars)<input type="number" class="m-cost" min="0" placeholder="5"></label>` : ""}
+      <div class="field"><label>Title</label><input type="text" class="m-title" placeholder="Movie night"></div>
+      ${canPrice ? `<div class="field"><label>Cost (stars)</label><input type="number" class="m-cost" min="0" placeholder="5"></div>` : ""}
       ${
         canPrice
           ? `
-      <label>What it's really worth (optional)<input type="text" class="m-value-note" placeholder="$20, or 2 hrs"></label>
-      <label title="Optional - e.g. 120 for &quot;2 hours of gaming&quot;. Using this reward starts a countdown and sends a notification when it's up. One reward timer runs at a time per person.">Timer (optional - minutes)<input type="number" class="m-timer-minutes" min="1" max="1440" placeholder="Leave blank for no timer"></label>
-      <label>How it works
+      <div class="field"><label>What it's really worth (optional)</label><input type="text" class="m-value-note" placeholder="$20, or 2 hrs"></div>
+      <div class="field" title="Optional - e.g. 120 for &quot;2 hours of gaming&quot;. Using this reward starts a countdown and sends a notification when it's up. One reward timer runs at a time per person."><label>Timer (optional - minutes)</label><input type="number" class="m-timer-minutes" min="1" max="1440" placeholder="Leave blank for no timer"></div>
+      ${this._alarmAudienceToggleHtml("m-alarm-audience", isEdit ? existingItem.alarm_audience : "self")}
+      <div class="field"><label>How it works</label>
         <select class="m-redeem-mode">
           <option value="instant">Redeem any time</option>
           <option value="banked">Stacks up (e.g. allowance, TV time)</option>
           <option value="one_time">One-time - disappears after use</option>
         </select>
-      </label>
-      <div class="m-banked-fields" hidden>
-        <label>Adds this much per redemption
+      </div>
+      <div class="m-banked-fields field" hidden>
+        <label>Adds this much per redemption</label>
           <span class="m-stack-row"><input type="number" class="m-stack-amount" min="0" step="any" value="1"><input type="text" class="m-stack-label" placeholder="hours, $, etc."></span>
-        </label>
       </div>
       <label class="m-checkbox-label"><input type="checkbox" class="m-requires-fulfillment"> Needs a parent to mark it done before it counts (e.g. cash allowance)</label>
       `
@@ -2222,12 +2544,12 @@ class FamilyHubRewardsCard extends HTMLElement {
       </div>
       ${showGoalTab ? `
       <div class="tab-pane goal-pane" hidden>
-        <label>Title<input type="text" class="g-title" placeholder="Get 3 Bs in math"></label>
-        <label>For<select class="g-assigned">${memberUsersHtml}</select></label>
-        <label>Target count (how many times to log before it's done)<input type="number" class="g-target" min="1" value="1"></label>
+        <div class="field"><label>Title</label><input type="text" class="g-title" placeholder="Get 3 Bs in math"></div>
+        <div class="field"><label>For</label><select class="g-assigned">${memberUsersHtml}</select></div>
+        <div class="field"><label>Target count (how many times to log before it's done)</label><input type="number" class="g-target" min="1" value="1"></div>
         ${this._goalRewardFieldsHtml(null)}
-        <label>Due date (optional)<input type="datetime-local" class="g-due"></label>
-        <label>Notes<textarea class="g-notes" rows="3" placeholder="Any details worth knowing"></textarea></label>
+        <div class="field"><label>Due date (optional)</label><input type="datetime-local" class="g-due"></div>
+        <div class="field"><label>Notes</label><textarea class="g-notes" rows="3" placeholder="Any details worth knowing"></textarea></div>
       </div>` : ""}
       <div class="modal-actions">
         <button class="cancel-btn">Cancel</button>
@@ -2235,12 +2557,14 @@ class FamilyHubRewardsCard extends HTMLElement {
       </div>
       <div class="form-error"></div>
     `;
+    box.querySelector(".reward-modal-close").addEventListener("click", () => overlay.classList.remove("open"));
     if (showGoalTab) {
       this._wireGoalRewardFields(box);
       this._wireModalTabs(box, () => {
         box.querySelector(".save-btn").textContent = box.dataset.activeTab === "goal" ? "Create" : (isEdit ? "Save" : canPrice ? "Add" : "Submit for approval");
       });
     }
+    this._wireAlarmAudienceToggle(box, "m-alarm-audience");
     const colorInput = box.querySelector(".m-color");
     if (colorInput) colorInput.addEventListener("input", () => { colorInput.dataset.touched = "true"; });
     const redeemModeSelect = box.querySelector(".m-redeem-mode");
@@ -2299,6 +2623,40 @@ class FamilyHubRewardsCard extends HTMLElement {
         const errEl = box.querySelector(".form-error");
         if (errEl) errEl.textContent = "";
         if (onSwitch) onSwitch();
+      });
+    });
+  }
+  // v1.132.55+: household ask, verbatim - "if a kid starts a clean room
+  // for 30 minutes task they should get an alarm at the main kiosk, but if
+  // they have siblings the siblings don't need that alarm. But maybe
+  // parents want alarms to trigger everywhere." Copy of family-hub-chores-
+  // card.js's own identical pair (independently-loaded-card convention,
+  // not shared code) - three tiers, see const.py's REWARD_KEY_ALARM_AUDIENCE.
+  _alarmAudienceToggleHtml(inputClass, value) {
+    const v = value === "kiosks" || value === "everyone" ? value : "self";
+    const opt = (val, label) => `<button type="button" class="approval-toggle-btn${v === val ? " active" : ""}" data-value="${val}">${label}</button>`;
+    return `
+      <div class="approval-toggle-field">
+        <div class="approval-toggle-label">Who hears this alarm</div>
+        <div class="approval-toggle-btn-group">
+          ${opt("self", "Just them")}
+          ${opt("kiosks", "Them + kiosks")}
+          ${opt("everyone", "Everyone")}
+        </div>
+        <input type="text" class="${inputClass}" hidden value="${v}" />
+      </div>
+    `;
+  }
+  _wireAlarmAudienceToggle(scope, inputClass) {
+    const hidden = scope.querySelector(`.${inputClass}`);
+    if (!hidden) return;
+    const group = hidden.previousElementSibling;
+    if (!group || !group.classList.contains("approval-toggle-btn-group")) return;
+    group.querySelectorAll(".approval-toggle-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        group.querySelectorAll(".approval-toggle-btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        hidden.value = btn.dataset.value;
       });
     });
   }
@@ -2418,6 +2776,9 @@ class FamilyHubRewardsCard extends HTMLElement {
           type: "family_hub/rewards/update_catalog_item", item_id: existingItem.id, title, cost_stars: cost, icon, color,
           value_note: valueNote, redeem_mode: redeemMode, requires_fulfillment: requiresFulfillment,
           timer_minutes: timerMinutes,
+          // v1.132.55+: "who hears this alarm" 3-way tier - see const.py's
+          // REWARD_KEY_ALARM_AUDIENCE.
+          alarm_audience: box.querySelector(".m-alarm-audience").value,
         };
         if (redeemMode === "banked") {
           payload.stack_unit_amount = parseFloat(box.querySelector(".m-stack-amount").value) || 1;
@@ -2436,6 +2797,8 @@ class FamilyHubRewardsCard extends HTMLElement {
           type: "family_hub/rewards/add_catalog_item", title, cost_stars: cost, icon, color,
           value_note: valueNote, redeem_mode: redeemMode, requires_fulfillment: requiresFulfillment,
           timer_minutes: timerMinutes,
+          // v1.132.55+: same field as the edit form - see its own comment.
+          alarm_audience: box.querySelector(".m-alarm-audience").value,
         };
         if (redeemMode === "banked") {
           payload.stack_unit_amount = parseFloat(box.querySelector(".m-stack-amount").value) || 1;
@@ -2475,7 +2838,13 @@ class FamilyHubRewardsCard extends HTMLElement {
   }
   async _adjustBalance(userId, delta) {
     try {
-      await this._hass.connection.sendMessagePromise({ type: "family_hub/rewards/adjust_balance", user_id: userId, delta });
+      // v199+: routed through _kioskMsg, same fix and same reason as
+      // _openCreateEditRewardModal's own call to add_catalog_item - see
+      // chores_websocket_api.py's ws_adjust_balance for the server-side
+      // half (this quick +/- balance button had the identical gap: no
+      // elevation_token meant a kiosk-elevated household member's own
+      // admin/override permission was never actually checked).
+      await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/rewards/adjust_balance", user_id: userId, delta }));
       await this._fetchRewardsState();
     } catch (e) {
       /* no-op */
@@ -2497,15 +2866,17 @@ class FamilyHubRewardsCard extends HTMLElement {
     const box = overlay.querySelector(".modal-box");
     const myBalance = this._balances[this._myUserId()] || 0;
     box.innerHTML = `
-      <h3>Gift stars to ${this._esc(toName || "them")}</h3>
+      <button type="button" class="modal-close gift-stars-close" aria-label="Close">&#10005;</button>
+      <h2>&#127873; Gift stars to ${this._esc(toName || "them")}</h2>
       <div class="m-hint">You have ${myBalance} star${myBalance === 1 ? "" : "s"}.</div>
-      <label>How many stars<input type="number" class="gift-amount-input" min="1" max="${myBalance}" placeholder="1"></label>
+      <div class="field"><label>How many stars</label><input type="number" class="gift-amount-input" min="1" max="${myBalance}" placeholder="1"></div>
       <div class="form-error gift-stars-error" hidden></div>
       <div class="modal-actions">
         <button class="cancel-btn gift-stars-cancel-btn">Cancel</button>
         <button class="save-btn gift-stars-send-btn">Send gift</button>
       </div>
     `;
+    box.querySelector(".gift-stars-close").addEventListener("click", () => this._closeGiftStarsModal());
     box.querySelector(".gift-stars-cancel-btn").addEventListener("click", () => this._closeGiftStarsModal());
     box.querySelector(".gift-stars-send-btn").addEventListener("click", () => this._submitGiftStars(toUserId));
     const input = box.querySelector(".gift-amount-input");
@@ -2576,26 +2947,28 @@ class FamilyHubRewardsCard extends HTMLElement {
       (n) => `<button type="button" class="preset-btn manage-stars-preset-btn" data-amount="${n}">${n}</button>`
     ).join("");
     box.innerHTML = `
-      <h3>Manage stars</h3>
-      <label>Who
+      <button type="button" class="modal-close manage-stars-close" aria-label="Close">&#10005;</button>
+      <h2>&#11088; Manage stars</h2>
+      <div class="field"><label>Who</label>
         <select class="manage-stars-user">
           ${members.map((u) => `<option value="${u.id}" ${u.id === preselect ? "selected" : ""}>${this._esc(u.name)} (${this._balances[u.id] || 0} &#11088;)</option>`).join("")}
         </select>
-      </label>
+      </div>
       <button type="button" class="manage-stars-history-btn">&#128220; View star history</button>
       <div class="preset-row manage-stars-preset-row">${presetBtns}</div>
-      <label>Or a custom amount<input type="number" class="manage-stars-amount" min="1" step="1" placeholder="e.g. 5"></label>
+      <div class="field"><label>Or a custom amount</label><input type="number" class="manage-stars-amount" min="1" step="1" placeholder="e.g. 5"></div>
       <div class="manage-stars-sign-row">
         <button type="button" class="manage-stars-sign-btn manage-stars-add" data-sign="1">&#43; Add</button>
         <button type="button" class="manage-stars-sign-btn manage-stars-subtract" data-sign="-1">&#8722; Subtract</button>
       </div>
-      <label>Reason (optional)<textarea class="manage-stars-reason" rows="2" placeholder="e.g. Grandma gave a bonus, or: was rude at dinner"></textarea></label>
+      <div class="field"><label>Reason (optional)</label><textarea class="manage-stars-reason" rows="2" placeholder="e.g. Grandma gave a bonus, or: was rude at dinner"></textarea></div>
       <div class="form-error manage-stars-error" hidden></div>
       <div class="modal-actions">
         <button class="cancel-btn manage-stars-cancel-btn">Cancel</button>
         <button class="save-btn manage-stars-save-btn">Save</button>
       </div>
     `;
+    box.querySelector(".manage-stars-close").addEventListener("click", () => this._closeManageStarsModal());
     this._manageStarsSign = 1;
     const amountInput = box.querySelector(".manage-stars-amount");
     const markSign = () => {
@@ -2679,7 +3052,11 @@ class FamilyHubRewardsCard extends HTMLElement {
     try {
       const msg = { type: "family_hub/rewards/adjust_balance", user_id: userId, delta };
       if (reason) msg.reason = reason;
-      await this._hass.connection.sendMessagePromise(msg);
+      // v199+: routed through _kioskMsg - see _adjustBalance's own comment
+      // and chores_websocket_api.py's ws_adjust_balance for the full story
+      // (same "kiosk-elevated household member's real permission was never
+      // checked" bug this modal shared with the quick +/- balance buttons).
+      await this._hass.connection.sendMessagePromise(this._kioskMsg(msg));
       await this._fetchRewardsState();
       this._closeManageStarsModal();
     } catch (e) {
@@ -3158,7 +3535,18 @@ class FamilyHubRewardsCard extends HTMLElement {
          all before v127, everything used to render inline). */
       .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 1000; align-items: center; justify-content: center; }
       .modal-overlay.open { display: flex; }
-      .modal-box { background: var(--fc-bg); color: var(--fc-text); border-radius: 14px; padding: 18px; width: min(90vw, 420px); max-height: 85vh; overflow-y: auto; }
+      .modal-box { position: relative; background: var(--fc-bg); color: var(--fc-text); border-radius: 14px; padding: 18px; width: min(92vw, 420px); max-height: 85vh; overflow-y: auto; }
+      /* v194+: "make the chores and rewards modals more similar to the add
+         calendar and add reminder modal" (household's own words, full visual
+         match) - same design-system port as family-hub-chores-card.js's own
+         copy of this comment/block (no shared module between the cards, so
+         it's its own independent copy of the calendar card's look), applied
+         onto the EXISTING .modal-tab/.cancel-btn/.save-btn/.modal-actions
+         class names below rather than renaming them so the JS wiring that
+         already queries those selectors doesn't have to change. */
+      .modal-close { position: absolute; top: 10px; right: 10px; width: 36px; height: 36px; border-radius: 50%; border: none; background: var(--fc-surface-alt); color: var(--fc-text); font-size: 18px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: var(--fc-shadow); }
+      .modal-box h2 { margin: 0 26px 14px 0; font-size: 1.2em; color: var(--fc-text); }
+      .modal-box h3 { margin: 0 26px 14px 0; font-size: 1.1em; color: var(--fc-text); }
       .modal-box label { display: block; margin: 8px 0; font-size: 13px; font-weight: 700; }
       .modal-box input[type="text"], .modal-box input[type="number"] { width: 100%; box-sizing: border-box; margin-top: 4px; padding: 8px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 13px; font-family: inherit; }
       .m-hint { font-size: 12px; color: var(--fc-text-secondary); line-height: 1.5; margin: 4px 0 10px; }
@@ -3169,16 +3557,34 @@ class FamilyHubRewardsCard extends HTMLElement {
          local inputs this card never needed before Goals existed. */
       .modal-box textarea, .modal-box input[type="datetime-local"] { width: 100%; box-sizing: border-box; margin-top: 4px; padding: 8px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 13px; font-family: inherit; }
       .modal-box textarea { resize: vertical; }
-      .modal-tabs { display: flex; gap: 4px; margin-bottom: 10px; border-bottom: 1px solid var(--fc-border); }
-      .modal-tab { flex: 1; border: none; background: none; color: var(--fc-text-secondary); font-weight: 800; font-size: 13px; padding: 8px 4px; cursor: pointer; border-bottom: 2px solid transparent; }
-      .modal-tab.active { color: var(--fc-accent); border-bottom-color: var(--fc-accent); }
+      /* .field - same calendar-card field-wrapper idiom ported into
+         family-hub-chores-card.js's own copy of this block. */
+      .field { margin-bottom: 14px; }
+      .field label { display: block; font-size: 13px; font-weight: 600; color: var(--fc-text-secondary); margin-bottom: 5px; }
+      .field input, .field select, .field textarea { width: 100%; box-sizing: border-box; font-size: 16px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-family: inherit; margin-top: 0; }
+      .field textarea { resize: vertical; min-height: 60px; }
+      .remind-check-row { display: flex; flex-wrap: wrap; gap: 6px; }
+      .remind-check-opt { display: flex; align-items: center; gap: 4px; padding: 5px 9px; border-radius: 12px; background: var(--fc-surface-alt); color: var(--fc-text); font-size: 12px; font-weight: 600; cursor: pointer; user-select: none; margin: 4px 0; }
+      .remind-check-opt input { margin: 0; width: auto; }
+      .modal-tabs { display: flex; gap: 8px; margin-bottom: 10px; }
+      .modal-tab { flex: 1 1 0; min-height: 40px; padding: 8px 10px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
+      .modal-tab.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
+      /* v1.132.55+: "who hears this alarm" 3-way toggle - copy of
+         family-hub-chores-card.js's own .approval-toggle-* block (same
+         independently-loaded-card convention as everything else in this
+         file, not shared code). */
+      .approval-toggle-field { margin: 10px 0; }
+      .approval-toggle-label { font-size: 12.5px; font-weight: 700; color: var(--fc-text-secondary); margin-bottom: 4px; }
+      .approval-toggle-btn-group { display: flex; gap: 6px; flex-wrap: wrap; }
+      .approval-toggle-btn { flex: 1 1 0; min-width: 88px; min-height: 40px; padding: 8px 10px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 12.5px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
+      .approval-toggle-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
       .goal-pane[hidden], .reward-pane[hidden] { display: none; }
       .m-banked-fields { margin: 4px 0; }
       .m-stack-row { display: flex; gap: 6px; margin-top: 4px; }
       .m-stack-row input[type="number"] { width: 70px; }
       .m-stack-row input[type="text"] { flex: 1; }
-      .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
-      .modal-actions button { border: none; border-radius: 10px; padding: 8px 16px; font-weight: 700; cursor: pointer; }
+      .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+      .modal-actions button { border: none; border-radius: 10px; padding: 10px 18px; font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
       .save-btn { background: var(--fc-accent); color: var(--fc-accent-text); }
       .cancel-btn { background: var(--fc-surface-alt); color: var(--fc-text); }
       .form-error { color: var(--fc-accent3); font-size: 12px; margin-top: 8px; min-height: 14px; }

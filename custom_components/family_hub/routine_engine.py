@@ -92,6 +92,21 @@ def _validate_star_value(star_value: Any) -> int:
     return max(0, n)
 
 
+# v1.132.41+ (household ask, verbatim: "add the account to automate routine
+# completion based on sensors like we do with chores"): a routine item's own
+# equivalent of a chore's auto_complete_trigger - {"entity_id": ...,
+# "from_state": ..., "to_state": ...}, checked by __init__.py's
+# _sensor_trigger_matches (shared with chores) whenever the matching entity
+# changes state. Deliberately as loose as chore_engine.create_chore's own
+# handling of the same shape (no entity_id-exists check, no from/to-state
+# enum) - matching only actually happens later, at trigger-fire time, same
+# as chores.
+def _validate_auto_complete_trigger(trigger: Any) -> Optional[dict[str, Any]]:
+    if not trigger or not isinstance(trigger, dict):
+        return None
+    return trigger
+
+
 def create_item(
     routines: dict[str, Any],
     user_id: str,
@@ -102,6 +117,7 @@ def create_item(
     days_of_week: Optional[list[int]] = None,
     star_value: int = 0,
     no_approval_required: bool = False,
+    auto_complete_trigger: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Add one checklist item under `user_id`'s `category` routine. Raises
     if user_id isn't a real Family Hub member (same membership gate as
@@ -120,7 +136,11 @@ def create_item(
     (mirroring CHORE_KEY_NO_APPROVAL_REQUIRED's own "skip the gate
     entirely" exemption), False (the default) leaves the item pending_
     approval instead until a verifier calls approve_item - see both
-    functions below for the actual payout logic."""
+    functions below for the actual payout logic.
+
+    auto_complete_trigger (v1.132.41+, default None) is this item's own
+    mirror of a chore's auto_complete_trigger - see
+    _validate_auto_complete_trigger's own comment above."""
     if category not in ROUTINE_CATEGORIES:
         raise RoutineError("invalid_category", f"Unknown routine category: {category!r}")
     title = str(title or "").strip()
@@ -143,8 +163,26 @@ def create_item(
         "done": False,
         "due_time": due_time,
         "days_of_week": days_of_week,
+        # v211+: household ask, verbatim - "allow routine blocks to be drug
+        # around and ordered in the routine modal, default is routine items
+        # with time are sorted by when their time is." sort_order is None
+        # (unset) until a household actually drags something in this
+        # user_id+category section (see reorder_items) - while it's None on
+        # every item in a section, the frontend falls back to its own
+        # default ordering (items with a due_time sorted chronologically,
+        # everything else after in whatever order it was created), so a
+        # never-touched routine needs no manual order at all. The moment a
+        # section HAS been dragged, every item in it carries an explicit
+        # sort_order (reorder_items always stamps the whole section, not
+        # just the moved item) - a brand new item added into an
+        # already-ordered section then gets appended to the end of that
+        # explicit order here, rather than silently reverting to
+        # time-sorted and popping up in an unexpected spot relative to its
+        # now manually-arranged siblings.
+        "sort_order": _next_sort_order_if_section_is_manually_ordered(routines, user_id, category),
         "star_value": _validate_star_value(star_value),
         "no_approval_required": bool(no_approval_required),
+        "auto_complete_trigger": _validate_auto_complete_trigger(auto_complete_trigger),
         # Both transient, day-scoped bookkeeping for the star payout below -
         # neither means anything for a star_value=0 item, and both get
         # cleared back to False every morning by maybe_reset_daily alongside
@@ -167,23 +205,30 @@ def update_item(
     days_of_week: Optional[list[int]] = None,
     star_value: int = 0,
     no_approval_required: bool = False,
+    auto_complete_trigger: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Edit an existing item's title/due_time/days_of_week/star_value/
-    no_approval_required in place - the "manage items" flow from the
-    Routine tab of the Chores card's FAB modal (v136+). Deliberately does
-    NOT allow moving an item to a different user_id/category - those are
-    set once at creation (matches the picker-driven "which person/category
-    am I managing right now" UI, which just deletes-and-recreates in that
-    rare case rather than needing a move operation here). Same
-    PERMISSION_ASSIGN gate as create_item/delete_item, enforced by the
-    caller (ws_update_routine_item).
+    no_approval_required/auto_complete_trigger in place - the "manage
+    items" flow from the Routine tab of the Chores card's FAB modal (v136+).
+    Deliberately does NOT allow moving an item to a different user_id/
+    category - those are set once at creation (matches the picker-driven
+    "which person/category am I managing right now" UI, which just
+    deletes-and-recreates in that rare case rather than needing a move
+    operation here). Same PERMISSION_ASSIGN gate as create_item/delete_item,
+    enforced by the caller (ws_update_routine_item).
 
     Changing star_value/no_approval_required never touches today's
     pending_approval/stars_disbursed_today bookkeeping - editing the
     reward on an item that's already checked off today shouldn't
     retroactively grant or claw back stars for a decision already made
     under the old settings; the new value only takes effect the next time
-    the item is toggled."""
+    the item is toggled.
+
+    auto_complete_trigger (v1.132.41+) always gets (re)written from
+    whatever's passed - unlike star_value/no_approval_required there's no
+    "in progress today" state tied to it, so clearing it (passing None)
+    genuinely turns automation off immediately, same as a chore's
+    auto_complete_trigger on ws_update_chore."""
     item = _get_item(routines, item_id)
     title = str(title or "").strip()
     if not title:
@@ -193,6 +238,7 @@ def update_item(
     item["days_of_week"] = _validate_days_of_week(days_of_week)
     item["star_value"] = _validate_star_value(star_value)
     item["no_approval_required"] = bool(no_approval_required)
+    item["auto_complete_trigger"] = _validate_auto_complete_trigger(auto_complete_trigger)
     item["updated_at"] = _now_iso()
     return item
 
@@ -277,6 +323,101 @@ def delete_item(routines: dict[str, Any], item_id: str) -> None:
     if item_id not in items:
         raise RoutineError("not_found", f"No routine item with id {item_id!r}")
     del items[item_id]
+
+
+def _section_items(routines: dict[str, Any], user_id: str, category: str) -> list[dict[str, Any]]:
+    return [
+        item for item in routines.get("items", {}).values()
+        if item.get("user_id") == user_id and item.get("category") == category
+    ]
+
+
+def _next_sort_order_if_section_is_manually_ordered(
+    routines: dict[str, Any], user_id: str, category: str
+) -> Optional[int]:
+    """See create_item's own comment for the full reasoning - returns None
+    (stay in default time-sorted mode) unless this user_id+category section
+    already has at least one manually-ordered item, in which case the new
+    item is appended just past whatever the highest sort_order in that
+    section currently is."""
+    existing_orders = [
+        item.get("sort_order") for item in _section_items(routines, user_id, category)
+        if item.get("sort_order") is not None
+    ]
+    if not existing_orders:
+        return None
+    return max(existing_orders) + 1
+
+
+def reorder_items(
+    routines: dict[str, Any], user_id: str, category: str, ordered_item_ids: list[str]
+) -> list[dict[str, Any]]:
+    """Persists a household's drag-and-drop reordering of one person's one
+    routine category (Morning/Afternoon/Night) - the Routine tab's manage
+    list is always scoped to exactly one user_id+category at a time (see
+    family-hub-chores-card.js's _routineItemsForManage), so a reorder is
+    always a full, exact re-statement of that one section's order, never a
+    partial move. `ordered_item_ids` must be exactly the ids of every item
+    currently in that section, in the new desired order - not a subset and
+    not from a different section - so a stale drag (e.g. from a client that
+    hasn't picked up someone else's just-added item yet) fails loudly
+    instead of silently dropping or duplicating an item. Every item in the
+    section gets a fresh sort_order (its plain list index, 0-based) - not
+    just the ones that actually moved - so this section is now fully in
+    "manual order" mode (see create_item's own comment on what that means
+    for any item added to it later)."""
+    section_items = {item["id"]: item for item in _section_items(routines, user_id, category)}
+    if set(ordered_item_ids) != set(section_items.keys()):
+        raise RoutineError(
+            "invalid_order",
+            "That reordering doesn't match this section's current items - it may have changed since you started dragging.",
+        )
+    for index, item_id in enumerate(ordered_item_ids):
+        section_items[item_id]["sort_order"] = index
+        section_items[item_id]["updated_at"] = _now_iso()
+    return [section_items[item_id] for item_id in ordered_item_ids]
+
+
+def is_item_due_today(item: dict[str, Any], today_weekday: Optional[int] = None) -> bool:
+    """True when `item` is scheduled for today - mirrors the board's own
+    day filter (family-hub-chores-card.js's _routineItemsFor: "!item.
+    days_of_week || !item.days_of_week.length || item.days_of_week.
+    includes(todayWeekday)") so is_routine_complete below agrees exactly
+    with what the household actually SEES on today's board, not some
+    separate backend notion of "today." today_weekday defaults to the
+    server's own local weekday (0=Monday..6=Sunday, matching days_of_
+    week's own convention) when not passed in explicitly - tests pass it
+    explicitly so they don't depend on whatever day they happen to run
+    on."""
+    days_of_week = item.get("days_of_week") or []
+    if not days_of_week:
+        return True
+    weekday = dt_util.now().weekday() if today_weekday is None else today_weekday
+    return weekday in days_of_week
+
+
+def is_routine_complete(
+    routines: dict[str, Any], user_id: str, category: str, today_weekday: Optional[int] = None
+) -> bool:
+    """v186+: household ask, verbatim - "Routines should be able to be
+    triggers for automations." True once every item belonging to
+    `user_id`'s `category` routine that's actually due today (is_item_due_
+    today) is checked off - the natural "is this person's Morning Routine
+    done" a household would want to point an automation at, not a raw
+    per-item toggle. A user/category with no items due today at all
+    returns False rather than vacuously True (nothing to call "complete"
+    when there was nothing to do) - see chores_websocket_api.ws_toggle_
+    routine_item, the caller that turns this into the "routine_completed"
+    event."""
+    weekday = dt_util.now().weekday() if today_weekday is None else today_weekday
+    todays_items = [
+        item
+        for item in routines.get("items", {}).values()
+        if item.get("user_id") == user_id and item.get("category") == category and is_item_due_today(item, weekday)
+    ]
+    if not todays_items:
+        return False
+    return all(item.get("done") for item in todays_items)
 
 
 def maybe_reset_daily(routines: dict[str, Any], today: Optional[date] = None) -> bool:

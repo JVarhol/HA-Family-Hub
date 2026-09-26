@@ -49,6 +49,38 @@ REMINDER_OVERRIDES_STORAGE_VERSION = 1
 EVENT_PEOPLE_OVERRIDES_STORAGE_KEY_PREFIX = "family_hub_event_people_overrides"
 EVENT_PEOPLE_OVERRIDES_STORAGE_VERSION = 1
 
+# v1.132.63+: attachable checklists ("baseball practice needs cleats, a
+# water bottle, a glove packed") for calendar events and standalone
+# Reminders to-do items alike. Same "can't rewrite an existing event's own
+# data" constraint as the two overrides stores just above, so this is the
+# same shape of lightweight side-channel store: keyed off
+# _event_override_key for a calendar event, or off "reminder|<todo entity
+# id>|<item uid>" for a standalone reminder (a to-do item DOES have a
+# stable uid, unlike a calendar event fetched through the REST/poller
+# paths, so no composite-identity trick is needed there). Each record is
+# either {"mode": "existing", "entity_id": "todo.xxx"} - a pointer at a
+# real, already-existing Home Assistant to-do list the household picked,
+# never duplicated or owned by Family Hub - or {"mode": "custom", "items":
+# [{"id", "text", "done"}, ...]} - a one-off list that lives only here,
+# for something too specific to deserve its own permanent to-do list (a
+# packing list for one specific practice, not a recurring "Sports Bag"
+# list). See _sweep_expired_event_checklists in __init__.py for how a
+# "custom" record gets deleted once its parent event/reminder is done or
+# has passed - "existing" records just get unattached (detached) the same
+# way, the underlying to-do list itself is never touched.
+EVENT_CHECKLISTS_STORAGE_KEY_PREFIX = "family_hub_event_checklists"
+EVENT_CHECKLISTS_STORAGE_VERSION = 1
+# Generous grace window after a calendar event's own START time before its
+# attached checklist is treated as "passed" and cleaned up - the checklist
+# exists so its items can be gathered WHILE the activity is happening (or
+# in the last few minutes before it), so cleaning it up the instant the
+# clock ticks past the start time would delete it out from under someone
+# mid-use. There's no reliable "this event's end time" signal available
+# here (see _event_override_key's own docstring on why events have no
+# stable identity beyond calendar+start+summary), so this errs long rather
+# than guessing an end time.
+EVENT_CHECKLIST_PASSED_GRACE_HOURS = 12
+
 CONF_CALENDARS = "calendars"
 CONF_DEFAULT_NOTIFY = "default_notify_target"
 CONF_POLL_MINUTES = "poll_minutes"
@@ -508,8 +540,17 @@ TIMER_SWEEP_SECONDS = 30
 # Guard rails on a timer's length. 1 minute minimum (anything shorter is a
 # mis-typed entry, not a real intent); 24 hours maximum (a "timer" longer
 # than a day is a due date, which chores already have a better field for).
+# Chore/reward timer lengths (configured as plain whole-minute settings
+# fields) are still effectively floored at TIMER_MIN_MINUTES in practice,
+# since neither of those UIs offers a seconds input.
 TIMER_MIN_MINUTES = 1
 TIMER_MAX_MINUTES = 24 * 60
+# v1.132.59+: household ask, verbatim - "can we make the timer accept
+# seconds." A standalone quick timer can now be entered down to whole
+# seconds (e.g. "30 sec" with no minutes at all), so
+# timer_engine.normalize_timer_minutes uses this floor instead of
+# TIMER_MIN_MINUTES for a sub-minute request - see its own docstring.
+TIMER_MIN_SECONDS = 1
 
 TIMER_KIND_CHORE = "chore"
 TIMER_KIND_REWARD = "reward"
@@ -551,6 +592,127 @@ TIMER_LABEL_MAX_LENGTH = 60
 # enumeration would have made those combinations unexpressible.
 CHORE_KEY_TIMER_MINUTES = "timer_minutes"
 REWARD_KEY_TIMER_MINUTES = "timer_minutes"
+
+# --- Timer alarm audience (v1.132.55+) ---------------------------------------
+#
+# Household ask, verbatim: "I want to have chores and rewards use timers and
+# be able to notify on people's devices but also things like Google homes,
+# Amazon Alexa's or even devices running Assist or the Home Assistant app or
+# even the website... I want to be able to alarm and notify a user when it
+# goes off and they need to click a button to make the alarm stop." A
+# follow-up narrowed the actual requirement: "if a kid starts a clean room
+# task they should get an alarm and the main kiosk, but if they have
+# siblings the siblings don't need that alarm. But maybe parents want alarms
+# to trigger everywhere."
+#
+# That's not "notify a flat list of targets" (the existing notifyTargets/
+# notify_targets mechanism, which only ever reaches notify.* mobile push) -
+# it's "who/what should ring" varying PER CHORE/REWARD. So this is a new,
+# separate per-chore/per-catalog-item field, independent of timer_minutes
+# and of the person's own notifyTimerAlarm profile flag (which still governs
+# alarm-vs-plain delivery style, unchanged) - this field governs SCOPE, that
+# field governs STYLE.
+#
+#   CHORE_KEY_ALARM_AUDIENCE / REWARD_KEY_ALARM_AUDIENCE = "alarm_audience"
+#
+#     TIMER_ALARM_AUDIENCE_SELF ("self", the default - matches every
+#       chore/reward that existed before this feature, so nothing changes
+#       for anyone who never touches this field): only the assignee's own
+#       phone (existing notify_targets snapshot, unchanged) and any
+#       dashboard/kiosk screen currently logged in as THAT person ring.
+#       No registered alarm device (speaker/Assist satellite) rings at all.
+#     TIMER_ALARM_AUDIENCE_KIOSKS ("kiosks"): everything "self" does, PLUS
+#       every registered alarm device (see SETTINGS_KEY_ALARM_DEVICES below)
+#       and every dashboard logged in as a person whose own profile has
+#       isAlarmKiosk set - the "main kitchen kiosk" case. A sibling's own
+#       personal login, not flagged as a kiosk, stays silent.
+#     TIMER_ALARM_AUDIENCE_EVERYONE ("everyone"): every person's phone
+#       (not just the assignee's), every registered alarm device, and every
+#       open dashboard regardless of who's logged into it.
+#
+# See chores_websocket_api.py's _resolve_alarm_audience for where this
+# actually turns into a target list, and __init__.py's SETTINGS_KEY_
+# ALARM_DEVICES/isAlarmKiosk docstrings for the two pieces of Settings this
+# builds on.
+CHORE_KEY_ALARM_AUDIENCE = "alarm_audience"
+REWARD_KEY_ALARM_AUDIENCE = "alarm_audience"
+TIMER_ALARM_AUDIENCE_SELF = "self"
+TIMER_ALARM_AUDIENCE_KIOSKS = "kiosks"
+TIMER_ALARM_AUDIENCE_EVERYONE = "everyone"
+TIMER_ALARM_AUDIENCES = (TIMER_ALARM_AUDIENCE_SELF, TIMER_ALARM_AUDIENCE_KIOSKS, TIMER_ALARM_AUDIENCE_EVERYONE)
+
+# settings["alarmDevices"] - a household-wide list of registered speakers/
+# Assist satellites that a "kiosks"/"everyone" audience timer alarm should
+# also ring on, alongside phones and dashboards. Picked from Home
+# Assistant's own existing media_player.*/assist_satellite.* entities (see
+# family_hub/settings/list_alarm_device_candidates in chores_websocket_api.py)
+# rather than typed in by hand, so there's nothing to get wrong:
+#
+#   settings["alarmDevices"] = [
+#       {"id": "<opaque, generated here>", "entity_id": "media_player.kitchen_display",
+#        "domain": "media_player", "name": "Kitchen Google Home"},
+#       {"id": "...", "entity_id": "assist_satellite.living_room_voice_pe",
+#        "domain": "assist_satellite", "name": "Living Room Voice PE"},
+#       ...
+#   ]
+#
+# `domain` is what picks the dispatch path in _dispatch_timer_alarm_devices:
+# "assist_satellite" calls assist_satellite.announce directly (the satellite
+# handles its own TTS); "media_player" calls tts.speak against the
+# household's configured settings["alarmTtsEntityId"] (see that key's own
+# comment) targeting this media_player. A media_player entry with no TTS
+# entity configured is skipped with a logged warning, same best-effort
+# never-break-the-core-action convention as every other notify send loop in
+# this file - it never blocks the phone push or the dashboard ring.
+SETTINGS_KEY_ALARM_DEVICES = "alarmDevices"
+
+# settings["alarmTtsEntityId"] - which tts.* entity to use for the
+# media_player half of alarmDevices above (e.g. "tts.google_translate" or
+# "tts.piper"). Home Assistant has no single "the" TTS engine - a household
+# can have zero, one, or several installed - so this is picked explicitly in
+# Settings (defaulting to whichever tts.* entity is found first, purely as a
+# convenience starting point) rather than guessed silently at alarm time.
+# Assist satellite entries need no such setting since assist_satellite.
+# announce handles its own TTS internally.
+SETTINGS_KEY_ALARM_TTS_ENTITY = "alarmTtsEntityId"
+
+# userProfiles[uid]["isAlarmKiosk"] (bool, default False) - "this login is a
+# shared/always-on screen (the main kitchen kiosk, a hallway tablet), not
+# one person's own device." A dashboard logged in as a person with this flag
+# set rings for anyone's "kiosks"/"everyone"-audience timer alarm, not just
+# that logged-in person's own timers - see TIMER_ALARM_AUDIENCE_KIOSKS
+# above. Toggled from the Users tab's per-person admin-only settings,
+# alongside their other profile flags.
+SETTINGS_KEY_PROFILE_IS_ALARM_KIOSK = "isAlarmKiosk"
+
+# Bus events broadcasting a "ring"/"stop" to every open Family Hub dashboard
+# for a "kiosks"/"everyone"-audience timer alarm - the house-wide counterpart
+# to the existing same-tab-only window.__familyHubTimerAlarm (which still
+# fires first, locally, with zero latency, for the tab that actually started
+# the timer). Every Family Hub card subscribes once via
+# hass.connection.subscribeEvents and rings/stops based on whether ITS OWN
+# login qualifies for the event's own audience/target_user_ids - see
+# _resolve_alarm_audience's own docstring for that payload shape and
+# family-hub-active-timers-card.js's _wireHouseWideAlarmBroadcast for the
+# frontend half. RING is fired once when the timer completes; STOP is fired
+# once, to every screen at once, the moment ANYONE dismisses it (the
+# household's own choice - "first tap wins, from anyone," no permission
+# gate) - see ws_dismiss_timer_alarm.
+EVENT_FAMILY_HUB_TIMER_ALARM_RING = "family_hub_timer_alarm_ring"
+EVENT_FAMILY_HUB_TIMER_ALARM_STOP = "family_hub_timer_alarm_stop"
+
+# How often the sweep re-announces a still-ringing "kiosks"/"everyone"
+# alarm to its registered speakers/Assist satellites. Phones and dashboards
+# don't need this - a phone's critical-alert push already holds the OS's own
+# alarm channel open until swiped, and a dashboard's own modal+beep runs
+# entirely client-side once - but neither Home Assistant's media_player nor
+# assist_satellite domains have any "keep announcing until told to stop"
+# primitive of their own, so re-firing the same announcement on an interval
+# is the only way a speaker "keeps ringing." Deliberately longer than
+# TIMER_SWEEP_SECONDS (which just checks whether it's time yet) so a
+# household isn't hearing the same announcement every 30 seconds - see
+# _reannounce_active_alarms in chores_websocket_api.py.
+ALARM_REANNOUNCE_SECONDS = 45
 
 # First-time setup wizard (config_flow.py's async_step_calendars/grocy/
 # todo_lists/finish): everything it collects - which calendars to monitor,
@@ -637,6 +799,19 @@ CONF_NOTIFICATION_CLICK_PATH = "notification_click_path"
 # naturally makes it eligible to fire again tomorrow, and again the day
 # after that, for as long as it stays uncompleted.
 REMINDER_ROLLOVER_MARKER_PATTERN = r"<!--rollover:1-->"
+
+# v185+: household ask, verbatim - "Better roll over to next day for
+# reminders that allows you to select what days you want it to apply to.
+# Maybe you only want something to remind on friday saturday sunday, or
+# mondays, etc." A SECOND, optional marker alongside the one above -
+# present only when rollover is restricted to specific weekdays (0=Monday..
+# 6=Sunday, matching CHORE_RECUR_TYPE_WEEKDAYS's identical 0-6 convention
+# elsewhere in this file). Absent (every reminder created before this
+# existed, and any new one left at its "every day" default) means
+# unrestricted - roll over every day, exactly like the old behavior. See
+# __init__.py's _roll_reminder_to_today for where this actually changes
+# which day a stale reminder lands on.
+REMINDER_ROLLOVER_DAYS_MARKER_PATTERN = r"<!--rolldays:([\d,]*)-->"
 
 DEFAULT_POLL_MINUTES = 5
 # How far ahead each poll looks for events - also doubles as how far ahead
@@ -803,6 +978,7 @@ GROCY_CONVERSIONS_SYNC_STORAGE_VERSION = 1
 #           "notifyGoalRejected": bool,
 #           "notifyTimerAlarm": bool,
 #           "remindersSubscriptions": {"<person calendar entity>": "calendar" | "calendar_alert"},
+#           "isAlarmKiosk": bool,
 #       },
 #       ...
 #   }
@@ -928,6 +1104,12 @@ REMINDER_SUBSCRIPTION_LEVELS = (REMINDER_SUBSCRIPTION_CALENDAR, REMINDER_SUBSCRI
 #     (timer_engine.py's "alarm" field), same reasoning as notify_targets/
 #     title being snapshots there. Household ask: "route this through alarm
 #     notifications for the person the timer is for."
+#   - isAlarmKiosk (v1.132.55+): unrelated to notification STYLE (that's
+#     notifyTimerAlarm above) - this is about SCOPE. See
+#     TIMER_ALARM_AUDIENCE_KIOSKS's own comment near CHORE_KEY_ALARM_AUDIENCE
+#     for the full picture; in short, a dashboard logged into a login with
+#     this flag on rings for OTHER people's "kiosks"/"everyone"-audience
+#     timer alarms too, not just this login's own.
 # The chore/reward/goal pair-events above are sent from chores_websocket_
 # api.py (ws_redeem_reward/ws_approve_chore/ws_reject_chore/ws_approve_goal/
 # ws_reject_goal - all Goals commands live in this same unified file) and,
@@ -1348,6 +1530,27 @@ CHORE_KEY_NO_APPROVAL_REQUIRED = "no_approval_required"
 CHORE_KEY_QUANTITY_TOTAL = "quantity_total"
 CHORE_KEY_QUANTITY_REMAINING = "quantity_remaining"
 
+# v184+: household ask, verbatim - "Ability to Mark Chores Important. Chore
+# will have a red ! denoting importance, they always go to the top of the
+# list." Plain opt-in boolean, editable via update_chore like every other
+# simple flag here - the actual "sorts to the top" behavior lives entirely
+# on the frontend (family-hub-chores-card.js's _sortChoresForColumn), the
+# backend just stores and passes it through.
+CHORE_KEY_IMPORTANT = "important"
+
+# v184+: household ask, verbatim - "Ability to Assign chores to multiple
+# people. Each person is rewarded individually. Chore can be marked
+# completed for each person individually." Implemented as fan-out: one
+# ordinary single-assignee chore is created PER assignee (reusing the
+# entire existing single-assignee state machine - assign/claim/complete/
+# approve/reward - completely unchanged), with every chore created from the
+# same multi-assign request sharing this one group_id so the frontend can
+# show them as a linked set (create/edit/delete-together) even though the
+# backend treats them as fully independent records. None for an ordinary,
+# non-multi-assign chore - not a new concept most chores need to know
+# about.
+CHORE_KEY_GROUP_ID = "group_id"
+
 # Plain-schedule recurrence - a SECOND, independent way (alongside the
 # sensor-driven auto_create_trigger above) for an approved chore to cycle
 # back to "open" on its own, with no Home Assistant sensor/automation
@@ -1361,9 +1564,65 @@ CHORE_KEY_QUANTITY_REMAINING = "quantity_remaining"
 # open, since "waiting to recur" only describes an approved chore sitting
 # idle, never one that's currently active again.
 CHORE_RECUR_TYPE_INTERVAL = "interval"
+# v187+: household ask, verbatim - "chore scheduling needs some more work
+# potentially want to do every 2 months or every 3 months, every 4th week
+# or 7th week, every other day etc." The "interval" schedule used to ALWAYS
+# mean "every N days" (recur_interval_days alone) - "every other day"
+# already worked (recur_interval_days=2), but "every N weeks"/"every N
+# months" had no way to express at all. CHORE_KEY_RECUR_INTERVAL_UNIT adds
+# a unit alongside the existing count (recur_interval_days is kept as the
+# field name for backward compatibility - every chore ever saved before
+# this existed has no recur_interval_unit at all, and _normalize_recur_
+# interval_unit treats that exactly like an explicit "days", so nothing
+# stored before this feature changes meaning). "Every 4th/7th week" reads
+# as a plain N-week interval (recur_interval_unit="weeks", recur_interval_
+# days=4 or 7), not "the 4th week of some larger period" - consistent with
+# "every 2/3 months" being a plain N-month interval, and with how
+# CHORE_RECUR_TYPE_MONTHLY_NTH (below) already owns the OTHER kind of
+# monthly pattern ("the 3rd Wednesday of every month").
+CHORE_RECUR_INTERVAL_UNIT_DAYS = "days"
+CHORE_RECUR_INTERVAL_UNIT_WEEKS = "weeks"
+CHORE_RECUR_INTERVAL_UNIT_MONTHS = "months"
+CHORE_RECUR_INTERVAL_UNITS = (CHORE_RECUR_INTERVAL_UNIT_DAYS, CHORE_RECUR_INTERVAL_UNIT_WEEKS, CHORE_RECUR_INTERVAL_UNIT_MONTHS)
+CHORE_KEY_RECUR_INTERVAL_UNIT = "recur_interval_unit"
 CHORE_RECUR_TYPE_WEEKDAYS = "weekdays"
-CHORE_RECUR_TYPES = (CHORE_RECUR_TYPE_INTERVAL, CHORE_RECUR_TYPE_WEEKDAYS)
+# v185+: household ask, verbatim - "Better chore scheduling so you can
+# choose things like every third Wednesday or the first weekend of every
+# month. Very similar to how Google calendar does it now." Google Calendar's
+# own "Monthly on the third Wednesday" option picks exactly one weekday;
+# this reuses the existing CHORE_KEY_RECUR_WEEKDAYS field (see chore_engine.
+# _compute_next_recur_due) to allow MORE than one, so "the first weekend"
+# (Saturday+Sunday, nth=1) works as one selection instead of needing a
+# separate concept - "1st occurrence of ANY of these weekdays in the
+# month." CHORE_KEY_RECUR_MONTH_NTH holds which occurrence: 1/2/3/4 for
+# "the Nth," or -1 for "the last" (Google's own "last" option) - always
+# resolvable since every weekday occurs at least 4 times in any month, so
+# nth 1-4 never has to skip a month the way a literal "5th" would.
+CHORE_RECUR_TYPE_MONTHLY_NTH = "monthly_nth"
+CHORE_RECUR_TYPES = (CHORE_RECUR_TYPE_INTERVAL, CHORE_RECUR_TYPE_WEEKDAYS, CHORE_RECUR_TYPE_MONTHLY_NTH)
+CHORE_KEY_RECUR_MONTH_NTH = "recur_month_nth"
+CHORE_RECUR_MONTH_NTH_VALUES = (1, 2, 3, 4, -1)
 CHORE_KEY_RECUR_NEXT_DUE = "recur_next_due"
+
+# v186+: household ask, verbatim - "Chores due x amount time before due on
+# recurring chores. This will set the due date based on when the chore is
+# recurred instead of when the chore was created." Before this, a recurring
+# chore's due_date was set once (at creation, or whenever someone last
+# hand-edited it) and never touched again by recurrence itself - so a
+# chore due "in 3 days" at creation stayed due on that same fixed calendar
+# date forever, even once it had cycled open/approved/open many times over
+# (reset_recurring_chore never wrote due_date at all). CHORE_KEY_RECUR_DUE_
+# OFFSET_MINUTES (default 0 - "due the moment it reopens," a fresh
+# behavior change from "keep whatever due_date it happened to have") is
+# how long AFTER each recurrence the chore should be due; reset_recurring_
+# chore recomputes due_date = the moment it just reopened + this offset,
+# every single time it recurs, replacing whatever due_date was left over
+# from the previous cycle (or from creation, the very first time). Minutes
+# rather than whole days so short-turnaround chores ("bring the trash bin
+# in within a couple hours of pickup") aren't forced into day granularity -
+# the card's own picker offers day/hour presets that all resolve to a
+# minute count.
+CHORE_KEY_RECUR_DUE_OFFSET_MINUTES = "recur_due_offset_minutes"
 
 # Fired on every status change (assignment, claim, complete, approve, and
 # the automatic bin->open/rotation reset when a recurring sensor-triggered
@@ -1372,6 +1631,34 @@ CHORE_KEY_RECUR_NEXT_DUE = "recur_next_due"
 # carries at least {"chore_id", "status", "previous_status"}; see
 # chore_engine._fire_chore_event for the full payload.
 CHORE_EVENT_TYPE = "family_hub_chore_event"
+
+# v186+: household ask, verbatim - "Routines should be able to be triggers
+# for automations." Chores already had CHORE_EVENT_TYPE above; Routines
+# (routine_engine.py's per-person daily checklists) never fired anything
+# onto hass.bus at all, so there was no native "Event" trigger a household
+# could point an automation at. routine_engine.py deliberately stays
+# hass-free (see its own module docstring), so - unlike chores, which fire
+# from inside chore_engine.py itself - this fires from the websocket layer
+# (chores_websocket_api.py's ws_toggle_routine_item/ws_approve_routine_item),
+# the same place `hass` is already on hand for _save_routines.
+#
+# Three event shapes share this one event_type, told apart by
+# event_data["event"]:
+#   - "item_toggled": every single checkbox flip, done True or False.
+#     event_data: {item_id, title, user_id, category, done, actor}.
+#   - "item_approved": a star-earning item's approve_item payout (only
+#     reachable for items with no_approval_required=False - see
+#     routine_engine.approve_item). event_data shape matches item_toggled
+#     (done is always True here).
+#   - "routine_completed": fired once, the moment the LAST item that's
+#     actually due today (see routine_engine.is_item_due_today) in a given
+#     user_id+category flips to done - "when Mom's Morning Routine is
+#     done, do X" is what most people actually want to automate off of,
+#     not every individual item. Never re-fires from toggling an
+#     already-fully-done routine's item off and back on in place (that's
+#     just "item_toggled" twice) - only the transition into "everything
+#     due today is now done" fires it. event_data: {user_id, category}.
+ROUTINE_EVENT_TYPE = "family_hub_routine_event"
 
 # Native HA services (see services.yaml) - the same five actions the
 # websocket API exposes to the cards, registered as real hass.services too
@@ -1504,6 +1791,55 @@ PERMISSION_EDIT_MENU = "can_edit_menu"
 # after the migration has already run, correctly starts blind to claim
 # status until an admin explicitly turns it on for them.
 PERMISSION_SEE_WISHLIST_CLAIMS = "can_see_wishlist_claims"
+# v1.132.43+: household ask, verbatim - "Deleting calendar events (Needs
+# permission) if the calendar integration you're using supports delete,
+# else gray out and when click give a pop up that says delete is not
+# supported with your current integration please use [INTEGRATION] app to
+# delete." Gates the new Delete button in family-week-calendar-card.js's
+# event-info popup (_openEventInfo) - same standalone-permission shape as
+# PERMISSION_EDIT_MENU just above (deleting a calendar event has never had
+# ANY permission gating before this, because there was no delete feature at
+# all before this). The genuinely-enforced half lives server-side in
+# __init__.py's _ws_delete_calendar_event, re-deriving this from the
+# Permissions store via chores_websocket_api._has_permission exactly like
+# _ws_apply_menu_suggestion does for PERMISSION_EDIT_MENU - a kid's card
+# hiding the button is just UX; the actual `calendar.delete_event` service
+# call only happens after a server-side check. Whether that delete button
+# is USABLE at all (vs. greyed out with an explanatory popup) is a
+# completely separate question from this permission - see
+# CALENDAR_PLATFORM_FRIENDLY_NAMES and _ws_get_calendar_delete_support just
+# below/in __init__.py: most calendar platforms don't implement
+# CalendarEntityFeature.DELETE_EVENT at all, so even someone WITH this
+# permission sees the popup instead of a working button on those.
+PERMISSION_DELETE_EVENT = "can_delete_event"
+# v1.132.47+: household ask, verbatim - "Need a permission to add/delete
+# routines both add/delete self and all so someone can't modify others."
+# Before this, every routine-item write (create/update/delete/reorder - see
+# chores_websocket_api.py's ws_create_routine_item/ws_update_routine_item/
+# ws_delete_routine_item/ws_reorder_routine_items) was gated on the single,
+# broad PERMISSION_ASSIGN - which also means a non-admin without that grant
+# couldn't touch even their OWN routine checklist (confirmed by
+# test_routine_reorder.py's own forbidden-for-a-non-permitted-user case,
+# which reorders that same user's own section and still gets rejected).
+# These two new permissions add a narrower, ownership-aware alternative
+# without changing PERMISSION_ASSIGN's own existing behavior at all (an
+# assign-permission holder, or a real admin, can still manage EVERY
+# person's routines exactly as before - this is purely additive):
+#   - PERMISSION_ROUTINES_MANAGE_OWN grants write access to routine items in
+#     the GRANTEE'S OWN section only (the item's/section's user_id must
+#     equal the acting user's own id) - the "manage self" half of the ask.
+#   - PERMISSION_ROUTINES_MANAGE_ANY grants write access to EVERY person's
+#     routine items, same reach as PERMISSION_ASSIGN but scoped to just
+#     Routines - the "manage all" half of the ask, for a household that
+#     wants to hand out routine-management authority without also handing
+#     out PERMISSION_ASSIGN's much broader chore-assignment authority.
+# See chores_websocket_api.py's _can_write_routine_items(entry_data,
+# connection, target_user_id) for the one shared check all four handlers
+# now call: real admin, OR PERMISSION_ASSIGN (unchanged precedent), OR
+# PERMISSION_ROUTINES_MANAGE_ANY, OR (PERMISSION_ROUTINES_MANAGE_OWN AND
+# target_user_id == the acting user's own id).
+PERMISSION_ROUTINES_MANAGE_OWN = "can_manage_own_routines"
+PERMISSION_ROUTINES_MANAGE_ANY = "can_manage_any_routines"
 CHORE_PERMISSIONS = (
     PERMISSION_ASSIGN,
     PERMISSION_VERIFY,
@@ -1515,7 +1851,40 @@ CHORE_PERMISSIONS = (
     PERMISSION_STAR_OVERRIDE,
     PERMISSION_EDIT_MENU,
     PERMISSION_SEE_WISHLIST_CLAIMS,
+    PERMISSION_DELETE_EVENT,
+    PERMISSION_ROUTINES_MANAGE_OWN,
+    PERMISSION_ROUTINES_MANAGE_ANY,
 )
+
+# v1.132.43+: HA core's `calendar` component defines a CalendarEntityFeature
+# IntFlag on CalendarEntity (CREATE_EVENT=1, DELETE_EVENT=2, UPDATE_EVENT=4);
+# a calendar entity that implements async_delete_event exposes this bit in
+# its own state's `supported_features` attribute, which is what
+# _ws_get_calendar_delete_support (__init__.py) checks - not vendored here
+# since real Home Assistant isn't a dependency of this repo, so the bit
+# value is inlined rather than imported. Only DELETE_EVENT is needed here.
+CALENDAR_ENTITY_FEATURE_DELETE_EVENT = 2
+
+# Human-facing names for the "please use [INTEGRATION] app to delete this
+# event" popup (family-week-calendar-card.js's _wireEventInfoDeleteButton)
+# when this household's calendar entity doesn't support delete at all. Keyed
+# by the entity registry's `platform` (the integration's own domain, e.g.
+# "google" for the official Google Calendar integration) - see
+# _ws_get_calendar_delete_support's own docstring for where `platform` comes
+# from. Deliberately just the common ones a household is likely to actually
+# have connected as a Family Hub calendar; an unlisted platform falls back
+# to a title-cased version of its domain (e.g. "caldav" -> "Caldav") rather
+# than failing or showing a raw domain string.
+CALENDAR_PLATFORM_FRIENDLY_NAMES = {
+    "google": "Google Calendar",
+    "caldav": "your CalDAV app",
+    "local_calendar": "Home Assistant's local calendar",
+    "office365": "Outlook / Office 365",
+    "o365": "Outlook / Office 365",
+    "icloud": "iCloud Calendar",
+    "todoist": "Todoist",
+    "remote_calendar": "your remote calendar's own app",
+}
 
 # v128+: a catalog item's redeem_mode - see reward_engine.py's own module
 # docstring for the full picture. Every reward has exactly one:

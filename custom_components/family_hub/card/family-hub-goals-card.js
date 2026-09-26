@@ -191,6 +191,220 @@ if (!window.__familyHubFabCoordinator) {
   })();
 }
 
+// Household-wide timer alarm sound+modal (v1.119.0+, widened in
+// v1.132.55+) - see family-hub-active-timers-card.js's own top comment
+// above this same block for the full design note. Added here in
+// v1.132.59+ after a household bug report, verbatim: "a household
+// alarm or an assigned alarm set to them plus kiosk doesnt alarm on the
+// kiosk" - this card never carried this singleton or subscribed to
+// the widened-alarm broadcast at all, so a kiosk whose dashboard shows
+// it silently never rang for anyone else's widened timer alarm. Kept
+// byte-identical to every other card's copy on purpose.
+if (!window.__familyHubTimerAlarm) {
+  window.__familyHubTimerAlarm = (function () {
+    let modalEl = null;
+    let audioCtx = null;
+    let beepHandle = null;
+    let activeUid = null;
+    // A timer's uid, once dismissed, stays dismissed - otherwise the very
+    // next poll's countdown tick (still <= 0 for a few more seconds until
+    // the backend's own sweep, up to TIMER_SWEEP_SECONDS later, actually
+    // removes it from family_hub/timers/list) would immediately re-open
+    // the modal a person just tapped Stop on. Unbounded but negligible: a
+    // few bytes per timer this ONE tab ever alarmed for in its lifetime.
+    const dismissedUids = new Set();
+    function ensureModal() {
+      if (modalEl) return modalEl;
+      modalEl = document.createElement("div");
+      modalEl.id = "family-hub-timer-alarm-overlay";
+      Object.assign(modalEl.style, {
+        position: "fixed", inset: "0", zIndex: "2147483647", display: "none",
+        alignItems: "center", justifyContent: "center",
+        background: "rgba(20,16,8,0.78)",
+      });
+      modalEl.innerHTML =
+        '<div style="background:#fff8ea;color:#3a352c;border-radius:22px;padding:38px 30px;max-width:360px;width:88vw;text-align:center;box-shadow:0 14px 46px rgba(0,0,0,0.45);font-family:-apple-system,\'Segoe UI\',Roboto,sans-serif;">' +
+        '<div style="font-size:48px;margin-bottom:12px;">&#9200;</div>' +
+        '<div class="fh-timer-alarm-title" style="font-size:1.3em;font-weight:800;margin-bottom:6px;"></div>' +
+        '<div style="font-size:14px;color:#96877a;margin-bottom:24px;">Time\'s up!</div>' +
+        '<button type="button" class="fh-timer-alarm-stop" style="min-height:54px;width:100%;border:none;border-radius:14px;background:#8f5a00;color:#fff8ea;font-size:19px;font-weight:800;cursor:pointer;">Stop</button>' +
+        "</div>";
+      document.body.appendChild(modalEl);
+      modalEl.querySelector(".fh-timer-alarm-stop").addEventListener("click", () => stop());
+      return modalEl;
+    }
+    // A plain oscillator beep via the Web Audio API - deliberately not a
+    // bundled sound file: no extra media asset for HACS/manual installs to
+    // ship or for a self-hosted install's network policy to worry about,
+    // and it sounds identical on every install.
+    //
+    // Household ask, verbatim: "can we make it sound more like an alarm
+    // and less like a ticking bomb." The original v1.119.0+ sound was one
+    // flat square-wave tone repeated once a second - metronomic, which is
+    // exactly what read as a countdown-bomb tick rather than an alarm. This
+    // plays a quick alternating two-pitch TRIPLET (a classic digital-alarm-
+    // clock trill) each cycle instead of a single tone, which is what
+    // actually reads as "alarm" to the ear - the alternating pitch is what
+    // a lone repeated tone can't give you, no matter how loud.
+    function playBeep(atTime, freq) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "square";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, atTime);
+      gain.gain.exponentialRampToValueAtTime(0.3, atTime + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, atTime + 0.13);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(atTime);
+      osc.stop(atTime + 0.15);
+    }
+    // Scheduled via Web Audio's own clock (osc.start(atTime)) rather than
+    // three back-to-back setTimeout calls, so the triplet's timing stays
+    // tight even if the main JS thread is briefly busy - it's the crisp,
+    // even spacing that makes it read as a trill instead of a stutter.
+    function beepOnce() {
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === "suspended") audioCtx.resume();
+        const now = audioCtx.currentTime;
+        [[0, 1046], [0.15, 1318], [0.3, 1046]].forEach(([offset, freq]) => playBeep(now + offset, freq));
+      } catch (e) {
+        // Autoplay blocked, or no Web Audio at all - the modal is still
+        // the primary alarm; sound is a bonus on top of it, not required.
+      }
+    }
+    // v1.132.55+: which hass connection to tell "dismiss this everywhere"
+    // when Stop is tapped - set by whichever card most recently called
+    // ring()/check() with one, since this singleton is shared across every
+    // card on the dashboard and any of them may have `hass` by now. Best-
+    // effort only (see stop() below): a same-tab-only local alarm (the
+    // original v1.119.0+ behavior this singleton already had) never had a
+    // server-side record to begin with, so the dismiss call below simply
+    // no-ops for it (ws_dismiss_timer_alarm pops a uid that was never
+    // registered - see its own docstring for why that's silent, not an
+    // error).
+    let lastHass = null;
+    function stop() {
+      if (activeUid) dismissedUids.add(activeUid);
+      const uid = activeUid;
+      activeUid = null;
+      if (beepHandle) {
+        clearInterval(beepHandle);
+        beepHandle = null;
+      }
+      if (modalEl) modalEl.style.display = "none";
+      // v1.132.55+: household's explicit choice - "first tap wins, from
+      // anyone" - so tapping Stop here also clears the alarm everywhere
+      // else (other kiosks, other people's phones-that-are-dashboards)
+      // rather than just silencing this one tab. No permission gate, by
+      // design.
+      if (uid && lastHass && lastHass.connection && lastHass.connection.sendMessagePromise) {
+        lastHass.connection.sendMessagePromise({ type: "family_hub/timers/dismiss_alarm", uid }).catch(() => {});
+      }
+    }
+    // Household bug report, verbatim: "a household alarm or an assigned
+    // alarm set to them plus kiosk doesnt alarm on the kiosk, it should end
+    // the screen saver and pop up the timer ended modal and make noise."
+    // This modal already outranks the screensaver's own overlay (z-index
+    // 2147483647 vs 2147483000, set in ensureModal() above), so it was
+    // always painting on top of it - but a screensaver left running
+    // underneath still means its video/camera poll keeps going, and the
+    // household asked for it to actually END, not just be covered up.
+    // There are THREE independent screensaver implementations in this
+    // project (the calendar card's own, the shared window.__familyHub
+    // ScreenSaver controller used by Chores/Rewards/My Chores/etc., and the
+    // standalone family-screensaver-card.js) and this singleton has no
+    // reference to whichever one might be running on this particular
+    // dashboard. Rather than importing all three, every one of them marks
+    // its overlay element with the same data-family-hub-screensaver
+    // attribute and already dismisses itself (hides, stops video/camera
+    // polling, navigates to its configured return dashboard) on its own
+    // overlay's "pointerdown" listener - so a synthetic pointerdown on
+    // whichever overlay is actually showing reuses each implementation's
+    // own real dismiss path for free, with zero coupling to which one it
+    // is.
+    function wakeAnyScreenSaver() {
+      try {
+        const overlay = document.querySelector("[data-family-hub-screensaver]");
+        if (overlay && overlay.style.display !== "none") {
+          overlay.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        }
+      } catch (e) {
+        // Best-effort - worst case the alarm modal still shows ON TOP of a
+        // running screensaver rather than ending it outright.
+      }
+    }
+    function start(timer, hass) {
+      if (hass) lastHass = hass;
+      if (activeUid === timer.uid) return;
+      activeUid = timer.uid;
+      wakeAnyScreenSaver();
+      const el = ensureModal();
+      el.querySelector(".fh-timer-alarm-title").textContent = timer.title || "Timer";
+      el.style.display = "flex";
+      beepOnce();
+      if (beepHandle) clearInterval(beepHandle);
+      // Shorter gap than the old single-tone version (1200ms) since each
+      // cycle is now a ~450ms triplet, not a single ~340ms tone - this
+      // keeps the alarm feeling urgent/continuous rather than sparse.
+      beepHandle = setInterval(beepOnce, 950);
+    }
+    return {
+      // Call once a second from a card's own countdown ticker (the same
+      // tick that already repaints the visible "X:XX left" text), passing:
+      //   timers        - that card's own freshly-fetched timers list
+      //   clientId      - this tab's own id (see _familyHubClientId below)
+      //   remainingSecondsFn - a (timer) => seconds function, so this
+      //                   singleton reuses the CALLING card's own
+      //                   native-timer-aware math (_timerRemainingSeconds)
+      //                   instead of a second, potentially-drifting copy
+      //                   of it living here with no access to `hass`.
+      // Only a timer whose origin_client_id matches THIS tab's own id and
+      // whose alarm flag is on can ever trigger anything - a timer someone
+      // else started, or one this same tab started but didn't opt into
+      // alarms for, is silently ignored here exactly as before this
+      // feature existed.
+      check(timers, clientId, remainingSecondsFn, hass) {
+        if (!clientId) return;
+        const mine = (timers || []).find((t) => t.alarm && t.origin_client_id && t.origin_client_id === clientId);
+        if (!mine || dismissedUids.has(mine.uid)) return;
+        if (remainingSecondsFn(mine) <= 0) start(mine, hass);
+      },
+      // v1.132.55+: the WIDENED half - a household_timer_alarm_ring bus
+      // event (fired by chores_websocket_api.py's _dispatch_timer_alarm/
+      // _reannounce_active_alarms) that THIS login should also ring for,
+      // because it's either the timer's own owner, a login flagged as an
+      // always-on alarm kiosk, or the tier was "everyone." Unlike check()
+      // above (which only ever recognizes the ONE tab that started the
+      // timer, by origin_client_id), this recognizes a login/account -
+      // every open tab logged in as a matching user rings, on every
+      // dashboard, which is the whole point of the widened tiers. Re-fired
+      // on every re-announcement (see _reannounce_active_alarms), so
+      // calling this again for an already-ringing uid is a deliberate
+      // no-op (start() already short-circuits on activeUid === timer.uid).
+      ringBroadcast(payload, hass, myUserId) {
+        if (!payload || !payload.uid || dismissedUids.has(payload.uid)) return;
+        const targets = payload.target_user_ids || [];
+        const shouldRing = !!payload.broadcast_all || (myUserId && targets.includes(myUserId));
+        if (!shouldRing) return;
+        start({ uid: payload.uid, title: payload.title }, hass);
+      },
+      // The STOP half of the same broadcast pair - fired the instant
+      // ANY device dismisses (see ws_dismiss_timer_alarm's own "first tap
+      // wins" docstring), including a dismiss that originated from THIS
+      // singleton's own stop() above (that call's own dismiss already
+      // covers this tab; the event still arrives here a moment later and
+      // is a harmless no-op via stop()'s own activeUid !== uid guard, or
+      // via dismissedUids already containing it).
+      stopFromServer(uid) {
+        if (uid) dismissedUids.add(uid);
+        if (activeUid === uid) stop();
+      },
+    };
+  })();
+}
+
 // Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
 // "When you load a card it tends to load the default theme first then it
 // switches over to the theme you set how can we always make it load the
@@ -326,7 +540,61 @@ class FamilyHubGoalsCard extends HTMLElement {
     await this._fetchGlobalThemes();
     this._startPolling();
     this._registerFabCoordinator();
+    // Household bug report, verbatim: "a household alarm or an assigned
+    // alarm set to them plus kiosk doesnt alarm on the kiosk" - see this
+    // file's own copy of the window.__familyHubTimerAlarm singleton
+    // (below) for the full design note. Kept byte-identical to every
+    // other card's copy on purpose.
+    this._subscribeAlarmEvents();
     this._render();
+  }
+  // v1.132.59+: household-wide timer alarms - subscribe to the two bus
+  // events chores_websocket_api.py's _dispatch_timer_alarm/
+  // _reannounce_active_alarms fire (see const.py's
+  // EVENT_FAMILY_HUB_TIMER_ALARM_RING/_STOP), and hand each one to the
+  // shared window.__familyHubTimerAlarm singleton below - same "one modal/
+  // audio loop shared by every card on the dashboard" convention its own
+  // top comment describes. Subscribed once per card instance (guarded by
+  // _alarmUnsub so a re-run of _initFirstLoad, which shouldn't happen but
+  // costs nothing to guard against, never double-subscribes).
+  async _subscribeAlarmEvents() {
+    if (this._alarmUnsub || !this._hass || !this._hass.connection) return;
+    const myUserId = this._myUserId();
+    try {
+      const unsubRing = await this._hass.connection.subscribeEvents((event) => {
+        if (window.__familyHubTimerAlarm) {
+          window.__familyHubTimerAlarm.ringBroadcast(event.data, this._hass, myUserId);
+        }
+      }, "family_hub_timer_alarm_ring");
+      const unsubStop = await this._hass.connection.subscribeEvents((event) => {
+        if (window.__familyHubTimerAlarm && event.data) {
+          window.__familyHubTimerAlarm.stopFromServer(event.data.uid);
+        }
+      }, "family_hub_timer_alarm_stop");
+      this._alarmUnsub = () => {
+        try { unsubRing(); } catch (e) { /* no-op */ }
+        try { unsubStop(); } catch (e) { /* no-op */ }
+      };
+    } catch (e) {
+      // Best-effort - a dashboard that can't subscribe (e.g. a very old
+      // frontend build) simply never gets the WIDENED alarm reach; the
+      // same-tab-only local alarm (window.__familyHubTimerAlarm.check,
+      // unaffected by any of this) still works exactly as before.
+    }
+    // Catch up on anything already ringing before this tab opened, rather
+    // than waiting up to ALARM_REANNOUNCE_SECONDS for the next re-
+    // announcement's RING event.
+    if (this._hass.connection.sendMessagePromise) {
+      try {
+        const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/timers/list_active_alarms" });
+        for (const alarm of (result && result.alarms) || []) {
+          if (window.__familyHubTimerAlarm) window.__familyHubTimerAlarm.ringBroadcast(alarm, this._hass, myUserId);
+        }
+      } catch (e) {
+        // Best-effort catch-up only - the next re-announcement still
+        // covers it.
+      }
+    }
   }
   // v1.110.4+: joins the shared FAB-stacking coordinator (see the
   // singleton block above this class) - unlike Chores/Rewards this card
@@ -373,6 +641,14 @@ class FamilyHubGoalsCard extends HTMLElement {
     if (this._interval) clearInterval(this._interval);
     this._interval = null;
     if (window.__familyHubFabCoordinator) window.__familyHubFabCoordinator.unregisterClient(this);
+    // v1.132.37+: same "force-remove a still-animating portal" cleanup as
+    // family-hub-chores-card.js's own disconnectedCallback - see
+    // _fireConfetti's own comment for why this lives in document.body
+    // rather than this card's shadow root.
+    if (this._confettiPortals && this._confettiPortals.length) {
+      this._confettiPortals.forEach((portal) => portal.remove());
+      this._confettiPortals = [];
+    }
   }
   getCardSize() {
     return 6;
@@ -432,10 +708,76 @@ class FamilyHubGoalsCard extends HTMLElement {
     };
   }
   _defaultSettings() {
-    return { theme: this._defaultTheme(), useGlobalTheme: false, globalThemeId: "" };
+    // v1.132.37+: defaults ON, matching family-hub-chores-card.js's own
+    // _defaultSettings (see that file's comment for why this has to be
+    // listed here too, not just in the calendar card's own Settings-form
+    // default - a household that's never (re-)saved Settings since this
+    // shipped ON by default would otherwise silently get no confetti at
+    // all from this card).
+    return { theme: this._defaultTheme(), useGlobalTheme: true, globalThemeId: "liquidglass", choresConfettiOnComplete: true };
   }
   _getSettings() {
     return this._settingsCache || this._defaultSettings();
+  }
+  // v1.132.37+: household ask, verbatim - "Confetti for completing chores,
+  // can we also apply it to goals and when you complete all tasks in a
+  // routine." Reuses the exact same choresConfettiOnComplete setting and
+  // _fireConfetti/_confettiCss trio as family-hub-chores-card.js's own
+  // (byte-identical, same "independently-loaded Lovelace resource, not an
+  // ES module that could share one file" convention as everything else
+  // copy-pasted across these card files) - one household-wide "on/off" for
+  // every kind of completion celebration, not a separate toggle per card.
+  _confettiOnCompleteEnabled() {
+    return !!(this._settingsCache && this._settingsCache.choresConfettiOnComplete);
+  }
+  _confettiCss() {
+    return `
+      .chore-confetti-overlay { position: fixed; top: 0; right: 0; bottom: 0; left: 0; pointer-events: none; z-index: 9999; overflow: hidden; }
+      .chore-confetti-piece { position: absolute; top: -12px; width: 8px; height: 14px; opacity: 0.95; animation-name: chore-confetti-fall; animation-timing-function: cubic-bezier(0.35, 0, 0.65, 1); animation-fill-mode: forwards; }
+      @keyframes chore-confetti-fall {
+        0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+        85% { opacity: 1; }
+        100% { transform: translateY(110vh) rotate(var(--chore-confetti-rot)); opacity: 0; }
+      }
+    `;
+  }
+  _fireConfetti() {
+    const COLORS = ["#f94144", "#f3722c", "#f9c74f", "#90be6d", "#43aa8b", "#577590", "#f8961e", "#f9844a"];
+    const portal = document.createElement("div");
+    portal.className = "fh-chore-confetti-portal";
+    const style = document.createElement("style");
+    style.textContent = this._confettiCss();
+    portal.appendChild(style);
+    const overlay = document.createElement("div");
+    overlay.className = "chore-confetti-overlay";
+    portal.appendChild(overlay);
+    const PIECE_COUNT = 70;
+    let maxLifetimeMs = 0;
+    for (let i = 0; i < PIECE_COUNT; i++) {
+      const piece = document.createElement("span");
+      piece.className = "chore-confetti-piece";
+      const durationS = 1.5 + Math.random() * 1.2;
+      const delayS = Math.random() * 0.35;
+      const rotationDeg = (360 + Math.random() * 720) * (Math.random() < 0.5 ? -1 : 1);
+      piece.style.left = `${Math.random() * 100}%`;
+      piece.style.background = COLORS[Math.floor(Math.random() * COLORS.length)];
+      piece.style.animationDuration = `${durationS}s`;
+      piece.style.animationDelay = `${delayS}s`;
+      piece.style.setProperty("--chore-confetti-rot", `${rotationDeg}deg`);
+      if (Math.random() < 0.5) piece.style.borderRadius = "50%";
+      overlay.appendChild(piece);
+      maxLifetimeMs = Math.max(maxLifetimeMs, (durationS + delayS) * 1000);
+    }
+    document.body.appendChild(portal);
+    if (!this._confettiPortals) this._confettiPortals = [];
+    this._confettiPortals.push(portal);
+    setTimeout(() => {
+      portal.remove();
+      if (this._confettiPortals) {
+        const idx = this._confettiPortals.indexOf(portal);
+        if (idx !== -1) this._confettiPortals.splice(idx, 1);
+      }
+    }, maxLifetimeMs + 200);
   }
   // v144.6+: "This device's theme" - a device-local override of the shared
   // Settings > Appearance theme choice, same key/mechanism
@@ -873,6 +1215,13 @@ class FamilyHubGoalsCard extends HTMLElement {
   async _archive(goalId) {
     try {
       await this._hass.connection.sendMessagePromise({ type: "family_hub/goals/archive", goal_id: goalId });
+      // v1.132.37+: household ask, verbatim - "Confetti for completing
+      // chores, can we also apply it to goals and when you complete all
+      // tasks in a routine." Fires on "Complete" (archiving an
+      // already-approved goal) - that's the moment with its own literal
+      // "Complete" button, closest to a chore's Complete tap, not on
+      // reaching the goal's target or on approval.
+      if (this._confettiOnCompleteEnabled()) this._fireConfetti();
     } catch (e) {
       /* server already validated/permission-gated this - a stale click just no-ops */
     }

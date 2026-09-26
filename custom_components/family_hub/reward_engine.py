@@ -56,6 +56,7 @@ from homeassistant.util import dt as dt_util
 
 from . import timer_engine
 from .const import (
+    REWARD_KEY_ALARM_AUDIENCE,
     REWARD_KEY_TIMER_MINUTES,
     REWARD_REDEEM_MODE_BANKED,
     REWARD_REDEEM_MODE_INSTANT,
@@ -274,6 +275,7 @@ def add_catalog_item(
     stack_unit_amount: float = 1,
     stack_unit_label: str = "",
     timer_minutes: Any = None,
+    alarm_audience: Any = None,
 ) -> dict[str, Any]:
     """v128+ adds four optional fields on top of the original title/cost/
     icon/color - see const.py's REWARD_REDEEM_MODES docstring for the full
@@ -318,6 +320,10 @@ def add_catalog_item(
         # describe how the star cost is consumed, a timer describes what
         # happens after, and they compose ("1 hour of TV, banked").
         REWARD_KEY_TIMER_MINUTES: timer_engine.normalize_timer_minutes(timer_minutes),
+        # v1.132.55+: who/what rings when this reward's timer alarms - same
+        # field/tiers/default as a chore's own CHORE_KEY_ALARM_AUDIENCE, see
+        # its docstring in const.py for the full picture.
+        REWARD_KEY_ALARM_AUDIENCE: timer_engine.normalize_alarm_audience(alarm_audience),
     }
     rewards.setdefault("catalog", []).append(item)
     return item
@@ -340,6 +346,8 @@ def update_catalog_item(rewards: dict[str, Any], item_id: str, **fields: Any) ->
         item["cost_stars"] = cost_stars
     if REWARD_KEY_TIMER_MINUTES in fields:
         item[REWARD_KEY_TIMER_MINUTES] = timer_engine.normalize_timer_minutes(fields[REWARD_KEY_TIMER_MINUTES])
+    if REWARD_KEY_ALARM_AUDIENCE in fields:
+        item[REWARD_KEY_ALARM_AUDIENCE] = timer_engine.normalize_alarm_audience(fields[REWARD_KEY_ALARM_AUDIENCE])
     if "icon" in fields:
         item["icon"] = fields["icon"] or ""
     if "color" in fields:

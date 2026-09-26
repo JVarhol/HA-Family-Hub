@@ -58,6 +58,16 @@ document.head.appendChild(link);
 // aren't tied to any one calendar (and so have no calendar color of their
 // own), but still need to look consistent wherever they show up.
 const REMINDER_COLOR = "#b58cd9";
+// v185+: household ask, verbatim - "Better roll over to next day for
+// reminders that allows you to select what days you want it to apply to.
+// Maybe you only want something to remind on friday saturday sunday, or
+// mondays, etc." 0=Monday..6=Sunday, matching the backend's own
+// REMINDER_ROLLOVER_DAYS_MARKER_PATTERN parsing (see const.py) and the
+// Chores card's identical WEEKDAY_LABELS convention (0=Mon..6=Sun, same as
+// Python's own date.weekday()) - kept as this file's own copy rather than
+// a shared import since the two card files are independently loaded
+// resources with no shared module (this project's established pattern).
+const REMINDER_WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 // Must match __init__.py's own HA_THEME_PREFIX exactly - Theme Builder's
 // own custom themes auto-register into hass.themes.themes under a name
 // starting with this prefix (see _register_ha_themes), so the Global
@@ -238,10 +248,19 @@ if (!window.__familyHubFabCoordinator) {
 // method here) - editing the modal's code in this one block is guaranteed to
 // change the standalone card's behavior identically, and vice versa.
 //
-// Same window-singleton, guarded-by-`if` shape as window.__familyHubFabCoordinator
-// above (the only cross-card-coordination precedent this codebase already had) -
-// whichever of this file or the standalone card's file loads first "wins" and
-// defines it; the second file's identical guarded block becomes a no-op.
+// Same window-singleton shape as window.__familyHubFabCoordinator above (the
+// only cross-card-coordination precedent this codebase already had), but
+// (v1.132.50+, see the "this._t is not a function" fix further below) THIS
+// file's own copy is deliberately UNGUARDED - it always (re)defines window.
+// __familyHubRecipeBoxShared, every time this module runs, rather than only
+// when it's not already set. The standalone recipe box card's own copy is
+// still guarded the old way (only defines it if unset), which is exactly
+// what lets it work completely on its own when this card's file isn't even
+// loaded. When both files ARE loaded, Home Assistant does not guarantee
+// which one's module executes first, so this file being unconditional is
+// what guarantees FamilyWeekCalendarCard.prototype always ends up with this
+// file's complete method set regardless of load order - see that fix's own
+// comment for the full story.
 //
 // Deliberately NOT included here (kept card-specific, each side supplies its
 // own): _openDishEditor/_saveDishEditor - fused with the day/menu editor's
@@ -261,7 +280,51 @@ if (!window.__familyHubFabCoordinator) {
 // its whole supporting cast) IS included below, no longer out of scope -
 // household report: "the recipe box card tries to send you to the external
 // grocy link for recipes. this needs to use the internal recipe viewer."
-if (!window.__familyHubRecipeBoxShared) {
+//
+// v1.132.50+: household report, verbatim - "The main card has a
+// configuration error" - detail text "this._t is not a function". Root
+// cause: this block used to be guarded by `if (!window.__familyHub
+// RecipeBoxShared)`, on the (wrong) assumption that it didn't matter which
+// of this file or family-hub-recipe-box-card.js's own identically-guarded
+// block "won" the race to define window.__familyHubRecipeBoxShared first -
+// see this file's own test_recipe_box_card_sharing.js, which only ever
+// loads this file BEFORE the recipe box card's file and so never caught
+// this. In reality, Home Assistant loads each registered dashboard
+// resource as its own dynamically-imported ES module, and does NOT
+// guarantee they execute in registration order - so on this household's
+// instance, family-hub-recipe-box-card.js's own (much smaller, recipe-
+// only) copy of this object was winning the race instead. Its own copy
+// never defined _t/_isAdmin/_myUserId/_hasPermission/the permission-modal
+// helpers/etc. (it only needs the recipe-box-specific methods for its own
+// standalone card), so once THIS card's own `Object.assign
+// (FamilyWeekCalendarCard.prototype, window.__familyHubRecipeBoxShared)`
+// below ran against that smaller object, this._t (and friends) were simply
+// never attached to FamilyWeekCalendarCard.prototype at all - hence
+// "this._t is not a function" the moment _render() or setConfig() first
+// called it, which Lovelace's own card-creation code catches and surfaces
+// as the generic "Configuration error" box (see this card's own error
+// path - nothing about this ever reached Home Assistant's server-side
+// logs, which is why the formatjs translation bug fixed in v1.132.49 and
+// this were two entirely separate issues that just happened to get
+// reported back to back).
+//
+// Fix: this file's own copy of the object is now defined UNCONDITIONALLY
+// (no more `if (!window.X)` guard) every time this module runs, always
+// overwriting window.__familyHubRecipeBoxShared with this file's complete,
+// authoritative version immediately before this file's own Object.assign
+// call further below uses it - so FamilyWeekCalendarCard.prototype always
+// ends up with the full method set regardless of which of the two card
+// files' modules Home Assistant happens to execute first. The recipe box
+// card's own file is UNCHANGED - it still only defines its own (smaller)
+// fallback copy when window.__familyHubRecipeBoxShared isn't already set,
+// which is exactly what it needs for standalone use when this card's file
+// isn't loaded at all; when both are present, whichever order they run in,
+// this file's own unconditional (re)definition + immediate Object.assign
+// guarantees THIS card is never left with a partial object. If this file
+// happens to run after the recipe box card's file already did its own
+// Object.assign using the smaller object, the recipe box card simply keeps
+// whatever smaller set it already copied - harmless, since it never calls
+// any of the methods that set doesn't include.
 window.__familyHubRecipeBoxShared = {
 _genId() {
 return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -388,6 +451,136 @@ bestDistance = distance;
 }
 return best;
 },
+// v1.132.39+ - "Suggestive meal line" (household ask, verbatim: "When
+// adding a new meal there should be a suggestion under the input field
+// if the meal is similar to one already in the catalog ie. Cilli dogs -
+// similar to: Chilli Cheese Dogs (Use this instead?)"). Runs on every
+// keystroke in .input-name (day/menu editor AND the Recipe Box's own
+// Add/Edit Recipe editor share that field). This is a live, dismissible
+// cousin of the existing Save-time duplicate confirm (_findFuzzyDuplicate/
+// _normalizeForDuplicateCheck, used by _upsertDish/_addSuggestion) - same
+// normalization, but with its own matching (_findMealNameSuggestionMatch
+// below), since _findFuzzyDuplicate's whole-string edit distance alone
+// wouldn't catch the household's own example: "Cilli dogs" is nowhere
+// close, character-for-character, to "Chilli Cheese Dogs" (it's missing
+// an entire word), even though it's obviously the same dish.
+_recipeNameTokens(name) {
+return this._normalizeForDuplicateCheck(name)
+.split(" ")
+.filter((t) => t.length >= 2);
+},
+_tokensFuzzyMatch(a, b) {
+if (a === b) return true;
+if (a.length >= 3 && b.length >= 3 && (a.indexOf(b) === 0 || b.indexOf(a) === 0)) return true;
+// v1.132.41+ (household ask, "a little broader match"): 0.34 -> 0.45.
+const threshold = Math.max(1, Math.round(Math.max(a.length, b.length) * 0.45));
+return this._levenshteinDistance(a, b) <= threshold;
+},
+// Two ways a catalog recipe counts as "similar" to what's being typed:
+// (1) the whole normalized name is a close edit-distance match (a typo of
+// the same overall name, same threshold _findFuzzyDuplicate uses), or
+// (2) every word actually typed fuzzily lands on some word in the
+// candidate's name (a shortened/typo'd fragment of a longer catalog
+// entry) - gated to 2+ typed words so a single common word ("dogs")
+// doesn't flag half the catalog on its own. An exact normalized match
+// isn't "similar", it's the same name already - never suggested.
+//
+// v1.132.41+ (household ask, verbatim: "can we make the fuzzy match menu
+// suggestuons up to 3 recipes with a little broader match"): returns up
+// to 3 candidates now (highest score first) instead of just the single
+// best one, and the whole-name threshold was loosened 0.2 -> 0.3 to
+// match (see _tokensFuzzyMatch above for the word-level threshold).
+_findMealNameSuggestionMatches(name) {
+const norm = this._normalizeForDuplicateCheck(name);
+if (!norm) return [];
+const typedTokens = this._recipeNameTokens(name);
+if (!typedTokens.length) return [];
+const scored = [];
+for (const recipe of this._recipes || []) {
+const otherNorm = this._normalizeForDuplicateCheck(recipe.name);
+if (!otherNorm || otherNorm === norm) continue;
+const wholeDistance = this._levenshteinDistance(norm, otherNorm);
+const wholeThreshold = Math.max(1, Math.round(Math.max(norm.length, otherNorm.length) * 0.3));
+const wholeMatch = wholeDistance <= wholeThreshold;
+const otherTokens = this._recipeNameTokens(recipe.name);
+const matchedTokenCount = typedTokens.filter((t) => otherTokens.some((o) => this._tokensFuzzyMatch(t, o))).length;
+const wordMatch = typedTokens.length >= 2 && matchedTokenCount === typedTokens.length;
+if (!wholeMatch && !wordMatch) continue;
+const score = wholeMatch ? 1000 - wholeDistance : matchedTokenCount;
+scored.push({ recipe, score });
+}
+scored.sort((a, b) => b.score - a.score);
+return scored.slice(0, 3).map((s) => s.recipe);
+},
+_updateMealNameSuggestion() {
+const root = this._root;
+if (!root) return;
+const box = root.querySelector(".meal-name-suggestion");
+if (!box) return;
+const list = box.querySelector(".meal-name-suggestion-list");
+const raw = root.querySelector(".input-name").value;
+const name = raw.trim();
+// Below a couple characters there's nothing meaningful to fuzzy-match
+// yet (and it'd otherwise flag almost anything against a short recipe
+// name).
+if (name.length < 3) {
+this._hideMealNameSuggestion();
+return;
+}
+const matches = this._findMealNameSuggestionMatches(name);
+if (!matches.length) {
+this._hideMealNameSuggestion();
+return;
+}
+this._mealNameSuggestionMatches = matches;
+list.innerHTML = "";
+matches.forEach((recipe) => {
+const row = document.createElement("div");
+row.className = "meal-name-suggestion-item";
+const label = document.createElement("span");
+label.className = "meal-name-suggestion-match";
+label.textContent = recipe.name || "";
+const btn = document.createElement("button");
+btn.type = "button";
+btn.className = "meal-name-suggestion-use";
+btn.dataset.uid = recipe.uid || "";
+btn.textContent = "Use this instead?";
+row.appendChild(label);
+row.appendChild(btn);
+list.appendChild(row);
+});
+box.style.display = "";
+},
+_hideMealNameSuggestion() {
+const root = this._root;
+if (!root) return;
+const box = root.querySelector(".meal-name-suggestion");
+if (box) {
+box.style.display = "none";
+const list = box.querySelector(".meal-name-suggestion-list");
+if (list) list.innerHTML = "";
+}
+this._mealNameSuggestionMatches = null;
+},
+// Fills the shared name/description/link/rating/Grocy-link fields from
+// the picked catalog recipe (matched by uid against the current
+// suggestion list), same as picking it from "Pick a Recipe"
+// (_selectLovedDish) - minus that flow's _closeLoved()/servings-reset,
+// since there's no picker overlay open here to close.
+_applyMealNameSuggestion(uid) {
+const matches = this._mealNameSuggestionMatches || [];
+const recipe = matches.find((r) => (r.uid || "") === uid) || matches[0];
+if (!recipe) return;
+const root = this._root;
+root.querySelector(".input-name").value = recipe.name || "";
+root.querySelector(".input-description").value = recipe.description || "";
+root.querySelector(".input-link").value = recipe.link || "";
+this._currentGrocyRecipeId = recipe.grocyRecipeId || null;
+this._updateMenuLinkOpenBtn();
+this._currentRating = recipe.rating || null;
+this._updateRatingButtons();
+this._hideMealNameSuggestion();
+},
 async _fetchRecipes() {
 if (!this._hass) return;
 try {
@@ -486,6 +679,182 @@ return !!(this._myPermissions && this._myPermissions[key]);
 },
 _canEditMenu() {
 return this._hasPermission("can_edit_menu");
+},
+_canDeleteEvent() {
+return this._hasPermission("can_delete_event");
+},
+// v1.132.44+: household ask, verbatim - "Add German Support and Spanish
+// (check HA default language) also have a setting for Language" ->
+// clarified to use Home Assistant's OWN native frontend translation
+// system rather than a bespoke one, and to follow HA's own language
+// automatically (no separate Family Hub language picker to maintain -
+// Home Assistant already has one, per-user, under its own Settings ->
+// General -> Language, and that's what `hass.language` reflects).
+//
+// The mechanism: family_hub/translations/<lang>.json (the SAME files
+// this integration already ships for its config_flow) gets a new
+// top-level "frontend" key holding this card's own UI strings, keyed by
+// dotted path (e.g. "nav.week"). hass.loadBackendTranslation(category,
+// integration) is real, native Home Assistant frontend API - it fetches
+// `/api/translations` for whatever `hass.language` currently is, scoped
+// to a (category, integration) pair, and populates hass.resources so
+// hass.localize(`component.family_hub.<category>.<path>`) can find it.
+// The "frontend" category name is our own invention (nothing enforces a
+// fixed category list at runtime - see translations/en.json's own
+// comment) - HA's own frontend TypeScript types constrain ITS OWN
+// built-in categories at compile time, but that has no bearing on what
+// a custom integration's translations file can define or what a plain-
+// JS custom card can request.
+//
+// _t() is a synchronous, always-safe wrapper: hass.localize() returns
+// "" (not the raw key) when a key is missing, wrapped translations
+// haven't loaded yet, or hass isn't ready at all - never throws, and
+// this always has an inline English fallback baked in right at the call
+// site, so the very first paint (before the async loadBackendTranslation
+// round trip resolves) - and any household that's simply using English
+// - looks and behaves exactly as if this feature didn't exist.
+_t(key, fallback, vars) {
+// v1.132.49+: v1.132.48's fix for the "Failed to format translation ...
+// [formatjs Error: MISSING_VALUE]" log spam (see that version's own
+// changelog entry) turned out to be WRONG and didn't actually stop it -
+// confirmed still logging on the household's instance after installing
+// v1.132.48 and a full Home Assistant restart, so the theory that
+// hass.localize(key, "name", value, ...) (flattened pairs, the OLD
+// Polymer-era HA frontend convention) was the right substitution
+// signature for this HA version (2026.9.1) was wrong. The REAL fix:
+// stop using "{x}"-style ICU placeholder syntax in the translation JSON
+// strings at all (see translations/en.json's own comment on this), so
+// hass.localize's internal formatjs call never sees an unresolved
+// argument in the first place, on ANY Home Assistant version, and never
+// logs anything - our own split/join below (now matching translations/
+// *.json's new "%x%" token instead of "{x}") does 100% of the
+// substitution work ourselves, exactly like this was always intended
+// to. hass.localize(key) is called with no extra arguments again.
+// Mirrors the identical fix in family-hub-chores-card.js's own copy of
+// this same trio.
+//
+// v1.132.51+: household report, verbatim - "I set my language to German
+// but the calendar and settings are still English" - confirmed Home
+// Assistant's own core UI (sidebar, other native pages) DID switch to
+// German, so hass.language really is "de" and the per-user profile
+// setting genuinely took effect; only Family Hub's own strings stayed
+// English. Root cause: the translation category this whole trio has used
+// since v1.132.44, "frontend", is not actually a free, collision-proof
+// name - it's also the literal domain/category name of Home Assistant's
+// OWN built-in frontend integration, which serves ITS OWN UI strings
+// (sidebar labels, common panel titles, etc.) through this exact same
+// generic backend translation API. hass.loadBackendTranslation caches
+// and batches its fetches per (language, category) - once HA's own core
+// frontend has already requested category "frontend" for the current
+// language (which it does on every app load, to translate its own UI),
+// this card's own later `hass.loadBackendTranslation("frontend",
+// "family_hub")` call could be satisfied entirely from that ALREADY-
+// cached (language, "frontend") result instead of actually performing a
+// fresh fetch scoped to include family_hub's own integration - silently
+// leaving hass.resources without any of family_hub's own German/Spanish
+// strings under that category, which is exactly what makes _t() fall
+// through to its own hard-coded English fallback for every single key,
+// forever, with nothing ever thrown or logged anywhere (this card's own
+// .catch() below never even fires, since the promise still resolves
+// successfully - it just resolves to translations that don't include
+// ours). Fixed by renaming this integration's OWN custom category from
+// "frontend" (a name it was never safe to reuse) to "fh_ui" - see
+// translations/en.json's own comment and _ensureTranslationsLoaded's own
+// loadBackendTranslation call below for the matching change. Also added
+// a console.warn on this trio's own .catch() (see
+// _ensureTranslationsLoaded below) so a genuine future load failure is
+// at least visible in the browser console instead of silently staying
+// English with zero trace anywhere, the way this exact bug did.
+let str = "";
+try {
+if (this._hass && typeof this._hass.localize === "function") {
+str = this._hass.localize(`component.family_hub.fh_ui.${key}`) || "";
+}
+} catch (e) {
+str = "";
+}
+if (!str) str = fallback;
+if (vars) {
+Object.keys(vars).forEach((k) => {
+str = str.split(`%${k}%`).join(vars[k]);
+});
+}
+return str;
+},
+// The two-language files ship today (German/Spanish, per the household's
+// own ask) - adding a third is just a new translations/<lang>.json file
+// with the same "frontend" key, no code change here at all.
+_supportedLanguages() {
+return ["en", "de", "es"];
+},
+// Home Assistant's own language codes are occasionally region-qualified
+// (e.g. "en-GB", "pt-BR") - only the base subtag matters for picking
+// which of our translation files to load.
+_baseLanguage(lang) {
+return (lang || "en").split("-")[0].toLowerCase();
+},
+// Called from the hass setter on every assignment (cheap - it's a no-op
+// once this._i18nLoadedLang already matches the current language, which
+// is true on every call after the first for the overwhelming majority of
+// sessions where the household's HA language never changes mid-session).
+// Kicks off hass.loadBackendTranslation for a NEW language, then re-runs
+// _applyTranslations() (for the static, built-once chrome) and
+// _renderGrid() (for the calendar body's own dynamic _t() calls, e.g.
+// _updateNavLabel's "This Week"/"Next Week" text) once it resolves -
+// never blocks the initial synchronous _build()/render path on this
+// round trip, so there's no added load-time delay for anyone.
+_ensureTranslationsLoaded() {
+if (!this._hass || typeof this._hass.loadBackendTranslation !== "function") return;
+const lang = this._baseLanguage(this._hass.language);
+if (this._i18nLoadedLang === lang || this._i18nLoading === lang) return;
+this._i18nLoading = lang;
+this._hass
+.loadBackendTranslation("fh_ui", "family_hub")
+.then(() => {
+this._i18nLoadedLang = lang;
+this._i18nLoading = null;
+this._applyTranslations();
+if (this._root) this._renderGrid();
+})
+.catch((e) => {
+// Transient failure (or an older HA core without this API) - stays on
+// whatever's already showing (English, via _t()'s own fallback); the
+// next hass assignment or language change tries again.
+this._i18nLoading = null;
+// v1.132.51+: this used to fail completely silently (see _t's own
+// comment above) - a real load failure now at least leaves a trace in
+// the browser console instead of just staying English with no way to
+// tell why.
+console.warn("[family_hub] failed to load \"" + lang + "\" translations - staying on English fallback text", e);
+});
+},
+// Sweeps the static, built-ONCE chrome (_build()'s own giant template -
+// the top nav bar, the Add Event modal's field labels, the Settings tab
+// bar - none of which get their innerHTML regenerated after _build()
+// runs, unlike e.g. the event-info popup's content, which is rebuilt
+// fresh on every open and so just calls _t() directly inline instead of
+// needing this sweep at all). Every translatable element in that static
+// template carries data-i18n (its own text) and/or data-i18n-title (its
+// title/aria-label) - this reads each one's ORIGINAL English text once
+// (cached on the element itself, in data-i18n-fallback) so re-running
+// this after a language change always translates from the true English
+// source, never from a previous translation attempt's leftover text.
+_applyTranslations() {
+if (!this._root) return;
+this._root.querySelectorAll("[data-i18n]").forEach((el) => {
+const key = el.dataset.i18n;
+if (el.dataset.i18nFallback === undefined) el.dataset.i18nFallback = el.textContent;
+el.textContent = this._t(key, el.dataset.i18nFallback);
+});
+this._root.querySelectorAll("[data-i18n-title]").forEach((el) => {
+const key = el.dataset.i18nTitle;
+if (el.dataset.i18nTitleFallback === undefined) {
+el.dataset.i18nTitleFallback = el.getAttribute("title") || el.getAttribute("aria-label") || "";
+}
+const translated = this._t(key, el.dataset.i18nTitleFallback);
+if (el.hasAttribute("title")) el.setAttribute("title", translated);
+if (el.hasAttribute("aria-label")) el.setAttribute("aria-label", translated);
+});
 },
 async _fetchMyPermissions() {
 if (!this._hass) return;
@@ -1681,8 +2050,222 @@ this._renderGrocyRecipeIngredients();
 this._renderGrocyRecipeDescription();
 },
 };
-}
 
+
+// Household-wide timer alarm sound+modal (v1.119.0+, widened in v1.132.55+)
+// - see family-hub-active-timers-card.js's own top comment above this same
+// block for the full design note. Added here in v1.132.59+ after a
+// household bug report, verbatim: "a household alarm or an assigned alarm
+// set to them plus kiosk doesnt alarm on the kiosk" - this card (the one a
+// wall-mounted kiosk dashboard most commonly shows) never carried this
+// singleton or subscribed to the widened-alarm broadcast at all, so a kiosk
+// whose dashboard is just the calendar (running the built-in screensaver
+// below) silently never rang for anyone else's widened timer alarm. Kept
+// byte-identical to every other card's copy on purpose.
+if (!window.__familyHubTimerAlarm) {
+  window.__familyHubTimerAlarm = (function () {
+    let modalEl = null;
+    let audioCtx = null;
+    let beepHandle = null;
+    let activeUid = null;
+    // A timer's uid, once dismissed, stays dismissed - otherwise the very
+    // next poll's countdown tick (still <= 0 for a few more seconds until
+    // the backend's own sweep, up to TIMER_SWEEP_SECONDS later, actually
+    // removes it from family_hub/timers/list) would immediately re-open
+    // the modal a person just tapped Stop on. Unbounded but negligible: a
+    // few bytes per timer this ONE tab ever alarmed for in its lifetime.
+    const dismissedUids = new Set();
+    function ensureModal() {
+      if (modalEl) return modalEl;
+      modalEl = document.createElement("div");
+      modalEl.id = "family-hub-timer-alarm-overlay";
+      Object.assign(modalEl.style, {
+        position: "fixed", inset: "0", zIndex: "2147483647", display: "none",
+        alignItems: "center", justifyContent: "center",
+        background: "rgba(20,16,8,0.78)",
+      });
+      modalEl.innerHTML =
+        '<div style="background:#fff8ea;color:#3a352c;border-radius:22px;padding:38px 30px;max-width:360px;width:88vw;text-align:center;box-shadow:0 14px 46px rgba(0,0,0,0.45);font-family:-apple-system,\'Segoe UI\',Roboto,sans-serif;">' +
+        '<div style="font-size:48px;margin-bottom:12px;">&#9200;</div>' +
+        '<div class="fh-timer-alarm-title" style="font-size:1.3em;font-weight:800;margin-bottom:6px;"></div>' +
+        '<div style="font-size:14px;color:#96877a;margin-bottom:24px;">Time\'s up!</div>' +
+        '<button type="button" class="fh-timer-alarm-stop" style="min-height:54px;width:100%;border:none;border-radius:14px;background:#8f5a00;color:#fff8ea;font-size:19px;font-weight:800;cursor:pointer;">Stop</button>' +
+        "</div>";
+      document.body.appendChild(modalEl);
+      modalEl.querySelector(".fh-timer-alarm-stop").addEventListener("click", () => stop());
+      return modalEl;
+    }
+    // A plain oscillator beep via the Web Audio API - deliberately not a
+    // bundled sound file: no extra media asset for HACS/manual installs to
+    // ship or for a self-hosted install's network policy to worry about,
+    // and it sounds identical on every install.
+    //
+    // Household ask, verbatim: "can we make it sound more like an alarm
+    // and less like a ticking bomb." The original v1.119.0+ sound was one
+    // flat square-wave tone repeated once a second - metronomic, which is
+    // exactly what read as a countdown-bomb tick rather than an alarm. This
+    // plays a quick alternating two-pitch TRIPLET (a classic digital-alarm-
+    // clock trill) each cycle instead of a single tone, which is what
+    // actually reads as "alarm" to the ear - the alternating pitch is what
+    // a lone repeated tone can't give you, no matter how loud.
+    function playBeep(atTime, freq) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "square";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, atTime);
+      gain.gain.exponentialRampToValueAtTime(0.3, atTime + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, atTime + 0.13);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(atTime);
+      osc.stop(atTime + 0.15);
+    }
+    // Scheduled via Web Audio's own clock (osc.start(atTime)) rather than
+    // three back-to-back setTimeout calls, so the triplet's timing stays
+    // tight even if the main JS thread is briefly busy - it's the crisp,
+    // even spacing that makes it read as a trill instead of a stutter.
+    function beepOnce() {
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === "suspended") audioCtx.resume();
+        const now = audioCtx.currentTime;
+        [[0, 1046], [0.15, 1318], [0.3, 1046]].forEach(([offset, freq]) => playBeep(now + offset, freq));
+      } catch (e) {
+        // Autoplay blocked, or no Web Audio at all - the modal is still
+        // the primary alarm; sound is a bonus on top of it, not required.
+      }
+    }
+    // v1.132.55+: which hass connection to tell "dismiss this everywhere"
+    // when Stop is tapped - set by whichever card most recently called
+    // ring()/check() with one, since this singleton is shared across every
+    // card on the dashboard and any of them may have `hass` by now. Best-
+    // effort only (see stop() below): a same-tab-only local alarm (the
+    // original v1.119.0+ behavior this singleton already had) never had a
+    // server-side record to begin with, so the dismiss call below simply
+    // no-ops for it (ws_dismiss_timer_alarm pops a uid that was never
+    // registered - see its own docstring for why that's silent, not an
+    // error).
+    let lastHass = null;
+    function stop() {
+      if (activeUid) dismissedUids.add(activeUid);
+      const uid = activeUid;
+      activeUid = null;
+      if (beepHandle) {
+        clearInterval(beepHandle);
+        beepHandle = null;
+      }
+      if (modalEl) modalEl.style.display = "none";
+      // v1.132.55+: household's explicit choice - "first tap wins, from
+      // anyone" - so tapping Stop here also clears the alarm everywhere
+      // else (other kiosks, other people's phones-that-are-dashboards)
+      // rather than just silencing this one tab. No permission gate, by
+      // design.
+      if (uid && lastHass && lastHass.connection && lastHass.connection.sendMessagePromise) {
+        lastHass.connection.sendMessagePromise({ type: "family_hub/timers/dismiss_alarm", uid }).catch(() => {});
+      }
+    }
+    // Household bug report, verbatim: "a household alarm or an assigned
+    // alarm set to them plus kiosk doesnt alarm on the kiosk, it should end
+    // the screen saver and pop up the timer ended modal and make noise."
+    // This modal already outranks the screensaver's own overlay (z-index
+    // 2147483647 vs 2147483000, set in ensureModal() above), so it was
+    // always painting on top of it - but a screensaver left running
+    // underneath still means its video/camera poll keeps going, and the
+    // household asked for it to actually END, not just be covered up.
+    // There are THREE independent screensaver implementations in this
+    // project (the calendar card's own, the shared window.__familyHub
+    // ScreenSaver controller used by Chores/Rewards/My Chores/etc., and the
+    // standalone family-screensaver-card.js) and this singleton has no
+    // reference to whichever one might be running on this particular
+    // dashboard. Rather than importing all three, every one of them marks
+    // its overlay element with the same data-family-hub-screensaver
+    // attribute and already dismisses itself (hides, stops video/camera
+    // polling, navigates to its configured return dashboard) on its own
+    // overlay's "pointerdown" listener - so a synthetic pointerdown on
+    // whichever overlay is actually showing reuses each implementation's
+    // own real dismiss path for free, with zero coupling to which one it
+    // is.
+    function wakeAnyScreenSaver() {
+      try {
+        const overlay = document.querySelector("[data-family-hub-screensaver]");
+        if (overlay && overlay.style.display !== "none") {
+          overlay.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        }
+      } catch (e) {
+        // Best-effort - worst case the alarm modal still shows ON TOP of a
+        // running screensaver rather than ending it outright.
+      }
+    }
+    function start(timer, hass) {
+      if (hass) lastHass = hass;
+      if (activeUid === timer.uid) return;
+      activeUid = timer.uid;
+      wakeAnyScreenSaver();
+      const el = ensureModal();
+      el.querySelector(".fh-timer-alarm-title").textContent = timer.title || "Timer";
+      el.style.display = "flex";
+      beepOnce();
+      if (beepHandle) clearInterval(beepHandle);
+      // Shorter gap than the old single-tone version (1200ms) since each
+      // cycle is now a ~450ms triplet, not a single ~340ms tone - this
+      // keeps the alarm feeling urgent/continuous rather than sparse.
+      beepHandle = setInterval(beepOnce, 950);
+    }
+    return {
+      // Call once a second from a card's own countdown ticker (the same
+      // tick that already repaints the visible "X:XX left" text), passing:
+      //   timers        - that card's own freshly-fetched timers list
+      //   clientId      - this tab's own id (see _familyHubClientId below)
+      //   remainingSecondsFn - a (timer) => seconds function, so this
+      //                   singleton reuses the CALLING card's own
+      //                   native-timer-aware math (_timerRemainingSeconds)
+      //                   instead of a second, potentially-drifting copy
+      //                   of it living here with no access to `hass`.
+      // Only a timer whose origin_client_id matches THIS tab's own id and
+      // whose alarm flag is on can ever trigger anything - a timer someone
+      // else started, or one this same tab started but didn't opt into
+      // alarms for, is silently ignored here exactly as before this
+      // feature existed.
+      check(timers, clientId, remainingSecondsFn, hass) {
+        if (!clientId) return;
+        const mine = (timers || []).find((t) => t.alarm && t.origin_client_id && t.origin_client_id === clientId);
+        if (!mine || dismissedUids.has(mine.uid)) return;
+        if (remainingSecondsFn(mine) <= 0) start(mine, hass);
+      },
+      // v1.132.55+: the WIDENED half - a household_timer_alarm_ring bus
+      // event (fired by chores_websocket_api.py's _dispatch_timer_alarm/
+      // _reannounce_active_alarms) that THIS login should also ring for,
+      // because it's either the timer's own owner, a login flagged as an
+      // always-on alarm kiosk, or the tier was "everyone." Unlike check()
+      // above (which only ever recognizes the ONE tab that started the
+      // timer, by origin_client_id), this recognizes a login/account -
+      // every open tab logged in as a matching user rings, on every
+      // dashboard, which is the whole point of the widened tiers. Re-fired
+      // on every re-announcement (see _reannounce_active_alarms), so
+      // calling this again for an already-ringing uid is a deliberate
+      // no-op (start() already short-circuits on activeUid === timer.uid).
+      ringBroadcast(payload, hass, myUserId) {
+        if (!payload || !payload.uid || dismissedUids.has(payload.uid)) return;
+        const targets = payload.target_user_ids || [];
+        const shouldRing = !!payload.broadcast_all || (myUserId && targets.includes(myUserId));
+        if (!shouldRing) return;
+        start({ uid: payload.uid, title: payload.title }, hass);
+      },
+      // The STOP half of the same broadcast pair - fired the instant
+      // ANY device dismisses (see ws_dismiss_timer_alarm's own "first tap
+      // wins" docstring), including a dismiss that originated from THIS
+      // singleton's own stop() above (that call's own dismiss already
+      // covers this tab; the event still arrives here a moment later and
+      // is a harmless no-op via stop()'s own activeUid !== uid guard, or
+      // via dismissedUids already containing it).
+      stopFromServer(uid) {
+        if (uid) dismissedUids.add(uid);
+        if (activeUid === uid) stop();
+      },
+    };
+  })();
+}
 
 // Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
 // "When you load a card it tends to load the default theme first then it
@@ -1862,6 +2445,8 @@ if (this._settingsItemUid === undefined) this._settingsItemUid = null;
 if (this._screenSaverSettingsSnapshot === undefined) this._screenSaverSettingsSnapshot = null;
 if (this._settingsPeopleDraft === undefined) this._settingsPeopleDraft = [];
 if (this._mealEditMode === undefined) this._mealEditMode = false;
+if (this._weekSelectedDate === undefined) this._weekSelectedDate = null;
+if (this._calendarDeleteSupport === undefined) this._calendarDeleteSupport = {};
 if (this._settingsFetchSeq === undefined) this._settingsFetchSeq = 0;
 if (this._eventsFetchSeq === undefined) this._eventsFetchSeq = 0;
 if (this._topModalZ === undefined) this._topModalZ = 1006;
@@ -1885,6 +2470,11 @@ if (this._householdMemberNamesById === undefined) this._householdMemberNamesById
 if (this._settingsActiveTab === undefined) this._settingsActiveTab = "general";
 if (this._reminderOverrides === undefined) this._reminderOverrides = {};
 if (this._eventPeopleOverrides === undefined) this._eventPeopleOverrides = {};
+// v1.132.63+: attachable checklists - see _fetchEventChecklists's own
+// comment for why this is fetched proactively like _eventPeopleOverrides
+// rather than lazily like _reminderOverrides.
+if (this._eventChecklists === undefined) this._eventChecklists = {};
+if (this._todoListCandidates === undefined) this._todoListCandidates = null;
 if (this._eventInfoOpenId === undefined) this._eventInfoOpenId = null;
 if (this._eventInfoRemindDirty === undefined) this._eventInfoRemindDirty = false;
 if (this._eventInfoPeopleDirty === undefined) this._eventInfoPeopleDirty = false;
@@ -1905,6 +2495,7 @@ if (!this._built) this._build();
 set hass(hass) {
 const first = !this._hass;
 this._hass = hass;
+this._ensureTranslationsLoaded();
 if (first) {
 this._firstLoadPromise = this._initFirstLoad();
 // v1.126.0+: skip the _applySizeVars() call below on this very first
@@ -1948,6 +2539,7 @@ this._fetchReminders();
 // (week/month/timeline/planner/all-day) needs it to know which events
 // get the multi-person color collage.
 this._fetchEventPeopleOverrides();
+this._fetchEventChecklists();
 this._fetchHouseholdMemberNames();
 }
 // v1.131.0+: household member display names, kept current independent of
@@ -2015,6 +2607,62 @@ this._syncDailyDigestConfig();
 this._syncGrocyExpiringConfig();
 this._syncGrocyLowStockConfig();
 this._syncNotificationClickPath();
+// Household bug report, verbatim: "a household alarm or an assigned
+// alarm set to them plus kiosk doesnt alarm on the kiosk" - see this
+// file's own copy of the window.__familyHubTimerAlarm singleton above
+// for the full design note. This is the card a wall-mounted kiosk
+// dashboard most commonly shows, so it needs its own subscription just
+// like family-hub-active-timers-card.js/chores/rewards do - kept byte-
+// identical to those on purpose.
+this._subscribeAlarmEvents();
+}
+// v1.132.55+: household-wide timer alarms - subscribe to the two bus
+// events chores_websocket_api.py's _dispatch_timer_alarm/
+// _reannounce_active_alarms fire (see const.py's
+// EVENT_FAMILY_HUB_TIMER_ALARM_RING/_STOP), and hand each one to the
+// shared window.__familyHubTimerAlarm singleton above - same "one modal/
+// audio loop shared by every card on the dashboard" convention its own
+// top comment describes. Subscribed once per card instance (guarded by
+// _alarmUnsub so a re-run of _initFirstLoad, which shouldn't happen but
+// costs nothing to guard against, never double-subscribes).
+async _subscribeAlarmEvents() {
+  if (this._alarmUnsub || !this._hass || !this._hass.connection) return;
+  const myUserId = this._myUserId();
+  try {
+    const unsubRing = await this._hass.connection.subscribeEvents((event) => {
+      if (window.__familyHubTimerAlarm) {
+        window.__familyHubTimerAlarm.ringBroadcast(event.data, this._hass, myUserId);
+      }
+    }, "family_hub_timer_alarm_ring");
+    const unsubStop = await this._hass.connection.subscribeEvents((event) => {
+      if (window.__familyHubTimerAlarm && event.data) {
+        window.__familyHubTimerAlarm.stopFromServer(event.data.uid);
+      }
+    }, "family_hub_timer_alarm_stop");
+    this._alarmUnsub = () => {
+      try { unsubRing(); } catch (e) { /* no-op */ }
+      try { unsubStop(); } catch (e) { /* no-op */ }
+    };
+  } catch (e) {
+    // Best-effort - a dashboard that can't subscribe (e.g. a very old
+    // frontend build) simply never gets the WIDENED alarm reach; the
+    // same-tab-only local alarm (window.__familyHubTimerAlarm.check,
+    // unaffected by any of this) still works exactly as before.
+  }
+  // Catch up on anything already ringing before this tab opened, rather
+  // than waiting up to ALARM_REANNOUNCE_SECONDS for the next re-
+  // announcement's RING event.
+  if (this._hass.connection.sendMessagePromise) {
+    try {
+      const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/timers/list_active_alarms" });
+      for (const alarm of (result && result.alarms) || []) {
+        if (window.__familyHubTimerAlarm) window.__familyHubTimerAlarm.ringBroadcast(alarm, this._hass, myUserId);
+      }
+    } catch (e) {
+      // Best-effort catch-up only - the next re-announcement still
+      // covers it.
+    }
+  }
 }
 // v1.110.4+: joins the shared FAB-stacking coordinator - see
 // family-hub-chores-card.js's identical _registerFabCoordinator for the
@@ -2272,6 +2920,11 @@ return this._viewMode === "week" ? this._getWeekViewDayCount() : 7;
 }
 _setWeekOffset(n) {
 this._weekOffset = n;
+// v1.132.42+: a selected day only means anything relative to the week
+// currently showing - navigating to a different week without clearing it
+// would leave a stale highlight pointing at a date that's scrolled off
+// screen (and silently keep defaulting Add Event/Reminder to it).
+this._weekSelectedDate = null;
 this._fetchEvents();
 this._updateNavLabel();
 }
@@ -2345,7 +2998,13 @@ end.setDate(start.getDate() + dayCount - 1);
 const fmt = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 if (dayCount === 7) {
 const prefix =
-this._weekOffset === 0 ? "This Week" : this._weekOffset === 1 ? "Next Week" : this._weekOffset > 1 ? `${this._weekOffset} Weeks Out` : `${Math.abs(this._weekOffset)} Week(s) Ago`;
+this._weekOffset === 0
+? this._t("nav.label_this_week", "This Week")
+: this._weekOffset === 1
+? this._t("nav.label_next_week", "Next Week")
+: this._weekOffset > 1
+? this._t("nav.label_weeks_out", `${this._weekOffset} Weeks Out`, { n: String(this._weekOffset) })
+: this._t("nav.label_weeks_ago", `${Math.abs(this._weekOffset)} Week(s) Ago`, { n: String(Math.abs(this._weekOffset)) });
 this._root.querySelector(".week-label").textContent = `${prefix} · ${fmt(start)} – ${fmt(end)}`;
 if (shortcuts) shortcuts.style.display = "";
 } else {
@@ -2468,14 +3127,20 @@ return legacyShared;
 // in without touching any of its call sites (_renderGrid, the click
 // handler, _initFirstLoad). v145+ adds "split" (see _renderMonthSplitGrid):
 // classic month grid on one side, the selected day's full event list on
-// the other, with a button to jump to that week.
+// the other, with a button to jump to that week. v190: household asked
+// for the default month view to be "Month + Day" - a device that's never
+// touched this locally now falls back to "split" instead of "month".
+// Same this-device-only localStorage pattern as every other view-variant
+// setting here, so a device that HAS already saved an explicit "month"
+// choice keeps it - this default only changes what a brand-new device
+// (or one that's never opened the Month view before) starts on.
 _getMonthViewVariant() {
 let local = null;
 try {
 local = localStorage.getItem("familyCalendarMonthViewVariantLocal");
 } catch (e) {
 }
-return ["month", "split"].includes(local) ? local : "month";
+return ["month", "split"].includes(local) ? local : "split";
 }
 // v144+ task #28: which button (Week vs Month) should show as active,
 // and which family a given rendered variant belongs to. v145+: "split"
@@ -2523,7 +3188,15 @@ blockSize: "medium",
 showTimeline: false,
 timelineStartHour: 8,
 timelineEndHour: 23,
-defaultView: "week",
+// v1.132.54+: household ask, verbatim - "Default month view is month +
+// day." Two separate settings combine to land on that view: this
+// defaultView flag (Week family vs Month family - was "week") and
+// _getMonthViewVariant()'s own device-local fallback (Month vs Month+Day
+// WITHIN the Month family), which already defaulted to "split" (Month+Day)
+// before this change - see its own comment. Only this one needed to move.
+// Only affects a card that has never had its own Settings saved yet -
+// anyone who already picked Week (or plain Month) keeps that choice.
+defaultView: "month",
 countdownEnabled: true,
 // countdownLabel/countdownDate (singular) are kept only so an older save
 // can be migrated into countdownItems below - new saves always go
@@ -2552,10 +3225,16 @@ grocyLowStockEnabled: false,
 // Morning/Afternoon/Night daily checklists rendered on the Chores board -
 // see family-hub-chores-card.js's _routinesBlockHtml). A single shared
 // switch, not per-person, per the household's own choice when this was
-// built - off by default so a household that never asked for Routines
-// never sees the accordions or pays for the extra family_hub/routines/list
-// poll (see that card's _routinesEnabled/_fetchRoutines).
-routinesEnabled: false,
+// built. v1.132.54+: household ask, verbatim - "Default to routines
+// enabled" - now true by default (was off, so a household that never
+// asked for Routines wouldn't see the accordions or pay for the extra
+// family_hub/routines/list poll - see that card's _routinesEnabled/
+// _fetchRoutines). Only affects a household whose Settings blob has never
+// set this key at all (a brand-new install, or one that skipped/predates
+// the setup wizard's own Chores-features step - see config_flow.py's
+// _build_chores_features_schema for the matching wizard-default change);
+// anyone who already saved Settings (on or off) keeps exactly that choice.
+routinesEnabled: true,
 // v134+: household-wide on/off switches for embedding a Goals section into
 // the Chores board and/or the Rewards page - two separate flags (not one
 // combined switch), same off-by-default reasoning as routinesEnabled just
@@ -2569,6 +3248,14 @@ goalsShowInRewards: false,
 // always shows both regardless of this, so nothing is ever hidden, just
 // the compact card label.
 choreDueShowTime: false,
+// v189+: household ask, verbatim - "Confetti pop when chore complete. Add
+// to chore settings to display a confetti pop animation on chore
+// completion." Household-wide. v190: household asked to flip this on by
+// default (was off in v189) - unlike most opt-in cosmetic toggles here,
+// this one ships already turned on; still fully toggleable per household
+// from Settings -> General. See family-hub-chores-card.js's
+// _confettiOnCompleteEnabled/_fireConfetti for where it's actually used.
+choresConfettiOnComplete: true,
 // Optional relative path (e.g. "/lovelace-family/0") opened when someone
 // taps a reminder/event/Daily Digest push notification on their phone -
 // synced to the backend (family_hub/set_notification_click_path) since
@@ -2598,6 +3285,22 @@ memberUserIds: [],
 // v144+ task #29: nobody has kiosk PIN login enabled by default - see
 // const.py's own default for the backend twin of this field.
 kioskLoginEnabledUserIds: [],
+// v1.132.55+: household-wide "Alarm Devices" registry - speakers/Assist
+// satellites a widened ("kiosks"/"everyone") timer alarm rings on, picked
+// from Home Assistant's own entity list (see the Settings "Alarm Devices"
+// picker, backed by family_hub/settings/list_alarm_device_candidates) -
+// household's explicit choice, not manual entity-id typing. Each entry:
+// {id, entity_id, domain: "media_player"|"assist_satellite", name}. Empty
+// by default - nothing rings anywhere until a household actually registers
+// a device. See const.py's SETTINGS_KEY_ALARM_DEVICES and
+// chores_websocket_api.py's _dispatch_timer_alarm.
+alarmDevices: [],
+// v1.132.55+: which tts.* entity a registered media_player alarm device
+// speaks through (an assist_satellite entry needs none of this - announce
+// handles its own TTS). Empty = not configured, and a media_player device
+// is silently skipped at fire time until one is set - see const.py's
+// SETTINGS_KEY_ALARM_TTS_ENTITY.
+alarmTtsEntityId: "",
 people: [],
 weekendBreakfast: false,
 showMealsInMonth: false,
@@ -2629,8 +3332,8 @@ fabPosition: "dashboard",
 smallScreenMode: false,
 scrollLocked: false,
 theme: this._defaultTheme(),
-useGlobalTheme: false,
-globalThemeId: "",
+useGlobalTheme: true,
+globalThemeId: "liquidglass",
 // Auto screensaver: shows a full-screen video or live camera feed after
 // the dashboard sits idle for a while - built for a wall-mounted "home
 // hub" tablet, where it's wanted, without also switching on for
@@ -2655,6 +3358,23 @@ usersEnabled: {},
 // browse/list view (.loved-overlay) - that's still "idle" for this
 // purpose, since nothing is actually being read there.
 disableWhileRecipeOpen: false,
+// v193+: household ask, verbatim - "Default dashboard on screen saver
+// wake. We added where the device should be when waking from
+// screensaver in the screensaver card, but never added that
+// functionality to the main screensaver. Let's add it." The standalone
+// family-screensaver-card.js (a near-invisible companion card you place
+// on some OTHER dashboard to bring the auto screensaver there) already
+// had this as return_dashboard_path, a per-card yaml config field - see
+// its own _goToReturnDashboard. The MAIN screensaver here is a built-in
+// feature of this card itself, configured household-wide from Settings
+// (not per-card yaml), so this is the same idea/mechanism (a Home
+// Assistant dashboard path, navigated to via history.pushState + a
+// "location-changed" event on wake - see _goToReturnDashboard below)
+// but stored as a plain string on this same shared screenSaver settings
+// object alongside sourceType/videoUrl/etc. Blank (the default) means
+// "no change" - wake just hides the overlay in place, exactly like
+// before this existed.
+returnDashboardPath: "",
 },
 };
 }
@@ -2688,6 +3408,19 @@ color: "",
 // and new-assignment eligibility - built for a shared kiosk/wall-tablet
 // login, but works for anyone.
 includeInChores: true,
+// v1.132.32+: household ask, verbatim: "there should be another
+// permission level for [like] a child setting that hides the user tab
+// too." A second, narrower notch below "ordinary non-admin" - everything
+// a plain non-admin already can't see in Settings (see
+// .admin-only-setting/_openSettings) PLUS the whole Users tab itself,
+// including their own notification profile row. Purely a per-person flag
+// an admin sets from inside THIS SAME profile modal (see the admin-only
+// .notify-profile-child-field toggle, gated the same isAdminForPin way as
+// the Kiosk/Permissions accordions right below) - never self-service, and
+// never true for an actual admin (an admin viewer is never gated by this
+// at all, see _openSettings's own isChildAccount check). Defaults false so
+// nobody is ever silently locked out of the Users tab by an upgrade.
+isChildAccount: false,
 // v123+: instant, one-shot push notifications (NOT digest-batched, NOT
 // gated by digestEnabled above) - see const.py's own SETTINGS_KEY_USER_
 // PROFILES docstring for the full "who gets notified about what" picture.
@@ -2716,6 +3449,17 @@ notifyChoreDue: false,
 // docstring. Household ask: "route this through alarm notifications for
 // the person the timer is for."
 notifyTimerAlarm: false,
+// v1.132.55+: household ask, verbatim - "maybe parents want alarms to
+// trigger everywhere" / "if a kid starts a clean room for 30 minutes task
+// they should get an alarm at the main kiosk." This is the OTHER half of
+// that - flags THIS login as an always-on alarm kiosk, so a "kiosks"- or
+// "everyone"-tier chore/reward alarm rings on every open dashboard logged
+// in as this account, not just the timer's own owner. Set from the admin-
+// only Users tab (mirrors isChildAccount's own admin-only field just
+// above), never self-service. Defaults false, same "opt in to nothing" as
+// every other flag on a brand new profile - see const.py's
+// SETTINGS_KEY_PROFILE_IS_ALARM_KIOSK.
+isAlarmKiosk: false,
 // v124+: which calendar entity (an id from settings.people - see
 // _getPeople) this person's events should visually follow their own
 // `color` above, instead of that calendar's own separately-configured
@@ -2796,6 +3540,13 @@ return p.badges
 text: (b.text || "").toString().trim(),
 match: (b.match || "").toString().trim(),
 hideMatch: (b.hideMatch || "").toString().trim(),
+// v183+: household ask, verbatim - "There needs to be a checkbox
+// next to the calendar badges that clicking makes the event
+// showing the badge and event not showing the badge become hidden
+// in daily digest." Off by default (existing badges never suddenly
+// vanish from the digest on upgrade) - see _build_daily_digest_message
+// on the backend, the only place this is actually read.
+digestHide: !!b.digestHide,
 }))
 .filter((b) => b.text || b.match || b.hideMatch);
 }
@@ -2805,6 +3556,7 @@ return [
 text: (p.badgeText || "").toString().trim(),
 match: (p.badgeMatch || "").toString().trim(),
 hideMatch: (p.badgeHideMatch || "").toString().trim(),
+digestHide: false,
 },
 ];
 }
@@ -2833,7 +3585,18 @@ if (timelineEndHour <= timelineStartHour) timelineEndHour = Math.min(24, timelin
 // may still have "planner" or "portrait" saved here from the old 4-way
 // picker - those both belong to the Week family, so they fold into
 // "week" rather than being lost.
-const defaultView = parsed.defaultView === "month" ? "month" : "week";
+// v1.132.54+ bugfix: this used to hardcode "week" as the fallback for
+// anything that wasn't literally "month" or a known legacy Week-family
+// value, which silently ignored defaults.defaultView (now "month" - see
+// _defaultSettings' own comment) for a brand-new install's empty settings
+// blob. Explicit legacy Week-family markers still fold to "week"; anything
+// else missing/invalid now genuinely falls through to the real default.
+const defaultView =
+  parsed.defaultView === "month"
+    ? "month"
+    : ["week", "planner", "portrait"].includes(parsed.defaultView)
+    ? "week"
+    : defaults.defaultView;
 const countdownEnabled = typeof parsed.countdownEnabled === "boolean" ? parsed.countdownEnabled : defaults.countdownEnabled;
 const countdownLabel = typeof parsed.countdownLabel === "string" ? parsed.countdownLabel : defaults.countdownLabel;
 const countdownDate = typeof parsed.countdownDate === "string" ? parsed.countdownDate : defaults.countdownDate;
@@ -2861,6 +3624,7 @@ const routinesEnabled = typeof parsed.routinesEnabled === "boolean" ? parsed.rou
 const goalsShowInChores = typeof parsed.goalsShowInChores === "boolean" ? parsed.goalsShowInChores : defaults.goalsShowInChores;
 const goalsShowInRewards = typeof parsed.goalsShowInRewards === "boolean" ? parsed.goalsShowInRewards : defaults.goalsShowInRewards;
 const choreDueShowTime = typeof parsed.choreDueShowTime === "boolean" ? parsed.choreDueShowTime : defaults.choreDueShowTime;
+const choresConfettiOnComplete = typeof parsed.choresConfettiOnComplete === "boolean" ? parsed.choresConfettiOnComplete : defaults.choresConfettiOnComplete;
 const notificationClickPath = typeof parsed.notificationClickPath === "string" ? parsed.notificationClickPath.trim() : defaults.notificationClickPath;
 let people =
 Array.isArray(parsed.people) && parsed.people.length
@@ -2932,6 +3696,15 @@ if (parsedScreenSaver.usersEnabled[userId]) screenSaverUsersEnabled[userId] = tr
 }
 const screenSaverDisableWhileRecipeOpen =
 typeof parsedScreenSaver.disableWhileRecipeOpen === "boolean" ? parsedScreenSaver.disableWhileRecipeOpen : defaults.screenSaver.disableWhileRecipeOpen;
+// v1.132.33+: normalized here (not just trimmed) so a value already
+// saved without its leading "/" - see _normalizeDashboardPath's own
+// comment for the full "tapping doesn't send you back" bug this fixes -
+// self-heals the moment settings are next fetched, without the household
+// needing to open Settings or retype anything.
+const screenSaverReturnDashboardPath =
+typeof parsedScreenSaver.returnDashboardPath === "string"
+? this._normalizeDashboardPath(parsedScreenSaver.returnDashboardPath)
+: defaults.screenSaver.returnDashboardPath;
 const screenSaver = {
 sourceType: screenSaverSourceType,
 videoUrl: screenSaverVideoUrl,
@@ -2939,6 +3712,7 @@ cameraEntity: screenSaverCameraEntity,
 idleSeconds: screenSaverIdleSeconds,
 usersEnabled: screenSaverUsersEnabled,
 disableWhileRecipeOpen: screenSaverDisableWhileRecipeOpen,
+returnDashboardPath: screenSaverReturnDashboardPath,
 };
 const userProfiles = this._normalizeUserProfiles(parsed.userProfiles);
 const memberUserIds = this._normalizeMemberUserIds(parsed.memberUserIds);
@@ -2951,6 +3725,20 @@ const memberUserIds = this._normalizeMemberUserIds(parsed.memberUserIds);
 const kioskLoginEnabledUserIds = Array.isArray(parsed.kioskLoginEnabledUserIds)
 ? parsed.kioskLoginEnabledUserIds.filter((id) => typeof id === "string" && id)
 : [];
+// v1.132.55+: same "malformed/missing degrades to a safe empty default"
+// treatment as everything else in this function - see const.py's
+// SETTINGS_KEY_ALARM_DEVICES/SETTINGS_KEY_ALARM_TTS_ENTITY.
+const alarmDevices = Array.isArray(parsed.alarmDevices)
+? parsed.alarmDevices
+.filter((d) => d && typeof d === "object" && typeof d.entity_id === "string" && d.entity_id && (d.domain === "media_player" || d.domain === "assist_satellite"))
+.map((d) => ({
+id: typeof d.id === "string" && d.id ? d.id : d.entity_id,
+entity_id: d.entity_id,
+domain: d.domain,
+name: typeof d.name === "string" && d.name ? d.name : d.entity_id,
+}))
+: [];
+const alarmTtsEntityId = typeof parsed.alarmTtsEntityId === "string" ? parsed.alarmTtsEntityId.trim() : "";
 return {
 blocks,
 fontSize,
@@ -2972,6 +3760,7 @@ routinesEnabled,
 goalsShowInChores,
 goalsShowInRewards,
 choreDueShowTime,
+choresConfettiOnComplete,
 notificationClickPath,
 people,
 weekendBreakfast,
@@ -2987,6 +3776,8 @@ screenSaver,
 userProfiles,
 memberUserIds,
 kioskLoginEnabledUserIds,
+alarmDevices,
+alarmTtsEntityId,
 };
 }
 // Defensive, field-by-field normalization of settings.userProfiles - same
@@ -3033,6 +3824,7 @@ const badges = Array.isArray(p.badges)
 text: (b.text ? String(b.text) : "").trim(),
 match: (b.match ? String(b.match) : "").trim(),
 hideMatch: (b.hideMatch ? String(b.hideMatch) : "").trim(),
+digestHide: !!b.digestHide,
 }))
 : [];
 result[userId] = {
@@ -3043,11 +3835,19 @@ digestEnabled: !!p.digestEnabled,
 digestSections,
 color,
 includeInChores,
+// v1.132.32+: see _defaultUserProfile's own comment for the full picture
+// - default false (missing/malformed never silently locks someone out of
+// the Users tab), only an explicit `true` turns Child mode on.
+isChildAccount: !!p.isChildAccount,
 notifyRewardClaimed: !!p.notifyRewardClaimed,
 notifyChoreApproved: !!p.notifyChoreApproved,
 notifyChoreRejected: !!p.notifyChoreRejected,
 notifyChoreDue: !!p.notifyChoreDue,
 notifyTimerAlarm: !!p.notifyTimerAlarm,
+// v1.132.55+: see _defaultUserProfile's own comment - default false, only
+// an explicit `true` (set from the admin-only Users tab) flags this login
+// as an always-on alarm kiosk.
+isAlarmKiosk: !!p.isAlarmKiosk,
 primaryCalendar,
 remindersSubscriptions,
 remindersEntity,
@@ -3780,17 +4580,30 @@ return;
 }
 if (!this._settingsUserProfilesDraft) this._settingsUserProfilesDraft = {};
 const memberIds = Array.isArray(this._settingsMemberIdsDraft) ? this._settingsMemberIdsDraft : [];
-const members = users.filter((u) => memberIds.includes(u.id));
+const currentUserId = this._hass && this._hass.user && this._hass.user.id;
+const isAdminUser = !!(this._hass && this._hass.user && this._hass.user.is_admin);
+// Household ask, verbatim: "If a user is not an admin the only thing
+// they should be able to see in settings is: ... Whos reminders they
+// subscribe to, and what calendar is associated with them." That's this
+// list's own per-person profile - a non-admin only ever gets to see (and
+// tap Edit into) their OWN row, never anyone else's. An admin still sees
+// everyone, unchanged.
+const members = users.filter((u) => memberIds.includes(u.id) && (isAdminUser || u.id === currentUserId));
 if (!members.length) {
 listEl.innerHTML = "";
 if (emptyEl) emptyEl.style.display = "";
 return;
 }
 if (emptyEl) emptyEl.style.display = "none";
-const currentUserId = this._hass && this._hass.user && this._hass.user.id;
 listEl.innerHTML = members
 .map((u) => {
 const profile = this._settingsUserProfilesDraft[u.id] || this._defaultUserProfile();
+// Removing yourself from Family Hub (and, for an admin viewing someone
+// else, removing them) isn't part of the non-admin whitelist above, so
+// the ✕ only renders for an admin - a non-admin's own row is Edit-only.
+const removeBtnHtml = isAdminUser
+? `<button type="button" class="notify-profile-row-remove-btn" data-user-id="${u.id}" title="Remove from Family Hub">&#10005;</button>`
+: "";
 return `
 <div class="notify-profile-row" data-user-id="${u.id}">
 <div>
@@ -3799,7 +4612,7 @@ return `
 </div>
 <div class="notify-profile-row-actions">
 <button type="button" class="notify-profile-row-edit-btn" data-user-id="${u.id}">Edit</button>
-<button type="button" class="notify-profile-row-remove-btn" data-user-id="${u.id}" title="Remove from Family Hub">&#10005;</button>
+${removeBtnHtml}
 </div>
 </div>
 `;
@@ -3870,6 +4683,10 @@ this._renderNotifyProfilesList();
 // household's settings that couldn't be matched to them automatically).
 _userProfileSummaryText(profile) {
 const parts = [];
+// v1.132.32+: surfaced first so an admin scanning the Users list can spot
+// a Child account at a glance, same reasoning as leading with calendar
+// count - this is the one flag that changes what THEY see in Settings.
+if (profile.isChildAccount) parts.push("Child account");
 const calCount = (profile.subscribedCalendars || []).length;
 if (calCount) parts.push(`${calCount} calendar${calCount === 1 ? "" : "s"}`);
 if (profile.remindersEnabled) parts.push("Reminders on");
@@ -3967,6 +4784,17 @@ return [
 { key: "can_add_rewards", group: "Rewards", label: "Add to catalog", hint: "Can add rewards to the catalog with a star cost. Without this, what they add is a suggestion that needs approval." },
 { key: "can_edit_menu", group: "Menu", label: "Edit the menu", hint: "Can edit the weekly meal plan. Without this they can still suggest a meal for any day - someone with this permission decides whether it goes on the menu." },
 { key: "can_see_wishlist_claims", group: "Wish Lists", label: "See claim status", hint: "Can see who's claimed what on a wish list they don't own themselves (the list's own owner never sees this regardless). Off by default for anyone not already using Family Hub when this permission was introduced - see PERMISSION_SEE_WISHLIST_CLAIMS in const.py - so an unidentified shared kiosk login can't spoil a surprise." },
+{ key: "can_delete_event", group: "Calendar", label: "Delete calendar events", hint: "Can delete an event from the calendar (when the calendar integration supports it - otherwise the Delete button is greyed out with an explanation for everyone, regardless of this permission)." },
+// v1.132.47+: household ask, verbatim - "Need a permission to add/delete
+// routines both add/delete self and all so someone can't modify others."
+// Before these, every routine-item write was gated on the single, broad
+// can_assign, so a non-admin without that grant couldn't even touch their
+// OWN routine checklist. These two are a narrower, ownership-aware
+// alternative, purely additive on top of can_assign (unchanged) - see
+// chores_websocket_api.py's _can_write_routine_items and this card's own
+// _canManageRoutinesFor for the shared rule both ends enforce.
+{ key: "can_manage_own_routines", group: "Routines", label: "Manage own routine items", hint: "Can add/edit/delete/reorder items in their OWN Morning/Afternoon/Night routine section, without needing the broader chore-assignment permission." },
+{ key: "can_manage_any_routines", group: "Routines", label: "Manage everyone's routine items", hint: "Can add/edit/delete/reorder ANY person's routine items, not just their own - same reach as Assign to others, scoped to just Routines." },
 ];
 }
 // v1.132.5+: replaces the old whole-grid _renderPermissionsList - renders
@@ -4094,6 +4922,122 @@ select.innerHTML =
 const current = this._getDeviceThemeOverride();
 const hasCurrent = current === "" || current === "__default__" || list.some((t) => t.id === current);
 select.value = hasCurrent ? current : "";
+}
+// v1.132.55+: household ask, verbatim - "pick from HA's own entity list"
+// for the Alarm Devices registry, not manual entity-id typing. Renders the
+// currently-registered devices (from this._settingsAlarmDevicesDraft, the
+// household-level twin of _settingsUserProfilesDraft above) with a Remove
+// button each, the "add a device" select (candidates fetched lazily below,
+// filtered to exclude ones already registered), and the TTS-entity select
+// a registered media_player device speaks through. Re-called after every
+// add/remove so the list and the add-select's own remaining options both
+// stay in sync without a full Settings re-render.
+_renderAlarmDevicesSection(root) {
+if (!root.querySelector(".alarm-devices-list")) return;
+const draft = this._settingsAlarmDevicesDraft || [];
+const listEl = root.querySelector(".alarm-devices-list");
+if (listEl) {
+listEl.innerHTML = draft.length
+  ? draft
+      .map(
+        (d, i) =>
+          `<div class="alarm-device-row">` +
+          `<span class="alarm-device-row-name">${d.name || d.entity_id} <span class="alarm-device-row-domain">(${d.domain === "assist_satellite" ? "Assist satellite" : "Speaker"})</span></span>` +
+          `<button type="button" class="alarm-device-remove-btn" data-index="${i}" title="Remove">&#10005;</button>` +
+          `</div>`
+      )
+      .join("")
+  : `<div class="remind-hint" data-i18n="settings.no_alarm_devices">No alarm devices registered yet.</div>`;
+listEl.querySelectorAll(".alarm-device-remove-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const idx = parseInt(btn.dataset.index, 10);
+    if (Number.isFinite(idx)) this._settingsAlarmDevicesDraft.splice(idx, 1);
+    this._renderAlarmDevicesSection(root);
+  });
+});
+// v1.132.62+: this list's own empty-state hint carries a data-i18n key
+// (see just above) that only ever exists in the DOM once this .innerHTML
+// runs - the one-time sweep from _ensureTranslationsLoaded() can't have
+// covered it, since it fires long before Settings is ever opened. Sweep
+// again right here so it (and nothing else, since _applyTranslations()
+// is a cheap, idempotent, root-wide no-op for every already-translated
+// element) picks up its translation immediately.
+this._applyTranslations();
+}
+const ttsSelect = root.querySelector(".alarm-tts-entity-select");
+if (ttsSelect && ttsSelect.dataset.populated === "true") {
+ttsSelect.value = this._settingsAlarmTtsEntityDraft || "";
+}
+// v1.132.56+: household ask, verbatim - "can we make the picker UI more
+// similar to the buttons on the settings. I dont like the narrow box drop
+// down." Replaces the old <select> + Add button with the same pill-button
+// idiom the rest of Settings already uses (.size-btn/.approval-toggle-btn)
+// - one tap on a candidate's own button adds it immediately, no separate
+// Add step. A device disappears from this row the moment it's added
+// (re-rendered from the now-shorter candidate list below), so there's
+// never a stale "already added" button left sitting around to tap twice.
+this._fetchAlarmDeviceCandidates().then((candidates) => {
+if (!candidates) return;
+const candidatesEl = root.querySelector(".alarm-devices-candidates");
+if (candidatesEl) {
+  const registeredIds = new Set(draft.map((d) => d.entity_id));
+  const remaining = [...(candidates.media_players || []), ...(candidates.assist_satellites || [])].filter(
+    (c) => !registeredIds.has(c.entity_id)
+  );
+  candidatesEl.innerHTML = remaining.length
+    ? remaining
+        .map(
+          (c) =>
+            `<button type="button" class="alarm-device-candidate-btn" data-entity-id="${c.entity_id}" data-domain="${c.domain}" data-name="${c.name}">` +
+            `${c.name} <span class="alarm-device-row-domain">(${c.domain === "assist_satellite" ? "Assist satellite" : "Speaker"})</span>` +
+            `</button>`
+        )
+        .join("")
+    : `<div class="remind-hint" data-i18n="settings.no_more_alarm_devices">No more devices found.</div>`;
+  candidatesEl.querySelectorAll(".alarm-device-candidate-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      this._settingsAlarmDevicesDraft = this._settingsAlarmDevicesDraft || [];
+      if (this._settingsAlarmDevicesDraft.some((d) => d.entity_id === btn.dataset.entityId)) return;
+      this._settingsAlarmDevicesDraft.push({
+        id: btn.dataset.entityId,
+        entity_id: btn.dataset.entityId,
+        domain: btn.dataset.domain,
+        name: btn.dataset.name || btn.dataset.entityId,
+      });
+      this._renderAlarmDevicesSection(root);
+    });
+  });
+  // v1.132.62+: same reasoning as the sync .alarm-devices-list sweep
+  // above - this candidates list's own empty-state hint is rebuilt fresh
+  // on every async round trip, well after the one-time page-load sweep,
+  // so it needs its own re-sweep right here to ever get translated.
+  this._applyTranslations();
+}
+if (ttsSelect && ttsSelect.dataset.populated !== "true") {
+  ttsSelect.dataset.populated = "true";
+  const ttsOptions = (candidates.tts_entities || [])
+    .map((c) => `<option value="${c.entity_id}">${c.name}</option>`)
+    .join("");
+  ttsSelect.innerHTML = `<option value="">Not set</option>${ttsOptions}`;
+  ttsSelect.value = this._settingsAlarmTtsEntityDraft || "";
+}
+});
+}
+// Fetched once per Settings-open and cached on this._alarmDeviceCandidates
+// (cleared each time Settings opens fresh via _openSettings, same "ask
+// again next time, not on every keystroke" idea as _fetchGlobalThemes) -
+// best-effort: a failed fetch just leaves the add-select showing whatever
+// it already had (empty on first open), never blocks the rest of Settings.
+async _fetchAlarmDeviceCandidates() {
+if (this._alarmDeviceCandidates) return this._alarmDeviceCandidates;
+if (!this._hass || !this._hass.connection || !this._hass.connection.sendMessagePromise) return null;
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/settings/list_alarm_device_candidates" });
+this._alarmDeviceCandidates = result;
+return result;
+} catch (e) {
+return null;
+}
 }
 _updateGlobalThemeVisibility(isOn) {
 const root = this._root;
@@ -4313,6 +5257,33 @@ this._renderGrid();
 this._renderLegend();
 this._updateNavLabel();
 if (this._root.querySelector(".debug-overlay.open")) this._renderDebug();
+}
+// v1.132.43+: household ask, verbatim - "Deleting calendar events (Needs
+// permission) if the calendar integration you're using supports delete,
+// else gray out..." Whether entityId's calendar integration can delete an
+// event at all is a property of the CALENDAR (its platform, whether it
+// implements CalendarEntityFeature.DELETE_EVENT) - not of any one event -
+// so it never changes between one event-info popup and the next for the
+// same person's calendar. Cached per entity_id for the life of the card
+// rather than re-fetched every time _openEventInfo is opened.
+async _getCalendarDeleteSupport(entityId) {
+if (!this._calendarDeleteSupport) this._calendarDeleteSupport = {};
+if (this._calendarDeleteSupport[entityId]) return this._calendarDeleteSupport[entityId];
+if (!this._hass) return { supported: false, integrationName: "your calendar's own app" };
+let result;
+try {
+const res = await this._hass.connection.sendMessagePromise({
+type: "family_hub/calendar/delete_support",
+entity_id: entityId,
+});
+result = { supported: !!res.supported, integrationName: res.integration_name || "your calendar's own app" };
+} catch (e) {
+// An older backend (or a transient failure) means "assume unsupported"
+// - never silently offer a Delete button that might not actually work.
+result = { supported: false, integrationName: "your calendar's own app" };
+}
+this._calendarDeleteSupport[entityId] = result;
+return result;
 }
 async _fetchWeather() {
 if (!this._hass || !this._config.weather_entity) return;
@@ -4541,6 +5512,7 @@ summary: it.summary || "(untitled)",
 due,
 description: parsed.description,
 rollover: parsed.rollover,
+rolloverDays: parsed.rolloverDays,
 listEntity: list.entity,
 color: list.color,
 personName: list.personName,
@@ -5656,6 +6628,16 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .mc-pill { font-size: 10px; border-radius: 3px; padding: 1px 4px; color: #3a352c; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mc-meal-pill { cursor: pointer; font-weight: 700; }
 .mc-more { font-size: 9px; color: var(--fc-text-secondary); }
+/* v182+ - a multi-day event's pill on the day(s) it carries over into: pull
+   it flush against the continuing edge (cancel the cell's own 4px padding)
+   and square off that corner instead of rounding it, so consecutive days'
+   pills for the same event read as one continuous bar bridging the gap
+   between cells rather than a set of separate, disconnected chips. See the
+   "v182+" comment at this markup's build site (_buildMonthCellsHtml) for
+   why a literal cross-cell-border bar isn't possible without a much bigger
+   layout rewrite - each day is still its own bordered/shadowed card. */
+.mc-pill.mc-continue-prev { margin-left: -4px; padding-left: 4px; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.mc-pill.mc-continue-next { margin-right: -4px; padding-right: 4px; border-top-right-radius: 0; border-bottom-right-radius: 0; }
 /* v145+ task: the "split" Month variant - month calendar on one side,
    selected day's events on the other. Landscape/tablet default: the two
    panes sit side by side, calendar first (left) then detail (right) -
@@ -5687,7 +6669,14 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 }
 .day-col { background: var(--fc-card); border: 1px solid var(--fc-border); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; min-height: 0; min-width: 0; height: 100%; overflow: hidden; box-shadow: var(--fc-shadow); }
 .day-col.today { border: 2px solid var(--fc-accent); }
-.day-header { text-align: center; margin-bottom: 4px; flex: 0 0 auto; }
+.day-header { text-align: center; margin-bottom: 4px; flex: 0 0 auto; cursor: pointer; border-radius: 6px; }
+/* v1.132.42+: household ask, verbatim - "make a way to highlight a day of
+   the week like is possible in month view so you can click add calendar
+   event or reminder and it will default to that day, like we do in the
+   month view." Same border+inset-shadow treatment as .month-cell.selected
+   just above, applied to the header instead of the whole column so the
+   meal blocks/events below it don't visually shift. */
+.day-header.selected { border: 2px solid var(--fc-accent); box-shadow: 0 0 0 2px var(--fc-accent) inset; }
 .name-row { display: flex; align-items: center; justify-content: center; gap: 5px; }
 .day-header .name { font-size: var(--fs-day-name, 13px); text-transform: uppercase; color: var(--fc-text-secondary); }
 .wx-icon { font-size: 19px; line-height: 1; }
@@ -5730,7 +6719,7 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
    Purely visual: opacity only, cursor/pointer-events untouched, so a
    greyed-out pill is still fully tappable/interactable, same as before
    this existed. */
-.event.past, .tl-event.past, .all-day-chip.past { opacity: 0.45; }
+.event.past, .tl-event.past, .all-day-chip.past, .mc-pill.past { opacity: 0.45; }
 .mc-pill.mc-reminder-pill { border: 2px dashed rgba(0,0,0,0.35); }
 /* v144.16+: small-tablet header declutter tier (household report: a 7"
    kiosk panel like a Lenovo Smart Display is well wider than a phone, so
@@ -6146,6 +7135,28 @@ comes later in paint order. */
 .pick-recipe-btn { border: none; border-radius: 14px; padding: 8px 10px; font-size: 12px; font-weight: 700; background: #f2ddd4; color: #7a4436; cursor: pointer; white-space: nowrap; box-shadow: var(--fc-shadow); width: 100%; }
 .field input, .field textarea { width: 100%; box-sizing: border-box; font-size: 16px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-family: inherit; }
 .field textarea { resize: vertical; min-height: 60px; }
+/* v1.132.39+ - "Suggestive meal line": a live hint under the Dish
+   name/meal name field (shared by the day/menu editor and the Recipe Box
+   Add/Edit Recipe editor - see .input-name) when what's being typed looks
+   like a near-duplicate of something already in the Recipe Box catalog
+   ("Cilli dogs" -> "Similar to: Chilli Cheese Dogs"), so a household
+   catches the typo/near-miss before it becomes a second, separate entry
+   for the same dish - see _updateMealNameSuggestion. This is a live,
+   lighter-weight cousin of the existing Save-time fuzzy-duplicate confirm
+   (_findFuzzyDuplicate, used by _upsertDish/_addSuggestion) - same
+   matching logic, surfaced earlier and non-blocking instead of a confirm
+   dialog. v1.132.41+ (household ask, verbatim: "can we make the fuzzy
+   match menu suggestuons up to 3 recipes with a little broader match"):
+   up to 3 candidates now, each its own row with its own "Use this
+   instead?" button - see _findMealNameSuggestionMatches - and both fuzzy
+   thresholds were loosened (whole-name 20%->30%, word-level 34%->45%) so
+   more near-misses surface. */
+.meal-name-suggestion { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; padding: 6px 10px; border-radius: 8px; background: var(--fc-surface-alt); font-size: 12.5px; color: var(--fc-text-secondary); }
+.meal-name-suggestion-label { font-size: 11.5px; }
+.meal-name-suggestion-list { display: flex; flex-direction: column; gap: 4px; }
+.meal-name-suggestion-item { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.meal-name-suggestion-match { color: var(--fc-text); font-weight: 600; }
+.meal-name-suggestion-use { border: none; border-radius: 12px; padding: 4px 9px; font-size: 12px; font-weight: 700; background: #f2ddd4; color: #7a4436; cursor: pointer; white-space: nowrap; }
 /* "Move to another week" (v141+) - a plain date input plus its own Move
    button, rather than the usual full-width .field input, since the
    button needs to sit right next to the date picker on the same row. */
@@ -6186,6 +7197,33 @@ comes later in paint order. */
 .size-btn-row { display: flex; gap: 8px; }
 .size-btn { flex: 1 1 auto; min-height: 44px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
 .size-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
+/* v1.132.56+: household ask, verbatim - "can we make the picker UI more
+   similar to the buttons on the settings. I dont like the narrow box drop
+   down." The Alarm Devices "add a device" picker (see
+   _renderAlarmDevicesSection) now renders each not-yet-registered device
+   as its own tap-to-add button, styled like .size-btn above instead of a
+   <select>, wrapping onto multiple lines instead of stretching edge to
+   edge like a toggle pair. */
+.alarm-devices-candidates { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 10px; }
+.alarm-device-candidate-btn { min-height: 40px; padding: 8px 14px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
+.alarm-device-candidate-btn:active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
+.alarm-devices-add-label { margin: 2px 0 0; }
+.alarm-device-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+.alarm-device-row-name { flex: 1; }
+.alarm-device-row-domain { opacity: 0.6; font-size: 11px; }
+.alarm-device-remove-btn { min-width: 32px; min-height: 32px; border-radius: 8px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
+/* v1.132.63+: attachable checklists - reuses the alarm-device-row/remove-
+   btn shape above (a name, then a small square remove button) for both the
+   Add Event modal's item-builder rows and the event-info popup's checkable
+   items, since the visual idiom is identical either way. */
+.checklist-item-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+.checklist-item-row-text { flex: 1; }
+.checklist-item-row-text.done { text-decoration: line-through; opacity: 0.55; }
+.checklist-item-check { width: 22px; height: 22px; flex: 0 0 auto; }
+.checklist-item-remove-btn { min-width: 32px; min-height: 32px; border-radius: 8px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
+.checklist-add-row { display: flex; gap: 8px; margin-top: 6px; }
+.checklist-add-row input { flex: 1; min-height: 40px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 13px; padding: 0 10px; box-shadow: var(--fc-shadow); }
+.checklist-mode-btn-row { display: flex; gap: 8px; margin-bottom: 8px; }
 .hour-select { flex: 1 1 auto; min-height: 44px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 14px; font-weight: 700; padding: 0 8px; box-shadow: var(--fc-shadow); }
 .range-sep { display: flex; align-items: center; font-size: 13px; font-weight: 700; color: var(--fc-text-secondary); }
 .color-swatches { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -6331,6 +7369,11 @@ instead of the usual stacked field layout. */
 .event-info-countdown-btn:active { opacity: 0.7; }
 .event-info-countdown-btn.done { border-color: var(--fc-accent); background: #f0e6c4; }
 .event-info-countdown-btn:disabled { opacity: 0.6; cursor: default; }
+.event-info-delete-row { margin-top: 4px; }
+.event-info-delete-btn { min-height: 40px; padding: 6px 14px; border-radius: 10px; border: 2px solid #c0392b; background: #fdecea; color: #a5281b; font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
+.event-info-delete-btn:active { opacity: 0.7; }
+.event-info-delete-btn:disabled { opacity: 0.6; cursor: default; }
+.event-info-delete-btn.unsupported { border: 2px dashed var(--fc-border); background: var(--fc-card); color: var(--fc-text-secondary); opacity: 0.7; cursor: pointer; }
 .people-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
 .person-row { display: flex; align-items: center; gap: 6px; }
 .person-row input[type="text"] { width: auto; }
@@ -6350,9 +7393,16 @@ instead of the usual stacked field layout. */
 .notify-devices-add-btn { flex: 0 0 auto; min-height: 40px; padding: 6px 14px; border-radius: 10px; border: none; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
 .notify-devices-add-btn:disabled { opacity: 0.4; cursor: default; }
 .person-badges { display: flex; flex-direction: column; gap: 6px; margin: -2px 0 10px; }
-.person-badge-row { display: flex; align-items: center; gap: 6px; }
-.person-badge-row input { flex: 1 1 0; min-width: 0; font-size: 12px !important; padding: 6px 8px !important; }
+.person-badge-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.person-badge-row input[type="text"] { flex: 1 1 0; min-width: 0; font-size: 12px !important; padding: 6px 8px !important; }
 .person-badge-row .person-badge-text { flex: 0 0 64px; }
+/* v183+ - "Hide from digest" checkbox next to each badge row (see
+   _build_daily_digest_message on the backend for what it actually
+   drives). A plain checkbox+label, not another flex:1 text input, so it
+   sits at its own natural width instead of stretching like the text
+   fields above it. */
+.person-badge-digest-label { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--fc-text-secondary); white-space: nowrap; cursor: pointer; }
+.person-badge-digest-label input[type="checkbox"] { flex: 0 0 auto; width: 14px; height: 14px; margin: 0; }
 .person-badge-remove-btn { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 8px; border: none; background: var(--fc-surface-alt); color: #b5583c; font-size: 13px; cursor: pointer; }
 .person-badge-add-btn { align-self: flex-start; border: none; border-radius: 12px; padding: 5px 10px; font-size: 11px; font-weight: 700; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; box-shadow: var(--fc-shadow); }
 .person-countdown-btn.active { opacity: 1; border-color: var(--fc-accent); background: #f0e6c4; }
@@ -6383,6 +7433,16 @@ instead of the usual stacked field layout. */
 .leftover-days-picker { display: flex; flex-wrap: wrap; gap: 6px; }
 .leftover-day-opt { display: flex; align-items: center; gap: 4px; padding: 5px 9px; border-radius: 12px; background: var(--fc-surface-alt); color: var(--fc-text); font-size: 12px; font-weight: 600; cursor: pointer; user-select: none; }
 .leftover-day-opt input { margin: 0; }
+/* v185+: "Roll over to next day if not completed" reminders can now be
+   restricted to specific days of the week (see _rolldaysBtnsHtml) - a
+   Mon-Sun toggle-button row, same visual language as the Chores card's own
+   weekday-btn-row (this file has no shared module with that one, so it's
+   its own independent copy of the same look). */
+.rolldays-field { display: none; margin: 6px 0 0 0; }
+.rolldays-hint { font-size: 11px; color: var(--fc-text-secondary); font-style: italic; margin: 0 0 4px; }
+.rolldays-btn-row { display: flex; gap: 4px; flex-wrap: wrap; }
+.rolldays-btn { border: 1px solid var(--fc-border); border-radius: 8px; padding: 6px 8px; font-size: 12px; font-weight: 700; background: var(--fc-card); color: var(--fc-text); cursor: pointer; }
+.rolldays-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
 .event-info-remind-row { align-items: flex-start; }
 .event-info-remind-content { display: flex; flex-direction: column; gap: 4px; }
 .event-info-remind-status { font-size: 11px; color: var(--fc-text-secondary); min-height: 14px; }
@@ -6454,40 +7514,40 @@ instead of the usual stacked field layout. */
 <ha-card>
 <div class="week-nav">
 <div class="week-nav-side left">
-<button class="settings-btn" title="Settings">&#9881;&#65039;</button>
-<button class="view-btn" data-view="week" title="Week view">Week</button>
-<button class="view-btn" data-view="month" title="Month view">Month</button>
-<button class="edit-meals-btn" title="Rearrange meals">&#9999;&#65039;<span class="edit-meals-label"> Edit</span></button>
+<button class="settings-btn" title="Settings" data-i18n-title="nav.settings">&#9881;&#65039;</button>
+<button class="view-btn" data-view="week" title="Week view" data-i18n-title="nav.week_view_title"><span data-i18n="nav.week">Week</span></button>
+<button class="view-btn" data-view="month" title="Month view" data-i18n-title="nav.month_view_title"><span data-i18n="nav.month">Month</span></button>
+<button class="edit-meals-btn" title="Rearrange meals" data-i18n-title="nav.edit_meals_title">&#9999;&#65039;<span class="edit-meals-label" data-i18n="nav.edit_suffix"> Edit</span></button>
 </div>
 <div class="week-nav-center">
-<button class="nav-arrow nav-prev" aria-label="Previous">&#9664;</button>
+<button class="nav-arrow nav-prev" aria-label="Previous" data-i18n-title="nav.previous">&#9664;</button>
 <div class="week-label-wrap">
 <div class="week-label">This Week</div>
 <div class="countdown-line"></div>
-<button type="button" class="week-shortcuts-toggle" aria-haspopup="true" aria-expanded="false" aria-label="Jump to a week">&#9660;</button>
+<button type="button" class="week-shortcuts-toggle" aria-haspopup="true" aria-expanded="false" aria-label="Jump to a week" data-i18n-title="nav.jump_to_week">&#9660;</button>
 </div>
-<button class="nav-arrow nav-next" aria-label="Next">&#9654;</button>
+<button class="nav-arrow nav-next" aria-label="Next" data-i18n-title="nav.next">&#9654;</button>
 </div>
 <div class="week-nav-side right">
-<button class="suggestions-btn">&#128161; Suggestions</button>
-<button class="loved-btn">&#127869;&#65039; Recipe Box</button>
+<button class="suggestions-btn">&#128161; <span data-i18n="nav.suggestions">Suggestions</span></button>
+<button class="loved-btn">&#127869;&#65039; <span data-i18n="nav.recipe_box">Recipe Box</span></button>
 <div class="more-menu-wrap">
-<button class="more-menu-btn" title="More" aria-haspopup="true" aria-expanded="false">&#8942; More</button>
+<button class="more-menu-btn" title="More" aria-haspopup="true" aria-expanded="false" data-i18n-title="nav.more">&#8942; <span data-i18n="nav.more">More</span></button>
 <div class="more-menu-dropdown">
-<button type="button" class="more-menu-item loved-menu-item">&#127869;&#65039; Recipe Box</button>
-<button type="button" class="more-menu-item templates-btn">&#128203; Templates</button>
-<button type="button" class="more-menu-item print-btn" title="Print or save as PDF">&#128424;&#65039; Print</button>
-<button type="button" class="more-menu-item grocy-shopping-list-btn" title="View and add to your Grocy shopping list">&#128717; Shopping List</button>
-<button type="button" class="more-menu-item grocy-expiring-btn" title="Items in Grocy stock expiring within 30 days">&#8987; Expiring Soon</button>
-<button type="button" class="more-menu-item grocy-low-stock-btn" title="Items in Grocy stock below their minimum amount">&#128230; Low Stock</button>
+<button type="button" class="more-menu-item loved-menu-item">&#127869;&#65039; <span data-i18n="nav.recipe_box">Recipe Box</span></button>
+<button type="button" class="more-menu-item templates-btn">&#128203; <span data-i18n="nav.templates">Templates</span></button>
+<button type="button" class="more-menu-item print-btn" title="Print or save as PDF" data-i18n-title="nav.print_title">&#128424;&#65039; <span data-i18n="nav.print">Print</span></button>
+<button type="button" class="more-menu-item grocy-shopping-list-btn" title="View and add to your Grocy shopping list" data-i18n-title="nav.shopping_list_title">&#128717; <span data-i18n="nav.shopping_list">Shopping List</span></button>
+<button type="button" class="more-menu-item grocy-expiring-btn" title="Items in Grocy stock expiring within 30 days" data-i18n-title="nav.expiring_soon_title">&#8987; <span data-i18n="nav.expiring_soon">Expiring Soon</span></button>
+<button type="button" class="more-menu-item grocy-low-stock-btn" title="Items in Grocy stock below their minimum amount" data-i18n-title="nav.low_stock_title">&#128230; <span data-i18n="nav.low_stock">Low Stock</span></button>
 </div>
 </div>
 </div>
 </div>
 <div class="week-shortcuts">
-<button class="week-shortcut" data-weeks="0">This Week</button>
-<button class="week-shortcut" data-weeks="1">Next Week</button>
-<button class="week-shortcut" data-weeks="2">In 2 Weeks</button>
+<button class="week-shortcut" data-weeks="0" data-i18n="nav.this_week_shortcut">This Week</button>
+<button class="week-shortcut" data-weeks="1" data-i18n="nav.next_week">Next Week</button>
+<button class="week-shortcut" data-weeks="2" data-i18n="nav.in_2_weeks">In 2 Weeks</button>
 </div>
 <div class="legend"></div>
 <div class="grid mode-week"></div>
@@ -6517,6 +7577,10 @@ instead of the usual stacked field layout. */
 <button class="pick-recipe-btn" type="button">&#127869;&#65039; Pick a Recipe</button>
 </div>
 <input type="text" class="input-name" placeholder="e.g. Taco night" maxlength="120" />
+<div class="meal-name-suggestion" style="display:none;">
+<div class="meal-name-suggestion-label">Similar to:</div>
+<div class="meal-name-suggestion-list"></div>
+</div>
 </div>
 <div class="field">
 <label>Description</label>
@@ -6852,8 +7916,8 @@ instead of the usual stacked field layout. */
 </div>
 <div class="modal-overlay debug-overlay">
 <div class="modal-box debug-box">
-<button class="modal-close debug-close" aria-label="Close">&#10005;</button>
-<h2>Debug Info</h2>
+<button class="modal-close debug-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
+<h2 data-i18n="settings.debug_info">Debug Info</h2>
 <div class="debug-content"></div>
 </div>
 </div>
@@ -6866,595 +7930,640 @@ instead of the usual stacked field layout. */
 </div>
 <div class="modal-overlay settings-overlay">
 <div class="modal-box settings-box">
-<button class="modal-close settings-close" aria-label="Close">&#10005;</button>
-<h2>&#9881;&#65039; Settings</h2>
-<button type="button" class="settings-debug-btn">&#128027; Debug Info</button>
+<button class="modal-close settings-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
+<h2>&#9881;&#65039; <span data-i18n="settings.heading">Settings</span></h2>
+<button type="button" class="settings-debug-btn">&#128027; <span data-i18n="settings.debug_info">Debug Info</span></button>
 <div class="settings-tabs">
-<button type="button" class="settings-tab-btn active" data-settings-tab="general">General</button>
-<button type="button" class="settings-tab-btn" data-settings-tab="notifications">Users</button>
+<button type="button" class="settings-tab-btn active" data-settings-tab="general" data-i18n="settings.tab_general">General</button>
+<button type="button" class="settings-tab-btn" data-settings-tab="notifications" data-i18n="settings.tab_users">Users</button>
 </div>
 <div class="settings-tab-panel" data-settings-tab-panel="general">
 <div class="field">
 <button type="button" class="accordion-toggle" data-target="calendars-body">
-<span class="theme-section-label">Calendars</span>
+<span class="theme-section-label" data-i18n="settings.section_calendars">Calendars</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="calendars-body">
-<div class="people-hint">Tap &#9203; on a calendar to include its events in the countdown banner. Use &#10133; Add badge to show a small bubble (like "N", in that calendar's color) on days with events matching a keyword, and optionally hide events matching another keyword. Who gets notified about a calendar's events/reminders is set per-person under the Users tab, not here.</div>
-<div class="people-list"></div>
-<button type="button" class="add-person-btn">+ Add calendar</button>
+<div class="people-hint admin-only-setting" data-i18n="settings.calendars_hint">Tap &#9203; on a calendar to include its events in the countdown banner. Use &#10133; Add badge to show a small bubble (like "N", in that calendar's color) on days with events matching a keyword, and optionally hide events matching another keyword. Who gets notified about a calendar's events/reminders is set per-person under the Users tab, not here.</div>
+<div class="people-list admin-only-setting"></div>
+<button type="button" class="add-person-btn admin-only-setting" data-i18n="settings.add_calendar">+ Add calendar</button>
 <div class="field">
-<label>Default view</label>
+<label data-i18n="settings.default_view_label">Default view</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn default-view-btn" data-value="week">Week</button>
-<button type="button" class="size-btn default-view-btn" data-value="month">Month</button>
+<button type="button" class="size-btn default-view-btn" data-value="week" data-i18n="nav.week">Week</button>
+<button type="button" class="size-btn default-view-btn" data-value="month" data-i18n="nav.month">Month</button>
 </div>
 </div>
 <div class="field">
-<label>Week button shows — this device only</label>
+<label data-i18n="settings.week_button_shows_label">Week button shows — this device only</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn week-variant-btn" data-value="week">Week</button>
-<button type="button" class="size-btn week-variant-btn" data-value="planner">Planner</button>
-<button type="button" class="size-btn week-variant-btn" data-value="portrait">Portrait</button>
+<button type="button" class="size-btn week-variant-btn" data-value="week" data-i18n="nav.week">Week</button>
+<button type="button" class="size-btn week-variant-btn" data-value="planner" data-i18n="settings.planner">Planner</button>
+<button type="button" class="size-btn week-variant-btn" data-value="portrait" data-i18n="settings.portrait">Portrait</button>
 </div>
 </div>
 <div class="field">
-<label>Days shown in Week view — this device only (smaller displays: fewer columns)</label>
+<label data-i18n="settings.days_shown_label">Days shown in Week view — this device only (smaller displays: fewer columns)</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn week-day-count-btn" data-value="3">3 days</button>
-<button type="button" class="size-btn week-day-count-btn" data-value="5">5 days</button>
-<button type="button" class="size-btn week-day-count-btn" data-value="7">7 days</button>
+<button type="button" class="size-btn week-day-count-btn" data-value="3" data-i18n="settings.three_days">3 days</button>
+<button type="button" class="size-btn week-day-count-btn" data-value="5" data-i18n="settings.five_days">5 days</button>
+<button type="button" class="size-btn week-day-count-btn" data-value="7" data-i18n="settings.seven_days">7 days</button>
 </div>
 </div>
 <div class="field">
-<label>Month button shows — this device only</label>
+<label data-i18n="settings.month_button_shows_label">Month button shows — this device only</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn month-variant-btn" data-value="month">Month</button>
-<button type="button" class="size-btn month-variant-btn" data-value="split">Month + Day</button>
+<button type="button" class="size-btn month-variant-btn" data-value="month" data-i18n="nav.month">Month</button>
+<button type="button" class="size-btn month-variant-btn" data-value="split" data-i18n="settings.month_plus_day">Month + Day</button>
 </div>
 </div>
 <div class="field">
-<label>Show hours of the day (timeline) — this device only</label>
+<label data-i18n="settings.show_hours_label">Show hours of the day (timeline) — this device only</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn timeline-btn" data-value="off">Off</button>
-<button type="button" class="size-btn timeline-btn" data-value="on">On</button>
+<button type="button" class="size-btn timeline-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn timeline-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 </div>
 <div class="field">
-<label>Timeline range</label>
+<label data-i18n="settings.timeline_range_label">Timeline range</label>
 <div class="size-btn-row">
 <select class="hour-select timeline-start-select">${hourOptionsHtml}</select>
-<div class="range-sep">to</div>
+<div class="range-sep" data-i18n="add_event.to">to</div>
 <select class="hour-select timeline-end-select">${endHourOptionsHtml}</select>
 </div>
 </div>
-<div class="field">
-<label>Grey out events/reminders that have already passed</label>
+<div class="field admin-only-setting">
+<label data-i18n="settings.grey_out_label">Grey out events/reminders that have already passed</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn grey-out-past-btn" data-value="off">Off</button>
-<button type="button" class="size-btn grey-out-past-btn" data-value="on">On</button>
+<button type="button" class="size-btn grey-out-past-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn grey-out-past-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
-<div class="remind-hint">Today's events grey out one by one as they end; any earlier day is greyed out entirely, since the whole day is already over.</div>
+<div class="remind-hint" data-i18n="settings.grey_out_hint">Today's events grey out one by one as they end; any earlier day is greyed out entirely, since the whole day is already over.</div>
 </div>
-<div class="field">
-<label>+ button position</label>
+<div class="field admin-only-setting">
+<label data-i18n="settings.fab_position_label">+ button position</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn fab-position-btn" data-value="dashboard">Dashboard corner</button>
-<button type="button" class="size-btn fab-position-btn" data-value="card">This card's corner</button>
+<button type="button" class="size-btn fab-position-btn" data-value="dashboard" data-i18n="settings.fab_dashboard_corner">Dashboard corner</button>
+<button type="button" class="size-btn fab-position-btn" data-value="card" data-i18n="settings.fab_card_corner">This card's corner</button>
 </div>
-<div class="remind-hint">"Dashboard corner" pins the + button to the bottom-right of the whole screen (today's behavior). "This card's corner" anchors it to the bottom-right of THIS card instead - useful when this card shares a dashboard row/column with other cards, so the button doesn't float off in a corner unrelated to it.</div>
-</div>
-<div class="field">
-<label class="remind-check-opt"><input type="checkbox" class="small-screen-mode-check" /> Small screen mode — this device only</label>
-<div class="remind-hint">Hides the top bar (Settings/Week/Month/Edit Meals/Suggestions/Recipe Box/More) to save space on a small device - Settings moves into the + button's menu instead, right alongside Calendar Entry/Reminder/Meal Suggestion/Recipe. Saved to THIS device/browser only, like the Days shown/Month button settings above - turning it on here won't affect any other Family Hub tablet or screen in the household.</div>
-</div>
-</div>
+<div class="remind-hint" data-i18n="settings.fab_position_hint">"Dashboard corner" pins the + button to the bottom-right of the whole screen (today's behavior). "This card's corner" anchors it to the bottom-right of THIS card instead - useful when this card shares a dashboard row/column with other cards, so the button doesn't float off in a corner unrelated to it.</div>
 </div>
 <div class="field">
+<label class="remind-check-opt"><input type="checkbox" class="small-screen-mode-check" /> <span data-i18n="settings.small_screen_mode_label">Small screen mode — this device only</span></label>
+<div class="remind-hint" data-i18n="settings.small_screen_mode_hint">Hides the top bar (Settings/Week/Month/Edit Meals/Suggestions/Recipe Box/More) to save space on a small device - Settings moves into the + button's menu instead, right alongside Calendar Entry/Reminder/Meal Suggestion/Recipe. Saved to THIS device/browser only, like the Days shown/Month button settings above - turning it on here won't affect any other Family Hub tablet or screen in the household.</div>
+</div>
+</div>
+</div>
+<div class="field admin-only-setting">
 <button type="button" class="accordion-toggle" data-target="reminders-body">
-<span class="theme-section-label">Reminders</span>
+<span class="theme-section-label" data-i18n="settings.section_reminders">Reminders</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="reminders-body">
-<div class="people-hint">Reminders (from the &#128276; tab of the Add Event modal) are saved as Home Assistant to-do items in <code class="reminders-entity-label"></code> - not events on your calendar. Mark them done, edit them, or reschedule them anytime from Home Assistant's own To-do UI (or the &#9989; Mark done button in the event-info popup), independent of Google Calendar or whatever your other calendars are backed by. Who gets notified about them is set per-person under the Users tab.</div>
+<div class="people-hint reminders-hint-text">Reminders (from the &#128276; tab of the Add Event modal) are saved as Home Assistant to-do items in <code class="reminders-entity-label"></code> - not events on your calendar. Mark them done, edit them, or reschedule them anytime from Home Assistant's own To-do UI (or the &#9989; Mark done button in the event-info popup), independent of Google Calendar or whatever your other calendars are backed by. Who gets notified about them is set per-person under the Users tab.</div>
 <div class="add-event-warn reminders-entity-missing-warn" style="display:none"></div>
 </div>
 </div>
-<div class="field">
-<label>Lock vertical scrolling</label>
+<div class="field admin-only-setting">
+<label data-i18n="settings.lock_scroll_label">Lock vertical scrolling</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn scroll-lock-btn" data-value="off">Unlocked</button>
-<button type="button" class="size-btn scroll-lock-btn" data-value="on">Locked</button>
+<button type="button" class="size-btn scroll-lock-btn" data-value="off" data-i18n="settings.unlocked">Unlocked</button>
+<button type="button" class="size-btn scroll-lock-btn" data-value="on" data-i18n="settings.locked">Locked</button>
 </div>
 </div>
-<div class="field">
+<div class="field admin-only-setting">
 <button type="button" class="accordion-toggle" data-target="menu-blocks-body">
-<span class="theme-section-label">Menu Blocks</span>
+<span class="theme-section-label" data-i18n="settings.section_menu_blocks">Menu Blocks</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="menu-blocks-body">
 <div class="field">
-<label>Menu blocks per day</label>
+<label data-i18n="settings.blocks_per_day_label">Menu blocks per day</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn block-count-btn" data-count="0">None</button>
+<button type="button" class="size-btn block-count-btn" data-count="0" data-i18n="common.none">None</button>
 <button type="button" class="size-btn block-count-btn" data-count="1">1</button>
 <button type="button" class="size-btn block-count-btn" data-count="2">2</button>
 <button type="button" class="size-btn block-count-btn" data-count="3">3</button>
 </div>
 </div>
 <div class="field">
-<label>Breakfast on weekends</label>
+<label data-i18n="settings.breakfast_weekends_label">Breakfast on weekends</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn weekend-breakfast-btn" data-value="off">Off</button>
-<button type="button" class="size-btn weekend-breakfast-btn" data-value="on">On</button>
+<button type="button" class="size-btn weekend-breakfast-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn weekend-breakfast-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 </div>
 <div class="field">
-<label>Block size</label>
+<label data-i18n="settings.block_size_label">Block size</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn block-size-btn" data-size="small">Small</button>
-<button type="button" class="size-btn block-size-btn" data-size="medium">Medium</button>
-<button type="button" class="size-btn block-size-btn" data-size="large">Large</button>
+<button type="button" class="size-btn block-size-btn" data-size="small" data-i18n="settings.small">Small</button>
+<button type="button" class="size-btn block-size-btn" data-size="medium" data-i18n="settings.medium">Medium</button>
+<button type="button" class="size-btn block-size-btn" data-size="large" data-i18n="settings.large">Large</button>
 </div>
 </div>
 <div class="field">
-<label>Show meal plan in month view</label>
+<label data-i18n="settings.show_meal_plan_month_label">Show meal plan in month view</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn meals-in-month-btn" data-value="off">Off</button>
-<button type="button" class="size-btn meals-in-month-btn" data-value="on">On</button>
+<button type="button" class="size-btn meals-in-month-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn meals-in-month-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 </div>
 <div class="field block-name-field" data-index="0">
-<label>Block 1 name</label>
+<label data-i18n="settings.block_1_name">Block 1 name</label>
 <input type="text" class="block-name-input" data-index="0" placeholder="Breakfast" maxlength="30" />
 </div>
 <div class="field block-name-field" data-index="1">
-<label>Block 2 name</label>
+<label data-i18n="settings.block_2_name">Block 2 name</label>
 <input type="text" class="block-name-input" data-index="1" placeholder="Lunch" maxlength="30" />
 </div>
 <div class="field block-name-field" data-index="2">
-<label>Block 3 name</label>
+<label data-i18n="settings.block_3_name">Block 3 name</label>
 <input type="text" class="block-name-input" data-index="2" placeholder="Dinner" maxlength="30" />
 </div>
 </div>
 </div>
-<div class="field">
+<div class="field admin-only-setting">
 <button type="button" class="accordion-toggle" data-target="chores-rewards-body">
-<span class="theme-section-label">Chores, Rewards &amp; Routines</span>
+<span class="theme-section-label" data-i18n="settings.section_chores_rewards">Chores, Rewards &amp; Routines</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="chores-rewards-body">
 <div class="field">
-<label>Routines (per-person daily checklists on the Chores board)</label>
+<label data-i18n="settings.routines_label">Routines (per-person daily checklists on the Chores board)</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn routines-enabled-btn" data-value="off">Off</button>
-<button type="button" class="size-btn routines-enabled-btn" data-value="on">On</button>
+<button type="button" class="size-btn routines-enabled-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn routines-enabled-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
-<div class="remind-hint">One household-wide switch - once on, everyone gets Morning/Afternoon/Night checklist accordions on their own column of the Chores board.</div>
+<div class="remind-hint" data-i18n="settings.routines_hint">One household-wide switch - once on, everyone gets Morning/Afternoon/Night checklist accordions on their own column of the Chores board.</div>
 </div>
 <div class="field">
-<label>Show Goals on the Chores board</label>
+<label data-i18n="settings.goals_in_chores_label">Show Goals on the Chores board</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn goals-in-chores-btn" data-value="off">Off</button>
-<button type="button" class="size-btn goals-in-chores-btn" data-value="on">On</button>
+<button type="button" class="size-btn goals-in-chores-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn goals-in-chores-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
-<div class="remind-hint">Adds each person's goals to their own column of the Chores board, with Log Progress/Approve/Send Back actions right there.</div>
+<div class="remind-hint" data-i18n="settings.goals_in_chores_hint">Adds each person's goals to their own column of the Chores board, with Log Progress/Approve/Send Back actions right there.</div>
 </div>
 <div class="field">
-<label>Show Goals on the Rewards page</label>
+<label data-i18n="settings.goals_in_rewards_label">Show Goals on the Rewards page</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn goals-in-rewards-btn" data-value="off">Off</button>
-<button type="button" class="size-btn goals-in-rewards-btn" data-value="on">On</button>
+<button type="button" class="size-btn goals-in-rewards-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn goals-in-rewards-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
-<div class="remind-hint">Adds a Goals section to the Rewards page alongside the star catalog.</div>
+<div class="remind-hint" data-i18n="settings.goals_in_rewards_hint">Adds a Goals section to the Rewards page alongside the star catalog.</div>
 </div>
 <div class="field">
-<label>Chore due dates on the board show</label>
+<label data-i18n="settings.chore_due_label">Chore due dates on the board show</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn chore-due-time-btn" data-value="off">Date only</button>
-<button type="button" class="size-btn chore-due-time-btn" data-value="on">Date &amp; time</button>
+<button type="button" class="size-btn chore-due-time-btn" data-value="off" data-i18n="settings.date_only">Date only</button>
+<button type="button" class="size-btn chore-due-time-btn" data-value="on" data-i18n="settings.date_and_time">Date &amp; time</button>
 </div>
-<div class="remind-hint">The chore detail popup always shows both - this only controls the short "Due ..." label on each card in the Chores board columns.</div>
+<div class="remind-hint" data-i18n="settings.chore_due_hint">The chore detail popup always shows both - this only controls the short "Due ..." label on each card in the Chores board columns.</div>
+</div>
+<div class="field">
+<label data-i18n="settings.confetti_label">Confetti when a chore is completed</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn chores-confetti-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn chores-confetti-btn" data-value="on" data-i18n="common.on">On</button>
+</div>
+<div class="remind-hint" data-i18n="settings.confetti_hint">Pops a quick confetti animation across the screen whenever someone marks a chore done on the Chores board.</div>
 </div>
 <div class="field chores-danger-zone" style="display:none">
-<label>Danger Zone (admin only)</label>
+<label data-i18n="settings.danger_zone_label">Danger Zone (admin only)</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn danger-btn clear-all-chores-btn">Clear all chores</button>
-<button type="button" class="size-btn danger-btn clear-all-goals-btn">Clear all goals</button>
+<button type="button" class="size-btn danger-btn clear-all-chores-btn" data-i18n="settings.clear_all_chores">Clear all chores</button>
+<button type="button" class="size-btn danger-btn clear-all-goals-btn" data-i18n="settings.clear_all_goals">Clear all goals</button>
 </div>
-<div class="remind-hint">Permanently deletes every chore (or goal) regardless of status - open, awaiting approval, or already done. There's no undo. Only visible to real Home Assistant admin accounts.</div>
+<div class="remind-hint" data-i18n="settings.danger_zone_hint">Permanently deletes every chore (or goal) regardless of status - open, awaiting approval, or already done. There's no undo. Only visible to real Home Assistant admin accounts.</div>
 </div>
 </div>
 </div>
-<div class="field">
+<div class="field admin-only-setting">
 <button type="button" class="accordion-toggle" data-target="countdown-body">
-<span class="theme-section-label">Countdown</span>
+<span class="theme-section-label" data-i18n="settings.section_countdown">Countdown</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="countdown-body">
 <div class="field">
-<label>Countdown banner</label>
+<label data-i18n="settings.countdown_banner_label">Countdown banner</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn countdown-enabled-btn" data-value="off">Off</button>
-<button type="button" class="size-btn countdown-enabled-btn" data-value="on">On</button>
+<button type="button" class="size-btn countdown-enabled-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn countdown-enabled-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 </div>
 <div class="field">
-<label>Custom countdown items</label>
+<label data-i18n="settings.custom_countdown_label">Custom countdown items</label>
 <div class="countdown-items-list"></div>
 <div class="countdown-add-row">
 <input type="text" class="countdown-add-label-input" placeholder="e.g. Disney Trip" maxlength="40" />
 <input type="date" class="countdown-add-date-input" />
-<button type="button" class="template-apply-btn countdown-add-btn">+ Add</button>
+<button type="button" class="template-apply-btn countdown-add-btn" data-i18n="settings.add_btn">+ Add</button>
 </div>
 </div>
 <div class="field">
-<label class="remind-check-opt"><input type="checkbox" class="countdown-ticker-check" /> Cycle through all upcoming countdown items</label>
-<div class="remind-hint">Add more than one item above (or mark events/reminders "Use as countdown") to see this in action — with only one item there's nothing to cycle through.</div>
+<label class="remind-check-opt"><input type="checkbox" class="countdown-ticker-check" /> <span data-i18n="settings.cycle_countdown_label">Cycle through all upcoming countdown items</span></label>
+<div class="remind-hint" data-i18n="settings.cycle_countdown_hint">Add more than one item above (or mark events/reminders "Use as countdown") to see this in action — with only one item there's nothing to cycle through.</div>
 </div>
 </div>
 </div>
-<div class="field">
+<div class="field admin-only-setting">
 <button type="button" class="accordion-toggle" data-target="digest-body">
-<span class="theme-section-label">Daily Digest</span>
+<span class="theme-section-label" data-i18n="settings.section_daily_digest">Daily Digest</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="digest-body">
-<div class="remind-hint">Sends one notification each morning summarizing today's events, meals, and due reminders — independent of anyone having the dashboard open. Who gets a digest, and what's in theirs, is set per-person under the Users tab; this just turns the feature on and picks the household's send time.</div>
+<div class="remind-hint" data-i18n="settings.digest_hint">Sends one notification each morning summarizing today's events, meals, and due reminders — independent of anyone having the dashboard open. Who gets a digest, and what's in theirs, is set per-person under the Users tab; this just turns the feature on and picks the household's send time.</div>
 <div class="field">
-<label>Send daily digest</label>
+<label data-i18n="settings.send_digest_label">Send daily digest</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn digest-enabled-btn" data-value="off">Off</button>
-<button type="button" class="size-btn digest-enabled-btn" data-value="on">On</button>
+<button type="button" class="size-btn digest-enabled-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn digest-enabled-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 </div>
 <div class="field">
-<label>Send at</label>
+<label data-i18n="settings.send_at_label">Send at</label>
 <input type="time" class="digest-time-input" />
 </div>
 </div>
 </div>
-<div class="field">
+<div class="field admin-only-setting">
 <button type="button" class="accordion-toggle" data-target="grocy-settings-body">
-<span class="theme-section-label">Grocy</span>
+<span class="theme-section-label" data-i18n="settings.section_grocy">Grocy</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="grocy-settings-body">
-<div class="remind-hint">Connect Grocy itself under Settings → Devices & Services → Family Hub → Configure → Grocy - the toggles below only control which optional Grocy-powered features show up on the card once it's connected. Everything here is off by default.</div>
+<div class="remind-hint" data-i18n="settings.grocy_hint">Connect Grocy itself under Settings → Devices & Services → Family Hub → Configure → Grocy - the toggles below only control which optional Grocy-powered features show up on the card once it's connected. Everything here is off by default.</div>
 <div class="field">
-<label>Track expiring items</label>
+<label data-i18n="settings.track_expiring_label">Track expiring items</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn grocy-expiring-enabled-btn" data-value="off">Off</button>
-<button type="button" class="size-btn grocy-expiring-enabled-btn" data-value="on">On</button>
+<button type="button" class="size-btn grocy-expiring-enabled-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn grocy-expiring-enabled-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
-<div class="remind-hint">Adds an "Expiring Soon" list under the More menu. Whether it's also offered in anyone's Daily Digest is set under the Users tab once this is on.</div>
+<div class="remind-hint" data-i18n="settings.track_expiring_hint">Adds an "Expiring Soon" list under the More menu. Whether it's also offered in anyone's Daily Digest is set under the Users tab once this is on.</div>
 </div>
 <div class="field">
-<label>Track low stock</label>
+<label data-i18n="settings.track_low_stock_label">Track low stock</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn grocy-low-stock-enabled-btn" data-value="off">Off</button>
-<button type="button" class="size-btn grocy-low-stock-enabled-btn" data-value="on">On</button>
+<button type="button" class="size-btn grocy-low-stock-enabled-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn grocy-low-stock-enabled-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
-<div class="remind-hint">Adds a "Low Stock" list under the More menu (products below their own minimum stock amount, with a one-tap button to add them all to the shopping list). Whether it's also offered in anyone's Daily Digest is set under the Users tab once this is on.</div>
+<div class="remind-hint" data-i18n="settings.track_low_stock_hint">Adds a "Low Stock" list under the More menu (products below their own minimum stock amount, with a one-tap button to add them all to the shopping list). Whether it's also offered in anyone's Daily Digest is set under the Users tab once this is on.</div>
 </div>
 </div>
 </div>
-<div class="field">
+<div class="field admin-only-setting">
 <button type="button" class="accordion-toggle" data-target="screensaver-body">
-<span class="theme-section-label">Screen Saver</span>
+<span class="theme-section-label" data-i18n="settings.section_screensaver">Screen Saver</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="screensaver-body">
-<div class="remind-hint">Shows a full-screen video or live camera feed after the dashboard sits idle for a while - built for a wall-mounted display. The source and idle time below are shared by the whole household; which logins actually see it is controlled per Home Assistant user further down, so a tablet's own login can have it on while a phone's stays off.</div>
+<div class="remind-hint" data-i18n="settings.screensaver_hint">Shows a full-screen video or live camera feed after the dashboard sits idle for a while - built for a wall-mounted display. The source and idle time below are shared by the whole household; which logins actually see it is controlled per Home Assistant user further down, so a tablet's own login can have it on while a phone's stays off.</div>
 <div class="field">
-<label>Source</label>
+<label data-i18n="settings.source_label">Source</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn screensaver-source-type-btn" data-value="video">Video</button>
-<button type="button" class="size-btn screensaver-source-type-btn" data-value="camera">Camera</button>
+<button type="button" class="size-btn screensaver-source-type-btn" data-value="video" data-i18n="settings.video">Video</button>
+<button type="button" class="size-btn screensaver-source-type-btn" data-value="camera" data-i18n="settings.camera">Camera</button>
 </div>
 </div>
 <div class="field screensaver-video-field">
-<label>Video URL</label>
+<label data-i18n="settings.video_url_label">Video URL</label>
 <input type="text" class="screensaver-video-url-input" placeholder="https://example.com/video.mp4 or /local/screensaver.mp4" />
-<div class="remind-hint">A direct link to a video file, or a path under Home Assistant's own <code>/local/</code> media folder. Loops muted and silently while showing.</div>
+<div class="remind-hint" data-i18n="settings.video_url_hint">A direct link to a video file, or a path under Home Assistant's own <code>/local/</code> media folder. Loops muted and silently while showing.</div>
 </div>
 <div class="field screensaver-camera-field">
-<label>Camera entity</label>
+<label data-i18n="settings.camera_entity_label">Camera entity</label>
 <input type="text" class="screensaver-camera-entity-input" placeholder="camera.front_door" list="screensaver-camera-options" />
 <datalist id="screensaver-camera-options"></datalist>
 </div>
 <div class="field">
-<label>Idle time before it shows</label>
+<label data-i18n="settings.idle_time_label">Idle time before it shows</label>
 <div class="screensaver-idle-row">
 <input type="number" class="screensaver-idle-seconds-input" min="10" max="3600" step="5" />
-<span>seconds</span>
+<span data-i18n="settings.seconds">seconds</span>
 </div>
-<div class="remind-hint">Any tap on the screen dismisses it and starts the countdown over.</div>
+<div class="remind-hint" data-i18n="settings.idle_hint">Any tap on the screen dismisses it and starts the countdown over.</div>
 </div>
 <div class="field">
-<label>Enable for these logins</label>
+<label data-i18n="settings.enable_logins_label">Enable for these logins</label>
 <button type="button" class="screensaver-users-btn">&#128100; <span class="screensaver-users-summary">None selected</span></button>
 </div>
 <div class="field">
-<label>Disable while a recipe is open</label>
+<label data-i18n="settings.disable_recipe_open_label">Disable while a recipe is open</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn screensaver-recipe-disable-btn" data-value="off">Off</button>
-<button type="button" class="size-btn screensaver-recipe-disable-btn" data-value="on">On</button>
+<button type="button" class="size-btn screensaver-recipe-disable-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn screensaver-recipe-disable-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
-<div class="remind-hint">Pauses the idle countdown while a single recipe's detail view is open (Recipe Box or the Grocy recipe viewer) - browsing the recipe list itself still counts as idle.</div>
+<div class="remind-hint" data-i18n="settings.disable_recipe_open_hint">Pauses the idle countdown while a single recipe's detail view is open (Recipe Box or the Grocy recipe viewer) - browsing the recipe list itself still counts as idle.</div>
+</div>
+<div class="field">
+<label data-i18n="settings.return_dashboard_label">Return to this dashboard on wake</label>
+<input type="text" class="screensaver-return-dashboard-input" placeholder="/lovelace-family/0" />
+<div class="remind-hint" data-i18n="settings.return_dashboard_hint">Optional. If the screensaver falls asleep here and gets tapped awake, it jumps to this dashboard/view instead of staying on this one - handy if the wall tablet gets left on some other view during the day. Leave blank to just stay put.</div>
 </div>
 </div>
 </div>
 <div class="field">
-<label>Use global theme (Theme Builder)</label>
+<label data-i18n="settings.use_global_theme_label">Use global theme (Theme Builder)</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn global-theme-btn" data-value="off">Off</button>
-<button type="button" class="size-btn global-theme-btn" data-value="on">On</button>
+<button type="button" class="size-btn global-theme-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn global-theme-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 <select class="global-theme-select" style="display:none;margin-top:8px;width:100%;box-sizing:border-box;font-size:16px;padding:10px 12px;border-radius:8px;border:1px solid var(--fc-border);background:var(--fc-card);color:var(--fc-text);font-family:inherit;"></select>
 <div class="global-theme-status" style="display:none;font-size:12px;color:var(--fc-text-secondary);font-style:italic;margin-top:6px;"></div>
 </div>
 <div class="field">
-<label>This device's theme</label>
+<label data-i18n="settings.device_theme_label">This device's theme</label>
 <select class="device-theme-override-select" style="width:100%;box-sizing:border-box;font-size:16px;padding:10px 12px;border-radius:8px;border:1px solid var(--fc-border);background:var(--fc-card);color:var(--fc-text);font-family:inherit;"></select>
-<div class="remind-hint">Overrides the shared theme above for just this device/tablet - every other Family Hub card here (Chores, Rewards, Goals, My Pantry, My Chores) picks it up too, but no other device is affected. Takes effect immediately, with no Save needed.</div>
+<div class="remind-hint" data-i18n="settings.device_theme_hint">Overrides the shared theme above for just this device/tablet - every other Family Hub card here (Chores, Rewards, Goals, My Pantry, My Chores) picks it up too, but no other device is affected. Takes effect immediately, with no Save needed.</div>
 </div>
 <div class="field theme-local-fields">
 <button type="button" class="accordion-toggle" data-target="theme-colors-body">
-<span class="theme-section-label">Theme colors</span>
+<span class="theme-section-label" data-i18n="settings.section_theme_colors">Theme colors</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="theme-colors-body">
-<div class="theme-color-row"><div class="theme-row-label">Background</div><input type="color" class="theme-color-input" data-key="bg" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Card background</div><input type="color" class="theme-color-input" data-key="card" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Border</div><input type="color" class="theme-color-input" data-key="border" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Text</div><input type="color" class="theme-color-input" data-key="text" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Secondary text</div><input type="color" class="theme-color-input" data-key="textSecondary" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Accent</div><input type="color" class="theme-color-input" data-key="accent" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Text on accent</div><input type="color" class="theme-color-input" data-key="accentText" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Accent 2</div><input type="color" class="theme-color-input" data-key="accent2" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Accent 3</div><input type="color" class="theme-color-input" data-key="accent3" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Surface (alt)</div><input type="color" class="theme-color-input" data-key="surfaceAlt" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Surface 2</div><input type="color" class="theme-color-input" data-key="surface2" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_background">Background</div><input type="color" class="theme-color-input" data-key="bg" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_card_background">Card background</div><input type="color" class="theme-color-input" data-key="card" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_border">Border</div><input type="color" class="theme-color-input" data-key="border" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_text">Text</div><input type="color" class="theme-color-input" data-key="text" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_secondary_text">Secondary text</div><input type="color" class="theme-color-input" data-key="textSecondary" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_accent">Accent</div><input type="color" class="theme-color-input" data-key="accent" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_text_on_accent">Text on accent</div><input type="color" class="theme-color-input" data-key="accentText" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_accent2">Accent 2</div><input type="color" class="theme-color-input" data-key="accent2" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_accent3">Accent 3</div><input type="color" class="theme-color-input" data-key="accent3" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_surface_alt">Surface (alt)</div><input type="color" class="theme-color-input" data-key="surfaceAlt" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_surface2">Surface 2</div><input type="color" class="theme-color-input" data-key="surface2" /></div>
 </div>
 </div>
 <div class="field theme-local-fields">
 <button type="button" class="accordion-toggle" data-target="theme-fonts-body">
-<span class="theme-section-label">Theme font sizes (px)</span>
+<span class="theme-section-label" data-i18n="settings.section_theme_fonts">Theme font sizes (px)</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="theme-fonts-body">
-<div class="theme-font-row"><div class="theme-row-label">Day name</div><input type="number" class="theme-font-input" data-key="dayName" min="6" max="72" /></div>
-<div class="theme-font-row"><div class="theme-row-label">Day number</div><input type="number" class="theme-font-input" data-key="dayNumber" min="6" max="72" /></div>
-<div class="theme-font-row"><div class="theme-row-label">Weather temp</div><input type="number" class="theme-font-input" data-key="wxTemp" min="6" max="72" /></div>
-<div class="theme-font-row"><div class="theme-row-label">Event text</div><input type="number" class="theme-font-input" data-key="event" min="6" max="72" /></div>
-<div class="theme-font-row"><div class="theme-row-label">Chip text</div><input type="number" class="theme-font-input" data-key="chip" min="6" max="72" /></div>
-<div class="theme-font-row"><div class="theme-row-label">Header title</div><input type="number" class="theme-font-input" data-key="headerTitle" min="6" max="72" /></div>
-<div class="theme-font-row"><div class="theme-row-label">Countdown text</div><input type="number" class="theme-font-input" data-key="countdown" min="6" max="72" /></div>
-<div class="theme-font-row"><div class="theme-row-label">Block heading (label)</div><input type="number" class="theme-font-input" data-key="blockLabel" min="6" max="72" /></div>
-<div class="theme-font-row"><div class="theme-row-label">Block meal text</div><input type="number" class="theme-font-input" data-key="blockMeal" min="6" max="72" /></div>
-<button type="button" class="theme-reset-btn">Reset theme to default</button>
+<div class="theme-font-row"><div class="theme-row-label" data-i18n="settings.font_day_name">Day name</div><input type="number" class="theme-font-input" data-key="dayName" min="6" max="72" /></div>
+<div class="theme-font-row"><div class="theme-row-label" data-i18n="settings.font_day_number">Day number</div><input type="number" class="theme-font-input" data-key="dayNumber" min="6" max="72" /></div>
+<div class="theme-font-row"><div class="theme-row-label" data-i18n="settings.font_weather_temp">Weather temp</div><input type="number" class="theme-font-input" data-key="wxTemp" min="6" max="72" /></div>
+<div class="theme-font-row"><div class="theme-row-label" data-i18n="settings.font_event_text">Event text</div><input type="number" class="theme-font-input" data-key="event" min="6" max="72" /></div>
+<div class="theme-font-row"><div class="theme-row-label" data-i18n="settings.font_chip_text">Chip text</div><input type="number" class="theme-font-input" data-key="chip" min="6" max="72" /></div>
+<div class="theme-font-row"><div class="theme-row-label" data-i18n="settings.font_header_title">Header title</div><input type="number" class="theme-font-input" data-key="headerTitle" min="6" max="72" /></div>
+<div class="theme-font-row"><div class="theme-row-label" data-i18n="settings.font_countdown_text">Countdown text</div><input type="number" class="theme-font-input" data-key="countdown" min="6" max="72" /></div>
+<div class="theme-font-row"><div class="theme-row-label" data-i18n="settings.font_block_heading">Block heading (label)</div><input type="number" class="theme-font-input" data-key="blockLabel" min="6" max="72" /></div>
+<div class="theme-font-row"><div class="theme-row-label" data-i18n="settings.font_block_meal_text">Block meal text</div><input type="number" class="theme-font-input" data-key="blockMeal" min="6" max="72" /></div>
+<button type="button" class="theme-reset-btn" data-i18n="settings.reset_theme">Reset theme to default</button>
 </div>
 </div>
 </div>
 <div class="settings-tab-panel" data-settings-tab-panel="notifications" style="display:none">
-<div class="field">
-<label>Notification tap destination</label>
+<div class="field admin-only-setting">
+<label data-i18n="settings.notify_click_path_label">Notification tap destination</label>
 <input type="text" class="notify-click-path-input" placeholder="/lovelace-family/0" maxlength="255" />
-<div class="remind-hint">Optional. When set, tapping a reminder, event, or Daily Digest push notification opens this Home Assistant dashboard/view instead of just launching the app - use a relative path like /lovelace-family/0 (dashboard + view) or /lovelace/calendar (a view's own path). Applies to every notification this backend sends. Needs the Home Assistant Companion app.</div>
+<div class="remind-hint" data-i18n="settings.notify_click_path_hint">Optional. When set, tapping a reminder, event, or Daily Digest push notification opens this Home Assistant dashboard/view instead of just launching the app - use a relative path like /lovelace-family/0 (dashboard + view) or /lovelace/calendar (a view's own path). Applies to every notification this backend sends. Needs the Home Assistant Companion app.</div>
 </div>
-<div class="field">
-<div class="people-hint">Add a Home Assistant login to make them part of Family Hub - only people added here show up on this list, on the Permissions tab, and on the Chores board.</div>
+<div class="field admin-only-setting">
+<div class="people-hint" data-i18n="settings.add_member_hint">Add a Home Assistant login to make them part of Family Hub - only people added here show up on this list, on the Permissions tab, and on the Chores board.</div>
 <div class="member-add-row">
 <select class="member-add-select"></select>
-<button type="button" class="member-add-btn">&#10133; Add a person</button>
+<button type="button" class="member-add-btn" data-i18n="settings.add_a_person">&#10133; Add a person</button>
 </div>
 </div>
 <div class="field">
-<div class="people-hint">Each Home Assistant login has its own profile here - which calendars they get reminders from, whether they want standalone Reminders, and whether/what they want in the Daily Digest. Tap a person below to set theirs up, or Remove to take them out of Family Hub - nothing about them is deleted, and re-adding them brings everything right back.</div>
+<div class="people-hint" data-i18n="settings.profiles_hint">Each Home Assistant login has its own profile here - which calendars they get reminders from, whether they want standalone Reminders, and whether/what they want in the Daily Digest. Tap a person below to set theirs up, or Remove to take them out of Family Hub - nothing about them is deleted, and re-adding them brings everything right back.</div>
 <div class="notify-profiles-list"></div>
-<div class="remind-hint notify-profiles-empty" style="display:none">Nobody's been added to Family Hub yet. Use "Add a person" above to get started.</div>
+<div class="remind-hint notify-profiles-empty" style="display:none" data-i18n="settings.no_members_yet">Nobody's been added to Family Hub yet. Use "Add a person" above to get started.</div>
+</div>
+<div class="field admin-only-setting">
+<button type="button" class="accordion-toggle" data-target="alarm-devices-body">
+<span class="theme-section-label" data-i18n="settings.alarm_devices_heading">Alarm Devices</span>
+<span class="accordion-chevron">&#9660;</span>
+</button>
+<div class="accordion-body" id="alarm-devices-body">
+<div class="people-hint" data-i18n="settings.alarm_devices_hint">Speakers and Assist satellites a widened ("Them + kiosks" or "Everyone") chore/reward timer alarm rings on - picked from Home Assistant's own entity list, not typed by hand. Set per chore/reward from its own "Who hears this alarm" option.</div>
+<div class="alarm-devices-list"></div>
+<div class="alarm-devices-add-label remind-hint" data-i18n="settings.alarm_devices_add_label">Tap a device to add it:</div>
+<div class="alarm-devices-candidates"></div>
+<div class="field">
+<label data-i18n="settings.alarm_tts_entity_label">Text-to-speech voice (for speakers - not needed for Assist satellites)</label>
+<select class="alarm-tts-entity-select"><option value="">Not set</option></select>
+</div>
+</div>
 </div>
 </div>
 <div class="modal-actions">
 <span class="settings-save-status"></span>
-<button class="btn-cancel settings-cancel">Cancel</button>
-<button class="btn-save settings-save">Save</button>
+<button class="btn-cancel settings-cancel" data-i18n="common.cancel">Cancel</button>
+<button class="btn-save settings-save" data-i18n="common.save">Save</button>
 </div>
 </div>
 </div>
 <div class="modal-overlay notify-devices-overlay">
 <div class="modal-box notify-devices-box">
-<button class="modal-close notify-devices-close" aria-label="Close">&#10005;</button>
-<h2>&#128276; Notify targets</h2>
+<button class="modal-close notify-devices-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
+<h2>&#128276; <span data-i18n="settings.notify_targets_heading">Notify targets</span></h2>
 <div class="notify-devices-subtitle"></div>
-<button type="button" class="notify-devices-autodetect-btn" style="display:none">&#128269; Auto-detect this device</button>
+<button type="button" class="notify-devices-autodetect-btn" style="display:none">&#128269; <span data-i18n="settings.autodetect_device">Auto-detect this device</span></button>
 <div class="notify-devices-list"></div>
 <div class="notify-devices-add-row">
 <select class="notify-devices-add-select"></select>
-<button type="button" class="notify-devices-add-btn">&#10133; Add</button>
+<button type="button" class="notify-devices-add-btn">&#10133; <span data-i18n="common.add">Add</span></button>
 </div>
 <div class="modal-actions">
-<button class="btn-save notify-devices-done">Done</button>
+<button class="btn-save notify-devices-done" data-i18n="common.done">Done</button>
 </div>
 </div>
 </div>
 <div class="modal-overlay notify-profile-overlay">
 <div class="modal-box notify-profile-box">
-<button class="modal-close notify-profile-close" aria-label="Close">&#10005;</button>
+<button class="modal-close notify-profile-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
 <h2>&#128100; <span class="notify-profile-name">Notification profile</span></h2>
 <div class="field">
-<label>Chores &amp; Rewards color</label>
+<label data-i18n="settings.chores_rewards_color_label">Chores &amp; Rewards color</label>
 <div class="notify-profile-color-row">
 <input type="color" class="notify-profile-color-input" value="#c9c2b3" />
-<button type="button" class="notify-profile-color-reset-btn">Use default</button>
+<button type="button" class="notify-profile-color-reset-btn" data-i18n="common.use_default">Use default</button>
 </div>
-<div class="remind-hint">Their color on the Chores board columns and Rewards balances. Leave unset to use the automatically assigned color.</div>
+<div class="remind-hint" data-i18n="settings.chores_rewards_color_hint">Their color on the Chores board columns and Rewards balances. Leave unset to use the automatically assigned color.</div>
 </div>
 <div class="field">
-<label>Include in Chores &amp; Rewards</label>
+<label data-i18n="settings.include_chores_rewards_label">Include in Chores &amp; Rewards</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn notify-profile-chores-btn" data-value="on">On</button>
-<button type="button" class="size-btn notify-profile-chores-btn" data-value="off">Off</button>
+<button type="button" class="size-btn notify-profile-chores-btn" data-value="on" data-i18n="common.on">On</button>
+<button type="button" class="size-btn notify-profile-chores-btn" data-value="off" data-i18n="common.off">Off</button>
 </div>
-<div class="remind-hint">Turn this off to keep them a full Family Hub member (still shown here, on the Permissions tab, and in Routines) without a Chores board column or Rewards balance, and without offering them as a new chore assignee. Handy for a shared login - a wall-mounted tablet, say - that needs Permissions granted but isn't an actual person. Existing chores/rewards history is never affected.</div>
+<div class="remind-hint" data-i18n="settings.include_chores_rewards_hint">Turn this off to keep them a full Family Hub member (still shown here, on the Permissions tab, and in Routines) without a Chores board column or Rewards balance, and without offering them as a new chore assignee. Handy for a shared login - a wall-mounted tablet, say - that needs Permissions granted but isn't an actual person. Existing chores/rewards history is never affected.</div>
+</div>
+<div class="field notify-profile-child-field">
+<label data-i18n="settings.child_account_label">Child account</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn notify-profile-child-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn notify-profile-child-btn" data-value="on" data-i18n="common.on">On</button>
+</div>
+<div class="remind-hint" data-i18n="settings.child_account_hint">When they log into Home Assistant and open this card's own Settings, they'll see even less than an ordinary non-admin does - everything a non-admin already can't see, PLUS the whole Users tab (including this very profile). Admin-only, same as Kiosk PIN login and Permissions below - a child can never turn this off for themselves.</div>
+</div>
+<div class="field admin-only-setting">
+<label data-i18n="settings.alarm_kiosk_label">Always-on alarm kiosk</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn notify-profile-alarm-kiosk-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn notify-profile-alarm-kiosk-btn" data-value="on" data-i18n="common.on">On</button>
+</div>
+<div class="remind-hint" data-i18n="settings.alarm_kiosk_hint">A "kiosks"- or "everyone"-tier chore/reward alarm (set per chore/reward, see its own "Who hears this alarm" option) rings on every open Family Hub dashboard logged in as this account, not just the timer's own owner - built for a shared kiosk/wall-tablet login. Admin-only, same as Child account above.</div>
 </div>
 <div class="field">
-<button type="button" class="notify-profile-targets-btn">&#128276; Notify targets <span class="notify-profile-targets-count">0</span></button>
+<button type="button" class="notify-profile-targets-btn">&#128276; <span data-i18n="settings.notify_targets_label_full">Notify targets</span> <span class="notify-profile-targets-count">0</span></button>
 </div>
 <div class="field">
 <button type="button" class="accordion-toggle" data-target="notify-profile-calendar-body">
-<span class="theme-section-label">Calendar</span>
+<span class="theme-section-label" data-i18n="settings.section_calendar_single">Calendar</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="notify-profile-calendar-body">
 <div class="field">
-<label>Calendars</label>
+<label data-i18n="settings.calendars_field_label">Calendars</label>
 <div class="notify-profile-calendars-list"></div>
-<div class="remind-hint notify-profile-calendars-empty" style="display:none">No calendars added yet - add one under the General tab's Calendars section first.</div>
-<div class="remind-hint">Tap a card to subscribe them to reminders from that calendar. Tap the star to make it their primary calendar - that calendar's events follow their own color above instead of its own configured color, everywhere it's shown on the dashboard.</div>
+<div class="remind-hint notify-profile-calendars-empty" style="display:none" data-i18n="settings.no_calendars_added">No calendars added yet - add one under the General tab's Calendars section first.</div>
+<div class="remind-hint" data-i18n="settings.calendars_tap_hint">Tap a card to subscribe them to reminders from that calendar. Tap the star to make it their primary calendar - that calendar's events follow their own color above instead of its own configured color, everywhere it's shown on the dashboard.</div>
 </div>
 <div class="field">
-<label>Their own calendar</label>
+<label data-i18n="settings.own_calendar_label">Their own calendar</label>
 <input type="text" class="notify-profile-calendar-entity" placeholder="calendar.jaret (optional)" />
-<div class="remind-hint">Set this directly here if their calendar isn't already added under the General tab's Calendars section - it'll show up as its own column on the calendar, labeled with their name and their color above, without needing to also add it under Calendars. If it's ALSO added there, this profile's own color/badges win for it.</div>
+<div class="remind-hint" data-i18n="settings.own_calendar_hint">Set this directly here if their calendar isn't already added under the General tab's Calendars section - it'll show up as its own column on the calendar, labeled with their name and their color above, without needing to also add it under Calendars. If it's ALSO added there, this profile's own color/badges win for it.</div>
 <div class="notify-profile-own-calendar-badges"></div>
-<button type="button" class="notify-profile-own-calendar-badge-add-btn">&#10133; Add badge</button>
+<button type="button" class="notify-profile-own-calendar-badge-add-btn" data-i18n="settings.add_badge">&#10133; Add badge</button>
 </div>
 </div>
 </div>
 <div class="field">
 <button type="button" class="accordion-toggle" data-target="notify-profile-lists-body">
-<span class="theme-section-label">Lists</span>
+<span class="theme-section-label" data-i18n="settings.section_lists">Lists</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="notify-profile-lists-body">
 <div class="field">
-<label>Their reminders list</label>
+<label data-i18n="settings.their_reminders_list_label">Their reminders list</label>
 <div class="notify-profile-list-row">
 <input type="text" class="notify-profile-list-entity" data-list-kind="remindersEntity" placeholder="todo.jaret_reminders" />
-<button type="button" class="notify-profile-list-add-btn" data-list-kind="remindersEntity">+ Add list</button>
+<button type="button" class="notify-profile-list-add-btn" data-list-kind="remindersEntity" data-i18n="settings.add_list">+ Add list</button>
 </div>
 <div class="notify-profile-list-status" data-list-kind="remindersEntity"></div>
-<div class="remind-hint">Their own individual Reminders list, separate from the shared family Reminders list. Leave blank and tap "+ Add list" to create one automatically.</div>
+<div class="remind-hint" data-i18n="settings.their_reminders_list_hint">Their own individual Reminders list, separate from the shared family Reminders list. Leave blank and tap "+ Add list" to create one automatically.</div>
 </div>
 <div class="field">
-<label>Their wish list</label>
+<label data-i18n="settings.their_wishlist_label">Their wish list</label>
 <div class="notify-profile-list-row">
 <input type="text" class="notify-profile-list-entity" data-list-kind="wishlistEntity" placeholder="todo.jaret_wishlist" />
-<button type="button" class="notify-profile-list-add-btn" data-list-kind="wishlistEntity">+ Add list</button>
+<button type="button" class="notify-profile-list-add-btn" data-list-kind="wishlistEntity" data-i18n="settings.add_list">+ Add list</button>
 </div>
 <div class="notify-profile-list-status" data-list-kind="wishlistEntity"></div>
-<div class="remind-hint">A to-do list just for their own wish list - saving automatically flags it, same as the To-Do Lists card's own Wish List toggle. Leave blank and tap "+ Add list" to create one automatically.</div>
+<div class="remind-hint" data-i18n="settings.their_wishlist_hint">A to-do list just for their own wish list - saving automatically flags it, same as the To-Do Lists card's own Wish List toggle. Leave blank and tap "+ Add list" to create one automatically.</div>
 </div>
 <div class="field">
-<label>Other people's reminder lists</label>
+<label data-i18n="settings.other_reminder_lists_label">Other people's reminder lists</label>
 <div class="notify-profile-reminders-lists"></div>
-<div class="remind-hint notify-profile-reminders-lists-empty" style="display:none">Nobody else has their own individual Reminders list set up yet - add one to a person under the General tab's Calendars section first.</div>
-<div class="remind-hint">Everyone always sees their own list. For anyone else's: "None" keeps it fully out of sight, "Add to calendar" shows it on this person's own calendar (colored with its owner's color) with no push, and "...+ alert" also sends a notification the moment one of its reminders comes due. Anyone subscribed at either level can add new reminders to that list too.</div>
+<div class="remind-hint notify-profile-reminders-lists-empty" style="display:none" data-i18n="settings.no_other_reminder_lists">Nobody else has their own individual Reminders list set up yet - add one to a person under the General tab's Calendars section first.</div>
+<div class="remind-hint" data-i18n="settings.other_reminder_lists_hint">Everyone always sees their own list. For anyone else's: "None" keeps it fully out of sight, "Add to calendar" shows it on this person's own calendar (colored with its owner's color) with no push, and "...+ alert" also sends a notification the moment one of its reminders comes due. Anyone subscribed at either level can add new reminders to that list too.</div>
 </div>
 </div>
 </div>
 <div class="field">
-<label>Reminders</label>
+<label data-i18n="settings.reminders_field_label">Reminders</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn notify-profile-reminders-btn" data-value="off">Off</button>
-<button type="button" class="size-btn notify-profile-reminders-btn" data-value="on">On</button>
+<button type="button" class="size-btn notify-profile-reminders-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn notify-profile-reminders-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 </div>
 <div class="field">
 <button type="button" class="accordion-toggle" data-target="notify-profile-instant-body">
-<span class="theme-section-label">Instant notifications</span>
+<span class="theme-section-label" data-i18n="settings.section_instant">Instant notifications</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="notify-profile-instant-body">
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-reward-claimed-check" /> A reward is claimed (anyone in the household)</label>
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-chore-approved-check" /> One of my chores is approved</label>
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-chore-rejected-check" /> One of my chores is sent back (not approved)</label>
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-chore-due-check" /> One of my chores is due soon (uses that chore's own "remind me" times)</label>
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-timer-alarm-check" /> One of my timers goes off (alarm-style: bypasses silent mode/DND on your phone)</label>
-<div class="remind-hint">Sent right away, separate from the Daily Digest below - not folded into tomorrow morning's summary.</div>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-reward-claimed-check" /> <span data-i18n="settings.instant_reward_claimed">A reward is claimed (anyone in the household)</span></label>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-chore-approved-check" /> <span data-i18n="settings.instant_chore_approved">One of my chores is approved</span></label>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-chore-rejected-check" /> <span data-i18n="settings.instant_chore_rejected">One of my chores is sent back (not approved)</span></label>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-chore-due-check" /> <span data-i18n="settings.instant_chore_due">One of my chores is due soon (uses that chore's own "remind me" times)</span></label>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-timer-alarm-check" /> <span data-i18n="settings.instant_timer_alarm">One of my timers goes off (alarm-style: bypasses silent mode/DND on your phone)</span></label>
+<div class="remind-hint" data-i18n="settings.instant_hint">Sent right away, separate from the Daily Digest below - not folded into tomorrow morning's summary.</div>
 </div>
 </div>
 <div class="field">
 <button type="button" class="accordion-toggle" data-target="notify-profile-digest-body">
-<span class="theme-section-label">Daily Digest</span>
+<span class="theme-section-label" data-i18n="settings.section_daily_digest">Daily Digest</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="notify-profile-digest-body">
 <div class="field">
-<label>Daily Digest</label>
+<label data-i18n="settings.section_daily_digest">Daily Digest</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn notify-profile-digest-btn" data-value="off">Off</button>
-<button type="button" class="size-btn notify-profile-digest-btn" data-value="on">On</button>
+<button type="button" class="size-btn notify-profile-digest-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn notify-profile-digest-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 </div>
 <div class="field notify-profile-digest-sections">
-<label>In their digest</label>
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-section-check" data-section="calendar" /> Today's calendar events</label>
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-section-check" data-section="reminders" /> Today's due reminders</label>
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-section-check" data-section="meals" /> Today's planned meals</label>
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-section-check" data-section="chores" /> Their own pending chores</label>
-<label class="remind-check-opt notify-profile-section-grocy-expiring" style="display:none"><input type="checkbox" class="notify-profile-section-check" data-section="grocyExpiring" /> Grocy items expiring soon</label>
-<label class="remind-check-opt notify-profile-section-grocy-low-stock" style="display:none"><input type="checkbox" class="notify-profile-section-check" data-section="grocyLowStock" /> Grocy items running low</label>
+<label data-i18n="settings.in_their_digest_label">In their digest</label>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-section-check" data-section="calendar" /> <span data-i18n="settings.digest_calendar_events">Today's calendar events</span></label>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-section-check" data-section="reminders" /> <span data-i18n="settings.digest_due_reminders">Today's due reminders</span></label>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-section-check" data-section="meals" /> <span data-i18n="settings.digest_planned_meals">Today's planned meals</span></label>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-section-check" data-section="chores" /> <span data-i18n="settings.digest_pending_chores">Their own pending chores</span></label>
+<label class="remind-check-opt notify-profile-section-grocy-expiring" style="display:none"><input type="checkbox" class="notify-profile-section-check" data-section="grocyExpiring" /> <span data-i18n="settings.digest_grocy_expiring">Grocy items expiring soon</span></label>
+<label class="remind-check-opt notify-profile-section-grocy-low-stock" style="display:none"><input type="checkbox" class="notify-profile-section-check" data-section="grocyLowStock" /> <span data-i18n="settings.digest_grocy_low_stock">Grocy items running low</span></label>
 </div>
 <div class="field">
-<button type="button" class="notify-profile-send-digest-btn">&#128228; Send test digest now</button>
-<div class="remind-hint">Sends what's currently checked above (even if not Saved yet) to this person's notify targets, right now - handy for checking a device actually gets it and previewing today's content.</div>
+<button type="button" class="notify-profile-send-digest-btn" data-i18n="settings.send_test_digest">&#128228; Send test digest now</button>
+<div class="remind-hint" data-i18n="settings.send_test_digest_hint">Sends what's currently checked above (even if not Saved yet) to this person's notify targets, right now - handy for checking a device actually gets it and previewing today's content.</div>
 <div class="notify-profile-send-digest-status"></div>
 </div>
 </div>
 </div>
 <div class="notify-profile-kiosk-accordion admin-only-block" style="display:none">
 <button type="button" class="accordion-toggle" data-target="notify-profile-kiosk-body">
-<span class="theme-section-label">Kiosk PIN login</span>
+<span class="theme-section-label" data-i18n="settings.section_kiosk_pin">Kiosk PIN login</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="notify-profile-kiosk-body">
 <div class="field">
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-kiosk-login-check" /> Enable logging in as this person on a shared kiosk display</label>
-<div class="remind-hint">Once enabled, a &#128274; Login button appears on the Chores and Rewards boards - typing this person's PIN there runs those boards as them for a bit (auto logs out after 45 seconds idle) to claim their own rewards, mark their own chores done, or (if they have approval permission) approve/reject others'.</div>
-<button type="button" class="notify-profile-kiosk-set-pin-btn admin-only-btn" style="display:none">&#128272; Set / change PIN&hellip;</button>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-kiosk-login-check" /> <span data-i18n="settings.kiosk_enable_login">Enable logging in as this person on a shared kiosk display</span></label>
+<div class="remind-hint" data-i18n="settings.kiosk_login_hint">Once enabled, a &#128274; Login button appears on the Chores and Rewards boards - typing this person's PIN there runs those boards as them for a bit (auto logs out after 45 seconds idle) to claim their own rewards, mark their own chores done, or (if they have approval permission) approve/reject others'.</div>
+<button type="button" class="notify-profile-kiosk-set-pin-btn admin-only-btn" style="display:none" data-i18n="settings.kiosk_set_pin">&#128272; Set / change PIN&hellip;</button>
 <div class="notify-profile-kiosk-pin-status"></div>
 </div>
 </div>
 </div>
 <div class="notify-profile-permissions-accordion admin-only-block" style="display:none">
 <button type="button" class="accordion-toggle" data-target="notify-profile-permissions-body">
-<span class="theme-section-label">Permissions</span>
+<span class="theme-section-label" data-i18n="settings.section_permissions">Permissions</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="notify-profile-permissions-body">
-<div class="remind-hint">Only visible to a Home Assistant admin account - everyone can still do their own chores and claim anything from the Chore Bin regardless of these. Changes here save immediately, not on the Done button below.</div>
+<div class="remind-hint" data-i18n="settings.permissions_admin_hint">Only visible to a Home Assistant admin account - everyone can still do their own chores and claim anything from the Chore Bin regardless of these. Changes here save immediately, not on the Done button below.</div>
 <div class="notify-profile-perm-rows-list"></div>
 </div>
 </div>
 <div class="modal-actions">
-<button class="btn-save notify-profile-done">Done</button>
+<button class="btn-save notify-profile-done" data-i18n="common.done">Done</button>
 </div>
 </div>
 </div>
 <div class="modal-overlay kiosk-pin-modal">
 <div class="modal-box kiosk-pin-box">
-<h3 class="kiosk-pin-title">Set kiosk PIN</h3>
-<div class="remind-hint">4-8 digits. Leave blank and save to clear this person's PIN instead.</div>
-<label>PIN<input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" class="kiosk-pin-input" placeholder="e.g. 4821"></label>
+<h3 class="kiosk-pin-title" data-i18n="settings.set_kiosk_pin_title">Set kiosk PIN</h3>
+<div class="remind-hint" data-i18n="settings.kiosk_pin_digits_hint">4-8 digits. Leave blank and save to clear this person's PIN instead.</div>
+<label><span class="pin-label-text" data-i18n="settings.pin_label">PIN</span><input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" class="kiosk-pin-input" placeholder="e.g. 4821"></label>
 <div class="kiosk-pin-error" style="display:none"></div>
 <div class="modal-actions">
-<button class="btn-cancel kiosk-pin-cancel-btn">Cancel</button>
-<button class="btn-save kiosk-pin-save-btn">Save PIN</button>
+<button class="btn-cancel kiosk-pin-cancel-btn" data-i18n="common.cancel">Cancel</button>
+<button class="btn-save kiosk-pin-save-btn" data-i18n="settings.save_pin">Save PIN</button>
 </div>
 </div>
 </div>
 <div class="modal-overlay screensaver-users-overlay">
 <div class="modal-box screensaver-users-box">
-<button class="modal-close screensaver-users-close" aria-label="Close">&#10005;</button>
-<h2>&#128100; Screen Saver logins</h2>
-<div class="remind-hint">Check every Home Assistant login that should show the screensaver - everyone else keeps browsing without it, even though Settings itself is shared by the whole household.</div>
+<button class="modal-close screensaver-users-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
+<h2>&#128100; <span data-i18n="settings.screensaver_logins_heading">Screen Saver logins</span></h2>
+<div class="remind-hint" data-i18n="settings.screensaver_logins_hint">Check every Home Assistant login that should show the screensaver - everyone else keeps browsing without it, even though Settings itself is shared by the whole household.</div>
 <div class="screensaver-users-list"></div>
-<div class="remind-hint screensaver-users-hint" style="display:none">No other Home Assistant user accounts found besides yours - create one for the wall-mounted device (Settings → People → Users) if you want the screensaver on there but not on your own phone.</div>
+<div class="remind-hint screensaver-users-hint" style="display:none" data-i18n="settings.screensaver_logins_empty">No other Home Assistant user accounts found besides yours - create one for the wall-mounted device (Settings → People → Users) if you want the screensaver on there but not on your own phone.</div>
 <div class="modal-actions">
-<button class="btn-save screensaver-users-done">Done</button>
+<button class="btn-save screensaver-users-done" data-i18n="common.done">Done</button>
 </div>
 </div>
 </div>
@@ -7473,56 +8582,56 @@ instead of the usual stacked field layout. */
 </div>
 <div class="modal-overlay add-event-overlay">
 <div class="modal-box add-event-box">
-<button class="modal-close add-event-close" aria-label="Close">&#10005;</button>
+<button class="modal-close add-event-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
 <h2 class="add-event-heading">&#10133; New Event</h2>
 <div class="add-event-tabs">
-<button type="button" class="add-event-tab-btn active" data-tab="calendar">&#128197; Calendar Event</button>
-<button type="button" class="add-event-tab-btn" data-tab="reminder">&#128276; Reminder</button>
+<button type="button" class="add-event-tab-btn active" data-tab="calendar">&#128197; <span data-i18n="add_event.tab_calendar">Calendar Event</span></button>
+<button type="button" class="add-event-tab-btn" data-tab="reminder">&#128276; <span data-i18n="add_event.tab_reminder">Reminder</span></button>
 </div>
 <div class="field add-event-calendar-field">
-<label>Calendar</label>
+<label data-i18n="add_event.calendar_label">Calendar</label>
 <select class="hour-select add-event-calendar-select"></select>
 </div>
 <div class="field">
-<label>Title</label>
+<label data-i18n="add_event.title_label">Title</label>
 <input type="text" class="add-event-title" placeholder="e.g. Dentist appointment" maxlength="120" />
 </div>
 <div class="add-event-tab-panel" data-tab-panel="calendar">
 <div class="field">
-<label>All day</label>
+<label data-i18n="add_event.allday_label">All day</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn add-event-allday-btn" data-value="off">Timed</button>
-<button type="button" class="size-btn add-event-allday-btn" data-value="on">All day</button>
+<button type="button" class="size-btn add-event-allday-btn" data-value="off" data-i18n="add_event.timed">Timed</button>
+<button type="button" class="size-btn add-event-allday-btn" data-value="on" data-i18n="add_event.allday">All day</button>
 </div>
 </div>
 <div class="field">
-<label>Date</label>
+<label data-i18n="add_event.date_label">Date</label>
 <div class="date-picker-row">
 <input type="date" class="add-event-date" />
-<button type="button" class="add-event-date-btn" title="Pick a date">&#128197;</button>
+<button type="button" class="add-event-date-btn" title="Pick a date" data-i18n-title="add_event.pick_date">&#128197;</button>
 </div>
 </div>
 <div class="field add-event-enddate-field">
-<label>End date (optional - for multi-day events)</label>
+<label data-i18n="add_event.enddate_label">End date (optional - for multi-day events)</label>
 <div class="date-picker-row">
 <input type="date" class="add-event-end-date" />
-<button type="button" class="add-event-end-date-btn" title="Pick a date">&#128197;</button>
+<button type="button" class="add-event-end-date-btn" title="Pick a date" data-i18n-title="add_event.pick_date">&#128197;</button>
 </div>
 </div>
 <div class="field add-event-time-field">
-<label>Start / End time</label>
+<label data-i18n="add_event.time_label">Start / End time</label>
 <div class="size-btn-row">
 <input type="time" class="hour-select add-event-start-time" />
-<div class="range-sep">to</div>
+<div class="range-sep" data-i18n="add_event.to">to</div>
 <input type="time" class="hour-select add-event-end-time" />
 </div>
 </div>
 <div class="field">
-<label>Location (optional)</label>
+<label data-i18n="add_event.location_label">Location (optional)</label>
 <input type="text" class="add-event-location" placeholder="Optional" maxlength="120" />
 </div>
 <div class="field add-event-remind-field">
-<label>Remind me</label>
+<label data-i18n="add_event.remind_label">Remind me</label>
 <div class="remind-check-row">
 <label class="remind-check-opt"><input type="checkbox" class="remind-check" value="5" />5m</label>
 <label class="remind-check-opt"><input type="checkbox" class="remind-check" value="10" />10m</label>
@@ -7532,43 +8641,67 @@ instead of the usual stacked field layout. */
 <label class="remind-check-opt"><input type="checkbox" class="remind-check" value="120" />2h</label>
 <label class="remind-check-opt"><input type="checkbox" class="remind-check" value="1440" />1d</label>
 </div>
-<div class="remind-hint">Needs the Family Hub integration installed to actually notify.</div>
+<div class="remind-hint" data-i18n="add_event.remind_hint">Needs the Family Hub integration installed to actually notify.</div>
 </div>
 <div class="field add-event-people-field">
-<label>Also for</label>
+<label data-i18n="add_event.also_for_label">Also for</label>
 <div class="add-event-people-content"></div>
 </div>
 </div>
 <div class="add-event-tab-panel" data-tab-panel="reminder" style="display:none">
 <div class="field add-event-reminder-list-field">
-<label>List</label>
+<label data-i18n="add_event.list_label">List</label>
 <select class="hour-select add-event-reminder-list-select"></select>
 </div>
 <div class="field">
-<label>Date</label>
+<label data-i18n="add_event.date_label">Date</label>
 <div class="date-picker-row">
 <input type="date" class="add-event-reminder-date" />
-<button type="button" class="add-event-reminder-date-btn" title="Pick a date">&#128197;</button>
+<button type="button" class="add-event-reminder-date-btn" title="Pick a date" data-i18n-title="add_event.pick_date">&#128197;</button>
 </div>
 </div>
 <div class="field">
-<label>Notify at</label>
+<label data-i18n="add_event.notify_at_label">Notify at</label>
 <input type="time" class="hour-select add-event-reminder-time" />
 </div>
 <div class="field">
-<label class="remind-check-opt"><input type="checkbox" class="add-event-reminder-rollover" />&#128257; Roll over to next day if not completed</label>
+<label class="remind-check-opt"><input type="checkbox" class="add-event-reminder-rollover" />&#128257; <span data-i18n="add_event.rollover_label">Roll over to next day if not completed</span></label>
+<div class="field rolldays-field add-event-reminder-rolldays-field">
+<div class="rolldays-hint" data-i18n="add_event.rolldays_hint">Applies only on these days (leave every day selected to roll over daily, same as before)</div>
+<div class="rolldays-btn-row add-event-reminder-rolldays">${this._rolldaysBtnsHtml([])}</div>
 </div>
-<div class="remind-hint">Saved as a to-do in Home Assistant, not an event on your calendar - fires once at this exact time, and you can mark it done, edit it, or reschedule it anytime from the event-info popup or Home Assistant's own To-do UI. Needs the Family Hub integration installed to actually notify; set reminder notify devices under Settings.</div>
+</div>
+<div class="remind-hint" data-i18n="add_event.reminder_hint">Saved as a to-do in Home Assistant, not an event on your calendar - fires once at this exact time, and you can mark it done, edit it, or reschedule it anytime from the event-info popup or Home Assistant's own To-do UI. Needs the Family Hub integration installed to actually notify; set reminder notify devices under Settings.</div>
 <div class="add-event-warn add-event-reminder-missing-warn" style="display:none"></div>
 </div>
+<div class="field add-event-checklist-field">
+<label class="remind-check-opt"><input type="checkbox" class="add-event-checklist-toggle" />&#128203; <span data-i18n="add_event.checklist_toggle_label">Attach a checklist</span></label>
+<div class="add-event-checklist-body" style="display:none">
+<div class="checklist-mode-btn-row">
+<button type="button" class="size-btn add-event-checklist-mode-btn active" data-value="custom" data-i18n="add_event.checklist_mode_custom">Just for this</button>
+<button type="button" class="size-btn add-event-checklist-mode-btn" data-value="existing" data-i18n="add_event.checklist_mode_existing">Use an existing list</button>
+</div>
+<div class="field add-event-checklist-existing-field" style="display:none">
+<select class="hour-select add-event-checklist-existing-select"></select>
+</div>
+<div class="add-event-checklist-custom-field">
+<div class="add-event-checklist-items"></div>
+<div class="checklist-add-row">
+<input type="text" class="add-event-checklist-add-input" placeholder="e.g. Cleats" maxlength="200" />
+<button type="button" class="btn-cancel add-event-checklist-add-btn" data-i18n="common.add">Add</button>
+</div>
+</div>
+<div class="remind-hint" data-i18n="add_event.checklist_hint">A "just for this" list is deleted automatically once this happens (plus a grace window, so it doesn't vanish mid-use) - an existing list you attach is only ever unlinked, never touched or deleted itself.</div>
+</div>
+</div>
 <div class="field">
-<label>Notes (optional)</label>
+<label data-i18n="add_event.notes_label">Notes (optional)</label>
 <textarea class="add-event-description" placeholder="Optional details" maxlength="255"></textarea>
 </div>
 <div class="add-event-error" style="display:none"></div>
 <div class="modal-actions">
-<button class="btn-cancel add-event-cancel">Cancel</button>
-<button class="btn-save add-event-save">Save</button>
+<button class="btn-cancel add-event-cancel" data-i18n="common.cancel">Cancel</button>
+<button class="btn-save add-event-save" data-i18n="common.save">Save</button>
 </div>
 </div>
 </div>
@@ -7639,6 +8772,19 @@ this._renderGrid();
 return;
 }
 this._goToWeekFromDate(new Date(cell.dataset.date + "T00:00:00"));
+return;
+}
+// v1.132.42+: household ask, verbatim - "make a way to highlight a day
+// of the week like is possible in month view so you can click add
+// calendar event or reminder and it will default to that day, like we
+// do in the month view." Same select-a-day idiom as the split Month
+// variant's own .month-cell branch above - clicking again deselects
+// (there's no other affordance to clear it back to defaulting on
+// today, unlike Month, which always has SOME day selected).
+const dayHeader = e.target.closest(".day-header");
+if (dayHeader && dayHeader.dataset.date) {
+this._weekSelectedDate = this._weekSelectedDate === dayHeader.dataset.date ? null : dayHeader.dataset.date;
+this._renderGrid();
 return;
 }
 const evCard = e.target.closest(".event, .tl-event, .all-day-chip");
@@ -7729,6 +8875,11 @@ editBtn.classList.remove("active");
 editBtn.innerHTML = "&#9999;&#65039; Edit";
 }
 }
+// v1.132.42+: a Week-view day selection means nothing once Month is
+// showing instead (and _addEventDefaultDate only ever consults it while
+// _viewFamily is "week" anyway) - clear it so switching back to Week
+// later doesn't resurrect a highlight from a previous visit.
+if (this._viewFamily(mode) !== "week") this._weekSelectedDate = null;
 this._fetchEvents();
 this._updateNavLabel();
 });
@@ -7887,6 +9038,15 @@ this._closeMoreMenu();
 this._openLoved(false);
 });
 root.querySelector(".pick-recipe-btn").addEventListener("click", () => this._openLoved(true));
+root.querySelector(".input-name").addEventListener("input", () => this._updateMealNameSuggestion());
+// v1.132.41+: up to 3 suggestion rows now, rebuilt on every keystroke
+// (see _updateMealNameSuggestion) - delegated so it keeps working after
+// the list's innerHTML is replaced, instead of wiring a single static
+// button once.
+root.querySelector(".meal-name-suggestion-list").addEventListener("click", (e) => {
+const btn = e.target.closest(".meal-name-suggestion-use");
+if (btn) this._applyMealNameSuggestion(btn.dataset.uid || "");
+});
 root.querySelector(".loved-close").addEventListener("click", () => this._closeLoved());
 root.querySelector(".suggestions-btn").addEventListener("click", () => this._openSuggestedRecipes());
 // There's no standalone Suggestions box left at all now - both places
@@ -8079,6 +9239,41 @@ this._openSettings();
 root.querySelector(".add-event-close").addEventListener("click", () => this._closeAddEvent());
 root.querySelector(".add-event-cancel").addEventListener("click", () => this._closeAddEvent());
 root.querySelector(".add-event-save").addEventListener("click", () => this._saveAddEvent());
+// v1.132.63+: attachable checklists - toggle show/hide, mode switch
+// (custom vs existing), add-item input, same wiring shape as the rest of
+// this modal's own listeners right around it.
+root.querySelector(".add-event-checklist-toggle").addEventListener("change", (e) => {
+root.querySelector(".add-event-checklist-body").style.display = e.target.checked ? "" : "none";
+if (e.target.checked && root.querySelector(".add-event-checklist-mode-btn.active").dataset.value === "existing") {
+  this._renderAddEventChecklistExistingSelect();
+}
+});
+root.querySelectorAll(".add-event-checklist-mode-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+  root.querySelectorAll(".add-event-checklist-mode-btn").forEach((b) => b.classList.toggle("active", b === btn));
+  const isExisting = btn.dataset.value === "existing";
+  root.querySelector(".add-event-checklist-existing-field").style.display = isExisting ? "" : "none";
+  root.querySelector(".add-event-checklist-custom-field").style.display = isExisting ? "none" : "";
+  if (isExisting) this._renderAddEventChecklistExistingSelect();
+});
+});
+const addChecklistItem = () => {
+const input = root.querySelector(".add-event-checklist-add-input");
+const text = (input.value || "").trim();
+if (!text) return;
+this._addEventChecklistItems = this._addEventChecklistItems || [];
+this._addEventChecklistItems.push({ text: text.slice(0, 200) });
+input.value = "";
+this._renderAddEventChecklistItems();
+input.focus();
+};
+root.querySelector(".add-event-checklist-add-btn").addEventListener("click", addChecklistItem);
+root.querySelector(".add-event-checklist-add-input").addEventListener("keydown", (e) => {
+if (e.key === "Enter") {
+  e.preventDefault();
+  addChecklistItem();
+}
+});
 root.querySelector(".add-event-date-btn").addEventListener("click", () => {
 const input = root.querySelector(".add-event-date");
 if (input.showPicker) {
@@ -8142,6 +9337,27 @@ btn.classList.add("active");
 this._updateAddEventFieldVisibility(btn.dataset.value === "on");
 });
 });
+// v185+: "Roll over to next day if not completed" can now be restricted
+// to specific days (see _rolldaysBtnsHtml/_wireRolldaysToggle) - the day
+// picker only makes sense once rollover itself is checked.
+//
+// v186 bugfix: this used to set style.display = "" to reveal the field,
+// which is a no-op here specifically - .rolldays-field's OWN stylesheet
+// rule is "display: none" (its hidden-by-default state), so clearing the
+// inline style just falls back to that same "none" instead of showing
+// anything. Needs an explicit non-none value ("block") to actually
+// override it. (Most other fields in this file default to visible in
+// their stylesheet rule, where "" correctly means "go back to shown" -
+// this one's different because it's hidden by default at the CSS level,
+// not just via inline style.)
+const addEventRolloverCb = root.querySelector(".add-event-reminder-rollover");
+const addEventRolldaysField = root.querySelector(".add-event-reminder-rolldays-field");
+if (addEventRolloverCb && addEventRolldaysField) {
+addEventRolloverCb.addEventListener("change", () => {
+addEventRolldaysField.style.display = addEventRolloverCb.checked ? "block" : "none";
+});
+}
+this._wireRolldaysToggle(root.querySelector(".add-event-reminder-rolldays"));
 root.querySelector(".debug-close").addEventListener("click", () => {
 root.querySelector(".debug-overlay").classList.remove("open");
 });
@@ -8198,6 +9414,22 @@ const userId = this._notifyProfileEditingUserId;
 if (userId !== undefined && userId !== null) this._settingsUserProfilesDraft[userId].includeInChores = btn.dataset.value === "on";
 });
 });
+root.querySelectorAll(".notify-profile-child-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".notify-profile-child-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+const userId = this._notifyProfileEditingUserId;
+if (userId !== undefined && userId !== null) this._settingsUserProfilesDraft[userId].isChildAccount = btn.dataset.value === "on";
+});
+});
+root.querySelectorAll(".notify-profile-alarm-kiosk-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".notify-profile-alarm-kiosk-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+const userId = this._notifyProfileEditingUserId;
+if (userId !== undefined && userId !== null) this._settingsUserProfilesDraft[userId].isAlarmKiosk = btn.dataset.value === "on";
+});
+});
 root.querySelectorAll(".notify-profile-digest-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
 root.querySelectorAll(".notify-profile-digest-btn").forEach((b) => b.classList.remove("active"));
@@ -8251,7 +9483,7 @@ const userId = this._notifyProfileEditingUserId;
 if (userId === undefined || userId === null) return;
 this._syncNotifyProfileBadgesFromDom(userId);
 if (!Array.isArray(this._settingsUserProfilesDraft[userId].badges)) this._settingsUserProfilesDraft[userId].badges = [];
-this._settingsUserProfilesDraft[userId].badges.push({ text: "", match: "", hideMatch: "" });
+this._settingsUserProfilesDraft[userId].badges.push({ text: "", match: "", hideMatch: "", digestHide: false });
 this._renderNotifyProfileBadges(userId);
 });
 root.querySelectorAll(".notify-profile-list-entity").forEach((input) => {
@@ -8349,6 +9581,12 @@ root.querySelectorAll(".chore-due-time-btn").forEach((b) => b.classList.remove("
 btn.classList.add("active");
 });
 });
+root.querySelectorAll(".chores-confetti-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".chores-confetti-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+});
+});
 root.querySelectorAll(".screensaver-recipe-disable-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
 root.querySelectorAll(".screensaver-recipe-disable-btn").forEach((b) => b.classList.remove("active"));
@@ -8432,6 +9670,17 @@ root.querySelectorAll(".countdown-enabled-btn").forEach((b) => b.classList.remov
 btn.classList.add("active");
 });
 });
+// v1.132.56+: the old select+Add button click handler used to live here -
+// removed now that _renderAlarmDevicesSection renders the candidate list
+// as directly-clickable buttons instead and wires each one's own click
+// handler itself (re-wired on every re-render, same as the Remove buttons
+// right above it in that function).
+const alarmTtsSelect = root.querySelector(".alarm-tts-entity-select");
+if (alarmTtsSelect) {
+alarmTtsSelect.addEventListener("change", () => {
+this._settingsAlarmTtsEntityDraft = alarmTtsSelect.value;
+});
+}
 const countdownAddBtn = root.querySelector(".countdown-add-btn");
 if (countdownAddBtn) {
 countdownAddBtn.addEventListener("click", async () => {
@@ -8596,6 +9845,9 @@ ${(p.badges || [])
 <input type="text" class="person-badge-text" placeholder="Badge (e.g. N)" value="${b.text || ""}" maxlength="4" />
 <input type="text" class="person-badge-match" placeholder="Show badge when event contains..." value="${b.match || ""}" />
 <input type="text" class="person-badge-hide" placeholder="Hide event when contains..." value="${b.hideMatch || ""}" />
+<label class="person-badge-digest-label" title="Hide any matching event from the Daily Digest too">
+<input type="checkbox" class="person-badge-digest-hide" ${b.digestHide ? "checked" : ""} /> Hide from digest
+</label>
 <button type="button" class="person-badge-remove-btn" data-idx="${idx}" data-badge-idx="${bidx}" title="Remove badge">&#10005;</button>
 </div>
 `
@@ -8625,7 +9877,7 @@ btn.addEventListener("click", () => {
 this._syncPeopleDraftFromDom();
 const idx = parseInt(btn.dataset.idx, 10);
 if (!Array.isArray(this._settingsPeopleDraft[idx].badges)) this._settingsPeopleDraft[idx].badges = [];
-this._settingsPeopleDraft[idx].badges.push({ text: "", match: "", hideMatch: "" });
+this._settingsPeopleDraft[idx].badges.push({ text: "", match: "", hideMatch: "", digestHide: false });
 this._renderPeopleSettings(this._settingsPeopleDraft);
 });
 });
@@ -8816,7 +10068,7 @@ const root = this._root;
 const profile = this._settingsUserProfilesDraft[userId];
 const user = (this._notifyProfileUsersCache || []).find((u) => u.id === userId);
 const nameEl = root.querySelector(".notify-profile-name");
-if (nameEl) nameEl.textContent = (user && user.name) || "Notification profile";
+if (nameEl) nameEl.textContent = (user && user.name) || this._t("settings.notification_profile_default", "Notification profile");
 const colorInputEl = root.querySelector(".notify-profile-color-input");
 if (colorInputEl) colorInputEl.value = profile.color || "#c9c2b3";
 const targetsCountEl = root.querySelector(".notify-profile-targets-count");
@@ -8827,6 +10079,17 @@ btn.classList.toggle("active", btn.dataset.value === (profile.remindersEnabled ?
 root.querySelectorAll(".notify-profile-chores-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (profile.includeInChores === false ? "off" : "on"));
 });
+root.querySelectorAll(".notify-profile-child-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (profile.isChildAccount ? "on" : "off"));
+});
+root.querySelectorAll(".notify-profile-alarm-kiosk-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (profile.isAlarmKiosk ? "on" : "off"));
+});
+// Admin-only, same isAdminForPin check computed just below (real HA
+// admin) already used for the Kiosk PIN and Permissions accordions - a
+// child can never see or flip this about themselves.
+const childField = root.querySelector(".notify-profile-child-field");
+if (childField) childField.style.display = this._hass && this._hass.user && this._hass.user.is_admin ? "" : "none";
 root.querySelectorAll(".notify-profile-digest-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (profile.digestEnabled ? "on" : "off"));
 });
@@ -9242,6 +10505,9 @@ container.innerHTML = badges
 <input type="text" class="person-badge-text" placeholder="Badge (e.g. N)" value="${b.text || ""}" maxlength="4" />
 <input type="text" class="person-badge-match" placeholder="Show badge when event contains..." value="${b.match || ""}" />
 <input type="text" class="person-badge-hide" placeholder="Hide event when contains..." value="${b.hideMatch || ""}" />
+<label class="person-badge-digest-label" title="Hide any matching event from the Daily Digest too">
+<input type="checkbox" class="person-badge-digest-hide" ${b.digestHide ? "checked" : ""} /> Hide from digest
+</label>
 <button type="button" class="person-badge-remove-btn" data-badge-idx="${bidx}" title="Remove badge">&#10005;</button>
 </div>
 `
@@ -9249,6 +10515,9 @@ container.innerHTML = badges
 .join("");
 container.querySelectorAll(".person-badge-text, .person-badge-match, .person-badge-hide").forEach((input) => {
 input.addEventListener("input", () => this._syncNotifyProfileBadgesFromDom(userId));
+});
+container.querySelectorAll(".person-badge-digest-hide").forEach((input) => {
+input.addEventListener("change", () => this._syncNotifyProfileBadgesFromDom(userId));
 });
 container.querySelectorAll(".person-badge-remove-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
@@ -9272,6 +10541,7 @@ const badges = Array.from(rows).map((row) => ({
 text: row.querySelector(".person-badge-text").value.trim(),
 match: row.querySelector(".person-badge-match").value.trim(),
 hideMatch: row.querySelector(".person-badge-hide").value.trim(),
+digestHide: !!row.querySelector(".person-badge-digest-hide").checked,
 }));
 if (!this._settingsUserProfilesDraft[userId]) this._settingsUserProfilesDraft[userId] = this._defaultUserProfile();
 this._settingsUserProfilesDraft[userId].badges = badges;
@@ -9354,6 +10624,7 @@ const badges = Array.from(badgeRows).map((br) => ({
 text: br.querySelector(".person-badge-text").value.trim(),
 match: br.querySelector(".person-badge-match").value.trim(),
 hideMatch: br.querySelector(".person-badge-hide").value.trim(),
+digestHide: !!br.querySelector(".person-badge-digest-hide").checked,
 }));
 // v1.132.0+: the Calendars tab no longer has a "their own Reminders
 // list" field on each row - moved to the Users tab profile editor (see
@@ -9453,6 +10724,9 @@ btn.classList.toggle("active", btn.dataset.value === (settings.goalsShowInReward
 root.querySelectorAll(".chore-due-time-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.choreDueShowTime ? "on" : "off"));
 });
+root.querySelectorAll(".chores-confetti-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (settings.choresConfettiOnComplete ? "on" : "off"));
+});
 // Household's own "admin only setting" request - only a real Home
 // Assistant admin (not just someone granted chore-assignment/verify
 // permission) ever even sees the Clear All buttons exist, matching the
@@ -9499,6 +10773,18 @@ this._settingsPeopleDraft = JSON.parse(JSON.stringify(this._getPeople()));
 // under it) all read/write this one draft object, merged back into the
 // big settings blob on Save.
 this._settingsUserProfilesDraft = JSON.parse(JSON.stringify(settings.userProfiles || {}));
+// v1.132.55+: same "fresh deep copy on open, merged back in on Save"
+// draft convention as _settingsUserProfilesDraft above, for the household-
+// level Alarm Devices registry - see _renderAlarmDevicesSection.
+this._settingsAlarmDevicesDraft = JSON.parse(JSON.stringify(settings.alarmDevices || []));
+this._settingsAlarmTtsEntityDraft = settings.alarmTtsEntityId || "";
+// Cleared on every Settings open, not just once ever, so a speaker/
+// satellite added to Home Assistant since the last time Settings was open
+// shows up in the add-select without a full page reload.
+this._alarmDeviceCandidates = null;
+const ttsSelectEl = root.querySelector(".alarm-tts-entity-select");
+if (ttsSelectEl) ttsSelectEl.dataset.populated = "false";
+this._renderAlarmDevicesSection(root);
 // Same fresh-copy-on-open, merged-back-on-Save treatment as
 // _settingsUserProfilesDraft above - the Users tab's Add/Remove buttons
 // and the Permissions tab's filtering (see _renderPermissionsList) both
@@ -9517,6 +10803,20 @@ this._settingsKioskLoginUserIdsDraft = Array.isArray(settings.kioskLoginEnabledU
 this._notifyProfileEditingUserId = null;
 this._notifyDevicesEditIdx = null;
 this._setSettingsTab("general");
+// Deliberately NOT swept by _applyTranslations() (unlike every other
+// static label in this tab) - this hint has a nested <code> element
+// (.reminders-entity-label, repopulated with the actual entity id right
+// below) that a plain textContent-replace would silently delete. The
+// translated strings below carry that same <code> tag embedded verbatim
+// in the prose - translators keep it in place, same idiom as
+// strings.json's own {member_name}-style placeholders elsewhere.
+const remindersHintEl = root.querySelector(".reminders-hint-text");
+if (remindersHintEl) {
+remindersHintEl.innerHTML = this._t(
+"settings.reminders_hint_html",
+'Reminders (from the &#128276; tab of the Add Event modal) are saved as Home Assistant to-do items in <code class="reminders-entity-label"></code> - not events on your calendar. Mark them done, edit them, or reschedule them anytime from Home Assistant\'s own To-do UI (or the &#9989; Mark done button in the event-info popup), independent of Google Calendar or whatever your other calendars are backed by. Who gets notified about them is set per-person under the Users tab.'
+);
+}
 const remindersEntityLabel = root.querySelector(".reminders-entity-label");
 if (remindersEntityLabel) remindersEntityLabel.textContent = this._config.reminders_entity;
 const remindersMissingWarn = root.querySelector(".reminders-entity-missing-warn");
@@ -9546,6 +10846,8 @@ if (screenSaverIdleEl) screenSaverIdleEl.value = String(screenSaver.idleSeconds 
 root.querySelectorAll(".screensaver-recipe-disable-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (screenSaver.disableWhileRecipeOpen ? "on" : "off"));
 });
+const screenSaverReturnDashboardEl = root.querySelector(".screensaver-return-dashboard-input");
+if (screenSaverReturnDashboardEl) screenSaverReturnDashboardEl.value = screenSaver.returnDashboardPath || "";
 const cameraOptionsEl = root.querySelector("#screensaver-camera-options");
 if (cameraOptionsEl && this._hass) {
 cameraOptionsEl.innerHTML = Object.keys(this._hass.states)
@@ -9573,6 +10875,47 @@ if (saveStatusEl) {
 saveStatusEl.textContent = "";
 saveStatusEl.classList.remove("is-error");
 }
+// Household ask, verbatim: "If a user is not an admin the only thing they
+// should be able to see in settings is: The per device settings, theme,
+// calendar timeline range, week and month view items. Small screen mode
+// etc. Whos reminders they subscribe to, and what calendar is associated
+// with them." Every section that isn't on that whitelist (household
+// calendar management, the informational Reminders accordion, scroll
+// lock, Menu Blocks, Chores/Rewards/Routines, Countdown, Daily Digest,
+// Grocy, Screen Saver, the Notification tap destination field, and Add a
+// person) is tagged .admin-only-setting directly in the template above,
+// and hidden here with plain CSS display:none for anyone whose real HA
+// login isn't an admin - same is_admin check _isAdmin()/the existing
+// Danger Zone gate already use elsewhere in this file. This is UI-only,
+// same belt-and-suspenders note as the Danger Zone above: the backend's
+// own family_hub/set_settings handler is what actually decides who can
+// write what, so hiding a field here is about a clean/uncluttered non-
+// admin view, not enforcement.
+//
+// Hiding is done with CSS rather than skipping population, so every
+// hidden field still gets its real saved value written into its DOM
+// element (see all the .value/.checked assignments above) - the Save
+// handler reads the same DOM either way, so a non-admin saving Settings
+// can never blank out a household-wide field they simply never saw.
+root.querySelectorAll(".admin-only-setting").forEach((el) => {
+el.style.display = isAdmin ? "" : "none";
+});
+// v1.132.32+: a second, narrower notch below "ordinary non-admin".
+// Household ask, verbatim: "there should be another permission level for
+// [like] a child setting that hides the user tab too." An admin flags
+// someone as a Child account from inside their own profile modal (see
+// .notify-profile-child-field/isChildAccount above) - when THAT'S the
+// person currently looking at Settings, the Users tab disappears
+// entirely on top of everything .admin-only-setting already hides, since
+// even their own notification profile row is off the whitelist for this
+// stricter level. An admin is never gated by this, even if somehow also
+// flagged (isAdmin above already short-circuits everything else, and
+// nobody self-service-toggles this - see the admin-only field itself).
+const currentUserId = this._hass && this._hass.user && this._hass.user.id;
+const ownProfile = currentUserId && this._settingsUserProfilesDraft ? this._settingsUserProfilesDraft[currentUserId] : null;
+const isChildViewer = !isAdmin && !!(ownProfile && ownProfile.isChildAccount);
+const usersTabBtn = root.querySelector('.settings-tab-btn[data-settings-tab="notifications"]');
+if (usersTabBtn) usersTabBtn.style.display = isChildViewer ? "none" : "";
 this._openModal(root.querySelector(".settings-overlay"));
 // The Users tab's per-person list loads async (family_hub/list_users) and
 // re-renders once it arrives - opening Settings isn't blocked on the
@@ -9584,6 +10927,28 @@ this._fetchNotifyProfileUsers();
 // caching indefinitely) so a newly-created Home Assistant user shows up
 // without needing anything reloaded.
 this._fetchScreenSaverUsers();
+// v1.132.62+: household report, verbatim - "Translations have stopped
+// working in the settings menu again." _applyTranslations() normally only
+// ever runs ONCE, from _ensureTranslationsLoaded()'s own .then() callback
+// right after the very first hass assignment - long before Settings has
+// ever been opened, so it sweeps whatever [data-i18n]/[data-i18n-title]
+// elements exist in the DOM at that exact moment. That's fine for every
+// OTHER Settings label (all static, all part of _build()'s one-time
+// template, already in the DOM by then) - but not for the handful of
+// elements this method (and _renderAlarmDevicesSection, which this method
+// already calls above) rebuild via .innerHTML on every single Settings
+// open (the alarm-devices empty-state hints, the Users/Screen-Saver lists
+// once their own async round trips resolve). Those get freshly re-created
+// AFTER the one-and-only sweep already ran, so they were never covered by
+// it and always showed their raw English fallback text, in any language,
+// forever - not a regression in the strict sense, just a gap that's been
+// there since these dynamic sections were first added, and is easy to
+// mistake for "translations broke" since it's scoped to exactly the
+// Settings modal. Re-running the sweep every time Settings opens (a
+// plain, cheap, idempotent root-wide querySelectorAll - a no-op for any
+// element that's already translated) re-covers this dynamic content
+// instead of only ever covering _build()'s static one.
+this._applyTranslations();
 }
 // Toggles which of the Video URL / Camera entity fields is visible in the
 // Screen Saver section, based on the source-type toggle above them -
@@ -9687,14 +11052,14 @@ const settings = this._getSettings();
 const enabledMap = (settings.screenSaver && settings.screenSaver.usersEnabled) || {};
 enabledIds = Object.keys(enabledMap).filter((id) => enabledMap[id]);
 }
-if (!enabledIds.length) return "None selected";
+if (!enabledIds.length) return this._t("settings.none_selected", "None selected");
 const users = Array.isArray(this._screenSaverUsersCache) ? this._screenSaverUsersCache : [];
 const names = enabledIds.map((id) => {
 const u = users.find((x) => x.id === id);
 return u ? u.name : id;
 });
 if (names.length <= 2) return names.join(", ");
-return `${names.length} selected`;
+return this._t("settings.n_selected", `${names.length} selected`, { n: String(names.length) });
 }
 _updateScreenSaverUsersButton() {
 const root = this._root;
@@ -9902,6 +11267,121 @@ clearInterval(this._screenSaverCameraInterval);
 this._screenSaverCameraInterval = null;
 }
 this._resetScreenSaverIdleTimer();
+this._goToReturnDashboard();
+}
+// v193+: household ask, verbatim - "Default dashboard on screen saver
+// wake. We added where the device should be when waking from
+// screensaver in the screensaver card, but never added that
+// functionality to the main screensaver. Let's add it." Ported straight
+// from family-screensaver-card.js's own _goToReturnDashboard (same
+// method name, same mechanism) - the only difference is where the path
+// comes from: that card reads it off its own per-instance yaml config
+// (return_dashboard_path), this one reads screenSaver.returnDashboardPath
+// off the shared Settings blob, since the built-in screensaver here is a
+// single household-wide feature, not something placed as its own card
+// per dashboard. Same client-side navigation as the full card's own
+// dashboard-jump buttons (e.g. Family Today's _goToCalendar) - pushState
+// plus a "location-changed" event lets Home Assistant's own router swap
+// views instantly rather than a full page reload. A blank path (the
+// default) is a no-op, so upgrading changes nothing until a household
+// actually sets one.
+_goToReturnDashboard() {
+const ss = this._getSettings().screenSaver;
+const path = this._normalizeDashboardPath((ss && ss.returnDashboardPath) || "");
+if (!path) return;
+this._navigateWithFallback(path);
+}
+// v1.132.35+: v1.132.36 walked this back again - see that version's own
+// comment on _navigateWithFallback for the full story. Short version: a
+// brief v1.132.35 attempt replaced this with an unconditional hard
+// navigation (window.location.assign every time), reasoning that a
+// self-verifying soft route is fundamentally undiagnosable from JS. That
+// reasoning was correct as far as it went, but the household's own
+// direct feedback after trying it ("you borked the screen saver card it
+// now goes to the page but it refreshes home assistant in the process
+// and is very jaring it used to be very very smooth") made clear the
+// soft route DOES normally work fine and is worth keeping as the primary
+// path - the actual outstanding bug (see below) was never about this
+// mechanism being unreliable in general, it was that an entirely
+// separate, undocumented THIRD copy of the screensaver (the
+// window.__familyHubScreenSaver singleton shared by the Chores/Rewards/
+// My Chores cards) never had any return-dashboard navigation at all.
+// _navigateWithFallback (soft pushState+event first, verified, hard
+// navigation only as a last resort) is the shared, smooth-by-default
+// mechanism every Family Hub screensaver now uses - see this file's,
+// family-screensaver-card.js's, and the shared singleton's own copies,
+// which are kept in sync on purpose.
+_navigateWithFallback(path) {
+const before = window.location.href;
+// v1.132.63+: household bug report, verbatim - "Need to make it if
+// screensaver is set to return to the dashboard page it's currently on
+// it does nothing." v1.132.61 first "fixed" this by having
+// _goToReturnDashboard skip calling this method AT ALL when path was
+// already the current page - but that also skipped the hard-navigate
+// fallback below for a page that's stuck (a genuinely thrown pushState,
+// e.g. a kiosk WebView sandbox/origin quirk), even though that failure
+// has nothing to do with the destination happening to match the current
+// page. Fixed properly here instead: still attempt the soft navigation
+// unconditionally (so a real pushState failure is still caught below),
+// but only skip the AMBIGUOUS "did href change?" fallback check when
+// nothing needed to change in the first place AND pushState didn't
+// throw - that's the one case _navigateWithFallback's own before/after
+// comparison can never tell apart from "the soft nav silently failed"
+// (both look like "href unchanged"), so this is the only case worth
+// treating specially.
+const alreadyThere = path === before || path === window.location.pathname + window.location.search;
+let threw = false;
+try {
+window.history.pushState(null, "", path);
+window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
+} catch (e) {
+// A thrown pushState (e.g. a kiosk WebView's own sandbox/origin
+// quirks) must never abort silently - fall through to the setTimeout
+// below, which will see window.location unchanged and hard-navigate.
+threw = true;
+}
+if (alreadyThere && !threw) return;
+setTimeout(() => {
+if (window.location.href === before) this._hardNavigate(path);
+}, 300);
+}
+_hardNavigate(path) {
+window.location.assign(path);
+}
+// v1.132.33+: household bug report, verbatim: "tapping with the screen
+// saver running doesnt seem to send you back to the set dashboard."
+// Root cause: this field is a plain free-typed text input (unlike the
+// standalone Screen Saver card's own return_dashboard_path, which uses
+// Home Assistant's built-in navigation PICKER - see getConfigForm in
+// family-screensaver-card.js - so it can only ever produce a real,
+// already-slash-prefixed path). Nothing here validated or normalized
+// what got typed, so a household that typed "dashboard-tablet/family-
+// calendar" (no leading "/") got exactly that string handed straight to
+// `history.pushState(null, "", path)`. Without a leading slash,
+// pushState resolves it as RELATIVE to whatever page happens to be
+// showing at that exact moment (e.g. producing something like
+// "/lovelace-family/dashboard-tablet/family-calendar" instead of
+// "/dashboard-tablet/family-calendar") - a URL Home Assistant's router
+// has no matching panel for, so the "location-changed" dispatch is a
+// silent no-op from the household's point of view: the screensaver still
+// visibly dismisses (that part never depended on the path), but wake
+// never actually lands anywhere different.
+// Fixed by normalizing at every boundary this value crosses - both READS
+// (_normalizeSettings, so an already-broken value already sitting in a
+// household's saved settings self-heals the very next time Settings are
+// fetched, with no need to open Settings or retype anything) and the
+// SAVE path (_saveSettings, so retyping or resaving never re-introduces
+// the same bug) - plus here, at the actual point of use, as a last line
+// of defense against any value that reached the store some other way
+// (a direct family_hub/set_settings call, an older backup restore, etc).
+// A bare relative string like "dashboard-tablet/family-calendar" gets a
+// leading "/" added; an absolute http(s):// URL or an already-"/"-
+// prefixed path is left exactly as typed.
+_normalizeDashboardPath(raw) {
+const trimmed = typeof raw === "string" ? raw.trim() : "";
+if (!trimmed) return "";
+if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith("/")) return trimmed;
+return "/" + trimmed;
 }
 // Camera "streaming" here is the same lightweight approach Lovelace's own
 // picture-entity card uses under the hood - polling the camera's
@@ -10153,6 +11633,7 @@ badges: (Array.isArray(p.badges) ? p.badges : [])
 text: (b.text || "").trim(),
 match: (b.match || "").trim(),
 hideMatch: (b.hideMatch || "").trim(),
+digestHide: !!b.digestHide,
 }))
 .filter((b) => b.text || b.match || b.hideMatch),
 remindersEntity: (p.remindersEntity || "").trim(),
@@ -10256,6 +11737,8 @@ const activeGoalsInRewardsBtn = root.querySelector(".goals-in-rewards-btn.active
 const goalsShowInRewards = activeGoalsInRewardsBtn ? activeGoalsInRewardsBtn.dataset.value === "on" : false;
 const activeChoreDueTimeBtn = root.querySelector(".chore-due-time-btn.active");
 const choreDueShowTime = activeChoreDueTimeBtn ? activeChoreDueTimeBtn.dataset.value === "on" : false;
+const activeChoresConfettiBtn = root.querySelector(".chores-confetti-btn.active");
+const choresConfettiOnComplete = activeChoresConfettiBtn ? activeChoresConfettiBtn.dataset.value === "on" : false;
 const notifyClickPathInput = root.querySelector(".notify-click-path-input");
 const notificationClickPath = notifyClickPathInput ? notifyClickPathInput.value.trim() : "";
 const defaults = ["Breakfast", "Lunch", "Dinner"];
@@ -10312,6 +11795,14 @@ screenSaverUsersEnabled = Object.assign({}, this._getSettings().screenSaver.user
 }
 const activeScreenSaverRecipeDisableBtn = root.querySelector(".screensaver-recipe-disable-btn.active");
 const screenSaverDisableWhileRecipeOpen = activeScreenSaverRecipeDisableBtn ? activeScreenSaverRecipeDisableBtn.dataset.value === "on" : false;
+const screenSaverReturnDashboardInput = root.querySelector(".screensaver-return-dashboard-input");
+// v1.132.33+: normalized on save too (not just on read) - see
+// _normalizeDashboardPath's own comment - so retyping/resaving never
+// re-introduces the missing-leading-slash bug, and what's stored always
+// matches what _goToReturnDashboard will actually use.
+const screenSaverReturnDashboardPath = screenSaverReturnDashboardInput
+? this._normalizeDashboardPath(screenSaverReturnDashboardInput.value)
+: "";
 const screenSaver = {
 sourceType: screenSaverSourceType,
 videoUrl: screenSaverVideoUrl,
@@ -10319,6 +11810,7 @@ cameraEntity: screenSaverCameraEntity,
 idleSeconds: screenSaverIdleSeconds,
 usersEnabled: screenSaverUsersEnabled,
 disableWhileRecipeOpen: screenSaverDisableWhileRecipeOpen,
+returnDashboardPath: screenSaverReturnDashboardPath,
 };
 const settingsObj = {
 blocks,
@@ -10338,6 +11830,7 @@ routinesEnabled,
 goalsShowInChores,
 goalsShowInRewards,
 choreDueShowTime,
+choresConfettiOnComplete,
 notificationClickPath,
 people,
 weekendBreakfast,
@@ -10359,6 +11852,12 @@ screenSaver,
 userProfiles,
 memberUserIds,
 kioskLoginEnabledUserIds,
+// v1.132.55+: household-level Alarm Devices registry/TTS pick - see
+// _renderAlarmDevicesSection and _ws_set_settings's own "full replace, not
+// a merge" docstring for why these two MUST be read-and-resent here or
+// they'd be silently dropped on every single Settings save.
+alarmDevices: this._settingsAlarmDevicesDraft || [],
+alarmTtsEntityId: this._settingsAlarmTtsEntityDraft || "",
 };
 const payload = JSON.stringify(settingsObj);
 const statusEl = root.querySelector(".settings-save-status");
@@ -10535,6 +12034,67 @@ if (this._eventInfoOpenId && !this._eventInfoPeopleDirty) {
 this._renderEventInfoPeopleSection(this._eventInfoOpenId);
 }
 }
+// v1.132.63+: attachable checklists ("baseball practice needs cleats, a
+// water bottle, a glove packed" - household ask, verbatim: "we should be
+// able to attach lists to reminders and calendars ... a per event list
+// that goes away once the task is completed"). Fetched proactively (same
+// reasoning as _fetchEventPeopleOverrides just above, not lazily like
+// _fetchReminderOverrides) so the event-info popup can render its
+// checklist section the instant it opens, no extra round trip, and so a
+// future small "has a checklist" indicator on the event chip itself (not
+// added yet, but this makes it cheap to add later) would already have
+// the data in hand for every event on screen.
+async _fetchEventChecklists() {
+if (!this._hass) return;
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/get_event_checklists" });
+this._eventChecklists = (result && result.checklists && typeof result.checklists === "object") ? result.checklists : {};
+} catch (e) {
+// Family Hub not installed, or an older version without this command -
+// the checklist section just renders as "no checklist attached" for
+// everything, same graceful-fallback idiom as the other override
+// fetches above.
+this._eventChecklists = {};
+}
+if (this._eventInfoOpenId && !this._eventInfoChecklistDirty) {
+this._renderEventInfoChecklistSection(this._eventInfoOpenId);
+}
+}
+// The checklist store's key for an existing calendar event - identical
+// identity scheme to _eventOverrideKey (this event has no stable uid
+// across the REST/poller fetch paths, see _event_override_key's own
+// backend docstring), kept as a separate method rather than just calling
+// _eventOverrideKey directly so call sites read as "the checklist key"
+// rather than incidentally reusing an unrelated-looking helper.
+_checklistKeyForEvent(detail) {
+return this._eventOverrideKey(detail);
+}
+// The checklist store's key for a standalone reminder (a to-do item,
+// which DOES have a stable uid - see const.py's EVENT_CHECKLISTS_STORAGE_
+// KEY_PREFIX comment for why reminders don't need the composite-identity
+// trick events do). Mirrors the backend's own _checklist_target_key.
+_checklistKeyForReminder(todoEntity, itemUid) {
+return `reminder|${todoEntity}|${itemUid}`;
+}
+// Every todo.* entity in this Home Assistant instance, for the "use an
+// existing list" picker in the checklist section of the Add Event modal.
+// Cached on this._todoListCandidates once per Settings-open-equivalent
+// lifetime of the modal (cleared to null every time the modal is
+// (re)opened - see _openAddEvent) - same "ask again next time, not on
+// every keystroke" idea _fetchAlarmDeviceCandidates already uses for the
+// same reason (a todo.* entity added to Home Assistant since the modal
+// was last opened should show up without a full page reload).
+async _fetchTodoListCandidates() {
+if (this._todoListCandidates) return this._todoListCandidates;
+if (!this._hass || !this._hass.connection || !this._hass.connection.sendMessagePromise) return null;
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/checklist/list_todo_candidates" });
+this._todoListCandidates = (result && Array.isArray(result.todo_lists)) ? result.todo_lists : [];
+return this._todoListCandidates;
+} catch (e) {
+return null;
+}
+}
 // Every calendar entity actually involved in one event: the calendar it
 // was created on (calendarEntity, always first) plus whichever other
 // people's entity ids are tagged via the override store, filtered to
@@ -10586,6 +12146,10 @@ section.innerHTML = `<div class="event-info-remind-none">&#128276; This is a rem
 <input type="time" class="event-info-reminder-time" />
 </div>
 <label class="remind-check-opt event-info-reminder-rollover-label"><input type="checkbox" class="event-info-reminder-rollover" />&#128257; Roll over to next day if not completed</label>
+<div class="field rolldays-field event-info-reminder-rolldays-field">
+<div class="rolldays-hint">Applies only on these days (leave every day selected to roll over daily, same as before)</div>
+<div class="rolldays-btn-row event-info-reminder-rolldays">${this._rolldaysBtnsHtml(detail.rolloverDays)}</div>
+</div>
 <div class="event-info-reminder-actions">
 <button type="button" class="event-info-reminder-save-btn">&#128190; Save changes</button>
 <button type="button" class="event-info-reminder-done-btn">&#9989; Mark done</button>
@@ -10594,6 +12158,18 @@ section.innerHTML = `<div class="event-info-remind-none">&#128276; This is a rem
 section.querySelector(".event-info-reminder-date").value = this._dateKey(detail.start);
 section.querySelector(".event-info-reminder-time").value = fmtTimeInput(detail.start);
 section.querySelector(".event-info-reminder-rollover").checked = !!detail.rollover;
+// v185+: "Roll over to next day if not completed" restricted to specific
+// days (see _rolldaysBtnsHtml) - the day picker only shows once rollover
+// itself is checked, same show/hide relationship as the Add Reminder form.
+const rolldaysField = section.querySelector(".event-info-reminder-rolldays-field");
+if (rolldaysField) rolldaysField.style.display = detail.rollover ? "block" : "none";
+const rolloverCb = section.querySelector(".event-info-reminder-rollover");
+if (rolloverCb && rolldaysField) {
+rolloverCb.addEventListener("change", () => {
+rolldaysField.style.display = rolloverCb.checked ? "block" : "none";
+});
+}
+this._wireRolldaysToggle(section.querySelector(".event-info-reminder-rolldays"));
 const statusEl = section.querySelector(".event-info-remind-status");
 const saveBtn = section.querySelector(".event-info-reminder-save-btn");
 if (saveBtn) {
@@ -10602,6 +12178,7 @@ const dateVal = section.querySelector(".event-info-reminder-date").value;
 const timeVal = section.querySelector(".event-info-reminder-time").value;
 if (!dateVal || !timeVal) return;
 const rollover = section.querySelector(".event-info-reminder-rollover").checked;
+const rolloverDays = this._readRolldaysFromContainer(section.querySelector(".event-info-reminder-rolldays"));
 saveBtn.disabled = true;
 saveBtn.textContent = "Saving…";
 if (statusEl) statusEl.textContent = "";
@@ -10612,7 +12189,7 @@ await this._hass.callService(
 {
 item: detail.todoUid,
 due_datetime: `${dateVal}T${timeVal}:00`,
-description: this._buildReminderDescription(detail.description, rollover),
+description: this._buildReminderDescription(detail.description, rollover, rolloverDays),
 },
 // detail.calendarEntity is the specific list this reminder actually
 // lives on (the shared family list, or one of the individual lists) -
@@ -10829,6 +12406,224 @@ statusEl.textContent = savedMinutes.length
 if (statusEl) statusEl.textContent = "Couldn't save - try again";
 }
 }
+// v1.132.63+: attachable checklists - the event-info popup's read/edit
+// half of the feature (see _saveAddEventChecklistIfAny for the create-
+// time half in the Add Event modal). Renders one of three states into
+// .event-info-checklist-content: nothing attached yet (a single "+ Add a
+// checklist" button), an "existing" pointer (its live items, fetched
+// fresh from the real todo.* entity every render - never cached, since
+// that list can be edited from anywhere, not just here), or a "custom"
+// list (its own Family-Hub-owned items, straight from this._eventChecklists).
+async _renderEventInfoChecklistSection(id) {
+const root = this._root;
+const content = root.querySelector(".event-info-checklist-content");
+const detail = this._eventDetails && this._eventDetails[id];
+if (!content || !detail) return;
+const key = this._checklistKeyForEvent(detail);
+const record = (this._eventChecklists || {})[key];
+if (!record) {
+content.innerHTML = `<button type="button" class="event-info-checklist-add-btn">&#10133; ${this._t("event_info.checklist_add", "Add a checklist")}</button>`;
+const btn = content.querySelector(".event-info-checklist-add-btn");
+if (btn) btn.addEventListener("click", () => this._openEventInfoChecklistBuilder(id));
+return;
+}
+if (record.mode === "existing") {
+content.innerHTML = `<div class="remind-hint">${this._t("event_info.checklist_loading", "Loading…")}</div>`;
+let items = null;
+try {
+  const result = await this._hass.connection.sendMessagePromise({
+    type: "call_service",
+    domain: "todo",
+    service: "get_items",
+    service_data: {},
+    target: { entity_id: record.entity_id },
+    return_response: true,
+  });
+  const forEntity = result && result.response && result.response[record.entity_id];
+  items = (forEntity && forEntity.items) || [];
+} catch (e) {
+  items = null;
+}
+// The popup may have moved on to a different event while this round
+// trip was in flight (or closed outright) - don't paint stale results
+// into whatever it's now showing.
+if (this._eventInfoOpenId !== id) return;
+if (items === null) {
+  content.innerHTML = `<div class="remind-hint">${this._t("event_info.checklist_load_failed", "Couldn't load this list right now.")}</div>`;
+  return;
+}
+const itemsHtml = items.length
+  ? items
+      .map(
+        (it) =>
+          `<div class="checklist-item-row"><input type="checkbox" class="checklist-item-check" data-uid="${it.uid}" ${it.status === "completed" ? "checked" : ""} /><span class="checklist-item-row-text${it.status === "completed" ? " done" : ""}">${it.summary}</span></div>`
+      )
+      .join("")
+  : `<div class="remind-hint">${this._t("event_info.checklist_no_items", "No items yet.")}</div>`;
+content.innerHTML =
+  itemsHtml +
+  `<div class="checklist-add-row"><input type="text" class="event-info-checklist-add-input" maxlength="200" placeholder="${this._t("event_info.checklist_add_placeholder", "Add an item")}" /><button type="button" class="btn-cancel event-info-checklist-add-item-btn">${this._t("common.add", "Add")}</button></div>` +
+  `<button type="button" class="event-info-checklist-unlink-btn">&#128279; ${this._t("event_info.checklist_unlink", "Unlink this list")}</button>`;
+content.querySelectorAll(".checklist-item-check").forEach((cb) => {
+  cb.addEventListener("change", async () => {
+    try {
+      await this._hass.callService(
+        "todo",
+        "update_item",
+        { item: cb.dataset.uid, status: cb.checked ? "completed" : "needs_action" },
+        { entity_id: record.entity_id }
+      );
+    } catch (e) {
+      /* best-effort - the checkbox just stays as the user left it */
+    }
+  });
+});
+this._wireEventInfoChecklistAddRow(content, async (text) => {
+  try {
+    await this._hass.callService("todo", "add_item", { item: text }, { entity_id: record.entity_id });
+  } catch (e) {
+    /* best-effort */
+  }
+  this._renderEventInfoChecklistSection(id);
+});
+const unlinkBtn = content.querySelector(".event-info-checklist-unlink-btn");
+if (unlinkBtn) unlinkBtn.addEventListener("click", () => this._saveEventInfoChecklistRecord(id, detail, null));
+return;
+}
+// "custom" mode - a one-off list Family Hub owns outright.
+const items = record.items || [];
+const itemsHtml = items.length
+? items
+    .map(
+      (it) =>
+        `<div class="checklist-item-row"><input type="checkbox" class="checklist-item-check" data-item-id="${it.id}" ${it.done ? "checked" : ""} /><span class="checklist-item-row-text${it.done ? " done" : ""}">${it.text}</span><button type="button" class="checklist-item-remove-btn" data-item-id="${it.id}" title="Remove">&#10005;</button></div>`
+    )
+    .join("")
+: `<div class="remind-hint">${this._t("event_info.checklist_no_items", "No items yet.")}</div>`;
+content.innerHTML =
+itemsHtml +
+`<div class="checklist-add-row"><input type="text" class="event-info-checklist-add-input" maxlength="200" placeholder="${this._t("event_info.checklist_add_placeholder", "Add an item")}" /><button type="button" class="btn-cancel event-info-checklist-add-item-btn">${this._t("common.add", "Add")}</button></div>` +
+`<button type="button" class="event-info-checklist-unlink-btn">&#128465; ${this._t("event_info.checklist_delete", "Delete checklist")}</button>`;
+content.querySelectorAll(".checklist-item-check").forEach((cb) => {
+cb.addEventListener("change", () => {
+  const newItems = items.map((it) => (it.id === cb.dataset.itemId ? { ...it, done: cb.checked } : it));
+  this._saveEventInfoChecklistRecord(id, detail, { mode: "custom", items: newItems });
+});
+});
+content.querySelectorAll(".checklist-item-remove-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+  const newItems = items.filter((it) => it.id !== btn.dataset.itemId);
+  this._saveEventInfoChecklistRecord(id, detail, newItems.length ? { mode: "custom", items: newItems } : null);
+});
+});
+this._wireEventInfoChecklistAddRow(content, (text) => {
+const newItems = items.concat([{ text, done: false }]);
+this._saveEventInfoChecklistRecord(id, detail, { mode: "custom", items: newItems });
+});
+const unlinkBtn = content.querySelector(".event-info-checklist-unlink-btn");
+if (unlinkBtn) unlinkBtn.addEventListener("click", () => this._saveEventInfoChecklistRecord(id, detail, null));
+}
+// Shared "type something, click Add (or press Enter)" wiring for the
+// checklist section's own add-item row, used by both the "existing" and
+// "custom" render branches above (only what onAdd DOES with the text
+// differs between them).
+_wireEventInfoChecklistAddRow(content, onAdd) {
+const addBtn = content.querySelector(".event-info-checklist-add-item-btn");
+const addInput = content.querySelector(".event-info-checklist-add-input");
+if (!addBtn || !addInput) return;
+const submit = () => {
+const text = (addInput.value || "").trim().slice(0, 200);
+if (!text) return;
+addInput.value = "";
+onAdd(text);
+};
+addBtn.addEventListener("click", submit);
+addInput.addEventListener("keydown", (e) => {
+if (e.key === "Enter") {
+  e.preventDefault();
+  submit();
+}
+});
+}
+// The very first "attach a checklist" step for an event that doesn't have
+// one yet - same custom-vs-existing choice as the Add Event modal's own
+// checklist section, just rendered inline in the popup instead of inside
+// a separate modal. Picking "existing" and a list attaches immediately
+// (there's nothing else to configure); picking "custom" just reveals an
+// add-item row - the checklist record itself isn't created server-side
+// until the first item is actually added (an empty "custom" checklist is
+// meaningless and the backend would just treat it as a detach anyway, see
+// _ws_set_event_checklist's own docstring).
+_openEventInfoChecklistBuilder(id) {
+const root = this._root;
+const content = root.querySelector(".event-info-checklist-content");
+const detail = this._eventDetails && this._eventDetails[id];
+if (!content || !detail) return;
+content.innerHTML = `
+<div class="checklist-mode-btn-row">
+<button type="button" class="size-btn event-info-checklist-builder-mode-btn active" data-value="custom">${this._t("add_event.checklist_mode_custom", "Just for this")}</button>
+<button type="button" class="size-btn event-info-checklist-builder-mode-btn" data-value="existing">${this._t("add_event.checklist_mode_existing", "Use an existing list")}</button>
+</div>
+<div class="field event-info-checklist-builder-existing-field" style="display:none">
+<select class="hour-select event-info-checklist-builder-existing-select"></select>
+</div>
+<div class="event-info-checklist-builder-custom-field">
+<div class="checklist-add-row"><input type="text" class="event-info-checklist-add-input" maxlength="200" placeholder="${this._t("event_info.checklist_add_placeholder", "Add an item")}" /><button type="button" class="btn-cancel event-info-checklist-add-item-btn">${this._t("common.add", "Add")}</button></div>
+</div>
+`;
+content.querySelectorAll(".event-info-checklist-builder-mode-btn").forEach((btn) => {
+btn.addEventListener("click", async () => {
+  content.querySelectorAll(".event-info-checklist-builder-mode-btn").forEach((b) => b.classList.toggle("active", b === btn));
+  const isExisting = btn.dataset.value === "existing";
+  content.querySelector(".event-info-checklist-builder-existing-field").style.display = isExisting ? "" : "none";
+  content.querySelector(".event-info-checklist-builder-custom-field").style.display = isExisting ? "none" : "";
+  if (isExisting) {
+    const select = content.querySelector(".event-info-checklist-builder-existing-select");
+    const candidates = await this._fetchTodoListCandidates();
+    if (select && candidates) {
+      select.innerHTML = candidates.length
+        ? candidates
+            .map((c) => `<option value="${c.entity_id}">${c.name}</option>`)
+            .join("")
+        : `<option value="">${this._t("add_event.checklist_no_todo_lists", "No to-do lists found")}</option>`;
+      if (candidates.length) {
+        this._saveEventInfoChecklistRecord(id, detail, { mode: "existing", entity_id: select.value });
+      }
+    }
+  }
+});
+});
+this._wireEventInfoChecklistAddRow(content, (text) => {
+this._saveEventInfoChecklistRecord(id, detail, { mode: "custom", items: [{ text, done: false }] });
+});
+}
+// Single save/detach path for every checklist mutation the popup makes -
+// upserts (or, with checklist=null, detaches) via the same family_hub/
+// set_event_checklist command the Add Event modal uses, updates the
+// local cache from the server's own echoed-back record (never trusts the
+// locally-built one, in case the backend normalized anything - e.g.
+// trimmed/truncated text or minted an item id), and re-renders. A round
+// trip that lands after the popup has moved to a different event is
+// simply not re-rendered (see the same guard in the "existing" branch
+// above) - the write itself already succeeded, only the paint is skipped.
+async _saveEventInfoChecklistRecord(id, detail, checklist) {
+const key = this._checklistKeyForEvent(detail);
+try {
+const result = await this._hass.connection.sendMessagePromise({
+  type: "family_hub/set_event_checklist",
+  calendar_entity: detail.calendarEntity,
+  start: Math.floor(detail.start.getTime() / 1000),
+  summary: detail.summary,
+  checklist,
+});
+if (!this._eventChecklists) this._eventChecklists = {};
+if (result && result.checklist) this._eventChecklists[key] = result.checklist;
+else delete this._eventChecklists[key];
+} catch (e) {
+/* best-effort - the section just re-renders whatever it had before */
+}
+if (this._eventInfoOpenId === id) this._renderEventInfoChecklistSection(id);
+}
 _openEventInfo(id) {
 const detail = this._eventDetails && this._eventDetails[id];
 if (!detail) return;
@@ -10847,22 +12642,29 @@ whenText = sameDay
 }
 const rows = [];
 rows.push(
-`<div class="event-info-row"><div class="label">${detail.isReminder ? "Reminder" : "Calendar"}</div><span class="event-info-chip" style="background:${detail.color}">${detail.isReminder ? "&#128276; " : ""}${detail.personName}</span></div>`
+`<div class="event-info-row"><div class="label">${detail.isReminder ? this._t("event_info.reminder", "Reminder") : this._t("event_info.calendar", "Calendar")}</div><span class="event-info-chip" style="background:${detail.color}">${detail.isReminder ? "&#128276; " : ""}${detail.personName}</span></div>`
 );
-rows.push(`<div class="event-info-row"><div class="label">When</div>${whenText}</div>`);
+rows.push(`<div class="event-info-row"><div class="label">${this._t("event_info.when", "When")}</div>${whenText}</div>`);
 if (detail.location) {
-rows.push(`<div class="event-info-row"><div class="label">Location</div>${detail.location}</div>`);
+rows.push(`<div class="event-info-row"><div class="label">${this._t("event_info.location", "Location")}</div>${detail.location}</div>`);
 }
 // v129+: multi-person events - tag other people onto an event that
 // already lives on ONE calendar (see _renderEventInfoPeopleSection).
 // Standalone reminders are a to-do item, not a calendar event on
 // anyone's own calendar, so there's no "also for" to tag.
 if (!detail.isReminder) {
-rows.push(`<div class="event-info-row event-info-people-row"><div class="label">Also for</div><div class="event-info-people-content"></div></div>`);
+rows.push(`<div class="event-info-row event-info-people-row"><div class="label">${this._t("event_info.also_for", "Also for")}</div><div class="event-info-people-content"></div></div>`);
 }
-rows.push(`<div class="event-info-row event-info-remind-row"><div class="label">Remind me</div><div class="event-info-remind-content"></div></div>`);
+rows.push(`<div class="event-info-row event-info-remind-row"><div class="label">${this._t("event_info.remind_me", "Remind me")}</div><div class="event-info-remind-content"></div></div>`);
+// v1.132.63+: attachable checklists - works for both an ordinary event
+// and a marker-based reminder (see _isReminderEvent) since both have the
+// calendar+start+summary identity _checklistKeyForEvent needs. A
+// standalone to-do Reminder (Add Event modal's Reminder tab) never opens
+// this popup at all - it isn't a calendar event - so it can only get a
+// checklist attached at creation time, not edited here afterward.
+rows.push(`<div class="event-info-row event-info-checklist-row"><div class="label">${this._t("event_info.checklist", "Checklist")}</div><div class="event-info-checklist-content"></div></div>`);
 if (detail.description) {
-rows.push(`<div class="event-info-row"><div class="label">Details</div>${detail.description}</div>`);
+rows.push(`<div class="event-info-row"><div class="label">${this._t("event_info.details", "Details")}</div>${detail.description}</div>`);
 }
 const mealDateKey = this._dateKey(detail.start);
 const mealDayIndex = detail.start.getDay();
@@ -10874,7 +12676,7 @@ const useMealButtonsHtml = mealBlocks
 .map((blockName, blockIndex) => `<button type="button" class="event-info-use-meal-btn" data-block-index="${blockIndex}">${blockName}</button>`)
 .join("");
 rows.push(
-`<div class="event-info-row event-info-use-meal-row"><div class="label">Use as meal</div><div class="event-info-use-meal-buttons">${useMealButtonsHtml}</div></div>`
+`<div class="event-info-row event-info-use-meal-row"><div class="label">${this._t("event_info.use_as_meal", "Use as meal")}</div><div class="event-info-use-meal-buttons">${useMealButtonsHtml}</div></div>`
 );
 }
 const today0 = new Date();
@@ -10889,7 +12691,24 @@ const existingCountdownItem = (this._getSettings().countdownItems || []).find(
 (it) => it.label === detail.summary && it.date === dateKeyForCountdown
 );
 rows.push(
-`<div class="event-info-row event-info-countdown-row"><div class="label">Countdown</div><button type="button" class="event-info-countdown-btn${existingCountdownItem ? " done" : ""}" data-countdown-item-id="${existingCountdownItem ? existingCountdownItem.id : ""}">${existingCountdownItem ? "\u{1F5D1} Remove from countdown" : "⏳ Use as countdown"}</button></div>`
+`<div class="event-info-row event-info-countdown-row"><div class="label">${this._t("event_info.countdown", "Countdown")}</div><button type="button" class="event-info-countdown-btn${existingCountdownItem ? " done" : ""}" data-countdown-item-id="${existingCountdownItem ? existingCountdownItem.id : ""}">${existingCountdownItem ? `\u{1F5D1} ${this._t("event_info.countdown_remove", "Remove from countdown")}` : `⏳ ${this._t("event_info.countdown_use", "Use as countdown")}`}</button></div>`
+);
+}
+// v1.132.43+: household ask, verbatim - "Deleting calendar events (Needs
+// permission) if the calendar integration you're using supports delete,
+// else gray out and when click give a pop up..." No row at all without
+// can_delete_event (same "you don't even see the affordance" shape as
+// every other permission-gated destructive action in this codebase, e.g.
+// the chores card's Claim/Edit buttons) - whether the button then ends up
+// WORKING or greyed-out-with-a-popup is a separate question, resolved
+// async by _wireEventInfoDeleteButton just below since it needs a round
+// trip to know (see _getCalendarDeleteSupport). Reminders are Family-
+// Hub-owned to-do items, not calendar events - no delete-the-calendar-
+// event affordance for them here (they already have their own removal
+// path via the to-do list itself).
+if (!detail.isReminder && this._canDeleteEvent()) {
+rows.push(
+`<div class="event-info-row event-info-delete-row"><div class="label">${this._t("event_info.delete", "Delete")}</div><button type="button" class="event-info-delete-btn" disabled>${this._t("event_info.checking", "Checking…")}</button></div>`
 );
 }
 root.querySelector(".event-info-content").innerHTML = rows.join("");
@@ -10898,13 +12717,21 @@ this._eventInfoRemindDirty = false;
 this._renderEventInfoRemindSection(id);
 this._eventInfoPeopleDirty = false;
 if (!detail.isReminder) this._renderEventInfoPeopleSection(id);
+this._renderEventInfoChecklistSection(id);
+if (!detail.isReminder && this._canDeleteEvent()) this._wireEventInfoDeleteButton(id, detail);
 root.querySelectorAll(".event-info-use-meal-btn").forEach((btn) => {
 btn.addEventListener("click", async () => {
 const blockIndex = parseInt(btn.dataset.blockIndex, 10);
 const existing = this._getMealForDay(mealDateKey, detail.start, blockIndex);
 if (existing) {
-const blockName = mealBlocks[blockIndex] || `Block ${blockIndex + 1}`;
-const confirmed = window.confirm(`${blockName} already has "${existing.name}" planned. Replace it with "${detail.summary}"?`);
+const blockName = mealBlocks[blockIndex] || this._t("event_info.block_fallback", `Block ${blockIndex + 1}`, { n: String(blockIndex + 1) });
+const confirmed = window.confirm(
+this._t("event_info.replace_meal_confirm", `${blockName} already has "${existing.name}" planned. Replace it with "${detail.summary}"?`, {
+block: blockName,
+existing: existing.name,
+new: detail.summary,
+})
+);
 if (!confirmed) return;
 }
 btn.disabled = true;
@@ -10921,12 +12748,12 @@ countdownBtn.disabled = true;
 const currentId = countdownBtn.dataset.countdownItemId;
 if (currentId) {
 await this._removeCountdownItem(currentId);
-countdownBtn.textContent = "⏳ Use as countdown";
+countdownBtn.textContent = `⏳ ${this._t("event_info.countdown_use", "Use as countdown")}`;
 countdownBtn.classList.remove("done");
 countdownBtn.dataset.countdownItemId = "";
 } else {
 const newId = await this._addCountdownItem(detail.summary, this._dateKey(detail.start));
-countdownBtn.textContent = "\u{1F5D1} Remove from countdown";
+countdownBtn.textContent = `\u{1F5D1} ${this._t("event_info.countdown_remove", "Remove from countdown")}`;
 countdownBtn.classList.add("done");
 countdownBtn.dataset.countdownItemId = newId || "";
 }
@@ -10939,6 +12766,72 @@ this._openModal(root.querySelector(".event-info-overlay"));
 // blocked on the round trip.
 this._fetchReminderOverrides();
 this._fetchEventPeopleOverrides();
+}
+// v1.132.43+: household ask, verbatim - "Deleting calendar events (Needs
+// permission) if the calendar integration you're using supports delete,
+// else gray out and when click give a pop up that says delete is not
+// supported with your current integration please use [INTEGRATION] app
+// to delete." _openEventInfo already drew the button in a disabled
+// "Checking…" state (synchronously, so the popup never flashes with no
+// Delete row at all for someone who has the permission) - this resolves
+// _getCalendarDeleteSupport (cached per calendar entity) and turns it
+// into either a working Delete button or a greyed-out one whose click
+// just explains why, per the household's own wording.
+async _wireEventInfoDeleteButton(id, detail) {
+const support = await this._getCalendarDeleteSupport(detail.calendarEntity);
+// The household may have closed this popup (or opened a different
+// event) while that round trip was in flight - never resurrect a stale
+// button onto whatever's showing now.
+if (this._eventInfoOpenId !== id) return;
+const btn = this._root.querySelector(".event-info-delete-btn");
+if (!btn) return;
+const canActuallyDelete = support.supported && !!detail.uid;
+btn.disabled = false;
+if (!canActuallyDelete) {
+btn.classList.add("unsupported");
+btn.textContent = `\u{1F5D1} ${this._t("event_info.delete_unsupported_btn", "Delete (unsupported)")}`;
+btn.title = this._t("event_info.delete_unsupported_title", "This calendar integration doesn't support deleting events from here.");
+btn.addEventListener("click", () => {
+window.alert(
+this._t(
+"event_info.delete_unsupported_alert",
+`Delete is not supported with your current calendar integration. Please use ${support.integrationName} to delete this event.`,
+{ integration: support.integrationName }
+)
+);
+});
+return;
+}
+btn.textContent = `\u{1F5D1} ${this._t("event_info.delete_event_btn", "Delete event")}`;
+btn.addEventListener("click", async () => {
+if (
+!window.confirm(
+this._t(
+"event_info.delete_confirm",
+`Delete "${detail.summary}"? This can't be undone here - it removes the event from ${detail.personName}'s calendar.`,
+{ summary: detail.summary, person: detail.personName }
+)
+)
+)
+return;
+btn.disabled = true;
+btn.textContent = this._t("event_info.deleting", "Deleting…");
+try {
+await this._hass.connection.sendMessagePromise({
+type: "family_hub/calendar/delete_event",
+entity_id: detail.calendarEntity,
+uid: detail.uid,
+});
+} catch (e) {
+window.alert((e && e.message) || this._t("event_info.delete_failed", "Couldn't delete this event."));
+btn.disabled = false;
+btn.textContent = `\u{1F5D1} ${this._t("event_info.delete_event_btn", "Delete event")}`;
+return;
+}
+this._root.querySelector(".event-info-overlay").classList.remove("open");
+this._eventInfoOpenId = null;
+await this._fetchEvents();
+});
 }
 _updateRatingButtons() {
 const heart = this._root.querySelector(".btn-heart");
@@ -11550,6 +13443,7 @@ this._editingExistingMeal = existing;
 this._editingAdditionalRecipes = existing && Array.isArray(existing.additionalRecipes) ? existing.additionalRecipes.map((r) => Object.assign({}, r)) : [];
 this._renderAdditionalRecipesList();
 root.querySelector(".input-name").value = existing ? existing.name : "";
+this._hideMealNameSuggestion();
 root.querySelector(".input-description").value = existing ? existing.description : "";
 root.querySelector(".input-link").value = existing ? existing.link : "";
 this._currentGrocyRecipeId = (existing && existing.grocyRecipeId) || null;
@@ -11656,6 +13550,7 @@ el.style.display = "";
 root.querySelector(".btn-delete-dish").style.display = recipe ? "" : "none";
 root.querySelector(".modal-day-title").textContent = recipe ? "Edit Recipe" : "Add Recipe";
 root.querySelector(".input-name").value = recipe ? recipe.name || "" : "";
+this._hideMealNameSuggestion();
 root.querySelector(".input-description").value = recipe ? recipe.description || "" : "";
 root.querySelector(".input-link").value = recipe ? recipe.link || "" : "";
 root.querySelector(".input-category").value = recipe ? recipe.category || "" : "";
@@ -11861,6 +13756,7 @@ preview.style.display = "none";
 _selectLovedDish(recipe) {
 const root = this._root;
 root.querySelector(".input-name").value = recipe.name || "";
+this._hideMealNameSuggestion();
 root.querySelector(".input-description").value = recipe.description || "";
 root.querySelector(".input-link").value = recipe.link || "";
 this._currentGrocyRecipeId = recipe.grocyRecipeId || null;
@@ -14093,6 +15989,37 @@ this._closeTemplates();
 // along with that modal - see _openSuggestedRecipes for where "viewing
 // suggestions" and "picking a suggested recipe for a meal" both live now
 // (the Recipe Box's own "💡 Suggested" filter and _selectLovedDish).
+// v183+: household ask, verbatim - "If a day is highlighted in month view
+// and you click add calendar or add reminder it should default to the
+// selected day." The only "highlighted/selected" day concept Month view
+// has is the split variant's _monthSplitSelectedDate (the classic Month
+// view has no persistent selection at all - clicking a day jumps straight
+// into that week instead, see the .grid click handler's own comment) - so
+// when that's set and split Month is the active view, the Add Event
+// modal's date fields default to it instead of today. Every other case
+// (Week view, classic Month view, or split Month with nothing selected
+// yet - e.g. right after switching into it) keeps the original
+// default-to-today behavior unchanged.
+//
+// v1.132.42+: household ask, verbatim - "make a way to highlight a day
+// of the week like is possible in month view so you can click add
+// calendar event or reminder and it will default to that day, like we do
+// in the month view." Same idea, Week view's own selection field
+// (_weekSelectedDate, set by the .grid click handler's .day-header
+// branch) - checked via _viewFamily so it applies to every Week-family
+// variant (plain Week, Portrait, the 3/5-day windows), not just the
+// literal "week" _viewMode split Month's own check is written against.
+_addEventDefaultDate() {
+if (this._viewMode === "split" && this._monthSplitSelectedDate) {
+const d = new Date(`${this._monthSplitSelectedDate}T00:00:00`);
+if (!isNaN(d.getTime())) return d;
+}
+if (this._viewFamily(this._viewMode) === "week" && this._weekSelectedDate) {
+const d = new Date(`${this._weekSelectedDate}T00:00:00`);
+if (!isNaN(d.getTime())) return d;
+}
+return new Date();
+}
 _openAddEvent(tab) {
 const root = this._root;
 const select = root.querySelector(".add-event-calendar-select");
@@ -14114,17 +16041,21 @@ root.querySelector(".add-event-title").value = "";
 root.querySelector(".add-event-location").value = "";
 root.querySelector(".add-event-description").value = "";
 root.querySelector(".add-event-reminder-rollover").checked = false;
+const addEventRolldaysFieldReset = root.querySelector(".add-event-reminder-rolldays-field");
+if (addEventRolldaysFieldReset) addEventRolldaysFieldReset.style.display = "none";
+root.querySelectorAll(".add-event-reminder-rolldays .rolldays-btn").forEach((btn) => btn.classList.add("active"));
 // New events default to reminders at 10 and 30 minutes before.
 root.querySelectorAll(".remind-check").forEach((cb) => {
 cb.checked = cb.value === "10" || cb.value === "30";
 });
 const now = new Date();
-root.querySelector(".add-event-date").value = this._dateKey(now);
+const defaultDate = this._addEventDefaultDate();
+root.querySelector(".add-event-date").value = this._dateKey(defaultDate);
 // Blank by default - the same "one day, exactly as before this field
 // existed" behavior _saveAddEvent falls back to whenever it's left empty
 // (see its own comment there).
 root.querySelector(".add-event-end-date").value = "";
-root.querySelector(".add-event-reminder-date").value = this._dateKey(now);
+root.querySelector(".add-event-reminder-date").value = this._dateKey(defaultDate);
 const nextHour = new Date(now);
 nextHour.setMinutes(0, 0, 0);
 nextHour.setHours(nextHour.getHours() + 1);
@@ -14137,6 +16068,22 @@ root.querySelector(".add-event-reminder-time").value = fmtTimeInput(nextHour);
 root.querySelectorAll(".add-event-allday-btn").forEach((b) => b.classList.toggle("active", b.dataset.value === "off"));
 this._updateAddEventFieldVisibility(false);
 this._renderAddEventPeopleField();
+// v1.132.63+: attachable checklists - always start fresh, closed, in
+// "just for this" mode with no items, same "nothing carries over between
+// one new event/reminder and the next" reasoning the rest of this reset
+// already follows (e.g. Notes, Location above).
+this._addEventChecklistItems = [];
+root.querySelector(".add-event-checklist-toggle").checked = false;
+root.querySelector(".add-event-checklist-body").style.display = "none";
+root.querySelectorAll(".add-event-checklist-mode-btn").forEach((b) => b.classList.toggle("active", b.dataset.value === "custom"));
+root.querySelector(".add-event-checklist-existing-field").style.display = "none";
+root.querySelector(".add-event-checklist-custom-field").style.display = "";
+root.querySelector(".add-event-checklist-add-input").value = "";
+this._renderAddEventChecklistItems();
+// Cleared so the existing-list dropdown re-fetches next time it's needed
+// (see _fetchTodoListCandidates's own comment) rather than showing
+// whatever was current the last time this modal happened to be open.
+this._todoListCandidates = null;
 // Which tab was last used isn't meaningful context to carry over to the
 // next, unrelated event/reminder - default to Calendar unless the + menu
 // specifically picked "Reminder" (see the add-fab-reminder handler).
@@ -14171,6 +16118,53 @@ return `<label class="remind-check-opt event-info-person-opt"><input type="check
 .join("");
 content.innerHTML = `<div class="remind-check-row">${checkboxesHtml}</div>`;
 }
+// v1.132.63+: renders the "just for this" checklist-item builder inside
+// the Add Event modal from this._addEventChecklistItems (a plain
+// {text}[] - no "done" state yet, since the event/reminder this is
+// attached to doesn't exist until Save, so there's nothing to check off
+// before then) - same remove-button-per-row idiom as _renderAlarmDevices
+// Section's own list.
+_renderAddEventChecklistItems() {
+const root = this._root;
+const listEl = root.querySelector(".add-event-checklist-items");
+if (!listEl) return;
+const items = this._addEventChecklistItems || [];
+listEl.innerHTML = items.length
+? items
+    .map(
+      (item, i) =>
+        `<div class="checklist-item-row">` +
+        `<span class="checklist-item-row-text">${item.text}</span>` +
+        `<button type="button" class="checklist-item-remove-btn" data-index="${i}" title="Remove">&#10005;</button>` +
+        `</div>`
+    )
+    .join("")
+  : `<div class="remind-hint" data-i18n="add_event.checklist_no_items">No items yet - add whatever needs to be remembered below.</div>`;
+listEl.querySelectorAll(".checklist-item-remove-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const idx = parseInt(btn.dataset.index, 10);
+    if (Number.isFinite(idx)) this._addEventChecklistItems.splice(idx, 1);
+    this._renderAddEventChecklistItems();
+  });
+});
+this._applyTranslations();
+}
+// v1.132.63+: populates the "use an existing list" dropdown from
+// _fetchTodoListCandidates - separate from that fetch itself so it can be
+// called again cheaply (the fetch is cached) whenever the mode toggles to
+// "existing" without re-fetching every time.
+async _renderAddEventChecklistExistingSelect() {
+const root = this._root;
+const select = root.querySelector(".add-event-checklist-existing-select");
+if (!select) return;
+const candidates = await this._fetchTodoListCandidates();
+if (!candidates) return;
+const previous = select.value;
+select.innerHTML = candidates.length
+  ? candidates.map((c) => `<option value="${c.entity_id}">${c.name}</option>`).join("")
+  : `<option value="">${this._t("add_event.checklist_no_todo_lists", "No to-do lists found")}</option>`;
+if (previous && candidates.some((c) => c.entity_id === previous)) select.value = previous;
+}
 _setAddEventTab(tab) {
 const root = this._root;
 this._addEventActiveTab = tab === "reminder" ? "reminder" : "calendar";
@@ -14189,7 +16183,9 @@ const calendarField = root.querySelector(".add-event-calendar-field");
 if (calendarField) calendarField.style.display = isReminder ? "none" : "";
 const heading = root.querySelector(".add-event-heading");
 if (heading) {
-heading.innerHTML = isReminder ? "&#128276; New Reminder" : "&#10133; New Event";
+heading.innerHTML = isReminder
+? `&#128276; ${this._t("add_event.heading_reminder", "New Reminder")}`
+: `&#10133; ${this._t("add_event.heading_event", "New Event")}`;
 }
 this._setAddEventError("");
 this._refreshAddReminderMissingWarn();
@@ -14279,16 +16275,64 @@ return { minutesList, clean, isReminder };
 // server-side poller looks for the same marker and, once a due reminder
 // fires, bumps its due_datetime forward by a day as long as it's still
 // needs_action - so it keeps coming due, once a day, until marked done.
+// v185+: household ask, verbatim - "Better roll over to next day for
+// reminders that allows you to select what days you want it to apply to.
+// Maybe you only want something to remind on friday saturday sunday, or
+// mondays, etc." A second marker, <!--rolldays:0,4,5,6-->, alongside the
+// existing <!--rollover:1--> one - present only when the household
+// restricted rollover to specific days; absent (every pre-v185 reminder,
+// and any new one left at the "every day" default) means "roll over every
+// day," identical to the old unconditional behavior. See __init__.py's
+// REMINDER_ROLLOVER_DAYS_RE/_roll_reminder_to_today for the backend half.
 _parseReminderRollover(description) {
 const desc = description || "";
 const rollover = /<!--rollover:1-->/.test(desc);
-const clean = desc.replace(/\n*<!--rollover:1-->\s*/, "").trim();
-return { description: clean, rollover };
+const daysMatch = /<!--rolldays:([\d,]*)-->/.exec(desc);
+const rolloverDays = daysMatch && daysMatch[1]
+? daysMatch[1].split(",").map((d) => parseInt(d, 10)).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6)
+: [];
+const clean = desc
+.replace(/\n*<!--rollover:1-->\s*/, "")
+.replace(/\n*<!--rolldays:[\d,]*-->\s*/, "")
+.trim();
+return { description: clean, rollover, rolloverDays };
 }
-_buildReminderDescription(description, rollover) {
+_buildReminderDescription(description, rollover, rolloverDays) {
 const base = (description || "").trim();
 if (!rollover) return base;
-return base ? `${base}\n\n<!--rollover:1-->` : "<!--rollover:1-->";
+// A restriction only actually means anything once it's a real SUBSET of
+// the week - a full (or empty, e.g. someone unchecked everything by
+// mistake) selection is just "every day," so the marker is omitted
+// entirely rather than writing out all seven days every time. This also
+// keeps every pre-v185 reminder's plain <!--rollover:1--> marker (no
+// days list at all) reading exactly the same as "every day selected."
+const days = Array.isArray(rolloverDays) ? Array.from(new Set(rolloverDays)).filter((d) => d >= 0 && d <= 6) : [];
+const markers = ["<!--rollover:1-->"];
+if (days.length > 0 && days.length < 7) {
+markers.push(`<!--rolldays:${days.sort((a, b) => a - b).join(",")}-->`);
+}
+const markerBlock = markers.join("\n");
+return base ? `${base}\n\n${markerBlock}` : markerBlock;
+}
+// Renders the 7 Mon-Sun toggle buttons shared by the Add Reminder form and
+// the Event Info edit-reminder section - `selected` empty (or covering all
+// 7 days) renders every button active, matching "every day" being this
+// feature's default/unrestricted state.
+_rolldaysBtnsHtml(selectedDays) {
+const selected = new Set(selectedDays && selectedDays.length ? selectedDays : [0, 1, 2, 3, 4, 5, 6]);
+return REMINDER_WEEKDAY_LABELS.map(
+(label, idx) => `<button type="button" class="rolldays-btn ${selected.has(idx) ? "active" : ""}" data-day="${idx}">${label}</button>`
+).join("");
+}
+_wireRolldaysToggle(container) {
+if (!container) return;
+container.querySelectorAll(".rolldays-btn").forEach((btn) => {
+btn.addEventListener("click", () => btn.classList.toggle("active"));
+});
+}
+_readRolldaysFromContainer(container) {
+if (!container) return [];
+return Array.from(container.querySelectorAll(".rolldays-btn.active")).map((btn) => parseInt(btn.dataset.day, 10));
 }
 _formatReminderMinutes(minutes) {
 if (minutes % 1440 === 0) {
@@ -14305,6 +16349,48 @@ _formatReminderLabel(minutesList) {
 const list = Array.isArray(minutesList) ? minutesList : [minutesList];
 if (!list.length) return "";
 return `${list.map((m) => this._formatReminderMinutes(m)).join(" & ")} before`;
+}
+// v1.132.63+: shared by both _saveAddEvent's calendar branch and
+// _saveAddReminder below - reads whatever's currently set in the
+// checklist section (see _openAddEvent's own reset of this state) and,
+// if the toggle was ever turned on, attaches it to the just-created
+// event/reminder via the same identity scheme the event-info popup's
+// checklist section reads back with (_checklistKeyForEvent/
+// _checklistKeyForReminder on the backend's own equivalent,
+// _checklist_target_key). Best-effort, same idiom as the "Also for"
+// tagging right above its own call site - a failure here still leaves
+// the event/reminder itself created, just without its checklist
+// attached (it can always be added afterward from the event-info popup
+// for a calendar event; there's no such popup yet for a standalone
+// reminder - see the event-info popup's own checklist section comment).
+async _saveAddEventChecklistIfAny(targetParams) {
+const root = this._root;
+const toggle = root.querySelector(".add-event-checklist-toggle");
+if (!toggle || !toggle.checked) return;
+const isExisting = root.querySelector(".add-event-checklist-mode-btn.active").dataset.value === "existing";
+let checklist;
+if (isExisting) {
+const entityId = root.querySelector(".add-event-checklist-existing-select").value;
+if (!entityId) return;
+checklist = { mode: "existing", entity_id: entityId };
+} else {
+const items = (this._addEventChecklistItems || []).map((item) => ({ text: item.text }));
+if (!items.length) return;
+checklist = { mode: "custom", items };
+}
+try {
+const result = await this._hass.connection.sendMessagePromise({
+type: "family_hub/set_event_checklist",
+...targetParams,
+checklist,
+});
+if (result && result.key) {
+if (!this._eventChecklists) this._eventChecklists = {};
+this._eventChecklists[result.key] = result.checklist;
+}
+} catch (e) {
+/* best-effort - see comment above */
+}
 }
 async _saveAddEvent() {
 if (this._addEventActiveTab === "reminder") {
@@ -14385,11 +16471,14 @@ return;
 // an existing event). Best-effort: a failure here still leaves the event
 // itself created, just not yet tagged - the user can always add people
 // afterward from the event-info popup like before this existed.
+// v1.132.63+: also needed below for the checklist attach, not just the
+// "Also for" tagging - computed once, unconditionally, rather than only
+// inside the peopleEntities branch this used to live in exclusively.
+const startDate = allDay ? new Date(dateVal + "T00:00:00") : new Date(data.start_date_time.replace(" ", "T"));
+const startTs = Math.floor(startDate.getTime() / 1000);
 const peopleEntities = Array.from(root.querySelectorAll(".add-event-people-check:checked")).map((c) => c.value);
 if (peopleEntities.length) {
-const startDate = allDay ? new Date(dateVal + "T00:00:00") : new Date(data.start_date_time.replace(" ", "T"));
 try {
-const startTs = Math.floor(startDate.getTime() / 1000);
 const result = await this._hass.connection.sendMessagePromise({
 type: "family_hub/set_event_people_override",
 calendar_entity: entity,
@@ -14405,6 +16494,7 @@ if (savedPeople.length) this._eventPeopleOverrides[key] = savedPeople;
 /* best-effort - see comment above */
 }
 }
+await this._saveAddEventChecklistIfAny({ calendar_entity: entity, start: startTs, summary: title });
 this._closeAddEvent();
 this._fetchEvents();
 }
@@ -14440,7 +16530,8 @@ return;
 const notifyTime = root.querySelector(".add-event-reminder-time").value || "09:00";
 const description = root.querySelector(".add-event-description").value.trim();
 const rollover = root.querySelector(".add-event-reminder-rollover").checked;
-const fullDescription = this._buildReminderDescription(description, rollover);
+const rolloverDays = this._readRolldaysFromContainer(root.querySelector(".add-event-reminder-rolldays"));
+const fullDescription = this._buildReminderDescription(description, rollover, rolloverDays);
 const data = {
 item: title,
 due_datetime: `${dateVal}T${notifyTime}:00`,
@@ -14452,8 +16543,52 @@ await this._hass.callService("todo", "add_item", data, { entity_id: entityId });
 this._setAddEventError(`⚠️ Couldn't save this reminder: ${e && e.message ? e.message : e}`);
 return;
 }
+// v1.132.63+: only bother finding the just-created item's own uid (there
+// is no return-value from the plain callService above - deliberately
+// unchanged from before this existed, see this method's own established
+// convention and test_reminder_rollover_days_frontend.js's own mock,
+// which only stubs callService) when a checklist actually needs
+// attaching to it. Looked up the cheap way any other reminder-editing
+// code already has to (todo.get_items, then match by title + due time)
+// rather than switching the save call itself to a response-carrying
+// variant purely for this one optional feature.
+const toggle = root.querySelector(".add-event-checklist-toggle");
+if (toggle && toggle.checked) {
+const newItemUid = await this._findJustAddedReminderUid(entityId, title, data.due_datetime);
+if (newItemUid) {
+  await this._saveAddEventChecklistIfAny({ todo_entity: entityId, item_uid: newItemUid });
+}
+}
 this._closeAddEvent();
 this._fetchReminders();
+}
+// v1.132.63+: best-effort lookup for the uid of the to-do item
+// _saveAddReminder just created via the plain (response-less)
+// todo.add_item callService call above - only needed when a checklist is
+// about to be attached to it. Matches by exact title + due_datetime,
+// which is unambiguous enough for "the item I just created a moment
+// ago" (a household adding two reminders with the identical title AND
+// identical minute-precision due time back to back is not a real-world
+// case worth over-engineering for). Returns null on any failure or
+// no-match - the reminder itself is already safely saved either way, so
+// this only ever costs "no checklist got attached," never a broken save.
+async _findJustAddedReminderUid(entityId, title, dueDatetime) {
+try {
+const result = await this._hass.connection.sendMessagePromise({
+  type: "call_service",
+  domain: "todo",
+  service: "get_items",
+  service_data: {},
+  target: { entity_id: entityId },
+  return_response: true,
+});
+const forEntity = result && result.response && result.response[entityId];
+const items = (forEntity && forEntity.items) || [];
+const match = items.find((it) => it.summary === title && it.due && it.due.startsWith(dueDatetime.slice(0, 16)));
+return match ? match.uid : null;
+} catch (e) {
+return null;
+}
 }
 _renderLegend() {
 if (!this._root || !this._hass) return;
@@ -14647,7 +16782,20 @@ if (typeFilter.length && !typeFilter.includes(isReminder ? "reminder" : "event")
 const peopleEntities = this._eventPeopleEntities(person.entity, evStart, ev.summary, people);
 if (filterEntitySet && !peopleEntities.some((e) => filterEntitySet.has(e))) continue;
 if (personIsBirthdays) hasBirthday = true;
-dayEvents.push({ summary: ev.summary || "(untitled)", color: personColor, bg: this._eventCollageStyle(peopleEntities, people, colorMap), isReminder });
+// v182+: carry start/end/allDay through onto the pill data so this cell
+// can (a) sort all-day events to the top - see the dayEvents.sort below -
+// and (b) tell a genuinely multi-day event (one that started before this
+// cell's day or keeps going past it) apart from an ordinary same-day one,
+// for the "continues" pill styling a few lines down.
+dayEvents.push({
+summary: ev.summary || "(untitled)",
+color: personColor,
+bg: this._eventCollageStyle(peopleEntities, people, colorMap),
+isReminder,
+allDay: this._isAllDay(ev),
+start: evStart,
+end: evEnd,
+});
 }
 }
 }
@@ -14660,19 +16808,59 @@ if (r.due >= dayStart && r.due < dayEnd) {
 // color (r.color) instead of the fixed purple - the shared family list
 // (r.color left null/falsy by _fetchReminders) keeps REMINDER_COLOR.
 const remColor = r.color || REMINDER_COLOR;
-dayEvents.push({ summary: r.summary, color: remColor, bg: `background:${remColor}`, isReminder: true });
+// A reminder is a single point in time, never all-day and never
+// multi-day, so allDay stays false and end is just a nominal
+// point right after start (matches the identical pattern in
+// _buildMonthSplitDetailHtml/_buildDayColumnHtml).
+dayEvents.push({ summary: r.summary, color: remColor, bg: `background:${remColor}`, isReminder: true, allDay: false, start: r.due, end: new Date(r.due.getTime() + 60000) });
 }
 }
 }
 }
+// v182+: household ask, verbatim - "In Month calendar view, all day
+// events should be at the top." Same stable-sort idiom already used for
+// the day agenda list (_buildMonthSplitDetailHtml) and the Week view's
+// own day column (_buildDayColumnHtml) - all-day events first, then
+// timed events/reminders in start-time order within each group.
+dayEvents.sort((a, b) => (a.allDay === b.allDay ? a.start - b.start : a.allDay ? -1 : 1));
+// v182+: household ask, verbatim - "If grey out past events is checked
+// we should do that in month view too." Copied from _buildDayColumnHtml's
+// identical isPastEvent logic rather than shared, since that helper is a
+// closure over that function's own dayStart/dayEnd/today/isBeforeToday -
+// see its own comment for the today-vs-earlier-day distinction (today's
+// events greyed out one at a time as each ends; an earlier day is
+// greyed out entirely, since the whole day is already over).
+const isBeforeToday = dayStart.getTime() < today.getTime();
+const greyOutPast = settings.greyOutPastEvents && (isToday || isBeforeToday);
+const nowMs = Date.now();
+const isPastEvent = (e) => {
+if (!greyOutPast) return false;
+if (isBeforeToday) return true;
+return e.isReminder ? e.start.getTime() <= nowMs : e.end.getTime() <= nowMs;
+};
 const shown = dayEvents.slice(0, 3);
 const more = dayEvents.length - shown.length;
 let pillsHtml =
 shown
-.map(
-(e) =>
-`<div class="mc-pill${e.isReminder ? " mc-reminder-pill" : ""}" style="${e.bg || `background:${e.color}`}">${e.isReminder ? "&#128276; " : ""}${e.summary}</div>`
-)
+.map((e) => {
+// v182+: household ask, verbatim - "Events that carry over should
+// span the gap between days in month calendar view." Each day cell
+// is still its own independently-bordered card (see .month-cell),
+// so a pill can't literally paint across the 4px gap/border into the
+// next cell's box without a much bigger layout rewrite - instead, a
+// multi-day event's pill on the day(s) it continues through gets its
+// rounded corner squared off on the continuing side, pulled flush
+// against that edge (negative margin cancels the cell's own
+// padding), and a small chevron pointing the direction it continues,
+// so a run of same-colored pills across consecutive days reads as
+// one flowing event rather than separate, disconnected pills.
+const continuesFromPrev = !e.isReminder && e.start && e.start.getTime() < dayStart.getTime();
+const continuesToNext = !e.isReminder && e.end && e.end.getTime() > dayEnd.getTime();
+const continueClass = `${continuesFromPrev ? " mc-continue-prev" : ""}${continuesToNext ? " mc-continue-next" : ""}`;
+const prefix = continuesFromPrev ? "◂ " : "";
+const suffix = continuesToNext ? " ▸" : "";
+return `<div class="mc-pill${e.isReminder ? " mc-reminder-pill" : ""}${continueClass}${isPastEvent(e) ? " past" : ""}" style="${e.bg || `background:${e.color}`}">${e.isReminder ? "&#128276; " : ""}${prefix}${e.summary}${suffix}</div>`;
+})
 .join("") + (more > 0 ? `<div class="mc-more">+${more} more</div>` : "");
 // v141+ - meals render BEFORE (above) events/reminders in each cell,
 // not after - a household glancing at Month view is usually checking
@@ -14801,6 +16989,14 @@ description: reminderInfo.clean,
 reminderMinutesList: reminderInfo.minutesList,
 isReminder: reminderInfo.isReminder,
 location: ev.location || "",
+// v1.132.43+: household ask, verbatim - "Deleting calendar events
+// (Needs permission)". The one identifier that lets a delete call
+// target this exact occurrence rather than guessing by (entity,
+// start, summary) - see _openEventInfo's delete button wiring.
+// Most calendar platforms' GET response includes it; when they
+// don't, this stays null and the delete button falls back to its
+// "unsupported" state (see _getCalendarDeleteSupport).
+uid: ev.uid || null,
 };
 items.push({
 id: eventId,
@@ -15043,6 +17239,7 @@ description: reminderInfo.clean,
 reminderMinutesList: reminderInfo.minutesList,
 isReminder: reminderInfo.isReminder,
 location: ev.location || "",
+uid: ev.uid || null,
 };
 dayEvents.push({
 id: eventId,
@@ -15080,6 +17277,7 @@ reminderMinutesList: [],
 isReminder: true,
 todoUid: r.uid,
 rollover: !!r.rollover,
+rolloverDays: r.rolloverDays || [],
 location: "",
 };
 dayEvents.push({
@@ -15169,9 +17367,21 @@ return `<div class="event${ev.isReminder ? " reminder-event" : ""}${isPastEvent(
 })
 .join("");
 }
+// v1.132.42+: household ask, verbatim - "make a way to highlight a day
+// of the week like is possible in month view so you can click add
+// calendar event or reminder and it will default to that day, like we do
+// in the month view." Mirrors the split Month variant's own "click a day
+// to select/highlight it" behavior (_monthSplitSelectedDate + .month-
+// cell.selected) rather than opening the Add modal directly on click -
+// see _addEventDefaultDate's own comment for why (the household still
+// taps the FAB to actually add something; selecting a day just primes
+// what date that add defaults to). data-date on .day-header is what the
+// .grid click handler reads to select it, same data-date convention
+// .month-cell already uses.
+const isSelected = this._weekSelectedDate === dateKey;
 return `
 <div class="day-col ${isToday ? "today" : ""}">
-<div class="day-header">
+<div class="day-header ${isSelected ? "selected" : ""}" data-date="${dateKey}">
 <div class="name-row"><div class="name">${dayNames[dayStart.getDay()]}</div>${wxIconHtml}</div>
 <div class="num">${dayStart.getDate()}${badges
 .map((b) => `<span class="custody-badge" style="background:${b.color};color:${this._textColorFor(b.color)}">${b.text}</span>`)
@@ -15395,6 +17605,7 @@ description: pooled.reminderInfo.clean,
 reminderMinutesList: pooled.reminderInfo.minutesList,
 isReminder: pooled.reminderInfo.isReminder,
 location: pooled.ev.location || "",
+uid: pooled.ev.uid || null,
 };
 dayEvents.push({ id: eventId, summary: pooled.ev.summary || "(untitled)", start: pooled.evStart, allDay: this._isAllDay(pooled.ev), isReminder: pooled.reminderInfo.isReminder, bg: pooled.bg });
 }

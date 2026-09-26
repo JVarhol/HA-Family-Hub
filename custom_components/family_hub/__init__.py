@@ -38,7 +38,7 @@ import math
 import os
 import re
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import quote, urlsplit
 
@@ -49,6 +49,7 @@ from homeassistant.components import panel_custom, websocket_api
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_interval
@@ -101,6 +102,9 @@ from .const import (
     DOMAIN,
     EVENT_PEOPLE_OVERRIDES_STORAGE_KEY_PREFIX,
     EVENT_PEOPLE_OVERRIDES_STORAGE_VERSION,
+    EVENT_CHECKLISTS_STORAGE_KEY_PREFIX,
+    EVENT_CHECKLISTS_STORAGE_VERSION,
+    EVENT_CHECKLIST_PASSED_GRACE_HOURS,
     ICON_URL,
     MAX_THEMES,
     NOTIFIED_RETENTION_HOURS,
@@ -114,6 +118,7 @@ from .const import (
     REMINDER_NOTIFY_KEY,
     REMINDER_OVERRIDES_STORAGE_KEY_PREFIX,
     REMINDER_OVERRIDES_STORAGE_VERSION,
+    REMINDER_ROLLOVER_DAYS_MARKER_PATTERN,
     REMINDER_ROLLOVER_MARKER_PATTERN,
     REMINDER_SUBSCRIPTION_CALENDAR_ALERT,
     REMINDER_SUBSCRIPTION_LEVELS,
@@ -166,6 +171,9 @@ from .const import (
     TIMERS_STORAGE_VERSION,
     PERMISSION_EDIT_MENU,
     PERMISSION_SEE_WISHLIST_CLAIMS,
+    PERMISSION_DELETE_EVENT,
+    CALENDAR_ENTITY_FEATURE_DELETE_EVENT,
+    CALENDAR_PLATFORM_FRIENDLY_NAMES,
     SCREENSAVER_CARD_JS_URL,
     SUGGESTIONS_STORAGE_KEY_PREFIX,
     SUGGESTIONS_STORAGE_VERSION,
@@ -592,6 +600,7 @@ async def _ws_save_themes(
 REMINDER_RE = re.compile(REMINDER_MARKER_PATTERN)
 REMINDER_TYPE_RE = re.compile(REMINDER_TYPE_MARKER_PATTERN)
 REMINDER_ROLLOVER_RE = re.compile(REMINDER_ROLLOVER_MARKER_PATTERN)
+REMINDER_ROLLOVER_DAYS_RE = re.compile(REMINDER_ROLLOVER_DAYS_MARKER_PATTERN)
 
 
 def _is_reminder_type_event(description: str) -> bool:
@@ -739,20 +748,75 @@ def _get_user_profiles(settings: dict[str, Any] | None) -> dict[str, dict[str, A
             } if isinstance(reminder_subs, dict) else {},
             # v1.131.0+: see SETTINGS_KEY_USER_PROFILES's own comment in
             # const.py. Same defensive-list-of-dicts normalization as
-            # _get_people's own "badges" handling on a settings.people[] row.
+            # _get_people's own "badges" handling on a settings.people[] row -
+            # both funnel through the shared _normalize_badges helper now.
             "remindersEntity": reminders_entity.strip() if isinstance(reminders_entity, str) else "",
             "wishlistEntity": wishlist_entity.strip() if isinstance(wishlist_entity, str) else "",
-            "badges": [
-                {
-                    "text": str(b.get("text", "")).strip(),
-                    "match": str(b.get("match", "")).strip(),
-                    "hideMatch": str(b.get("hideMatch", "")).strip(),
-                }
-                for b in badges_raw
-                if isinstance(b, dict)
-            ] if isinstance(badges_raw, list) else [],
+            "badges": _normalize_badges(badges_raw),
         }
     return profiles
+
+
+def _normalize_badges(raw: Any) -> list[dict[str, Any]]:
+    """Defensively normalize a raw `badges` list (from either a
+    settings.people[] row or a userProfiles[uid] entry - same {text, match,
+    hideMatch, digestHide} shape either way, see the card's own identical
+    _normalizeBadges). digestHide (v183+) is the first badge field the
+    backend has ever needed to read for anything besides passing it through
+    unchanged - see _effective_badges_by_entity/_build_daily_digest_message,
+    household ask verbatim: "There needs to be a checkbox next to the
+    calendar badges that clicking makes the event showing the badge and
+    event not showing the badge become hidden in daily digest." Malformed
+    entries are skipped rather than raising, same defensiveness as every
+    other settings-blob reader in this file."""
+    if not isinstance(raw, list):
+        return []
+    return [
+        {
+            "text": str(b.get("text", "")).strip(),
+            "match": str(b.get("match", "")).strip(),
+            "hideMatch": str(b.get("hideMatch", "")).strip(),
+            "digestHide": bool(b.get("digestHide")),
+        }
+        for b in raw
+        if isinstance(b, dict)
+    ]
+
+
+def _effective_badges_by_entity(settings: dict[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
+    """{calendar entity: effective badges list}, mirroring the card's own
+    _primaryCalendarBadgesByEntity: each calendar's own settings.people[]
+    row badges, overridden by whichever user profile has that entity as its
+    primaryCalendar AND has at least one badge of its own set (an empty
+    profile badges list never blanks out badges already configured the old
+    way directly on the people[] row - same override rule the frontend
+    already uses, kept in sync here rather than reimplemented differently).
+    Used only by _build_daily_digest_message's digestHide filtering (v183+)
+    - every other backend badge concern before this was purely pass-through
+    (frontend display only)."""
+    if not isinstance(settings, dict):
+        return {}
+    result: dict[str, list[dict[str, Any]]] = {}
+    raw_people = settings.get("people")
+    if isinstance(raw_people, list):
+        for p in raw_people:
+            if not isinstance(p, dict):
+                continue
+            entity = p.get("entity")
+            if isinstance(entity, str) and entity.strip():
+                result[entity.strip()] = _normalize_badges(p.get("badges"))
+    raw_profiles = settings.get(SETTINGS_KEY_USER_PROFILES)
+    if isinstance(raw_profiles, dict):
+        for profile in raw_profiles.values():
+            if not isinstance(profile, dict):
+                continue
+            entity = profile.get("primaryCalendar")
+            if not isinstance(entity, str) or not entity.strip():
+                continue
+            normalized = _normalize_badges(profile.get("badges"))
+            if normalized:
+                result[entity.strip()] = normalized
+    return result
 
 
 async def _user_display_names(hass: HomeAssistant) -> dict[str, str]:
@@ -2583,6 +2647,144 @@ async def _ws_remove_menu_suggestion(
     remaining = [s for s in suggestions if s.get("uid") != msg["uid"]]
     await _save_menu_suggestions(entry_data, remaining)
     connection.send_result(msg["id"], {"suggestions": remaining})
+
+
+# ---------------------------------------------------------------------------
+# Calendar event deletion (v1.132.43+, household ask, verbatim: "Deleting
+# calendar events (Needs permission) if the calendar integration you're
+# using supports delete, else gray out and when click give a pop up that
+# says delete is not supported with your current integration please use
+# [INTEGRATION] app to delete.")
+#
+# Two commands, deliberately split: family-week-calendar-card.js's own
+# _openEventInfo popup calls _ws_get_calendar_delete_support FIRST (as soon
+# as it needs to decide whether to draw a working Delete button or a greyed-
+# out one with an explanatory popup), then only ever calls
+# _ws_delete_calendar_event if that came back supported AND the household
+# member has PERMISSION_DELETE_EVENT. The support check is read-only
+# information (no permission gate - a kid's card is allowed to know delete
+# isn't possible here at all, same as anyone can see a Claim button without
+# having claimed anything); the actual delete is the one genuinely
+# consequential, backend-enforced action, mirroring _ws_apply_menu_
+# suggestion's "the browser can ask all it wants, only the server-side
+# permission check decides" shape for PERMISSION_EDIT_MENU above.
+# ---------------------------------------------------------------------------
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/calendar/delete_support",
+        vol.Required("entity_id"): str,
+    }
+)
+@websocket_api.async_response
+async def _ws_get_calendar_delete_support(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Whether `entity_id` (one of this household's configured calendar
+    people) can have an event deleted from it at all, and if not, what to
+    call the app/service that owns it for the household's own popup text.
+
+    Two independent pieces of Home Assistant, neither derivable from the
+    other: (1) whether the entity ACTUALLY supports deletion - HA core's
+    `calendar` component defines a CalendarEntityFeature.DELETE_EVENT bit
+    (see const.py's CALENDAR_ENTITY_FEATURE_DELETE_EVENT) that a calendar
+    entity implementing `async_delete_event` reports in its own state's
+    `supported_features` attribute; most calendar platforms (this
+    integration has no way to know in advance which the household is using)
+    never implement it at all, so this is genuinely "no" far more often
+    than "yes". (2) which human-facing app name to show if it's "no" - the
+    state attributes say nothing about which INTEGRATION owns the entity,
+    only the entity registry does (`entry.platform`, the integration's own
+    domain, e.g. "google") - see CALENDAR_PLATFORM_FRIENDLY_NAMES for the
+    domain -> human name mapping, falling back to a title-cased domain for
+    anything not in that short list.
+
+    No permission gate - this is read-only information about what's
+    possible, not a mutation; every household member's card calls this to
+    decide how to DRAW the Delete button (working vs. greyed-out-with-
+    popup), independent of whether they personally have PERMISSION_DELETE_
+    EVENT to actually use it once drawn.
+    """
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    entity_id = msg["entity_id"]
+    platform = None
+    try:
+        registry = er.async_get(hass)
+        entry = registry.async_get(entity_id)
+        if entry is not None:
+            platform = entry.platform
+    except Exception:  # noqa: BLE001 - the registry lookup is a nice-to-have, not required
+        platform = None
+    state = hass.states.get(entity_id)
+    supported_features = 0
+    if state is not None:
+        try:
+            supported_features = int(state.attributes.get("supported_features") or 0)
+        except (TypeError, ValueError):
+            supported_features = 0
+    supported = bool(supported_features & CALENDAR_ENTITY_FEATURE_DELETE_EVENT)
+    integration_name = CALENDAR_PLATFORM_FRIENDLY_NAMES.get(platform) if platform else None
+    if integration_name is None:
+        integration_name = platform.replace("_", " ").title() if platform else "your calendar's own app"
+    connection.send_result(
+        msg["id"], {"supported": supported, "platform": platform, "integration_name": integration_name}
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/calendar/delete_event",
+        vol.Required("entity_id"): str,
+        vol.Required("uid"): str,
+        vol.Optional("recurrence_id"): vol.Any(str, None),
+    }
+)
+@websocket_api.async_response
+async def _ws_delete_calendar_event(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """The genuinely-enforced half of calendar event deletion - see the
+    section comment above. Re-derives PERMISSION_DELETE_EVENT server-side
+    from the Permissions store via chores_websocket_api._has_permission (a
+    real HA admin always passes) before calling the native `calendar.
+    delete_event` service - a kid's card can send this message all it
+    likes; without the permission it gets "forbidden" and nothing is
+    deleted. `uid` is required (not optional) because without one there is
+    no reliable way to identify which single occurrence to remove from a
+    calendar that may hold many similarly-named events - the card's own
+    _wireEventInfoDeleteButton never offers Delete at all for an event
+    whose GET response didn't carry a uid, same "can't safely mutate
+    without an id" caution the rest of this file already takes around
+    calendar events (see const.py's own comment on why event-people/
+    reminder overrides exist as a keyed-by-(entity,start,summary) sidecar
+    instead of a real mutation - delete is different: HA core's
+    `calendar.delete_event` service itself requires a uid, so there's no
+    weaker fallback to reach for the way there was for those."""
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    if not chores_ws_api._has_permission(entry_data, connection, PERMISSION_DELETE_EVENT):
+        connection.send_error(
+            msg["id"],
+            "forbidden",
+            "You don't have permission to delete calendar events - ask someone who does.",
+        )
+        return
+    call_data: dict[str, Any] = {"entity_id": msg["entity_id"], "uid": msg["uid"]}
+    if msg.get("recurrence_id"):
+        call_data["recurrence_id"] = msg["recurrence_id"]
+    try:
+        await hass.services.async_call("calendar", "delete_event", call_data, blocking=True)
+    except Exception as err:  # noqa: BLE001 - surfaced to the caller as-is, nothing here to recover
+        _LOGGER.warning("Family Hub: failed to delete calendar event on %s: %s", msg["entity_id"], err)
+        connection.send_error(msg["id"], "unknown_error", f"Could not delete this event: {err}")
+        return
+    connection.send_result(msg["id"], {"deleted": True})
 
 
 @websocket_api.websocket_command({vol.Required("type"): "family_hub/list_users"})
@@ -8001,7 +8203,9 @@ async def _ws_send_daily_digest_now(
     else:
         digest_sections = profile_for_digest.get("digestSections")
 
-    message = await _build_daily_digest_message(hass, entry, digest_sections, user_id, people=people, profile_for_digest=profile_for_digest)
+    message = await _build_daily_digest_message(
+        hass, entry, digest_sections, user_id, people=people, profile_for_digest=profile_for_digest, badges_by_entity=_effective_badges_by_entity(settings)
+    )
 
     sent = 0
     failed = 0
@@ -8167,6 +8371,233 @@ async def _ws_set_event_people_override(
         await store.async_save(overrides)
 
     connection.send_result(msg["id"], {"key": key, "people": people})
+
+
+def _checklist_target_key(msg: dict) -> str | None:
+    """Same composite-identity idea as _event_override_key, extended to
+    also address a standalone Reminder (a Home Assistant to-do item,
+    which DOES carry a stable uid - no calendar's REST/poller-path
+    mismatch to work around there). Returns None when msg carries neither
+    a complete (calendar_entity, start, summary) triple nor a complete
+    (todo_entity, item_uid) pair - callers treat that as a client bug, not
+    a normal "not found" case."""
+    calendar_entity = msg.get("calendar_entity")
+    start = msg.get("start")
+    summary = msg.get("summary")
+    if calendar_entity and start is not None and summary:
+        return _event_override_key(calendar_entity, int(start), summary)
+    todo_entity = msg.get("todo_entity")
+    item_uid = msg.get("item_uid")
+    if todo_entity and item_uid:
+        return f"reminder|{todo_entity}|{item_uid}"
+    return None
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/checklist/list_todo_candidates"})
+@websocket_api.async_response
+async def _ws_list_todo_candidates(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Every todo.* entity currently in Home Assistant, for the Add Event
+    modal's "use an existing list" picker. Same hass.states.async_all
+    (domain) idiom as chores_websocket_api.py's own
+    ws_list_alarm_device_candidates (media_player/assist_satellite/tts),
+    just for the todo domain - nothing scoped this list to Family Hub's
+    own todo.family_hub_chores entity or the household's configured
+    reminders_entity, since attaching either of THOSE to an event is a
+    perfectly reasonable (if unusual) thing for a household to want."""
+    candidates = [
+        {"entity_id": s.entity_id, "name": s.attributes.get("friendly_name") or s.entity_id}
+        for s in hass.states.async_all("todo")
+    ]
+    candidates.sort(key=lambda c: c["name"].lower())
+    connection.send_result(msg["id"], {"todo_lists": candidates})
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/get_event_checklists"})
+@websocket_api.async_response
+async def _ws_get_event_checklists(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Return every checklist currently attached to an event or reminder -
+    same fetch-everything-once-and-look-up-by-key-locally shape as
+    _ws_get_reminder_overrides/_ws_get_event_people_overrides above, so the
+    event-info popup and Add Event modal never need a per-item round trip
+    just to find out whether one particular event has a checklist."""
+    entry_data = _get_family_hub_entry_data(hass)
+    checklists = (entry_data or {}).get("event_checklists", {})
+    connection.send_result(msg["id"], {"checklists": checklists})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/set_event_checklist",
+        vol.Optional("calendar_entity"): str,
+        vol.Optional("start"): vol.Any(int, float),
+        vol.Optional("summary"): str,
+        vol.Optional("todo_entity"): str,
+        vol.Optional("item_uid"): str,
+        vol.Optional("checklist"): vol.Any(None, dict),
+    }
+)
+@websocket_api.async_response
+async def _ws_set_event_checklist(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Attach, replace, or remove the checklist on one event/reminder,
+    without touching the event/reminder itself - same
+    can't-rewrite-an-existing-event constraint _ws_set_reminder_override
+    and _ws_set_event_people_override already work around, reusing
+    _checklist_target_key's identity scheme. `checklist` missing/None
+    detaches (mirrors "an empty people list clears the override entirely"
+    just above - there's no meaningful distinction between "never
+    attached" and "attached, then removed" worth preserving). A "custom"
+    checklist whose items all get removed client-side also detaches
+    rather than being saved as an empty list, for the same reason.
+    """
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    key = _checklist_target_key(msg)
+    if key is None:
+        connection.send_error(
+            msg["id"],
+            "invalid_format",
+            "Need either (calendar_entity, start, summary) or (todo_entity, item_uid)",
+        )
+        return
+
+    checklists: dict[str, dict] = entry_data.setdefault("event_checklists", {})
+    checklist = msg.get("checklist")
+    if checklist:
+        mode = checklist.get("mode")
+        if mode == "existing":
+            entity_id = str(checklist.get("entity_id") or "")
+            if not entity_id:
+                connection.send_error(msg["id"], "invalid_format", '"existing" mode needs entity_id')
+                return
+            checklists[key] = {"mode": "existing", "entity_id": entity_id}
+        elif mode == "custom":
+            items = []
+            for raw in checklist.get("items") or []:
+                text = str((raw or {}).get("text") or "").strip()
+                if not text:
+                    continue
+                items.append(
+                    {
+                        "id": str((raw or {}).get("id") or uuid.uuid4().hex[:12]),
+                        # Same 200-char guard as other free-text fields
+                        # elsewhere (e.g. chore/goal names) - a packing-list
+                        # item is a short phrase, not a paragraph.
+                        "text": text[:200],
+                        "done": bool((raw or {}).get("done")),
+                    }
+                )
+            if items:
+                checklists[key] = {"mode": "custom", "items": items}
+            else:
+                checklists.pop(key, None)
+        else:
+            connection.send_error(msg["id"], "invalid_format", 'checklist.mode must be "existing" or "custom"')
+            return
+    else:
+        checklists.pop(key, None)
+
+    store: Store | None = entry_data.get("event_checklists_store")
+    if store is not None:
+        await store.async_save(checklists)
+
+    connection.send_result(msg["id"], {"key": key, "checklist": checklists.get(key)})
+
+
+async def _sweep_expired_event_checklists(
+    hass: HomeAssistant, entry_data: dict, checklists: dict[str, dict]
+) -> bool:
+    """Detach (for "existing" pointers) or delete (for "custom" items)
+    every checklist whose parent event/reminder is done or has passed -
+    household ask behind the whole feature, verbatim: "a per event list
+    that goes away once the task is completed." Called every _poll tick
+    (see its own call site), same cadence as the reminder-notification
+    sweep this rides alongside - a checklist lingering up to one extra
+    poll_minutes interval past its parent's real end is an acceptable
+    trade for not running a second, tighter interval timer just for this
+    (contrast the Active Timers countdown sweep, which DOES need
+    second-level precision because someone is actively watching it hit
+    zero - nobody is watching a checklist expire in real time).
+
+    A calendar-event key (see _event_override_key) has no stable uid to
+    re-fetch by, so "has passed" is judged purely from the start
+    timestamp baked into the key itself, past EVENT_CHECKLIST_PASSED_
+    GRACE_HOURS - see that constant's own comment for why. A reminder key
+    ("reminder|<entity>|<uid>") DOES have a stable to-do item uid, so
+    "done" is judged by actually asking Home Assistant for that item's
+    current status - both entirely and needs_action removed both count as
+    "gone", not just an explicit "completed" status, since a household
+    deleting the to-do item outright should just as surely release its
+    checklist.
+
+    Returns True if anything changed (caller decides whether/when to
+    persist - see its own call site in _poll).
+    """
+    if not checklists:
+        return False
+
+    now = dt_util.utcnow()
+    passed_cutoff = timedelta(hours=EVENT_CHECKLIST_PASSED_GRACE_HOURS)
+
+    # Group reminder-kind keys by their to-do entity so a household with
+    # several checklist-carrying reminders on the same list only costs one
+    # todo.get_items round trip for that entity, not one per reminder.
+    reminder_keys_by_entity: dict[str, list[tuple[str, str]]] = {}
+    expired_event_keys: list[str] = []
+    for key in list(checklists.keys()):
+        if key.startswith("reminder|"):
+            _prefix, todo_entity, item_uid = key.split("|", 2)
+            reminder_keys_by_entity.setdefault(todo_entity, []).append((key, item_uid))
+            continue
+        # Event key shape: "<calendar_entity>|<start_ts>|<summary>" - the
+        # start timestamp is always the middle field, see
+        # _event_override_key.
+        parts = key.split("|", 2)
+        if len(parts) != 3:
+            continue
+        try:
+            start_ts = int(parts[1])
+        except (TypeError, ValueError):
+            continue
+        event_start = datetime.fromtimestamp(start_ts, tz=timezone.utc)
+        if now >= event_start + passed_cutoff:
+            expired_event_keys.append(key)
+
+    expired_reminder_keys: list[str] = []
+    for todo_entity, entries in reminder_keys_by_entity.items():
+        try:
+            response = await hass.services.async_call(
+                "todo",
+                "get_items",
+                {"entity_id": todo_entity},
+                blocking=True,
+                return_response=True,
+            )
+        except Exception as err:  # noqa: BLE001 - one bad to-do list must not stop the rest
+            _LOGGER.debug(
+                "Family Hub: could not check %s for checklist cleanup: %s", todo_entity, err
+            )
+            continue
+        live_items = ((response or {}).get(todo_entity) or {}).get("items", [])
+        live_open_uids = {
+            item.get("uid") for item in live_items if item.get("status") == "needs_action"
+        }
+        for key, item_uid in entries:
+            if item_uid not in live_open_uids:
+                expired_reminder_keys.append(key)
+
+    changed = False
+    for key in expired_event_keys + expired_reminder_keys:
+        checklists.pop(key, None)
+        changed = True
+    return changed
 
 
 def _parse_reminder_minutes(description: str) -> list[int]:
@@ -8469,7 +8900,20 @@ async def _poll_one_reminders_todo_list(
         uid = item.get("uid")
         due_raw = item.get("due")
         summary = item.get("summary") or "(untitled)"
-        is_rollover = bool(REMINDER_ROLLOVER_RE.search(item.get("description") or ""))
+        description_raw = item.get("description") or ""
+        is_rollover = bool(REMINDER_ROLLOVER_RE.search(description_raw))
+        # v185+: household ask, verbatim - "Better roll over to next day for
+        # reminders that allows you to select what days you want it to
+        # apply to. Maybe you only want something to remind on friday
+        # saturday sunday, or mondays, etc." Absent marker (every reminder
+        # from before this existed) means unrestricted - every weekday is
+        # "allowed," identical to the old unconditional daily rollover.
+        rollover_days_match = REMINDER_ROLLOVER_DAYS_RE.search(description_raw)
+        allowed_rollover_weekdays: set[int] = set()
+        if rollover_days_match and rollover_days_match.group(1):
+            allowed_rollover_weekdays = {
+                int(d) for d in rollover_days_match.group(1).split(",") if d.isdigit() and 0 <= int(d) <= 6
+            }
         if not uid or not due_raw:
             continue
 
@@ -8492,7 +8936,9 @@ async def _poll_one_reminders_todo_list(
         # "now >= due_dt") is what keeps it showing under today's date for
         # the rest of today, only moving again at the next real day change.
         if is_rollover and dt_util.as_local(due_dt).date() < dt_util.now().date():
-            due_dt = await _roll_reminder_to_today(hass, reminders_entity, uid, due_dt, summary)
+            due_dt = await _roll_reminder_to_today(
+                hass, reminders_entity, uid, due_dt, summary, allowed_rollover_weekdays
+            )
 
         if now < due_dt:
             continue
@@ -8750,12 +9196,32 @@ async def _poll_chore_due_reminders(
     return changed
 
 
+def _next_allowed_rollover_date(today_local_date, allowed_weekdays: "set[int]"):
+    """v185+: household ask, verbatim - "Better roll over to next day for
+    reminders that allows you to select what days you want it to apply to.
+    Maybe you only want something to remind on friday saturday sunday, or
+    mondays, etc." An empty `allowed_weekdays` means unrestricted (every
+    pre-v185 reminder, and any new one left at its "every day" default) -
+    today's own date, exactly the old behavior. Otherwise scans forward
+    from today (today itself counts if its weekday is allowed) for the
+    nearest allowed weekday, capped at 7 days out since every weekday
+    recurs at least once a week."""
+    if not allowed_weekdays:
+        return today_local_date
+    for offset in range(7):
+        candidate = today_local_date + timedelta(days=offset)
+        if candidate.weekday() in allowed_weekdays:
+            return candidate
+    return today_local_date  # unreachable (some weekday always matches within 7 days), belt-and-suspenders
+
+
 async def _roll_reminder_to_today(
     hass: HomeAssistant,
     reminders_entity: str,
     uid: str,
     due_dt,
     summary: str,
+    allowed_rollover_weekdays: "set[int] | None" = None,
 ):
     """Carry a "roll over if not completed" reminder that's still sitting on
     a past calendar day forward onto TODAY (same local time of day), rather
@@ -8765,14 +9231,21 @@ async def _roll_reminder_to_today(
     cycle per missed day to slowly catch up. Computed in local time so the
     wall-clock time of day is preserved across DST transitions.
 
+    v185+: when `allowed_rollover_weekdays` is non-empty, "today" isn't
+    always the target anymore - a reminder restricted to (say) Friday/
+    Saturday/Sunday that goes stale on a Monday rolls forward to the coming
+    Friday instead, not to Monday itself (see _next_allowed_rollover_date).
+    An empty/None set keeps the original "always today" behavior.
+
     Returns the new due datetime (UTC-aware) so the caller can immediately
     continue evaluating today's due-ness/notification with it, without
     waiting for the next poll to notice the change it just wrote.
     """
     local_due = dt_util.as_local(due_dt)
     today_local = dt_util.now()
+    target_date = _next_allowed_rollover_date(today_local.date(), allowed_rollover_weekdays or set())
     next_local_due = local_due.replace(
-        year=today_local.year, month=today_local.month, day=today_local.day
+        year=target_date.year, month=target_date.month, day=target_date.day
     )
     next_due_str = next_local_due.strftime("%Y-%m-%dT%H:%M:%S")
     try:
@@ -8839,6 +9312,7 @@ async def _build_daily_digest_message(
     user_id: str | None = None,
     people: list[dict[str, str]] | None = None,
     profile_for_digest: dict[str, Any] | None = None,
+    badges_by_entity: dict[str, list[dict[str, Any]]] | None = None,
 ) -> str:
     """Build the "good morning" summary: today's calendar events, today's
     due reminders, today's planned meals, and (v112+) that recipient's own
@@ -8875,6 +9349,19 @@ async def _build_daily_digest_message(
     default None/skip entirely for any caller that doesn't have a specific
     recipient's own profile in hand (e.g. the Configure options-flow
     preview, same reasoning as user_id above).
+
+    badges_by_entity (v183+, from _effective_badges_by_entity) drives the
+    new "Hide from digest" badge checkbox - household ask, verbatim: "There
+    needs to be a checkbox next to the calendar badges that clicking makes
+    the event showing the badge and event not showing the badge become
+    hidden in daily digest." An event is dropped from the "Today's events"
+    section below when ANY of that calendar's badges has digestHide=True
+    AND either its `match` (the text that makes the badge show) or its
+    `hideMatch` (the text that hides the event from the calendar grid
+    entirely) is found in the event's summary - "the event showing the
+    badge" and "the event not showing the badge" respectively. None (the
+    default) skips this filtering entirely, same as every other optional
+    param here.
     """
     sections = digest_sections if digest_sections is not None else dict(DEFAULT_DIGEST_SECTIONS)
     options = entry.options
@@ -8947,8 +9434,21 @@ async def _build_daily_digest_message(
             )
             continue
         events = ((response or {}).get(calendar_entity) or {}).get("events", [])
+        entity_badges = (badges_by_entity or {}).get(calendar_entity, [])
         for event in events:
             summary = event.get("summary") or "(untitled)"
+            # v183+: "Hide from digest" badge checkbox - see this function's
+            # own docstring. Checked before the seen_events dedupe guard
+            # below so a hidden event is never counted as "already seen"
+            # and doesn't accidentally suppress a genuinely different event
+            # that happens to share the same (summary, start, end).
+            summary_lower = summary.lower()
+            if any(
+                b.get("digestHide")
+                and ((b.get("match") and b["match"].lower() in summary_lower) or (b.get("hideMatch") and b["hideMatch"].lower() in summary_lower))
+                for b in entity_badges
+            ):
+                continue
             event_key = (summary, str(event.get("start") or ""), str(event.get("end") or ""))
             if event_key in seen_events:
                 continue
@@ -9169,6 +9669,7 @@ async def _maybe_send_daily_digest(
     if settings_store is not None:
         settings, profiles = await _get_settings_and_profiles(hass, {"settings_store": settings_store})
     people = _get_people(settings)
+    badges_by_entity = _effective_badges_by_entity(settings)
     recipients = _digest_recipients(profiles)
     if not recipients:
         # Nobody has opted in yet (e.g. right after migration, before anyone
@@ -9195,7 +9696,9 @@ async def _maybe_send_daily_digest(
             changed = True
             continue
 
-        message = await _build_daily_digest_message(hass, entry, profile.get("digestSections"), user_id, people=people, profile_for_digest=profile)
+        message = await _build_daily_digest_message(
+            hass, entry, profile.get("digestSections"), user_id, people=people, profile_for_digest=profile, badges_by_entity=badges_by_entity
+        )
         any_success = False
         any_transient_failure = False
         for target in targets:
@@ -9391,16 +9894,19 @@ async def _build_upcoming_summary(
 
 
 # ---------------------------------------------------------------------------
-# Chores: sensor-driven triggers + native services
+# Chores + Routines: sensor-driven triggers + native services
 # ---------------------------------------------------------------------------
 
 
-def _chore_trigger_matches(trigger: Optional[dict], entity_id: str, old_state: Optional[str], new_state: Optional[str]) -> bool:
-    """A chore's auto_create_trigger/auto_complete_trigger field is a
-    {"entity_id": ..., "from_state": ..., "to_state": ...} matcher.
-    from_state/to_state of None/""/"*" means "don't care" (e.g. a trigger
-    that only cares the dryer is now "off", regardless of what it was
-    before)."""
+def _sensor_trigger_matches(trigger: Optional[dict], entity_id: str, old_state: Optional[str], new_state: Optional[str]) -> bool:
+    """Shared by chores (auto_create_trigger/auto_complete_trigger) and, as
+    of v1.132.41+, routine items (auto_complete_trigger) - same
+    {"entity_id": ..., "from_state": ..., "to_state": ...} matcher shape
+    either way. from_state/to_state of None/""/"*" means "don't care" (e.g.
+    a trigger that only cares the dryer is now "off", regardless of what it
+    was before). Named generically (was _chore_trigger_matches) once
+    routines started using it too - no behavior change, just a name that no
+    longer implies chore-only."""
     if not isinstance(trigger, dict):
         return False
     if trigger.get("entity_id") != entity_id:
@@ -9442,7 +9948,7 @@ async def _async_handle_chore_sensor_trigger(
         chore = chores.get(chore_id)
         if chore is None:
             continue
-        if _chore_trigger_matches(chore.get("auto_create_trigger"), entity_id, old_state, new_state):
+        if _sensor_trigger_matches(chore.get("auto_create_trigger"), entity_id, old_state, new_state):
             try:
                 if chore_engine.reset_recurring_chore(chores, hass, chore_id) is not None:
                     changed = True
@@ -9451,7 +9957,7 @@ async def _async_handle_chore_sensor_trigger(
         chore = chores.get(chore_id)
         if chore is None:
             continue
-        if chore["status"] == CHORE_STATUS_OPEN and _chore_trigger_matches(
+        if chore["status"] == CHORE_STATUS_OPEN and _sensor_trigger_matches(
             chore.get("auto_complete_trigger"), entity_id, old_state, new_state
         ):
             try:
@@ -9477,12 +9983,68 @@ async def _async_handle_chore_sensor_trigger(
             entity.async_write_ha_state()
 
 
+async def _async_handle_routine_sensor_trigger(
+    hass: HomeAssistant, entry_data: dict[str, Any], entity_id: str, old_state: Optional[str], new_state: Optional[str]
+) -> None:
+    """The routine-item mirror of _async_handle_chore_sensor_trigger just
+    above (v1.132.41+, household ask, verbatim: "add the account to
+    automate routine completion based on sensors like we do with chores").
+
+    A routine item has no open/pending_verification/approved lifecycle the
+    way a chore does - it's just done: bool, reset back to False every
+    morning by maybe_reset_daily - so there's no routine equivalent of a
+    chore's auto_create_trigger (there's nothing to "recreate"); only a
+    single auto_complete_trigger per item, sensor-on marks it done. Reuses
+    toggle_item (the exact same function the checkbox itself calls via
+    ws_toggle_routine_item) rather than poking "done" directly, so a
+    sensor-driven completion pays out star_value/pending_approval and fires
+    "item_toggled"/"routine_completed" identically to a household member
+    tapping the checkbox - see ws_toggle_routine_item's own docstring for
+    that behavior. Already-done items are skipped entirely (both so a
+    flapping sensor can't keep re-toggling something already checked off,
+    and so "was this item done before" - which gates routine_completed
+    below - never needs tracking separately: only items that were NOT done
+    are considered at all)."""
+    routines = entry_data["routines"]
+    items = routines.get("items", {})
+    changed = False
+    rewards_changed = False
+    for item_id in list(items.keys()):
+        item = items.get(item_id)
+        if item is None or item.get("done"):
+            continue
+        if not _sensor_trigger_matches(item.get("auto_complete_trigger"), entity_id, old_state, new_state):
+            continue
+        try:
+            toggled = routine_engine.toggle_item(routines, entry_data["rewards"], item_id, True, actor=None)
+        except routine_engine.RoutineError as err:
+            _LOGGER.debug("Family Hub: auto_complete_trigger fired for routine item %s but couldn't complete it: %s", item_id, err)
+            continue
+        changed = True
+        if toggled.get("stars_disbursed_today"):
+            rewards_changed = True
+        chores_ws_api._fire_routine_event(hass, event="item_toggled", item=toggled, actor=None, done=True)
+        if routine_engine.is_routine_complete(routines, toggled["user_id"], toggled["category"]):
+            chores_ws_api._fire_routine_event(
+                hass, event="routine_completed", user_id=toggled["user_id"], category=toggled["category"], actor=None
+            )
+    if changed:
+        await entry_data["routines_store"].async_save(routines)
+        await chores_store.backup_routines(hass, routines)
+        if rewards_changed:
+            await entry_data["rewards_store"].async_save(entry_data["rewards"])
+
+
 def _async_setup_chore_sensor_listener(hass: HomeAssistant, entry_data: dict[str, Any]):
     """A single hass.bus listener for every state_changed event, filtering
     internally (see _async_handle_chore_sensor_trigger's docstring for why
     this is preferred here over a dynamically-managed
-    async_track_state_change_event subscription per chore). Returns the
-    cancel callable hass.bus.async_listen hands back, stored by the caller
+    async_track_state_change_event subscription per chore/routine item).
+    v1.132.41+: also drives routine items' auto_complete_trigger (see
+    _async_handle_routine_sensor_trigger) - one shared bus subscription for
+    both, rather than a second hass.bus.async_listen("state_changed", ...)
+    doing the same full-scan-per-event work again. Returns the cancel
+    callable hass.bus.async_listen hands back, stored by the caller
     (async_setup_entry) and invoked on unload."""
 
     async def _handler(event) -> None:
@@ -9494,6 +10056,7 @@ def _async_setup_chore_sensor_listener(hass: HomeAssistant, entry_data: dict[str
         old_state_str = getattr(old_state, "state", None)
         new_state_str = getattr(new_state, "state", None)
         await _async_handle_chore_sensor_trigger(hass, entry_data, entity_id, old_state_str, new_state_str)
+        await _async_handle_routine_sensor_trigger(hass, entry_data, entity_id, old_state_str, new_state_str)
 
     return hass.bus.async_listen("state_changed", _handler)
 
@@ -9814,6 +10377,9 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     websocket_api.async_register_command(hass, _ws_set_reminder_override)
     websocket_api.async_register_command(hass, _ws_get_event_people_overrides)
     websocket_api.async_register_command(hass, _ws_set_event_people_override)
+    websocket_api.async_register_command(hass, _ws_list_todo_candidates)
+    websocket_api.async_register_command(hass, _ws_get_event_checklists)
+    websocket_api.async_register_command(hass, _ws_set_event_checklist)
     websocket_api.async_register_command(hass, _ws_set_reminders_entity)
     websocket_api.async_register_command(hass, _ws_set_notification_click_path)
     websocket_api.async_register_command(hass, _ws_get_grocy_recipes)
@@ -9879,6 +10445,8 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     websocket_api.async_register_command(hass, _ws_add_menu_suggestion)
     websocket_api.async_register_command(hass, _ws_apply_menu_suggestion)
     websocket_api.async_register_command(hass, _ws_remove_menu_suggestion)
+    websocket_api.async_register_command(hass, _ws_get_calendar_delete_support)
+    websocket_api.async_register_command(hass, _ws_delete_calendar_event)
     websocket_api.async_register_command(hass, _ws_list_users)
     websocket_api.async_register_command(hass, _ws_detect_notify_target)
     websocket_api.async_register_command(hass, _ws_get_recipes)
@@ -10047,6 +10615,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     event_people_overrides: dict[str, list[str]] = await event_people_overrides_store.async_load() or {}
 
+    # v1.132.63+: attachable checklists - see EVENT_CHECKLISTS_STORAGE_KEY_
+    # PREFIX's own comment in const.py for the record shape and why this is
+    # its own store, same reasoning as event_people_overrides_store above.
+    event_checklists_store: Store = Store(
+        hass,
+        EVENT_CHECKLISTS_STORAGE_VERSION,
+        f"{EVENT_CHECKLISTS_STORAGE_KEY_PREFIX}_{entry.entry_id}",
+    )
+    event_checklists: dict[str, dict] = await event_checklists_store.async_load() or {}
+
     digest_store: Store = Store(
         hass, DAILY_DIGEST_STORAGE_VERSION, f"{DAILY_DIGEST_STORAGE_KEY_PREFIX}_{entry.entry_id}"
     )
@@ -10171,6 +10749,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def _poll(_now=None) -> None:
         await _run_poll(hass, entry, reminders_store, notified, reminder_overrides, settings_store)
         await _poll_reminders_todo(hass, entry, reminders_store, notified, settings_store)
+        entry_data_for_checklists = hass.data.get(DOMAIN, {}).get("entries", {}).get(entry.entry_id)
+        if entry_data_for_checklists is not None:
+            try:
+                checklists_changed = await _sweep_expired_event_checklists(
+                    hass, entry_data_for_checklists, event_checklists
+                )
+            except Exception as err:  # noqa: BLE001 - a sweep failure must never kill the rest of _poll
+                _LOGGER.warning("Family Hub: checklist cleanup sweep failed: %s", err)
+                checklists_changed = False
+            if checklists_changed:
+                await event_checklists_store.async_save(event_checklists)
         await _maybe_send_daily_digest(hass, entry, digest_store, digest_state, settings_store)
         await _sync_grocy_recipes_to_recipe_box(hass, entry)
         penalized = chore_engine.sweep_overdue_chores(chores, rewards, hass)
@@ -10218,6 +10807,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             todo_entity = entry_data.get("chores_todo_entity")
             if todo_entity is not None:
                 todo_entity.async_write_ha_state()
+        # v1.132.55+: same tick, right after firing any newly-due timer -
+        # re-announce every still-ringing household timer alarm (speakers,
+        # Assist satellites, the dashboard ring) that hasn't been dismissed
+        # yet. See chores_websocket_api.py's _reannounce_active_alarms and
+        # const.py's ALARM_REANNOUNCE_SECONDS for why this has to be a
+        # recurring poke rather than a single announce-and-forget.
+        try:
+            await chores_ws_api._reannounce_active_alarms(hass, entry_data)
+        except Exception as err:  # noqa: BLE001 - a sweep failure must never kill the interval
+            _LOGGER.warning("Family Hub: alarm re-announce sweep failed: %s", err)
 
     cancel_timer_sweep = async_track_time_interval(
         hass, _sweep_timers, timedelta(seconds=TIMER_SWEEP_SECONDS)
@@ -10254,6 +10853,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "reminder_overrides_store": reminder_overrides_store,
         "event_people_overrides": event_people_overrides,
         "event_people_overrides_store": event_people_overrides_store,
+        "event_checklists": event_checklists,
+        "event_checklists_store": event_checklists_store,
         "digest_store": digest_store,
         "digest_state": digest_state,
         "settings_store": settings_store,
@@ -10278,6 +10879,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "pantry_extras_store": pantry_extras_store_obj,
         "pantry_extras": pantry_extras,
     }
+
+    # v190+: household ask, verbatim - "family hub is not showing as an
+    # integration with automation triggers and it's not showing if I type
+    # family into the trigger search." Root cause: v186 added the
+    # family_hub_routine_event bus event (see chores_websocket_api.py's
+    # _fire_routine_event) so routines COULD already drive a plain "Event"
+    # trigger, but Family Hub had never registered an actual device with
+    # the device registry - Home Assistant's Automation "Add Trigger"
+    # search only surfaces an integration by name for entities/devices it
+    # owns, and a bare bus event with no device behind it never shows up
+    # there no matter what you type. One device per config entry (a
+    # household normally only has one entry at all) makes "Family Hub"
+    # itself searchable/pickable in the trigger UI - see device_trigger.py
+    # for the actual trigger list this device now offers (routine
+    # completed / item toggled / item approved, each optionally narrowed
+    # to a specific routine category and/or household member).
+    device_registry = dr.async_get(hass)
+    device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, entry.entry_id)},
+        name="Family Hub",
+        manufacturer="Family Hub",
+        model="Family Hub",
+    )
 
     cancel_chore_sensor_listener = _async_setup_chore_sensor_listener(
         hass, hass.data[DOMAIN]["entries"][entry.entry_id]

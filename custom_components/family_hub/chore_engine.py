@@ -30,9 +30,10 @@ engine calls (e.g. the overdue sweep touching many chores) writes once.
 """
 from __future__ import annotations
 
+import calendar
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Callable, Optional
 
 from homeassistant.core import HomeAssistant
@@ -49,15 +50,21 @@ from .const import (
     CHORE_ASSIGNMENT_MODES,
     CHORE_BIN_SENTINEL,
     CHORE_EVENT_TYPE,
+    CHORE_KEY_ALARM_AUDIENCE,
     CHORE_KEY_APPROVED_AT,
     CHORE_KEY_APPROVED_BY,
     CHORE_KEY_COMPLETED_AT,
     CHORE_KEY_COMPLETED_BY,
+    CHORE_KEY_GROUP_ID,
+    CHORE_KEY_IMPORTANT,
     CHORE_KEY_NO_APPROVAL_REQUIRED,
     CHORE_KEY_OVERDUE_PENALTY_APPLIED,
     CHORE_KEY_QUANTITY_REMAINING,
     CHORE_KEY_QUANTITY_TOTAL,
     CHORE_KEY_TIMER_MINUTES,
+    CHORE_KEY_RECUR_DUE_OFFSET_MINUTES,
+    CHORE_KEY_RECUR_INTERVAL_UNIT,
+    CHORE_KEY_RECUR_MONTH_NTH,
     CHORE_KEY_RECUR_NEXT_DUE,
     CHORE_KEY_REJECT_REASON,
     CHORE_KEY_REJECTED_AT,
@@ -65,7 +72,13 @@ from .const import (
     CHORE_KEY_REMINDER_MINUTES,
     CHORE_KEY_REMINDERS_FIRED,
     CHORE_KEY_UPDATED_AT,
+    CHORE_RECUR_INTERVAL_UNIT_DAYS,
+    CHORE_RECUR_INTERVAL_UNIT_MONTHS,
+    CHORE_RECUR_INTERVAL_UNIT_WEEKS,
+    CHORE_RECUR_INTERVAL_UNITS,
+    CHORE_RECUR_MONTH_NTH_VALUES,
     CHORE_RECUR_TYPE_INTERVAL,
+    CHORE_RECUR_TYPE_MONTHLY_NTH,
     CHORE_RECUR_TYPE_WEEKDAYS,
     CHORE_RECUR_TYPES,
     CHORE_STATUS_APPROVED,
@@ -133,6 +146,15 @@ def new_chore_id() -> str:
     return f"chr_{uuid.uuid4().hex[:12]}"
 
 
+def new_group_id() -> str:
+    """v184+: one of these is generated per multi-assignee create request
+    (chores_websocket_api.ws_create_chore's fan-out) and stamped onto every
+    chore created from it, via CHORE_KEY_GROUP_ID - see that constant's own
+    docstring in const.py for why fan-out (N independent single-assignee
+    chores) rather than one multi-assignee record."""
+    return f"grp_{uuid.uuid4().hex[:12]}"
+
+
 def _now_iso() -> str:
     return dt_util.utcnow().isoformat()
 
@@ -147,6 +169,34 @@ def _parse_dt(value: Any) -> Optional[datetime]:
     except Exception:  # noqa: BLE001
         return None
     return parsed
+
+
+def _normalize_recur_interval_unit(value: Any) -> str:
+    """v187+: household ask, verbatim - "chore scheduling needs some more
+    work potentially want to do every 2 months or every 3 months, every
+    4th week or 7th week, every other day etc." Anything not one of the
+    three real units (days/weeks/months) - including None, the value every
+    chore saved before this field existed actually has - collapses to
+    "days," the exact meaning "interval" always had before this feature,
+    so nothing stored previously changes behavior."""
+    if value in CHORE_RECUR_INTERVAL_UNITS:
+        return value
+    return CHORE_RECUR_INTERVAL_UNIT_DAYS
+
+
+def _add_months(dt: datetime, months: int) -> datetime:
+    """Adds `months` calendar months to `dt`, clamping the day-of-month to
+    the target month's own last day when the original day doesn't exist
+    there (e.g. Jan 31 + 1 month lands on Feb 28, or Feb 29 in a leap
+    year) - the same "always resolvable, never skip/crash" philosophy
+    _nth_weekday_of_month's own docstring describes for its 1-4/-1 values.
+    Preserves hour/minute/second/tzinfo exactly, only year/month/day move."""
+    total_month_index = dt.month - 1 + months
+    year = dt.year + total_month_index // 12
+    month = total_month_index % 12 + 1
+    last_day = calendar.monthrange(year, month)[1]
+    day = min(dt.day, last_day)
+    return dt.replace(year=year, month=month, day=day)
 
 
 def _normalize_recur_type(value: Any) -> Optional[str]:
@@ -191,6 +241,52 @@ def _normalize_recur_weekdays(value: Any) -> list[int]:
     return sorted(days)
 
 
+def _normalize_recur_month_nth(value: Any) -> Optional[int]:
+    """v185+: which occurrence of the selected weekday(s) within a month -
+    1/2/3/4 for "the Nth," -1 for "the last" (matches Google Calendar's own
+    "Monthly on the last ..." option), None when not a monthly_nth chore or
+    left blank. Anything else (0, 5+, garbage) collapses to None the same
+    "opt-in field, blank on anything unrecognized" way every other numeric
+    field in this module behaves - _compute_next_recur_due simply treats a
+    None nth as "nothing to compute," the same as an empty weekday
+    selection."""
+    if value in (None, ""):
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n in CHORE_RECUR_MONTH_NTH_VALUES else None
+
+
+def _nth_weekday_of_month(year: int, month: int, weekdays: set[int], nth: int) -> Optional[date]:
+    """Every date in (year, month) whose weekday() is in `weekdays`, sorted,
+    then the nth one (1-indexed) or the last one (nth == -1). Returns None
+    only if `weekdays` is empty - nth 1-4 always exists because every
+    weekday occurs at least 4 times in any month (see CHORE_RECUR_MONTH_NTH_
+    VALUES's own comment), so this never has to "skip" a month the way a
+    literal 5th-occurrence request would.
+    v185+: this is also how "the first weekend of the month" is expressed -
+    weekdays={5, 6} (Sat+Sun), nth=1 - a plain date-by-date scan naturally
+    lands on the month's first Saturday (or, in the rare case the month
+    itself starts on a Sunday, that Sunday) without needing a dedicated
+    "weekend" concept of its own."""
+    if not weekdays:
+        return None
+    days_in_month = calendar.monthrange(year, month)[1]
+    matches = [
+        date(year, month, day)
+        for day in range(1, days_in_month + 1)
+        if date(year, month, day).weekday() in weekdays
+    ]
+    if not matches:
+        return None
+    if nth == -1:
+        return matches[-1]
+    idx = nth - 1
+    return matches[idx] if 0 <= idx < len(matches) else None
+
+
 def _normalize_reminder_minutes(value: Any) -> list[int]:
     """A chore's own reminder_minutes (v131+) - deliberately as permissive
     as the calendar card's own event-reminder marker parsing (_parse_
@@ -222,8 +318,23 @@ def _compute_next_recur_due(chore: dict[str, Any], from_dt: datetime) -> Optiona
     empty weekday selection (nothing to compute against)."""
     recur_type = chore.get("recur_type")
     if recur_type == CHORE_RECUR_TYPE_INTERVAL:
-        days = max(1, int(chore.get("recur_interval_days") or 0))
-        return from_dt + timedelta(days=days)
+        # v187+: household ask, verbatim - "chore scheduling needs some
+        # more work potentially want to do every 2 months or every 3
+        # months, every 4th week or 7th week, every other day etc." N
+        # (recur_interval_days, kept as the field name for backward
+        # compatibility) now pairs with a unit (recur_interval_unit) -
+        # days is the pre-existing/default behavior ("every other day" was
+        # already just N=2), weeks/months are new. Months uses _add_months
+        # rather than a flat 30-day multiply so "every 2 months" actually
+        # lands on the same day-of-month each time (clamped at short
+        # months), the way a household actually means it.
+        n = max(1, int(chore.get("recur_interval_days") or 0))
+        unit = _normalize_recur_interval_unit(chore.get(CHORE_KEY_RECUR_INTERVAL_UNIT))
+        if unit == CHORE_RECUR_INTERVAL_UNIT_WEEKS:
+            return from_dt + timedelta(weeks=n)
+        if unit == CHORE_RECUR_INTERVAL_UNIT_MONTHS:
+            return _add_months(from_dt, n)
+        return from_dt + timedelta(days=n)
     if recur_type == CHORE_RECUR_TYPE_WEEKDAYS:
         weekdays = set(_normalize_recur_weekdays(chore.get("recur_weekdays")))
         if not weekdays:
@@ -233,7 +344,54 @@ def _compute_next_recur_due(chore: dict[str, Any], from_dt: datetime) -> Optiona
             if candidate.weekday() in weekdays:
                 return candidate
         return None
+    if recur_type == CHORE_RECUR_TYPE_MONTHLY_NTH:
+        # v185+: household ask, verbatim - "Better chore scheduling so you
+        # can choose things like every third Wednesday or the first weekend
+        # of every month. Very similar to how Google calendar does it now."
+        # Reuses recur_weekdays (one or more weekdays - see _nth_weekday_
+        # of_month's own comment on how "first weekend" falls out of that)
+        # plus recur_month_nth (which occurrence). Scans forward month by
+        # month from from_dt's own month - capped at 24 so a malformed/
+        # cleared selection can't loop forever - taking the first candidate
+        # that's still strictly after from_dt (this month's occurrence, if
+        # it hasn't happened yet, otherwise next month's, exactly like the
+        # weekdays branch above never returns something on/before from_dt).
+        weekdays = set(_normalize_recur_weekdays(chore.get("recur_weekdays")))
+        nth = _normalize_recur_month_nth(chore.get(CHORE_KEY_RECUR_MONTH_NTH))
+        if not weekdays or nth is None:
+            return None
+        year, month = from_dt.year, from_dt.month
+        for _ in range(24):
+            candidate_date = _nth_weekday_of_month(year, month, weekdays, nth)
+            if candidate_date is not None:
+                candidate = from_dt.replace(year=candidate_date.year, month=candidate_date.month, day=candidate_date.day)
+                if candidate > from_dt:
+                    return candidate
+            month += 1
+            if month > 12:
+                month = 1
+                year += 1
+        return None
     return None
+
+
+def _normalize_recur_due_offset_minutes(value: Any) -> int:
+    """v186+: household ask, verbatim - "Chores due x amount time before
+    due on recurring chores. This will set the due date based on when the
+    chore is recurred instead of when the chore was created." How long
+    AFTER each recurrence reset_recurring_chore should set the fresh
+    due_date to. Same "opt-in numeric field, anything blank/invalid
+    collapses to the harmless default" style as star_value/overdue_penalty
+    - here the harmless default is 0 ("due the moment it reopens"), never
+    negative (a due date before the chore even exists again is
+    meaningless)."""
+    if value in (None, ""):
+        return 0
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, n)
 
 
 def default_chore(**overrides: Any) -> dict[str, Any]:
@@ -260,7 +418,10 @@ def default_chore(**overrides: Any) -> dict[str, Any]:
         "auto_complete_trigger": None,
         "recur_type": None,
         "recur_interval_days": 0,
+        CHORE_KEY_RECUR_INTERVAL_UNIT: CHORE_RECUR_INTERVAL_UNIT_DAYS,
         "recur_weekdays": [],
+        CHORE_KEY_RECUR_MONTH_NTH: None,
+        CHORE_KEY_RECUR_DUE_OFFSET_MINUTES: 0,
         CHORE_KEY_RECUR_NEXT_DUE: None,
         "created_at": _now_iso(),
         CHORE_KEY_UPDATED_AT: _now_iso(),
@@ -276,6 +437,8 @@ def default_chore(**overrides: Any) -> dict[str, Any]:
         CHORE_KEY_NO_APPROVAL_REQUIRED: False,
         CHORE_KEY_QUANTITY_TOTAL: None,
         CHORE_KEY_QUANTITY_REMAINING: None,
+        CHORE_KEY_IMPORTANT: False,
+        CHORE_KEY_GROUP_ID: None,
     }
     chore.update(overrides)
     return chore
@@ -371,6 +534,12 @@ def create_chore(
     # pre-v1.110.0 chore) means "no timer" and changes nothing - see
     # timer_engine.normalize_timer_minutes.
     timer_minutes = timer_engine.normalize_timer_minutes(payload.get(CHORE_KEY_TIMER_MINUTES))
+    # v1.132.55+: who/what rings when this chore's timer alarms - see
+    # const.py's CHORE_KEY_ALARM_AUDIENCE for the full picture. Defaults to
+    # "self" (timer_engine.normalize_alarm_audience's own fallback), which
+    # is exactly today's pre-existing behaviour, so a chore that never sets
+    # this is completely unaffected.
+    alarm_audience = timer_engine.normalize_alarm_audience(payload.get(CHORE_KEY_ALARM_AUDIENCE))
 
     chore = default_chore(
         id=new_chore_id(),
@@ -390,6 +559,9 @@ def create_chore(
         recur_type=recur_type,
         recur_interval_days=max(0, int(payload.get("recur_interval_days") or 0)),
         recur_weekdays=_normalize_recur_weekdays(payload.get("recur_weekdays")),
+        **{CHORE_KEY_RECUR_INTERVAL_UNIT: _normalize_recur_interval_unit(payload.get(CHORE_KEY_RECUR_INTERVAL_UNIT))},
+        **{CHORE_KEY_RECUR_MONTH_NTH: _normalize_recur_month_nth(payload.get(CHORE_KEY_RECUR_MONTH_NTH))},
+        **{CHORE_KEY_RECUR_DUE_OFFSET_MINUTES: _normalize_recur_due_offset_minutes(payload.get(CHORE_KEY_RECUR_DUE_OFFSET_MINUTES))},
         **{
             CHORE_KEY_NO_APPROVAL_REQUIRED: bool(payload.get(CHORE_KEY_NO_APPROVAL_REQUIRED)),
             CHORE_KEY_QUANTITY_TOTAL: quantity_total,
@@ -401,6 +573,15 @@ def create_chore(
             # when quantity_total is actually set.
             CHORE_KEY_QUANTITY_REMAINING: quantity_total,
             CHORE_KEY_TIMER_MINUTES: timer_minutes,
+            CHORE_KEY_ALARM_AUDIENCE: alarm_audience,
+            CHORE_KEY_IMPORTANT: bool(payload.get(CHORE_KEY_IMPORTANT)),
+            # v184+: set by chores_websocket_api's multi-assignee fan-out
+            # (ws_create_chore, when the request names more than one
+            # assignee) - the SAME group_id is passed in this same payload
+            # dict for every one of the N create_chore calls that request
+            # makes, one per assignee. An ordinary single-assignee create
+            # never sets this, so it stays None (see default_chore).
+            CHORE_KEY_GROUP_ID: payload.get(CHORE_KEY_GROUP_ID) or None,
         },
     )
     if mode == CHORE_ASSIGNMENT_MODE_DIRECT and not chore.get("assigned_to"):
@@ -731,6 +912,20 @@ def reset_recurring_chore(chores: dict[str, dict[str, Any]], hass: HomeAssistant
     # in const.py); it gets recomputed fresh the next time this same chore
     # is approved again (see approve_chore).
     chore[CHORE_KEY_RECUR_NEXT_DUE] = None
+    # v186+: household ask, verbatim - "Chores due x amount time before due
+    # on recurring chores. This will set the due date based on when the
+    # chore is recurred instead of when the chore was created." Every
+    # occurrence of a recurring chore (schedule-based via sweep_due_
+    # recurrences, or sensor-triggered via its own auto_create_trigger -
+    # this function is the single reset point for both) gets a fresh
+    # due_date anchored to right now, offset by CHORE_KEY_RECUR_DUE_OFFSET_
+    # MINUTES (0 = due the moment it reopens). Replaces whatever due_date
+    # was left over from the previous cycle (or from creation, the very
+    # first time this chore ever recurs) - a stale due_date that never
+    # moved was exactly the reported problem.
+    now = dt_util.utcnow()
+    offset_minutes = int(chore.get(CHORE_KEY_RECUR_DUE_OFFSET_MINUTES) or 0)
+    chore["due_date"] = (now + timedelta(minutes=offset_minutes)).isoformat()
     chore[CHORE_KEY_UPDATED_AT] = _now_iso()
     _resolve_initial_assignment(chore)
     _fire_chore_event(hass, chore, previous_status=previous, extra={"event": "recurred"})
@@ -853,10 +1048,15 @@ _EDITABLE_FIELDS = (
     "auto_complete_trigger",
     "recur_type",
     "recur_interval_days",
+    CHORE_KEY_RECUR_INTERVAL_UNIT,
     "recur_weekdays",
+    CHORE_KEY_RECUR_MONTH_NTH,
+    CHORE_KEY_RECUR_DUE_OFFSET_MINUTES,
     CHORE_KEY_NO_APPROVAL_REQUIRED,
     CHORE_KEY_QUANTITY_TOTAL,
     CHORE_KEY_TIMER_MINUTES,
+    CHORE_KEY_ALARM_AUDIENCE,
+    CHORE_KEY_IMPORTANT,
 )
 
 
@@ -886,6 +1086,8 @@ def update_chore(
         # create - editing a chore's timer to blank must genuinely remove
         # it, not leave a stale length behind.
         chore[CHORE_KEY_TIMER_MINUTES] = timer_engine.normalize_timer_minutes(fields[CHORE_KEY_TIMER_MINUTES])
+    if CHORE_KEY_ALARM_AUDIENCE in fields:
+        chore[CHORE_KEY_ALARM_AUDIENCE] = timer_engine.normalize_alarm_audience(fields[CHORE_KEY_ALARM_AUDIENCE])
     if "star_value" in fields:
         chore["star_value"] = max(0, int(fields["star_value"] or 0))
     if "overdue_penalty" in fields:
@@ -933,10 +1135,18 @@ def update_chore(
         chore["recur_type"] = _normalize_recur_type(fields["recur_type"])
     if "recur_interval_days" in fields:
         chore["recur_interval_days"] = max(0, int(fields["recur_interval_days"] or 0))
+    if CHORE_KEY_RECUR_INTERVAL_UNIT in fields:
+        chore[CHORE_KEY_RECUR_INTERVAL_UNIT] = _normalize_recur_interval_unit(fields[CHORE_KEY_RECUR_INTERVAL_UNIT])
     if "recur_weekdays" in fields:
         chore["recur_weekdays"] = _normalize_recur_weekdays(fields["recur_weekdays"])
+    if CHORE_KEY_RECUR_MONTH_NTH in fields:
+        chore[CHORE_KEY_RECUR_MONTH_NTH] = _normalize_recur_month_nth(fields[CHORE_KEY_RECUR_MONTH_NTH])
+    if CHORE_KEY_RECUR_DUE_OFFSET_MINUTES in fields:
+        chore[CHORE_KEY_RECUR_DUE_OFFSET_MINUTES] = _normalize_recur_due_offset_minutes(fields[CHORE_KEY_RECUR_DUE_OFFSET_MINUTES])
     if CHORE_KEY_NO_APPROVAL_REQUIRED in fields:
         chore[CHORE_KEY_NO_APPROVAL_REQUIRED] = bool(fields[CHORE_KEY_NO_APPROVAL_REQUIRED])
+    if CHORE_KEY_IMPORTANT in fields:
+        chore[CHORE_KEY_IMPORTANT] = bool(fields[CHORE_KEY_IMPORTANT])
     chore[CHORE_KEY_UPDATED_AT] = _now_iso()
     return chore
 
