@@ -14,10 +14,10 @@ Configure afterward. That same Configure dialog is also where updates get
 installed - see async_step_update below - since that's where an admin would
 look for it, not a sidebar panel.
 
-v1.132.8+: this wizard USED to also have a "Meal Plan & Reminders lists"
+this wizard USED to also have a "Meal Plan & Reminders lists"
 step (async_step_todo_lists) between Grocy and Notifications, letting you
 pick/auto-create the todo.* entities those two features are backed by.
-Removed - household ask, verbatim: "drop todo lists" - since it was never
+Removed - - since it was never
 actually load-bearing: the calendar card's own meal_plan_entity/
 reminders_entity Lovelace config fields (defaulting to todo.meal_plan/
 todo.family_reminders if never overridden - see the card's own YAML
@@ -127,7 +127,7 @@ def _build_grocy_schema(defaults: dict[str, Any]) -> vol.Schema:
     )
 
 
-# v138+: the first-time setup wizard's opening "which features do you
+# the first-time setup wizard's opening "which features do you
 # want" step (async_step_features) - lets a household skip whole sections
 # of the wizard up front rather than clicking through and leaving
 # everything blank. Deliberately a small, fixed set of transient string
@@ -138,7 +138,7 @@ def _build_grocy_schema(defaults: dict[str, Any]) -> vol.Schema:
 _FEATURE_CHORES = "chores"
 _FEATURE_GROCY = "grocy"
 _FEATURE_DIGEST = "digest"
-# v1.132.8+: _FEATURE_REMINDERS ("Reminders & Meal Plan to-do lists") is
+# _FEATURE_REMINDERS ("Reminders & Meal Plan to-do lists") is
 # gone - it only ever gated async_step_todo_lists, which is gone too (see
 # this module's own docstring). Calendar reminders themselves aren't
 # gated behind a feature choice here at all (see async_step_features'
@@ -244,8 +244,7 @@ def _build_member_profile_schema(default_color: str) -> vol.Schema:
 # Routines" accordion has (see family-week-calendar-card.js), just asked
 # once up front here too. Goals-on-Chores/Goals-on-Rewards stay off by
 # default, same as they've always defaulted to in Settings. Routines
-# defaults ON as of v1.132.54+ (household ask, verbatim: "Default to
-# routines enabled") - see family-week-calendar-card.js's own
+# defaults ON as of v1.132.54+ ) - see family-week-calendar-card.js's own
 # routinesEnabled:true default for the matching change to an existing/
 # upgraded install that never went through this wizard (or skipped the
 # Features step's "Chores, Rewards, Routines & Goals" option) and so falls
@@ -281,7 +280,7 @@ def _build_calendars_schema(defaults: dict[str, Any]) -> vol.Schema:
     )
 
 
-# v1.132.8+: _build_todo_lists_schema/_REMINDERS_NOTIFY_FIELD (the
+# _build_todo_lists_schema/_REMINDERS_NOTIFY_FIELD (the
 # now-removed "Meal Plan & Reminders lists" step's own schema, and the
 # Notifications step's reminders-notify-target picker that only ever made
 # sense keyed by that step's CONF_REMINDERS_ENTITY output) are both gone -
@@ -605,8 +604,8 @@ class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=_build_grocy_schema(self._collected_options),
         )
 
-    # v1.132.8+: async_step_todo_lists ("Meal Plan & Reminders lists") is
-    # gone - household ask, verbatim: "drop todo lists." See this module's
+    # async_step_todo_lists ("Meal Plan & Reminders lists") is
+    # gone - See this module's
     # own docstring for why it was safe to drop entirely: the calendar
     # card's own meal_plan_entity/reminders_entity config fields already
     # self-sync into these same backend options every session with no user
@@ -700,7 +699,7 @@ class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Read-only summary before creating the entry - mainly so the
         dashboard YAML (if requested) is visible somewhere, since it still
         needs to be copied into place by hand via Settings > Dashboards.
-        v1.132.8+: no longer mentions meal_plan_entity/reminders_entity -
+        no longer mentions meal_plan_entity/reminders_entity -
         those aren't collected by this wizard any more (see this module's
         own docstring on why the "Meal Plan & Reminders lists" step was
         dropped); the calendar card's own config fields for those, or its
@@ -779,7 +778,7 @@ def _build_test_notify_schema(hass) -> vol.Schema:
 
 class FamilyHubOptionsFlow(config_entries.OptionsFlow):
     """Configure reminders, send a test notification, install an update, or
-    (v201+) get pointed at the card's own Settings modal - all live here
+    get pointed at the card's own Settings modal - all live here
     since this is where an admin would already be looking (Settings >
     Devices & Services > Family Hub > Configure), not a separate sidebar
     panel."""
@@ -790,8 +789,7 @@ class FamilyHubOptionsFlow(config_entries.OptionsFlow):
             menu_options=["settings", "reminders", "grocy", "test_notify", "upcoming", "update"],
         )
 
-    # v201+: household ask, verbatim - "add a settings button to the
-    # integration settings page." Home Assistant's own "Configure" button
+    # Home Assistant's own "Configure" button
     # (Settings -> Devices & Services -> Family Hub -> Configure) already
     # opens this options flow's menu, but the actual day-to-day Family Hub
     # settings (theme, per-person notifications, chores/rewards toggles,

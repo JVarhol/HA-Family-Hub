@@ -41,6 +41,8 @@ from .const import (
     CHORES_BACKUP_FILENAME,
     CHORES_STORAGE_KEY_PREFIX,
     CHORES_STORAGE_VERSION,
+    DEVICE_SETTINGS_STORAGE_KEY_PREFIX,
+    DEVICE_SETTINGS_STORAGE_VERSION,
     GOALS_BACKUP_FILENAME,
     GOALS_STORAGE_KEY_PREFIX,
     GOALS_STORAGE_VERSION,
@@ -86,6 +88,10 @@ def create_pantry_extras_store(hass: HomeAssistant, entry: ConfigEntry) -> Store
     return Store(hass, PANTRY_EXTRAS_STORAGE_VERSION, f"{PANTRY_EXTRAS_STORAGE_KEY_PREFIX}_{entry.entry_id}")
 
 
+def create_device_settings_store(hass: HomeAssistant, entry: ConfigEntry) -> Store:
+    return Store(hass, DEVICE_SETTINGS_STORAGE_VERSION, f"{DEVICE_SETTINGS_STORAGE_KEY_PREFIX}_{entry.entry_id}")
+
+
 async def async_load_chores(store: Store) -> dict[str, dict[str, Any]]:
     """chore_id -> chore record. An empty/missing store is a household that
     has never created a chore yet - not an error."""
@@ -112,13 +118,43 @@ async def async_load_pantry_extras(store: Store) -> dict[str, dict[str, Any]]:
     return data if isinstance(data, dict) else {}
 
 
+def default_device_settings() -> dict[str, Any]:
+    """See const.py's DEVICE_SETTINGS_STORAGE_KEY_PREFIX docstring for the
+    full picture of what this store is (a mirror/staging area, not any
+    device's own source of truth).
+
+    devices: {<device_id>: {"settings": {...}, "last_seen": <iso str>,
+                             "pending_seq": <int>, "pending_settings":
+                             {...} or None}}
+    presets: {<preset_id>: {"name": <str>, "settings": {...},
+                             "created": <iso str>}}
+    """
+    return {"devices": {}, "presets": {}}
+
+
+async def async_load_device_settings(store: Store) -> dict[str, Any]:
+    """Loads the device-settings blob, filling in either top-level key
+    that's missing (an older/partial save, or the very first load) with its
+    empty default - same defensive merge as async_load_rewards/
+    async_load_routines above."""
+    data = await store.async_load()
+    if not isinstance(data, dict):
+        data = {}
+    defaults = default_device_settings()
+    merged = dict(data)
+    for key, default_value in defaults.items():
+        if key not in merged or not isinstance(merged[key], type(default_value)):
+            merged[key] = default_value
+    return merged
+
+
 def default_rewards() -> dict[str, Any]:
-    # v127+: "suggestions" - pending reward suggestions from someone without
+    # "suggestions" - pending reward suggestions from someone without
     # add/override authority, awaiting a priced approve_suggestion (or a
     # reject_suggestion) from someone who has one - see reward_engine.py's
     # own module docstring and const.py's PERMISSION_REWARD_ADD.
     #
-    # v128+: three more -
+    # three more -
     #   "ledger": every star balance change ever made (chore approvals/
     #   overdue penalties/redemptions/reversals/manual adjustments), for a
     #   complete per-user star history - see reward_engine.add_stars.

@@ -1,4 +1,4 @@
-// Family Hub My Pantry card (v141+) - a household's stock at a glance, in
+// Family Hub My Pantry card - a household's stock at a glance, in
 // two parts: a live Grocy Stock list (every product currently in stock,
 // read/written straight through Grocy's own REST API - see __init__.py's
 // _fetch_pantry_stock/_ws_get_pantry_stock and friends, right alongside
@@ -18,9 +18,7 @@
 // Household-wide timer alarm sound+modal (v1.119.0+, widened in
 // v1.132.55+) - see family-hub-active-timers-card.js's own top comment
 // above this same block for the full design note. Added here in
-// v1.132.59+ after a household bug report, verbatim: "a household
-// alarm or an assigned alarm set to them plus kiosk doesnt alarm on the
-// kiosk" - this card never carried this singleton or subscribed to
+// v1.132.59+ after a - this card never carried this singleton or subscribed to
 // the widened-alarm broadcast at all, so a kiosk whose dashboard shows
 // it silently never rang for anyone else's widened timer alarm. Kept
 // byte-identical to every other card's copy on purpose.
@@ -62,8 +60,7 @@ if (!window.__familyHubTimerAlarm) {
     // ship or for a self-hosted install's network policy to worry about,
     // and it sounds identical on every install.
     //
-    // Household ask, verbatim: "can we make it sound more like an alarm
-    // and less like a ticking bomb." The original v1.119.0+ sound was one
+    // The original v1.119.0+ sound was one
     // flat square-wave tone repeated once a second - metronomic, which is
     // exactly what read as a countdown-bomb tick rather than an alarm. This
     // plays a quick alternating two-pitch TRIPLET (a classic digital-alarm-
@@ -98,7 +95,7 @@ if (!window.__familyHubTimerAlarm) {
         // the primary alarm; sound is a bonus on top of it, not required.
       }
     }
-    // v1.132.55+: which hass connection to tell "dismiss this everywhere"
+    // which hass connection to tell "dismiss this everywhere"
     // when Stop is tapped - set by whichever card most recently called
     // ring()/check() with one, since this singleton is shared across every
     // card on the dashboard and any of them may have `hass` by now. Best-
@@ -118,7 +115,7 @@ if (!window.__familyHubTimerAlarm) {
         beepHandle = null;
       }
       if (modalEl) modalEl.style.display = "none";
-      // v1.132.55+: household's explicit choice - "first tap wins, from
+      // household's explicit choice - "first tap wins, from
       // anyone" - so tapping Stop here also clears the alarm everywhere
       // else (other kiosks, other people's phones-that-are-dashboards)
       // rather than just silencing this one tab. No permission gate, by
@@ -127,14 +124,11 @@ if (!window.__familyHubTimerAlarm) {
         lastHass.connection.sendMessagePromise({ type: "family_hub/timers/dismiss_alarm", uid }).catch(() => {});
       }
     }
-    // Household bug report, verbatim: "a household alarm or an assigned
-    // alarm set to them plus kiosk doesnt alarm on the kiosk, it should end
-    // the screen saver and pop up the timer ended modal and make noise."
     // This modal already outranks the screensaver's own overlay (z-index
     // 2147483647 vs 2147483000, set in ensureModal() above), so it was
     // always painting on top of it - but a screensaver left running
-    // underneath still means its video/camera poll keeps going, and the
-    // household asked for it to actually END, not just be covered up.
+    // underneath still means its video/camera poll keeps going, so it
+    // needs to actually END, not just be covered up.
     // There are THREE independent screensaver implementations in this
     // project (the calendar card's own, the shared window.__familyHub
     // ScreenSaver controller used by Chores/Rewards/My Chores/etc., and the
@@ -195,7 +189,7 @@ if (!window.__familyHubTimerAlarm) {
         if (!mine || dismissedUids.has(mine.uid)) return;
         if (remainingSecondsFn(mine) <= 0) start(mine, hass);
       },
-      // v1.132.55+: the WIDENED half - a household_timer_alarm_ring bus
+      // the WIDENED half - a household_timer_alarm_ring bus
       // event (fired by chores_websocket_api.py's _dispatch_timer_alarm/
       // _reannounce_active_alarms) that THIS login should also ring for,
       // because it's either the timer's own owner, a login flagged as an
@@ -229,10 +223,7 @@ if (!window.__familyHubTimerAlarm) {
   })();
 }
 
-// Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
-// "When you load a card it tends to load the default theme first then it
-// switches over to the theme you set how can we always make it load the
-// set theme first." Root cause: EVERY themed card's first paint happens
+// Theme flash-of-default fix - Root cause: EVERY themed card's first paint happens
 // with no theme CSS vars set at all (falls back to _defaultTheme()'s own
 // hardcoded palette), because resolving the household's actual theme
 // takes two sequential, awaited websocket round trips after `hass` is
@@ -316,7 +307,7 @@ class FamilyHubPantryCard extends HTMLElement {
   static getStubConfig() {
     return { title: "My Pantry" };
   }
-  // v1.111.0+: switched to getConfigElement (a real custom element) so the
+  // switched to getConfigElement (a real custom element) so the
   // new theme_override field can offer a live-fetched theme list - see
   // FamilyHubPantryCardEditor at the bottom of this file.
   static getConfigElement() {
@@ -335,7 +326,7 @@ class FamilyHubPantryCard extends HTMLElement {
     if (this._pickerProducts === undefined) this._pickerProducts = [];
     if (this._pickerUnits === undefined) this._pickerUnits = [];
     if (this._locations === undefined) this._locations = [];
-    // v144.17+: full-CRUD pass - categories (Grocy's "product groups"),
+    // full-CRUD pass - categories (Grocy's "product groups"),
     // plus the toolbar's own live search/sort/filter state. These are
     // deliberately plain instance fields rather than persisted Settings -
     // same "just how much room THIS device gives a feature right now"
@@ -358,12 +349,11 @@ class FamilyHubPantryCard extends HTMLElement {
   }
   async _initFirstLoad() {
     await Promise.all([this._fetchSettings(), this._fetchStock(), this._fetchExtras()]);
-    // v1.111.0+: always fetched now - a per-card theme_override needs this
+    // always fetched now - a per-card theme_override needs this
     // list regardless of the household's own useGlobalTheme setting.
     await this._fetchGlobalThemes();
     this._startPolling();
-    // Household bug report, verbatim: "a household alarm or an assigned
-    // alarm set to them plus kiosk doesnt alarm on the kiosk" - see this
+    // - see this
     // file's own copy of the window.__familyHubTimerAlarm singleton
     // (below) for the full design note. Kept byte-identical to every
     // other card's copy on purpose.
@@ -373,7 +363,7 @@ class FamilyHubPantryCard extends HTMLElement {
   _myUserId() {
     return this._hass && this._hass.user ? this._hass.user.id : null;
   }
-  // v1.132.59+: household-wide timer alarms - subscribe to the two bus
+  // household-wide timer alarms - subscribe to the two bus
   // events chores_websocket_api.py's _dispatch_timer_alarm/
   // _reannounce_active_alarms fire (see const.py's
   // EVENT_FAMILY_HUB_TIMER_ALARM_RING/_STOP), and hand each one to the
@@ -463,7 +453,7 @@ class FamilyHubPantryCard extends HTMLElement {
   _getSettings() {
     return this._settingsCache || this._defaultSettings();
   }
-  // v144.6+: "This device's theme" - a device-local override of the shared
+  // "This device's theme" - a device-local override of the shared
   // Settings > Appearance theme choice, same key/mechanism
   // family-week-calendar-card.js's own _getDeviceThemeOverride uses (see
   // its own comment) and configured from that card's Settings modal (this
@@ -496,7 +486,7 @@ class FamilyHubPantryCard extends HTMLElement {
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
-    // v1.111.0+: a per-card-placement Theme override (from this card's own
+    // a per-card-placement Theme override (from this card's own
     // native "Edit Card" dialog) wins over this device's own override and
     // the household's Global Theme.
     const cardOverride = this._config && this._config.theme_override;
@@ -521,7 +511,7 @@ class FamilyHubPantryCard extends HTMLElement {
     const a = Math.max(0, Math.min(1, typeof alpha === "number" ? alpha : 1));
     return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
-  // v1.126.0+ - see window.__familyHubThemeCache's own comment above the
+  // see window.__familyHubThemeCache's own comment above the
   // class for the full "why a key, not one shared blob" reasoning. Called
   // identically from here (after resolving the REAL theme) and from
   // `_build()` (before the real theme is known yet, to look up whatever
@@ -537,14 +527,14 @@ class FamilyHubPantryCard extends HTMLElement {
   }
   _applyThemeVars() {
     const theme = this._resolveTheme(this._getSettings());
-    // v144.5+: same "liquid glass" support family-week-calendar-card.js has
+    // same "liquid glass" support family-week-calendar-card.js has
     // - a theme's cardOpacity/glassBlur (100/0 defaults, both no-ops) turn
     // the card/surface backgrounds translucent and blur whatever shows
     // through them, so picking a Liquid Glass theme actually looks glassy
     // on this card too, not just the calendar.
     const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
     const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
-    // v1.126.0+: built as a plain object first (rather than each var going
+    // built as a plain object first (rather than each var going
     // straight into its own setProperty call, as before) purely so the
     // exact same values that get applied here also get cached - see
     // window.__familyHubThemeCache's own comment for why this fixes the
@@ -566,7 +556,7 @@ class FamilyHubPantryCard extends HTMLElement {
     Object.keys(vars).forEach((name) => this.style.setProperty(name, vars[name]));
     if (window.__familyHubThemeCache) window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
   }
-  // v1.126.0+: applies whatever theme this device/placement last actually
+  // applies whatever theme this device/placement last actually
   // resolved to, SYNCHRONOUSLY, before the real fetches that would
   // otherwise be the only way to know it - see window.__familyHubTheme
   // Cache's own comment above the class. Called once from `_build()`,
@@ -601,7 +591,7 @@ class FamilyHubPantryCard extends HTMLElement {
     } catch (e) {
       custom = [];
     }
-    // v1.111.0+: also merge in every installed native Home Assistant theme.
+    // also merge in every installed native Home Assistant theme.
     this._globalThemes = custom.concat(this._nativeHaThemeEntries());
     this._applyThemeVars();
   }
@@ -750,14 +740,14 @@ class FamilyHubPantryCard extends HTMLElement {
 
   _build() {
     this._built = true;
-    // v1.126.0+: applied BEFORE attachShadow/the first innerHTML paint -
+    // applied BEFORE attachShadow/the first innerHTML paint -
     // see _applyCachedThemeVarsIfAny's own comment and window.__familyHub
     // ThemeCache's above the class for why this is what actually fixes
     // the household's reported "loads the default theme first" flash.
     this._applyCachedThemeVarsIfAny();
     this.attachShadow({ mode: "open" });
     const root = this.shadowRoot;
-    // v144.13+: restyled to match the Chores/Rewards board's own chrome
+    // restyled to match the Chores/Rewards board's own chrome
     // (see this card's own docstring at the top of the file) - a real
     // .header + .actions bar and a .board of side-by-side columns, same
     // classes/shapes those cards already use, rather than the old single
@@ -977,7 +967,7 @@ class FamilyHubPantryCard extends HTMLElement {
     ]);
     const entries = (entriesResult && Array.isArray(entriesResult.entries)) ? entriesResult.entries : [];
     const locationOptions = `<option value="">(product's default)</option>` + this._locations.map((l) => `<option value="${l.id}">${this._esc(l.name)}</option>`).join("");
-    // v144.17+: price/location per entry, alongside the original amount/
+    // price/location per entry, alongside the original amount/
     // best-before - see _ws_update_grocy_stock_entry's own docstring on why
     // both are optional on the backend (a blank price field just omits
     // price from that entry's save, same as before this existed).
@@ -1044,7 +1034,7 @@ class FamilyHubPantryCard extends HTMLElement {
   }
 
   // --- Edit product (full CRUD on the Grocy product itself) -----------
-  // v144.17+: Add/Read/Update/Delete on a product's own core fields (name,
+  // Add/Read/Update/Delete on a product's own core fields (name,
   // category, default location, stock/purchase quantity unit, min stock
   // amount, description) - as opposed to _openEditStockModal just above,
   // which only ever touched individual stock purchases (amount/best-before/
@@ -1308,7 +1298,7 @@ class FamilyHubPantryCard extends HTMLElement {
     `;
   }
 
-  // v144.17+: the toolbar's search/sort/expired/expiring-soon controls, all
+  // the toolbar's search/sort/expired/expiring-soon controls, all
   // applied client-side over whatever this._stock already holds (no extra
   // round trip per keystroke/toggle) - _render() below calls this instead
   // of using this._stock directly.
@@ -1380,7 +1370,7 @@ class FamilyHubPantryCard extends HTMLElement {
   _css() {
     return `
       :host { display: block; font-family: 'Varela Round', sans-serif; }
-      /* v144.13+: matches the Chores/Rewards board's own ha-card chrome
+      /* matches the Chores/Rewards board's own ha-card chrome
          pixel-for-pixel (same padding/flex/overflow rules) so Pantry reads
          as another full board alongside them rather than a small stacked
          card - see family-hub-chores-card.js's own ha-card/.header/.board
@@ -1393,7 +1383,7 @@ class FamilyHubPantryCard extends HTMLElement {
       .add-extra-btn { margin: 10px; }
       .not-configured-hint { font-size: 12px; color: var(--fc-text-secondary); background: var(--fc-surface-alt); border-radius: 10px; padding: 8px 10px; margin-bottom: 10px; }
       .not-configured-hint[hidden] { display: none; }
-      /* v144.17+: full-CRUD pass - search/sort/filter toolbar, sitting
+      /* full-CRUD pass - search/sort/filter toolbar, sitting
          between the header and the board same as it would on any list
          view. Wraps to multiple lines on a narrow dashboard rather than
          needing its own breakpoint. */
@@ -1413,7 +1403,7 @@ class FamilyHubPantryCard extends HTMLElement {
       .pantry-col-body { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
       .empty-state { font-size: 13px; color: var(--fc-text-secondary); padding: 10px 4px; }
       .stock-row, .extra-row { display: flex; align-items: center; gap: 10px; background: var(--fc-surface2, var(--fc-bg)); border-radius: 12px; padding: 12px 14px; box-shadow: var(--fc-shadow, 0 2px 5px rgba(0,0,0,0.08)); }
-      /* v144.5+: "Liquid glass" support, same convention as
+      /* "Liquid glass" support, same convention as
          family-week-calendar-card.js - see that file's own comment on its
          backdrop-filter rule for the full reasoning. Zero-cost for every
          existing theme (blur(0px) is a no-op); -webkit- prefix needed for
@@ -1428,7 +1418,7 @@ class FamilyHubPantryCard extends HTMLElement {
       .stock-expiry .expiring-soon { color: var(--fc-accent3); font-weight: 700; }
       .stock-expiry .expired { color: var(--fc-accent3); font-weight: 800; }
       .extra-meta, .extra-notes { font-size: 12px; color: var(--fc-text-secondary); }
-      /* v144.17+: location/category/low-stock badges on a stock row. */
+      /* location/category/low-stock badges on a stock row. */
       .stock-badges { display: flex; flex-wrap: wrap; gap: 4px; margin: 3px 0; }
       .stock-badge { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 8px; background: var(--fc-surface-alt); color: var(--fc-text-secondary); }
       .low-stock-badge { background: var(--fc-accent3); color: #fff; }
@@ -1445,7 +1435,7 @@ class FamilyHubPantryCard extends HTMLElement {
       .new-product-toggle input { width: auto; margin: 0; }
       .new-product-fields[hidden], .existing-product-field[hidden] { display: none; }
       .entries-list { display: flex; flex-direction: column; gap: 10px; margin: 10px 0; }
-      /* v144.17+: each stock entry now edits amount+best-before AND
+      /* each stock entry now edits amount+best-before AND
          price+location, so a row is two label/input pairs stacked instead
          of the original two bare inputs side by side. */
       .entry-row { display: flex; flex-direction: column; gap: 6px; padding-bottom: 8px; border-bottom: 1px solid var(--fc-border); }
@@ -1457,7 +1447,7 @@ class FamilyHubPantryCard extends HTMLElement {
       .modal-actions button { border: none; border-radius: 10px; padding: 8px 16px; font-weight: 700; cursor: pointer; }
       .save-btn { background: var(--fc-accent); color: var(--fc-accent-text); }
       .cancel-btn { background: var(--fc-surface-alt); color: var(--fc-text); }
-      /* v144.17+: the Edit Product modal's Delete button sits at the far
+      /* the Edit Product modal's Delete button sits at the far
          left of the same .modal-actions row, visually separated from
          Cancel/Save by margin-right: auto so a household never mistakes
          it for a third "confirm" option next to Save. */
@@ -1478,7 +1468,7 @@ class FamilyHubPantryCard extends HTMLElement {
 
 customElements.define("family-hub-pantry-card", FamilyHubPantryCard);
 
-// v1.111.0+: native "Edit Card" config editor - a thin wrapper around
+// native "Edit Card" config editor - a thin wrapper around
 // Home Assistant's own <ha-form>, needed only because the new
 // theme_override field's option list has to be fetched live.
 class FamilyHubPantryCardEditor extends HTMLElement {

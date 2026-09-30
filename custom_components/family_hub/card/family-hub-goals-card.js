@@ -7,9 +7,9 @@
 // gate) and const.py's GOAL_REWARD_TYPE_* docstring for the per-goal
 // stars-vs-catalog-item reward choice.
 //
-// v143+ task #30: this used to render one column PER household member (a
-// shared board, same shape as Chores' own board) - the household asked for
-// it to become a personal "My Goals" card instead, showing only the logged-
+// this used to render one column PER household member (a
+// shared board, same shape as Chores' own board) - it's now
+// a personal "My Goals" card instead, showing only the logged-
 // in viewer's own goals, so a kiosk/tablet parked in one person's room (or
 // several people sharing one dashboard) doesn't have to scroll past
 // everyone else's goals to find their own. See _boardHtml below for the
@@ -42,8 +42,6 @@ const GOAL_REWARD_TYPE_CATALOG_ITEM = "catalog_item";
 const GOAL_STATUS_OPEN = "open";
 const GOAL_STATUS_PENDING_VERIFICATION = "pending_verification";
 const GOAL_STATUS_APPROVED = "approved";
-// v144.13+: household report - "show goal reward (stars) when a goal is
-// complete, add a button to complete (moves to the completed accordion)."
 // An approved goal used to just sit in the same flat My Goals list forever
 // (see _goalCardHtml's own `.status-approved { opacity: 0.6 }` - the only
 // concession that was ever made for it), same complaint as chores had
@@ -131,7 +129,7 @@ if (!window.__familyHubFabCoordinator) {
         if (oa !== ob) return oa - ob;
         return a[1].seq - b[1].seq;
       });
-      // v1.110.7+: entries with takesSlot:false (a fab_position: "card"
+      // entries with takesSlot:false (a fab_position: "card"
       // client - see registerClient's own doc below) are skipped when
       // handing out stacking slots/offsets, but still walked here so they
       // still see otherProvidesGoalTab and still get an onUpdate call.
@@ -157,7 +155,7 @@ if (!window.__familyHubFabCoordinator) {
       // register/unregister/updateClientMeta from ANY card, since adding a
       // second FAB changes where the first one's slot is too.
       //
-      // v1.110.7+: `opts.takesSlot` (default true) - pass `{ takesSlot:
+      // `opts.takesSlot` (default true) - pass `{ takesSlot:
       // false }` for a card whose FAB has opted out of the shared
       // viewport-corner stack (fab_position: "card" - anchored to its own
       // card's box instead, see each card's own _registerFabCoordinator).
@@ -194,9 +192,7 @@ if (!window.__familyHubFabCoordinator) {
 // Household-wide timer alarm sound+modal (v1.119.0+, widened in
 // v1.132.55+) - see family-hub-active-timers-card.js's own top comment
 // above this same block for the full design note. Added here in
-// v1.132.59+ after a household bug report, verbatim: "a household
-// alarm or an assigned alarm set to them plus kiosk doesnt alarm on the
-// kiosk" - this card never carried this singleton or subscribed to
+// v1.132.59+ after a - this card never carried this singleton or subscribed to
 // the widened-alarm broadcast at all, so a kiosk whose dashboard shows
 // it silently never rang for anyone else's widened timer alarm. Kept
 // byte-identical to every other card's copy on purpose.
@@ -238,8 +234,7 @@ if (!window.__familyHubTimerAlarm) {
     // ship or for a self-hosted install's network policy to worry about,
     // and it sounds identical on every install.
     //
-    // Household ask, verbatim: "can we make it sound more like an alarm
-    // and less like a ticking bomb." The original v1.119.0+ sound was one
+    // The original v1.119.0+ sound was one
     // flat square-wave tone repeated once a second - metronomic, which is
     // exactly what read as a countdown-bomb tick rather than an alarm. This
     // plays a quick alternating two-pitch TRIPLET (a classic digital-alarm-
@@ -274,7 +269,7 @@ if (!window.__familyHubTimerAlarm) {
         // the primary alarm; sound is a bonus on top of it, not required.
       }
     }
-    // v1.132.55+: which hass connection to tell "dismiss this everywhere"
+    // which hass connection to tell "dismiss this everywhere"
     // when Stop is tapped - set by whichever card most recently called
     // ring()/check() with one, since this singleton is shared across every
     // card on the dashboard and any of them may have `hass` by now. Best-
@@ -294,7 +289,7 @@ if (!window.__familyHubTimerAlarm) {
         beepHandle = null;
       }
       if (modalEl) modalEl.style.display = "none";
-      // v1.132.55+: household's explicit choice - "first tap wins, from
+      // household's explicit choice - "first tap wins, from
       // anyone" - so tapping Stop here also clears the alarm everywhere
       // else (other kiosks, other people's phones-that-are-dashboards)
       // rather than just silencing this one tab. No permission gate, by
@@ -303,14 +298,11 @@ if (!window.__familyHubTimerAlarm) {
         lastHass.connection.sendMessagePromise({ type: "family_hub/timers/dismiss_alarm", uid }).catch(() => {});
       }
     }
-    // Household bug report, verbatim: "a household alarm or an assigned
-    // alarm set to them plus kiosk doesnt alarm on the kiosk, it should end
-    // the screen saver and pop up the timer ended modal and make noise."
     // This modal already outranks the screensaver's own overlay (z-index
     // 2147483647 vs 2147483000, set in ensureModal() above), so it was
     // always painting on top of it - but a screensaver left running
-    // underneath still means its video/camera poll keeps going, and the
-    // household asked for it to actually END, not just be covered up.
+    // underneath still means its video/camera poll keeps going, so it
+    // needs to actually END, not just be covered up.
     // There are THREE independent screensaver implementations in this
     // project (the calendar card's own, the shared window.__familyHub
     // ScreenSaver controller used by Chores/Rewards/My Chores/etc., and the
@@ -371,7 +363,7 @@ if (!window.__familyHubTimerAlarm) {
         if (!mine || dismissedUids.has(mine.uid)) return;
         if (remainingSecondsFn(mine) <= 0) start(mine, hass);
       },
-      // v1.132.55+: the WIDENED half - a household_timer_alarm_ring bus
+      // the WIDENED half - a household_timer_alarm_ring bus
       // event (fired by chores_websocket_api.py's _dispatch_timer_alarm/
       // _reannounce_active_alarms) that THIS login should also ring for,
       // because it's either the timer's own owner, a login flagged as an
@@ -405,10 +397,7 @@ if (!window.__familyHubTimerAlarm) {
   })();
 }
 
-// Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
-// "When you load a card it tends to load the default theme first then it
-// switches over to the theme you set how can we always make it load the
-// set theme first." Root cause: EVERY themed card's first paint happens
+// Theme flash-of-default fix - Root cause: EVERY themed card's first paint happens
 // with no theme CSS vars set at all (falls back to _defaultTheme()'s own
 // hardcoded palette), because resolving the household's actual theme
 // takes two sequential, awaited websocket round trips after `hass` is
@@ -492,7 +481,7 @@ class FamilyHubGoalsCard extends HTMLElement {
   static getStubConfig() {
     return { title: "My Goals" };
   }
-  // v1.111.0+: switched from getConfigForm (a static schema) to
+  // switched from getConfigForm (a static schema) to
   // getConfigElement (a real custom element with its own hass/config
   // lifecycle) solely so the new theme_override field below can offer a
   // live-fetched list of themes - see FamilyHubGoalsCardEditor at the
@@ -500,14 +489,14 @@ class FamilyHubGoalsCard extends HTMLElement {
   static getConfigElement() {
     return document.createElement("family-hub-goals-card-editor");
   }
-  // v1.110.7+: see family-hub-chores-card.js's identical setConfig/
+  // see family-hub-chores-card.js's identical setConfig/
   // _registerFabCoordinator comment for the full "dashboard" vs "card"
   // design note - same option, same mechanism, on every FAB-bearing card.
   setConfig(config) {
     this._config = {
       title: (config && config.title) || "My Goals",
       fab_position: config && config.fab_position === "card" ? "card" : "dashboard",
-      // v1.111.0+: per-card-placement Theme override, set from this card's
+      // per-card-placement Theme override, set from this card's
       // own "Edit Card" dialog - "" (the default, untouched by every
       // existing dashboard) means "Use device settings," i.e. exactly the
       // pre-1.111.0 behavior (device override, else household Global
@@ -534,21 +523,20 @@ class FamilyHubGoalsCard extends HTMLElement {
   }
   async _initFirstLoad() {
     await Promise.all([this._fetchSettings(), this._fetchUsers(), this._fetchGoals(), this._fetchCatalog(), this._fetchMyPermissions()]);
-    // v1.111.0+: always fetched now, not just when the household has
+    // always fetched now, not just when the household has
     // useGlobalTheme on - a per-card theme_override needs this list
     // regardless of the household's own Global Theme setting.
     await this._fetchGlobalThemes();
     this._startPolling();
     this._registerFabCoordinator();
-    // Household bug report, verbatim: "a household alarm or an assigned
-    // alarm set to them plus kiosk doesnt alarm on the kiosk" - see this
+    // - see this
     // file's own copy of the window.__familyHubTimerAlarm singleton
     // (below) for the full design note. Kept byte-identical to every
     // other card's copy on purpose.
     this._subscribeAlarmEvents();
     this._render();
   }
-  // v1.132.59+: household-wide timer alarms - subscribe to the two bus
+  // household-wide timer alarms - subscribe to the two bus
   // events chores_websocket_api.py's _dispatch_timer_alarm/
   // _reannounce_active_alarms fire (see const.py's
   // EVENT_FAMILY_HUB_TIMER_ALARM_RING/_STOP), and hand each one to the
@@ -596,7 +584,7 @@ class FamilyHubGoalsCard extends HTMLElement {
       }
     }
   }
-  // v1.110.4+: joins the shared FAB-stacking coordinator (see the
+  // joins the shared FAB-stacking coordinator (see the
   // singleton block above this class) - unlike Chores/Rewards this card
   // never SETS `providesGoalTab` (it has no tab, just its own single FAB),
   // but it READS `otherProvidesGoalTab` off every layout update to decide
@@ -604,7 +592,7 @@ class FamilyHubGoalsCard extends HTMLElement {
   // own docstring for the full reasoning on why only this direction is
   // handled.
   //
-  // v1.110.7+: fab_position "card" toggles the [fab-position="card"] host
+  // fab_position "card" toggles the [fab-position="card"] host
   // attribute (position:fixed -> :host-relative position:absolute) and
   // registers with takesSlot:false - it stays a full coordinator member
   // (so it still reads otherProvidesGoalTab and still suppresses itself
@@ -641,7 +629,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     if (this._interval) clearInterval(this._interval);
     this._interval = null;
     if (window.__familyHubFabCoordinator) window.__familyHubFabCoordinator.unregisterClient(this);
-    // v1.132.37+: same "force-remove a still-animating portal" cleanup as
+    // same "force-remove a still-animating portal" cleanup as
     // family-hub-chores-card.js's own disconnectedCallback - see
     // _fireConfetti's own comment for why this lives in document.body
     // rather than this card's shadow root.
@@ -708,7 +696,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     };
   }
   _defaultSettings() {
-    // v1.132.37+: defaults ON, matching family-hub-chores-card.js's own
+    // defaults ON, matching family-hub-chores-card.js's own
     // _defaultSettings (see that file's comment for why this has to be
     // listed here too, not just in the calendar card's own Settings-form
     // default - a household that's never (re-)saved Settings since this
@@ -719,9 +707,7 @@ class FamilyHubGoalsCard extends HTMLElement {
   _getSettings() {
     return this._settingsCache || this._defaultSettings();
   }
-  // v1.132.37+: household ask, verbatim - "Confetti for completing chores,
-  // can we also apply it to goals and when you complete all tasks in a
-  // routine." Reuses the exact same choresConfettiOnComplete setting and
+  // Reuses the exact same choresConfettiOnComplete setting and
   // _fireConfetti/_confettiCss trio as family-hub-chores-card.js's own
   // (byte-identical, same "independently-loaded Lovelace resource, not an
   // ES module that could share one file" convention as everything else
@@ -779,7 +765,7 @@ class FamilyHubGoalsCard extends HTMLElement {
       }
     }, maxLifetimeMs + 200);
   }
-  // v144.6+: "This device's theme" - a device-local override of the shared
+  // "This device's theme" - a device-local override of the shared
   // Settings > Appearance theme choice, same key/mechanism
   // family-week-calendar-card.js's own _getDeviceThemeOverride uses (see
   // its own comment) and configured from that card's Settings modal (this
@@ -814,7 +800,7 @@ class FamilyHubGoalsCard extends HTMLElement {
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
-    // v1.111.0+: a per-card-placement Theme override (set from this card's
+    // a per-card-placement Theme override (set from this card's
     // own native "Edit Card" dialog) wins over everything else, including
     // this device's own override and the household's Global Theme - it's
     // the most specific choice available, same "more specific wins"
@@ -847,7 +833,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     const a = Math.max(0, Math.min(1, typeof alpha === "number" ? alpha : 1));
     return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
-  // v1.126.0+ - see window.__familyHubThemeCache's own comment above the
+  // see window.__familyHubThemeCache's own comment above the
   // class for the full "why a key, not one shared blob" reasoning. Called
   // identically from here (after resolving the REAL theme) and from
   // `_build()` (before the real theme is known yet, to look up whatever
@@ -863,14 +849,14 @@ class FamilyHubGoalsCard extends HTMLElement {
   }
   _applyThemeVars() {
     const theme = this._resolveTheme(this._getSettings());
-    // v144.5+: same "liquid glass" support family-week-calendar-card.js has
+    // same "liquid glass" support family-week-calendar-card.js has
     // - a theme's cardOpacity/glassBlur (100/0 defaults, both no-ops) turn
     // the card/surface backgrounds translucent and blur whatever shows
     // through them, so picking a Liquid Glass theme actually looks glassy
     // on this card too, not just the calendar.
     const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
     const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
-    // v1.126.0+: built as a plain object first (rather than each var going
+    // built as a plain object first (rather than each var going
     // straight into its own setProperty call, as before) purely so the
     // exact same values that get applied here also get cached - see
     // window.__familyHubThemeCache's own comment for why this fixes the
@@ -892,7 +878,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     Object.keys(vars).forEach((name) => this.style.setProperty(name, vars[name]));
     if (window.__familyHubThemeCache) window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
   }
-  // v1.126.0+: applies whatever theme this device/placement last actually
+  // applies whatever theme this device/placement last actually
   // resolved to, SYNCHRONOUSLY, before the real fetches that would
   // otherwise be the only way to know it - see window.__familyHubTheme
   // Cache's own comment above the class. Called once from `_build()`,
@@ -927,7 +913,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     } catch (e) {
       custom = [];
     }
-    // v1.111.0+: also merge in every installed native Home Assistant theme
+    // also merge in every installed native Home Assistant theme
     // - duplicated (not shared/imported) from family-week-calendar-card.js's
     // own _fetchGlobalThemes/_nativeHaThemeEntries, same "independently
     // loaded Lovelace resources duplicate small helpers" convention as
@@ -1097,7 +1083,7 @@ class FamilyHubGoalsCard extends HTMLElement {
 
   _build() {
     this._built = true;
-    // v1.126.0+: applied BEFORE attachShadow/the first innerHTML paint -
+    // applied BEFORE attachShadow/the first innerHTML paint -
     // see _applyCachedThemeVarsIfAny's own comment and window.__familyHub
     // ThemeCache's above the class for why this is what actually fixes
     // the household's reported "loads the default theme first" flash.
@@ -1170,7 +1156,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     }
     await this._fetchGoals();
   }
-  // v144.13+: was a bare window.prompt() for the optional reason - replaced
+  // was a bare window.prompt() for the optional reason - replaced
   // with a proper modal (the household's own "send back reason should be a
   // modal" request, applied here and to both of family-hub-chores-card.js's
   // own reject flows - chores and its embedded Goals view - the same way).
@@ -1215,9 +1201,7 @@ class FamilyHubGoalsCard extends HTMLElement {
   async _archive(goalId) {
     try {
       await this._hass.connection.sendMessagePromise({ type: "family_hub/goals/archive", goal_id: goalId });
-      // v1.132.37+: household ask, verbatim - "Confetti for completing
-      // chores, can we also apply it to goals and when you complete all
-      // tasks in a routine." Fires on "Complete" (archiving an
+      // Fires on "Complete" (archiving an
       // already-approved goal) - that's the moment with its own literal
       // "Complete" button, closest to a chore's Complete tap, not on
       // reaching the goal's target or on approval.
@@ -1418,7 +1402,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     const progressLabel = target > 1 ? `${current} / ${target} logged` : (current >= target ? "Done" : "Not yet done");
     let statusBadge = "";
     if (goal.status === GOAL_STATUS_PENDING_VERIFICATION) statusBadge = `<span class="goal-badge pending">Awaiting approval</span>`;
-    // v144.13+: the achieved badge now shows the reward inline ("Achieved!
+    // the achieved badge now shows the reward inline ("Achieved!
     // +5 stars" / "Achieved! Movie night 🎬") instead of leaving the reward
     // to the separate, much less noticeable `.goal-reward` line below -
     // the household specifically asked to "show goal reward (stars) when a
@@ -1458,7 +1442,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     `;
   }
 
-  // v143+ task #30: "My Goals" - a single flat list of just the logged-in
+  // "My Goals" - a single flat list of just the logged-in
   // viewer's own goals, replacing the old one-column-per-household-member
   // board (see this file's own header comment for the reasoning). Someone
   // not logged in at all (a kiosk display with no hass.user) sees a plain
@@ -1523,7 +1507,7 @@ class FamilyHubGoalsCard extends HTMLElement {
 
   _css() {
     return `
-      /* v1.110.7+: position:relative is the containing block .add-goal-fab
+      /* position:relative is the containing block .add-goal-fab
          needs when [fab-position="card"] switches it to position:absolute. */
       :host { display: block; position: relative; font-family: 'Varela Round', sans-serif; }
       ha-card { background: var(--fc-bg); color: var(--fc-text); padding: 14px; }
@@ -1533,7 +1517,7 @@ class FamilyHubGoalsCard extends HTMLElement {
       .goal-list { display: flex; flex-direction: column; gap: 8px; }
       .empty-state { font-size: 12px; color: var(--fc-text-secondary); padding: 8px 2px; }
       .goal-card { background: var(--fc-card); border-radius: 10px; padding: 10px; box-shadow: var(--fc-shadow, 0 2px 5px rgba(0,0,0,0.08)); display: flex; flex-direction: column; gap: 4px; }
-      /* v144.5+: "Liquid glass" support, same convention as
+      /* "Liquid glass" support, same convention as
          family-week-calendar-card.js - see that file's own comment on its
          backdrop-filter rule for the full reasoning. Zero-cost for every
          existing theme (blur(0px) is a no-op); -webkit- prefix needed for
@@ -1556,7 +1540,7 @@ class FamilyHubGoalsCard extends HTMLElement {
       .goal-actions button { border: none; border-radius: 8px; padding: 4px 8px; font-size: 11px; font-weight: 700; cursor: pointer; background: var(--fc-accent); color: var(--fc-accent-text); }
       .goal-delete-btn { background: var(--fc-surface2) !important; color: var(--fc-accent3) !important; }
       .goal-complete-btn { background: var(--fc-accent2) !important; }
-      /* v144.13+: the Completed accordion - same collapsed-by-default,
+      /* the Completed accordion - same collapsed-by-default,
          click-to-expand shape as family-hub-chores-card.js's own per-column
          Completed accordion (_completedChoresAccordionHtml), just a single
          one here since My Goals is already one flat list, not one per
@@ -1566,10 +1550,10 @@ class FamilyHubGoalsCard extends HTMLElement {
       .completed-goals-title { flex: 1; }
       .completed-goals-badge { background: var(--fc-surface2); color: var(--fc-accent2); border-radius: 8px; padding: 1px 7px; font-size: 11px; }
       .completed-goals-body { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
-      /* v1.110.4+: bottom offset by --fh-fab-offset - see family-hub-chores-card.js's identical comment. */
+      /* bottom offset by --fh-fab-offset - see family-hub-chores-card.js's identical comment. */
       .add-goal-fab { position: fixed; right: 18px; bottom: calc(18px + var(--fh-fab-offset, 0px)); z-index: 900; width: 56px; height: 56px; border-radius: 50%; border: none; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 28px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(58,53,44,0.35); transition: bottom 0.15s ease; }
       .add-goal-fab[hidden] { display: none; }
-      /* v1.110.7+: fab_position: "card" - see family-hub-chores-card.js's
+      /* fab_position: "card" - see family-hub-chores-card.js's
          identical .add-chore-fab rule for the same mechanism. */
       :host([fab-position="card"]) .add-goal-fab { position: absolute; bottom: 18px; }
       .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 1000; align-items: center; justify-content: center; }
@@ -1589,7 +1573,7 @@ class FamilyHubGoalsCard extends HTMLElement {
 
 customElements.define("family-hub-goals-card", FamilyHubGoalsCard);
 
-// v1.111.0+: the card's native "Edit Card" config editor - a thin wrapper
+// the card's native "Edit Card" config editor - a thin wrapper
 // around Home Assistant's own <ha-form> (every field here is a plain text/
 // select the generic form already renders fine) rather than a hand-built
 // form, needed ONLY because the new theme_override field's option list has

@@ -17,9 +17,7 @@
 // Household-wide timer alarm sound+modal (v1.119.0+, widened in
 // v1.132.55+) - see family-hub-active-timers-card.js's own top comment
 // above this same block for the full design note. Added here in
-// v1.132.59+ after a household bug report, verbatim: "a household
-// alarm or an assigned alarm set to them plus kiosk doesnt alarm on the
-// kiosk" - this card never carried this singleton or subscribed to
+// v1.132.59+ after a - this card never carried this singleton or subscribed to
 // the widened-alarm broadcast at all, so a kiosk whose dashboard shows
 // it silently never rang for anyone else's widened timer alarm. Kept
 // byte-identical to every other card's copy on purpose.
@@ -61,8 +59,7 @@ if (!window.__familyHubTimerAlarm) {
     // ship or for a self-hosted install's network policy to worry about,
     // and it sounds identical on every install.
     //
-    // Household ask, verbatim: "can we make it sound more like an alarm
-    // and less like a ticking bomb." The original v1.119.0+ sound was one
+    // The original v1.119.0+ sound was one
     // flat square-wave tone repeated once a second - metronomic, which is
     // exactly what read as a countdown-bomb tick rather than an alarm. This
     // plays a quick alternating two-pitch TRIPLET (a classic digital-alarm-
@@ -97,7 +94,7 @@ if (!window.__familyHubTimerAlarm) {
         // the primary alarm; sound is a bonus on top of it, not required.
       }
     }
-    // v1.132.55+: which hass connection to tell "dismiss this everywhere"
+    // which hass connection to tell "dismiss this everywhere"
     // when Stop is tapped - set by whichever card most recently called
     // ring()/check() with one, since this singleton is shared across every
     // card on the dashboard and any of them may have `hass` by now. Best-
@@ -117,7 +114,7 @@ if (!window.__familyHubTimerAlarm) {
         beepHandle = null;
       }
       if (modalEl) modalEl.style.display = "none";
-      // v1.132.55+: household's explicit choice - "first tap wins, from
+      // household's explicit choice - "first tap wins, from
       // anyone" - so tapping Stop here also clears the alarm everywhere
       // else (other kiosks, other people's phones-that-are-dashboards)
       // rather than just silencing this one tab. No permission gate, by
@@ -126,14 +123,11 @@ if (!window.__familyHubTimerAlarm) {
         lastHass.connection.sendMessagePromise({ type: "family_hub/timers/dismiss_alarm", uid }).catch(() => {});
       }
     }
-    // Household bug report, verbatim: "a household alarm or an assigned
-    // alarm set to them plus kiosk doesnt alarm on the kiosk, it should end
-    // the screen saver and pop up the timer ended modal and make noise."
     // This modal already outranks the screensaver's own overlay (z-index
     // 2147483647 vs 2147483000, set in ensureModal() above), so it was
     // always painting on top of it - but a screensaver left running
-    // underneath still means its video/camera poll keeps going, and the
-    // household asked for it to actually END, not just be covered up.
+    // underneath still means its video/camera poll keeps going, so it
+    // needs to actually END, not just be covered up.
     // There are THREE independent screensaver implementations in this
     // project (the calendar card's own, the shared window.__familyHub
     // ScreenSaver controller used by Chores/Rewards/My Chores/etc., and the
@@ -194,7 +188,7 @@ if (!window.__familyHubTimerAlarm) {
         if (!mine || dismissedUids.has(mine.uid)) return;
         if (remainingSecondsFn(mine) <= 0) start(mine, hass);
       },
-      // v1.132.55+: the WIDENED half - a household_timer_alarm_ring bus
+      // the WIDENED half - a household_timer_alarm_ring bus
       // event (fired by chores_websocket_api.py's _dispatch_timer_alarm/
       // _reannounce_active_alarms) that THIS login should also ring for,
       // because it's either the timer's own owner, a login flagged as an
@@ -228,10 +222,7 @@ if (!window.__familyHubTimerAlarm) {
   })();
 }
 
-// Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
-// "When you load a card it tends to load the default theme first then it
-// switches over to the theme you set how can we always make it load the
-// set theme first." Root cause: EVERY themed card's first paint happens
+// Theme flash-of-default fix - Root cause: EVERY themed card's first paint happens
 // with no theme CSS vars set at all (falls back to _defaultTheme()'s own
 // hardcoded palette), because resolving the household's actual theme
 // takes two sequential, awaited websocket round trips after `hass` is
@@ -350,7 +341,7 @@ class FamilyScreensaverCard extends HTMLElement {
       },
     };
   }
-  // v1.111.0+: switched to getConfigElement (a real custom element) so the
+  // switched to getConfigElement (a real custom element) so the
   // Theme picker below can list live Theme Builder + native HA themes -
   // see family-hub-goals-card.js's identical comment for the full reasoning.
   // getConfigForm above is kept (and still used by the editor below to
@@ -361,7 +352,7 @@ class FamilyScreensaverCard extends HTMLElement {
   }
   setConfig(config) {
     config = config || {};
-    // v140+: an optional wrapped `card:` (any Lovelace card config, built-in
+    // an optional wrapped `card:` (any Lovelace card config, built-in
     // or custom:*) - for a panel-view dashboard, which only ever holds
     // exactly ONE card, so this companion card couldn't previously be added
     // alongside whatever the household actually wanted showing on that
@@ -379,7 +370,7 @@ class FamilyScreensaverCard extends HTMLElement {
     const hasCard = config.card && typeof config.card === "object";
     this._config = {
       title: (config.title || "Screen Saver").toString(),
-      // v1.132.33+: normalized (not just trimmed) - see the main card's
+      // normalized (not just trimmed) - see the main card's
       // family-week-calendar-card.js _normalizeDashboardPath for the full
       // "tapping doesn't send you back" bug this guards against. This
       // card's own field is normally filled in through Home Assistant's
@@ -388,7 +379,7 @@ class FamilyScreensaverCard extends HTMLElement {
       // defensive fix applies here.
       return_dashboard_path: this._normalizeDashboardPath((config.return_dashboard_path || "").toString()),
       card: hasCard ? config.card : null,
-      // v1.111.0+: per-card Theme override - see family-hub-goals-card.js's
+      // per-card Theme override - see family-hub-goals-card.js's
       // identical field/comment for the full precedence story. This card
       // never had any theming at all before this (its edit-mode "face" used
       // hardcoded colors) - _defaultTheme/_resolveTheme/_applyThemeVars
@@ -409,6 +400,12 @@ class FamilyScreensaverCard extends HTMLElement {
     const first = !this._hass;
     this._hass = hass;
     if (this._wrappedCardEl) this._wrappedCardEl.hass = hass;
+    if (this._screenSaverWidgetEls) {
+      Object.values(this._screenSaverWidgetEls).forEach((wrap) => {
+        const cardEl = wrap && wrap.firstElementChild;
+        if (cardEl) cardEl.hass = hass;
+      });
+    }
     if (first) {
       this._firstLoadPromise = this._initFirstLoad();
     }
@@ -454,7 +451,7 @@ class FamilyScreensaverCard extends HTMLElement {
   }
   async _initFirstLoad() {
     await this._fetchSettings();
-    // v1.111.0+: always fetch (not just when useGlobalTheme is on) so a
+    // always fetch (not just when useGlobalTheme is on) so a
     // per-card theme_override can resolve even when the household hasn't
     // turned on Global Theme - same change as every other themed card.
     await this._fetchGlobalThemes();
@@ -462,9 +459,7 @@ class FamilyScreensaverCard extends HTMLElement {
     this._setupScreenSaverActivityListeners();
     this._resetScreenSaverIdleTimer();
     this._startPolling();
-    // Household bug report, verbatim: "a household alarm or an assigned
-    // alarm set to them plus kiosk doesnt alarm on the kiosk, it should end
-    // the screen saver and pop up the timer ended modal and make noise" -
+    // -
     // this is the standalone screensaver card itself, so it especially
     // needs this. See this file's own copy of the
     // window.__familyHubTimerAlarm singleton (below) for the full design
@@ -474,7 +469,7 @@ class FamilyScreensaverCard extends HTMLElement {
   _myUserId() {
     return this._hass && this._hass.user ? this._hass.user.id : null;
   }
-  // v1.132.59+: household-wide timer alarms - subscribe to the two bus
+  // household-wide timer alarms - subscribe to the two bus
   // events chores_websocket_api.py's _dispatch_timer_alarm/
   // _reannounce_active_alarms fire (see const.py's
   // EVENT_FAMILY_HUB_TIMER_ALARM_RING/_STOP), and hand each one to the
@@ -629,11 +624,35 @@ class FamilyScreensaverCard extends HTMLElement {
         idleSeconds: 180,
         usersEnabled: {},
       },
+      screenSaverWidgets: [],
     };
+  }
+  // Same clamped-percentage, drop-malformed-entries normalization as the
+  // main calendar card's own screenSaverWidgets handling (see that file's
+  // _normalizeSettings) - kept in sync by hand since this project copies
+  // small helpers into every independently-loaded card resource rather than
+  // sharing modules.
+  _normalizeScreenSaverWidgets(parsed) {
+    if (!Array.isArray(parsed)) return [];
+    const clampPct = (v, fallback) => {
+      const n = typeof v === "number" ? v : parseFloat(v);
+      return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : fallback;
+    };
+    return parsed
+      .filter((w) => w && typeof w === "object" && w.config && typeof w.config === "object" && typeof w.config.type === "string" && w.config.type)
+      .map((w) => ({
+        id: typeof w.id === "string" && w.id ? w.id : `sw-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+        config: w.config,
+        x: clampPct(w.x, 5),
+        y: clampPct(w.y, 5),
+        w: clampPct(w.w, 30),
+        h: clampPct(w.h, 20),
+      }));
   }
   _normalizeSettings(parsed) {
     const defaults = this._defaultSettings();
     if (!parsed || typeof parsed !== "object") return defaults;
+    const screenSaverWidgets = this._normalizeScreenSaverWidgets(parsed.screenSaverWidgets);
     const parsedScreenSaver = parsed.screenSaver && typeof parsed.screenSaver === "object" ? parsed.screenSaver : {};
     const sourceType = parsedScreenSaver.sourceType === "camera" ? "camera" : "video";
     const videoUrl = typeof parsedScreenSaver.videoUrl === "string" ? parsedScreenSaver.videoUrl.trim() : defaults.screenSaver.videoUrl;
@@ -647,7 +666,25 @@ class FamilyScreensaverCard extends HTMLElement {
         if (parsedScreenSaver.usersEnabled[userId]) usersEnabled[userId] = true;
       });
     }
-    return { screenSaver: { sourceType, videoUrl, cameraEntity, idleSeconds, usersEnabled } };
+    return { screenSaver: { sourceType, videoUrl, cameraEntity, idleSeconds, usersEnabled }, screenSaverWidgets };
+  }
+  // Same this-device-only localStorage key as the main calendar card's own
+  // _getScreenSaverHiddenWidgetIds - shared by name (not by module) so a
+  // widget hidden here on this device also stays hidden if this same
+  // device ever shows the main card's built-in screensaver instead.
+  _getScreenSaverHiddenWidgetIds() {
+    let raw = null;
+    try {
+      raw = localStorage.getItem("familyCalendarScreenSaverHiddenWidgetIdsLocal");
+    } catch (e) {
+    }
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.filter((id) => typeof id === "string" && id) : [];
+    } catch (e) {
+      return [];
+    }
   }
   _getSettings() {
     return this._settingsCache || this._defaultSettings();
@@ -658,7 +695,7 @@ class FamilyScreensaverCard extends HTMLElement {
       const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/get_settings" });
       const parsed = result && result.settings && typeof result.settings === "object" ? result.settings : null;
       this._settingsCache = this._normalizeSettings(parsed);
-      // v1.111.0+: _normalizeSettings above only keeps the screenSaver
+      // _normalizeSettings above only keeps the screenSaver
       // slice this card actually renders - theme/useGlobalTheme/
       // globalThemeId live on the SAME shared settings blob but get
       // stripped out by that normalization, so a separate cache of the raw
@@ -723,7 +760,7 @@ class FamilyScreensaverCard extends HTMLElement {
     const raw = this._themeSettingsCache;
     const settings = raw && typeof raw === "object" ? Object.assign(this._defaultThemeSettings(), raw) : this._defaultThemeSettings();
     const local = settings.theme || this._defaultTheme();
-    // v1.111.0+: a per-card-placement Theme override (set from this card's
+    // a per-card-placement Theme override (set from this card's
     // own native "Edit Card" dialog) wins over everything else, including
     // this device's own override and the household's Global Theme.
     const cardOverride = this._config && this._config.theme_override;
@@ -748,7 +785,7 @@ class FamilyScreensaverCard extends HTMLElement {
     const a = Math.max(0, Math.min(1, typeof alpha === "number" ? alpha : 1));
     return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
-  // v1.126.0+ - see window.__familyHubThemeCache's own comment above the
+  // see window.__familyHubThemeCache's own comment above the
   // class for the full "why a key, not one shared blob" reasoning. Called
   // identically from here (after resolving the REAL theme) and from
   // `_build()` (before the real theme is known yet, to look up whatever
@@ -772,7 +809,7 @@ class FamilyScreensaverCard extends HTMLElement {
     this.style.setProperty("--fc-text-secondary", theme.colors.textSecondary);
     this.style.setProperty("--fc-accent", theme.colors.accent);
     this.style.setProperty("--fc-accent-text", theme.colors.accentText);
-    // v1.126.0+: snapshot exactly what was just set/removed above into the
+    // snapshot exactly what was just set/removed above into the
     // shared cache under this card/placement's key, so a future _build() can
     // apply the same values before the real fetches resolve - see
     // window.__familyHubThemeCache's own comment for the full reasoning. A
@@ -807,7 +844,7 @@ class FamilyScreensaverCard extends HTMLElement {
       window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
     }
   }
-  // v1.126.0+: applies whatever theme this device/placement last actually
+  // applies whatever theme this device/placement last actually
   // resolved to, SYNCHRONOUSLY, before the real fetches that would
   // otherwise be the only way to know it - see window.__familyHubTheme
   // Cache's own comment above the class. Called once from `_build()`,
@@ -831,7 +868,7 @@ class FamilyScreensaverCard extends HTMLElement {
     } catch (e) {
       custom = [];
     }
-    // v1.111.0+: also merge in every installed native Home Assistant theme -
+    // also merge in every installed native Home Assistant theme -
     // duplicated (not shared/imported) from family-week-calendar-card.js's
     // own _fetchGlobalThemes/_nativeHaThemeEntries, same "independently
     // loaded Lovelace resources duplicate small helpers" convention as
@@ -945,7 +982,7 @@ class FamilyScreensaverCard extends HTMLElement {
     if (!hasSource) return false;
     return !!(ss.usersEnabled && ss.usersEnabled[this._hass.user.id]);
   }
-  // v134+: same fix as the full calendar card's own
+  // same fix as the full calendar card's own
   // _maybeResetScreenSaverIdleTimer - this card's 60s settings poll
   // (_startPolling) used to call _resetScreenSaverIdleTimer() on every
   // single tick regardless of whether anything actually changed, which
@@ -1006,15 +1043,69 @@ class FamilyScreensaverCard extends HTMLElement {
     Object.assign(img.style, { width: "100%", height: "100%", objectFit: "cover", background: "#000", display: "none" });
     el.appendChild(video);
     el.appendChild(img);
+    const widgetsLayer = document.createElement("div");
+    widgetsLayer.className = "screensaver-widgets";
+    Object.assign(widgetsLayer.style, { position: "absolute", top: "0", left: "0", right: "0", bottom: "0", pointerEvents: "none" });
+    el.appendChild(widgetsLayer);
     el.addEventListener("pointerdown", () => this._hideScreenSaver());
     document.body.appendChild(el);
     this._screenSaverOverlayEl = el;
     return el;
   }
+  // Same dynamic-card-hosting approach as this card's own
+  // _ensureWrappedCardElement above (loadCardHelpers/createCardElement) -
+  // see the main calendar card's _renderScreenSaverWidgets for the full
+  // "why" comment, kept in sync by hand across both files per this
+  // project's copy-paste-per-resource convention.
+  async _renderScreenSaverWidgets(overlay) {
+    const layer = overlay && overlay.querySelector(".screensaver-widgets");
+    if (!layer) return;
+    const widgets = this._getSettings().screenSaverWidgets || [];
+    const hiddenIds = this._getScreenSaverHiddenWidgetIds();
+    const visible = widgets.filter((w) => !hiddenIds.includes(w.id));
+    if (!visible.length) {
+      layer.innerHTML = "";
+      this._screenSaverWidgetEls = {};
+      return;
+    }
+    if (typeof window.loadCardHelpers !== "function") return;
+    const helpers = await window.loadCardHelpers();
+    const seenIds = {};
+    this._screenSaverWidgetEls = this._screenSaverWidgetEls || {};
+    for (const widget of visible) {
+      seenIds[widget.id] = true;
+      let wrap = this._screenSaverWidgetEls[widget.id];
+      if (!wrap || !wrap.isConnected) {
+        wrap = document.createElement("div");
+        wrap.setAttribute("data-screensaver-widget-id", widget.id);
+        Object.assign(wrap.style, { position: "absolute", overflow: "hidden" });
+        try {
+          const cardEl = helpers.createCardElement(widget.config);
+          cardEl.hass = this._hass;
+          wrap.appendChild(cardEl);
+        } catch (e) {
+        }
+        layer.appendChild(wrap);
+        this._screenSaverWidgetEls[widget.id] = wrap;
+      } else {
+        const cardEl = wrap.firstElementChild;
+        if (cardEl) cardEl.hass = this._hass;
+      }
+      Object.assign(wrap.style, { left: `${widget.x}%`, top: `${widget.y}%`, width: `${widget.w}%`, height: `${widget.h}%` });
+    }
+    Object.keys(this._screenSaverWidgetEls).forEach((id) => {
+      if (!seenIds[id]) {
+        const wrap = this._screenSaverWidgetEls[id];
+        if (wrap && wrap.parentNode) wrap.parentNode.removeChild(wrap);
+        delete this._screenSaverWidgetEls[id];
+      }
+    });
+  }
   _showScreenSaver() {
     if (!this._screenSaverApplicable()) return;
     const overlay = this._ensureScreenSaverOverlay();
     const ss = this._getSettings().screenSaver;
+    this._renderScreenSaverWidgets(overlay);
     const videoEl = overlay.querySelector(".screensaver-video");
     const imgEl = overlay.querySelector(".screensaver-camera-image");
     if (ss.sourceType === "camera") {
@@ -1095,11 +1186,11 @@ class FamilyScreensaverCard extends HTMLElement {
     });
     this._boundScreenSaverActivity = null;
   }
-  // v1.132.36+: see the main card's family-week-calendar-card.js own
+  // see the main card's family-week-calendar-card.js own
   // identical _navigateWithFallback for the full story - this briefly
-  // (v1.132.35) went to an unconditional hard navigation, but the
-  // household reported that made this specific card's own wake "jaring"
-  // where it "used to be very very smooth", so it's back to the smooth
+  // went to an unconditional hard navigation, but
+  // that made this specific card's own wake feel jarring
+  // compared to how smooth it was before, so it's back to the smooth
   // soft route (pushState + location-changed) with a hard-navigate
   // fallback only if that provably didn't work within 300ms.
   _goToReturnDashboard() {
@@ -1109,9 +1200,7 @@ class FamilyScreensaverCard extends HTMLElement {
   }
   _navigateWithFallback(path) {
     const before = window.location.href;
-    // v1.132.63+: household bug report, verbatim - "Need to make it if
-    // screensaver is set to return to the dashboard page it's currently
-    // on it does nothing." See family-week-calendar-card.js's own
+    // See family-week-calendar-card.js's own
     // identical copy of this method for the full root-cause note (v193
     // onward's soft-route-with-hard-fallback; v1.132.61's own attempted
     // fix of skipping this method entirely when already on the target
@@ -1138,7 +1227,7 @@ class FamilyScreensaverCard extends HTMLElement {
   _hardNavigate(path) {
     window.location.assign(path);
   }
-  // v1.132.33+: see the main card's family-week-calendar-card.js own
+  // see the main card's family-week-calendar-card.js own
   // identical helper for the full "tapping doesn't send you back to the
   // set dashboard" bug report this exists to fix - a value missing its
   // leading "/" gets resolved by pushState as RELATIVE to whatever's
@@ -1153,7 +1242,7 @@ class FamilyScreensaverCard extends HTMLElement {
   }
   _build() {
     this._built = true;
-    // v1.126.0+: applied BEFORE attachShadow/the first innerHTML paint -
+    // applied BEFORE attachShadow/the first innerHTML paint -
     // see _applyCachedThemeVarsIfAny's own comment and window.__familyHub
     // ThemeCache's above the class for why this is what actually fixes
     // the household's reported "loads the default theme first" flash.
@@ -1228,7 +1317,7 @@ color: var(--fc-text);
       this.dispatchEvent(new CustomEvent("config-changed", { bubbles: true, composed: true, detail: { config: this._config } }));
       this._updateStatus();
     });
-    // v1.126.0+: this used to unconditionally call `_applyThemeVars()` here
+    // this used to unconditionally call `_applyThemeVars()` here
     // too, but that ran the REAL theme resolution before `_hass`/
     // `_globalThemes` could possibly have anything in them yet, so it
     // always resolved to the plain local default - harmless on its own
@@ -1314,7 +1403,7 @@ if (!customElements.get("family-hub-screensaver-card")) {
   customElements.define("family-hub-screensaver-card", FamilyScreensaverCard);
 }
 
-// v1.111.0+: dedicated editor element for getConfigElement above - same
+// dedicated editor element for getConfigElement above - same
 // pattern as family-hub-goals-card.js's own editor (see that file's
 // comments for the full reasoning on each duplicated helper). Reuses
 // getConfigForm's own title/return_dashboard_path schema/labels/helpers

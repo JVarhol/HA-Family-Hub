@@ -187,13 +187,12 @@ async def _send_instant_notification(hass: HomeAssistant, notify_targets: list[s
 
 
 async def _send_alarm_notification(hass: HomeAssistant, notify_targets: list[str], title: str, message: str) -> int:
-    """v1.119.0+: same send loop as _send_instant_notification, but with an
+    """same send loop as _send_instant_notification, but with an
     enriched `data` payload asking the Home Assistant Companion App for
     alarm-like delivery instead of a normal quiet push - only used for a
     timer whose own "alarm" field is True (the owner's own notifyTimerAlarm
     profile flag, snapshotted at start - see timer_engine.py's docstring
-    and _timer_alarm_enabled_for_user above). Household ask: "route this
-    through alarm notifications for the person the timer is for."
+    and _timer_alarm_enabled_for_user above).
 
     What this data payload actually does, per platform - these are Home
     Assistant Companion App features, not anything Family Hub invents:
@@ -267,8 +266,7 @@ def _fire_routine_event(
     actor: Optional[str] = None,
     done: Optional[bool] = None,
 ) -> None:
-    """v186+: household ask, verbatim - "Routines should be able to be
-    triggers for automations." Mirrors chore_engine._fire_chore_event's
+    """Mirrors chore_engine._fire_chore_event's
     "always fire, never let a listener misbehaving break the actual
     action" shape, but lives here rather than in routine_engine.py since
     that module deliberately stays hass-free (see its own module
@@ -325,7 +323,7 @@ def _can_add_rewards(entry_data: dict[str, Any], connection: websocket_api.Activ
     )
 
 
-# Task #29: "log in as a specific user at a kiosk display." A shared kiosk
+# "log in as a specific user at a kiosk display." A shared kiosk
 # HA account (see const.py's SETTINGS_KEY_MEMBER_USER_IDS docstring for the
 # existing "one shared Tablet login" pattern this builds on) can act, for a
 # short window, AS whichever household member just typed their own PIN -
@@ -537,9 +535,7 @@ async def ws_list_chores(hass: HomeAssistant, connection: websocket_api.ActiveCo
         vol.Required("type"): "family_hub/chores/create",
         vol.Required("title"): str,
         vol.Optional("assigned_to"): vol.Any(str, None),
-        # v184+: household ask, verbatim - "Ability to Assign chores to
-        # multiple people. Each person is rewarded individually. Chore can
-        # be marked completed for each person individually." When present
+        # When present
         # with 2+ entries, ws_create_chore fans this single request out
         # into one ordinary chore PER assignee (each with its own plain
         # `assigned_to`) instead of creating one multi-assignee record -
@@ -559,38 +555,28 @@ async def ws_list_chores(hass: HomeAssistant, connection: websocket_api.ActiveCo
         vol.Optional("auto_complete_trigger"): vol.Any(dict, None),
         vol.Optional("recur_type"): vol.Any(str, None),
         vol.Optional("recur_interval_days"): int,
-        # v187+: household ask, verbatim - "chore scheduling needs some
-        # more work potentially want to do every 2 months or every 3
-        # months, every 4th week or 7th week, every other day etc." Only
+        # Only
         # meaningful when recur_type == "interval" - see chore_engine.
         # _normalize_recur_interval_unit/_compute_next_recur_due's own
         # comments.
         vol.Optional(CHORE_KEY_RECUR_INTERVAL_UNIT): vol.Any(str, None),
         vol.Optional("recur_weekdays"): [int],
-        # v185+: household ask, verbatim - "Better chore scheduling so you
-        # can choose things like every third Wednesday or the first weekend
-        # of every month. Very similar to how Google calendar does it now."
         # Only meaningful when recur_type == "monthly_nth" - see chore_
         # engine._compute_next_recur_due's own comment for how this pairs
         # with recur_weekdays just above to express "the first weekend."
         vol.Optional(CHORE_KEY_RECUR_MONTH_NTH): vol.Any(int, None),
-        # v186+: household ask, verbatim - "Chores due x amount time before
-        # due on recurring chores. This will set the due date based on when
-        # the chore is recurred instead of when the chore was created." How
+        # How
         # many minutes after each recurrence reset_recurring_chore should
         # set the fresh due_date to - see chore_engine._normalize_recur_
         # due_offset_minutes.
         vol.Optional(CHORE_KEY_RECUR_DUE_OFFSET_MINUTES): vol.Any(int, None),
         vol.Optional("no_approval_required"): bool,
         vol.Optional("quantity_total"): vol.Any(int, None),
-        # v1.110.0+: optional countdown length in minutes, None to clear.
+        # optional countdown length in minutes, None to clear.
         vol.Optional("timer_minutes"): vol.Any(int, None),
-        # v1.132.55+: who/what rings when this chore's timer alarms - see
+        # who/what rings when this chore's timer alarms - see
         # const.py's CHORE_KEY_ALARM_AUDIENCE/TIMER_ALARM_AUDIENCES.
         vol.Optional(CHORE_KEY_ALARM_AUDIENCE): vol.Any(str, None),
-        # v184+: household ask, verbatim - "Ability to Mark Chores
-        # Important. Chore will have a red ! denoting importance, they
-        # always go to the top of the list."
         vol.Optional(CHORE_KEY_IMPORTANT): bool,
     }
 )
@@ -602,7 +588,7 @@ async def ws_create_chore(hass: HomeAssistant, connection: websocket_api.ActiveC
     if not _has_permission(entry_data, connection, PERMISSION_ASSIGN):
         connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted chore-assignment permission) can create chores.")
         return
-    # v144.4+: creating a chore with no_approval_required=True is the one
+    # creating a chore with no_approval_required=True is the one
     # specific way someone with plain PERMISSION_ASSIGN could otherwise
     # collect stars with zero oversight - author a chore assigned to
     # themselves, skip verification entirely, done. Turning it OFF (or
@@ -611,7 +597,7 @@ async def ws_create_chore(hass: HomeAssistant, connection: websocket_api.ActiveC
     if msg.get("no_approval_required") and not _has_permission(entry_data, connection, PERMISSION_STAR_OVERRIDE):
         connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted star-override permission) can create a chore that doesn't require approval.")
         return
-    # v184+: multi-assignee fan-out - see the schema's own comment on
+    # multi-assignee fan-out - see the schema's own comment on
     # assigned_to_list above. De-duplicated, order-preserving (a household
     # double-checking the same person twice in the picker shouldn't get two
     # identical chores for them). A single name in the list is handled by
@@ -671,38 +657,32 @@ async def ws_create_chore(hass: HomeAssistant, connection: websocket_api.ActiveC
         vol.Optional("auto_complete_trigger"): vol.Any(dict, None),
         vol.Optional("recur_type"): vol.Any(str, None),
         vol.Optional("recur_interval_days"): int,
-        # v187+: household ask, verbatim - "chore scheduling needs some
-        # more work potentially want to do every 2 months or every 3
-        # months, every 4th week or 7th week, every other day etc." Only
+        # Only
         # meaningful when recur_type == "interval" - see chore_engine.
         # _normalize_recur_interval_unit/_compute_next_recur_due's own
         # comments.
         vol.Optional(CHORE_KEY_RECUR_INTERVAL_UNIT): vol.Any(str, None),
         vol.Optional("recur_weekdays"): [int],
-        # v185+: see ws_create_chore's identical field for the household ask
-        # this answers.
+        # see ws_create_chore's identical field.
         vol.Optional(CHORE_KEY_RECUR_MONTH_NTH): vol.Any(int, None),
-        # v186+: household ask, verbatim - "Chores due x amount time before
-        # due on recurring chores. This will set the due date based on when
-        # the chore is recurred instead of when the chore was created." How
+        # How
         # many minutes after each recurrence reset_recurring_chore should
         # set the fresh due_date to - see chore_engine._normalize_recur_
         # due_offset_minutes.
         vol.Optional(CHORE_KEY_RECUR_DUE_OFFSET_MINUTES): vol.Any(int, None),
         vol.Optional("no_approval_required"): bool,
         vol.Optional("quantity_total"): vol.Any(int, None),
-        # v1.110.0+: optional countdown length in minutes, None to clear.
+        # optional countdown length in minutes, None to clear.
         vol.Optional("timer_minutes"): vol.Any(int, None),
-        # v1.132.55+: see ws_create_chore's identical field.
+        # see ws_create_chore's identical field.
         vol.Optional(CHORE_KEY_ALARM_AUDIENCE): vol.Any(str, None),
-        # v184+: see ws_create_chore's identical field for the household ask
-        # this answers.
+        # see ws_create_chore's identical field.
         vol.Optional(CHORE_KEY_IMPORTANT): bool,
     }
 )
 @websocket_api.async_response
 async def ws_update_chore(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    """v144.4+: gated on PERMISSION_EDIT_CHORE, NOT PERMISSION_ASSIGN - see
+    """gated on PERMISSION_EDIT_CHORE, NOT PERMISSION_ASSIGN - see
     that permission's own docstring in const.py for why this was split out
     (the household's own worry: someone granted plain "assign chores"
     could otherwise also go bump the star_value on any existing open
@@ -758,7 +738,7 @@ async def ws_delete_chore(hass: HomeAssistant, connection: websocket_api.ActiveC
     except chore_engine.ChoreError as err:
         connection.send_error(msg["id"], err.code, str(err))
         return
-    # v1.110.0+: a deleted chore's timer has nothing left to count toward.
+    # a deleted chore's timer has nothing left to count toward.
     await _clear_chore_timers(hass, entry_data, msg["chore_id"])
     await _save_chores(hass, entry_data)
     connection.send_result(msg["id"], {"success": True})
@@ -808,7 +788,7 @@ async def ws_assign_chore(hass: HomeAssistant, connection: websocket_api.ActiveC
     except chore_engine.ChoreError as err:
         connection.send_error(msg["id"], err.code, str(err))
         return
-    # v1.110.0+: reassigning a chore mid-countdown drops its timer. The
+    # reassigning a chore mid-countdown drops its timer. The
     # timer belongs to the person it was started for, and silently
     # transferring "you have 12 minutes left to clean" to somebody who
     # never agreed to it (or leaving it counting for the old assignee, who
@@ -861,7 +841,7 @@ async def ws_complete_chore(hass: HomeAssistant, connection: websocket_api.Activ
     if entry_data is None:
         return
     chore = entry_data["chores"].get(msg["chore_id"])
-    # Task #29: resolves to whichever household member is "logged in" on
+    # resolves to whichever household member is "logged in" on
     # this kiosk (see _effective_actor's own docstring) when msg carries a
     # valid elevation_token, else the real connection identity as before.
     user_id, is_admin = await _effective_actor(hass, connection, entry_data, msg)
@@ -880,7 +860,7 @@ async def ws_complete_chore(hass: HomeAssistant, connection: websocket_api.Activ
     except chore_engine.ChoreError as err:
         connection.send_error(msg["id"], err.code, str(err))
         return
-    # v1.110.0+: completing a chore by hand while a timer is counting down
+    # completing a chore by hand while a timer is counting down
     # on it just ends the timer - "don't fight the user." They've clearly
     # finished early (or changed their mind about timing it), and leaving
     # an orphan timer running against a now-approved chore would fire a
@@ -892,7 +872,7 @@ async def ws_complete_chore(hass: HomeAssistant, connection: websocket_api.Activ
 
 async def _apply_chore_completion_effects(hass: HomeAssistant, entry_data: dict[str, Any], chore: dict[str, Any]) -> None:
     """Everything that has to happen AFTER chore_engine.complete_chore
-    succeeds, factored out of ws_complete_chore (v1.110.0+) so a chore
+    succeeds, factored out of ws_complete_chore so a chore
     timer running out can reuse the completion path byte-for-byte instead
     of forking its own.
 
@@ -945,7 +925,7 @@ async def ws_approve_chore(hass: HomeAssistant, connection: websocket_api.Active
 
 
 async def _notify_chore_approved(hass: HomeAssistant, entry_data: dict[str, Any], chore: dict[str, Any]) -> None:
-    """v123+: an instant push to the chore's own assignee, gated by their
+    """an instant push to the chore's own assignee, gated by their
     own profile's notifyChoreApproved flag - see const.py's
     SETTINGS_KEY_USER_PROFILES docstring. Never sent to anyone else, and a
     no-op (not an error) when the assignee has no profile, no notify
@@ -979,7 +959,7 @@ async def _notify_chore_approved(hass: HomeAssistant, entry_data: dict[str, Any]
 )
 @websocket_api.async_response
 async def ws_reject_chore(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    """v128+: the other way out of the verification gate - same permission
+    """the other way out of the verification gate - same permission
     tier as ws_approve_chore above (verification authority, not the
     narrower can_complete_any), since sending work back is just as much a
     verifier's call as accepting it."""
@@ -1001,7 +981,7 @@ async def ws_reject_chore(hass: HomeAssistant, connection: websocket_api.ActiveC
 
 
 async def _notify_chore_rejected(hass: HomeAssistant, entry_data: dict[str, Any], chore: dict[str, Any]) -> None:
-    """v128+: the reject-side twin of _notify_chore_approved right above -
+    """the reject-side twin of _notify_chore_approved right above -
     same "gated by the assignee's own profile flag" shape, see const.py's
     SETTINGS_KEY_USER_PROFILES docstring. Includes the verifier's optional
     reject_reason note (see const.py's CHORE_KEY_REJECT_REASON docstring)
@@ -1065,14 +1045,14 @@ async def ws_get_rewards_state(hass: HomeAssistant, connection: websocket_api.Ac
             "balances": dict(rewards.get("balances") or {}),
             "catalog": reward_engine.list_catalog(rewards),
             "redemptions": reward_engine.list_redemptions(rewards)[:REDEMPTION_HISTORY_LIMIT],
-            # v127+: always included, same as catalog/redemptions above -
+            # always included, same as catalog/redemptions above -
             # every caller can see what's pending (a submitter should be
             # able to see their own suggestion is still waiting), the
             # approve/reject ACTIONS are what's actually permission-gated
             # (see ws_approve_suggestion/ws_reject_suggestion below), not
             # visibility of the list itself.
             "suggestions": reward_engine.list_suggestions(rewards),
-            # v128+: same full-household transparency as "balances" above
+            # same full-household transparency as "balances" above
             # (every caller sees everyone's) - {user_id: {item_id: amount}}
             # for "banked" redeem_mode rewards, see reward_engine._adjust_bank.
             "banks": {uid: dict(bank) for uid, bank in (rewards.get("banks") or {}).items()},
@@ -1088,7 +1068,7 @@ async def ws_get_rewards_state(hass: HomeAssistant, connection: websocket_api.Ac
         vol.Required("cost_stars"): int,
         vol.Optional("icon"): str,
         vol.Optional("color"): str,
-        # v128+ - see const.py's REWARD_REDEEM_MODES docstring and
+        # see const.py's REWARD_REDEEM_MODES docstring and
         # reward_engine.add_catalog_item.
         vol.Optional("redeem_mode"): str,
         vol.Optional("requires_fulfillment"): bool,
@@ -1096,7 +1076,7 @@ async def ws_get_rewards_state(hass: HomeAssistant, connection: websocket_api.Ac
         vol.Optional("stack_unit_amount"): vol.Any(int, float),
         vol.Optional("stack_unit_label"): str,
         vol.Optional("timer_minutes"): vol.Any(int, None),
-        # v1.132.55+ - see const.py's REWARD_KEY_ALARM_AUDIENCE/
+        # see const.py's REWARD_KEY_ALARM_AUDIENCE/
         # TIMER_ALARM_AUDIENCES.
         vol.Optional("alarm_audience"): str,
         vol.Optional("elevation_token"): str,
@@ -1104,7 +1084,7 @@ async def ws_get_rewards_state(hass: HomeAssistant, connection: websocket_api.Ac
 )
 @websocket_api.async_response
 async def ws_add_catalog_item(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    """v127+: gated on _can_add_rewards (reward-override OR the narrower
+    """gated on _can_add_rewards (reward-override OR the narrower
     can_add_rewards grant), not reward-override alone - see const.py's
     PERMISSION_REWARD_ADD. Anyone WITHOUT either of those still gets to
     suggest a new reward, just through ws_add_suggestion below instead
@@ -1113,8 +1093,7 @@ async def ws_add_catalog_item(hass: HomeAssistant, connection: websocket_api.Act
     told it, and this handler independently re-checks rather than trusting
     that client-side choice, same as every other permission gate here.
 
-    v1.132.9+: household report, verbatim: "when logged in as elevated user
-    on todo lists I cant assign a star value to items on the kiosk." Root
+    Root
     cause: unlike ws_approve_suggestion/ws_reject_suggestion (which accept
     an optional elevation_token and resolve the actor via _effective_actor +
     _can_add_rewards_ctx), this handler only ever checked the raw connection
@@ -1221,7 +1200,7 @@ async def ws_delete_catalog_item(hass: HomeAssistant, connection: websocket_api.
 @websocket_api.async_response
 async def ws_redeem_reward(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
     """Instant self-serve claim - redeems for the caller's own id by
-    default (task #29: "the caller" includes whoever is elevated via a
+    default ("the caller" includes whoever is elevated via a
     kiosk PIN login, so a kid can claim their own reward from a shared
     kiosk without needing any override permission at all - see
     _effective_actor). Redeeming on someone ELSE's behalf (an admin
@@ -1250,7 +1229,7 @@ async def ws_redeem_reward(hass: HomeAssistant, connection: websocket_api.Active
 
 
 async def _notify_reward_claimed(hass: HomeAssistant, entry_data: dict[str, Any], claimer_id: str, redemption: dict[str, Any]) -> None:
-    """v123+: an instant push to EVERY profile opted into notifyRewardClaimed
+    """an instant push to EVERY profile opted into notifyRewardClaimed
     (not just an admin, not just the claimer) - see const.py's
     SETTINGS_KEY_USER_PROFILES docstring for why this is intentionally
     household-wide rather than scoped to one person. A no-op when nobody's
@@ -1286,8 +1265,7 @@ async def ws_adjust_balance(hass: HomeAssistant, connection: websocket_api.Activ
     star grant or deduction outside the normal chore-approval/redemption
     flow (e.g. a one-off bonus, or correcting a mistake).
 
-    v199+: household report, verbatim: "when logging in and trying to
-    adjust stars I get an error that only an admin can adjust stars." Same
+    Same
     root cause (and same fix) as v1.132.9's ws_add_catalog_item bug: this
     handler only ever checked the raw connection identity
     (_has_permission(entry_data, connection, ...)), never an
@@ -1363,7 +1341,7 @@ async def ws_reverse_redemption(hass: HomeAssistant, connection: websocket_api.A
 )
 @websocket_api.async_response
 async def ws_mark_fulfilled(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    """v128+: marks a pending (requires_fulfillment) redemption as
+    """marks a pending (requires_fulfillment) redemption as
     delivered - "yes, I actually handed over the $20." Same authority tier
     as approving a suggestion (_can_add_rewards - reward-override OR the
     narrower can_add_rewards grant), not the broader reward-override alone,
@@ -1389,7 +1367,7 @@ async def ws_mark_fulfilled(hass: HomeAssistant, connection: websocket_api.Activ
 )
 @websocket_api.async_response
 async def ws_use_bank(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    """v128+: spends part (or all) of a banked reward - "use 1.5 of my 3
+    """spends part (or all) of a banked reward - "use 1.5 of my 3
     banked hours." Same self-serve-for-yourself/reward-override-for-someone-
     else split as ws_redeem_reward above - using your OWN bank needs no
     permission at all, using someone ELSE's needs reward-override (an
@@ -1438,7 +1416,7 @@ async def ws_mark_bank_usage_fulfilled(hass: HomeAssistant, connection: websocke
 @websocket_api.websocket_command({vol.Required("type"): "family_hub/rewards/get_ledger", vol.Required("user_id"): str})
 @websocket_api.async_response
 async def ws_get_ledger(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    """v128+: a complete per-user star history (every chore approval/
+    """a complete per-user star history (every chore approval/
     overdue penalty/redemption/reversal/manual adjustment - see
     reward_engine.add_stars) for the rewards card's own "click a name to
     see their history" view. No permission gate, for the same reason
@@ -1464,10 +1442,10 @@ async def ws_get_ledger(hass: HomeAssistant, connection: websocket_api.ActiveCon
 )
 @websocket_api.async_response
 async def ws_gift_stars(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    """Task #31: gift some of the caller's OWN stars to another household
+    """gift some of the caller's OWN stars to another household
     member - self-serve and instant, same "no admin approval needed" shape
     ws_redeem_reward already has (see reward_engine.gift_stars' own
-    docstring). Elevation-aware the same way ws_redeem_reward is (task #29
+    docstring). Elevation-aware the same way ws_redeem_reward is (
     - a kid logged in at a shared kiosk can gift their own stars without
     needing any override permission), via _effective_actor. Unlike
     ws_redeem_reward there is no "on someone else's behalf" mode at all -
@@ -1512,7 +1490,7 @@ async def ws_gift_stars(hass: HomeAssistant, connection: websocket_api.ActiveCon
 )
 @websocket_api.async_response
 async def ws_add_suggestion(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    """v127+: open to any authenticated household member, no permission
+    """open to any authenticated household member, no permission
     gate at all - this IS the path for whoever doesn't have pricing
     authority (see _can_add_rewards/PERMISSION_REWARD_ADD). Someone who DOES
     have it could call this too (nothing stops them), but the card only
@@ -1613,7 +1591,7 @@ async def ws_get_permissions(hass: HomeAssistant, connection: websocket_api.Acti
 @websocket_api.websocket_command({vol.Required("type"): "family_hub/permissions/get_mine"})
 @websocket_api.async_response
 async def ws_get_my_permissions(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    """v127+: the non-admin-safe counterpart to ws_get_permissions above -
+    """the non-admin-safe counterpart to ws_get_permissions above -
     open to ANY authenticated household member (not admin-only), and
     returns only the CALLER's own effective grants (exactly the
     {permission: bool} shape _has_permission already checks for every
@@ -1653,13 +1631,28 @@ async def ws_get_my_permissions(hass: HomeAssistant, connection: websocket_api.A
         vol.Optional("can_edit_chore"): bool,
         vol.Optional("can_star_override"): bool,
         vol.Optional("can_edit_menu"): bool,
-        # v1.132.5+: PERMISSION_SEE_WISHLIST_CLAIMS - see its own docstring
+        # PERMISSION_SEE_WISHLIST_CLAIMS - see its own docstring
         # in const.py. Must be listed here literally (this schema doesn't
         # derive its keys from CHORE_PERMISSIONS) or a save carrying this
         # field would be silently stripped by voluptuous before the handler
         # ever saw it, even though the handler's own `for key in
         # CHORE_PERMISSIONS` loop below already handles it generically.
         vol.Optional("can_see_wishlist_claims"): bool,
+        # v1.133.2 bugfix: PERMISSION_DELETE_EVENT/PERMISSION_ROUTINES_
+        # MANAGE_OWN/PERMISSION_ROUTINES_MANAGE_ANY (const.py's Calendar and
+        # Routines groups) were added to CHORE_PERMISSIONS in v1.132.47 and
+        # v1.132.43 but never added here - exactly the trap this schema's
+        # own comment above warns about. Root cause: voluptuous silently stripped these three
+        # keys out of every family_hub/permissions/set call before
+        # ws_set_permissions ever saw them (its own `for key in
+        # CHORE_PERMISSIONS: if key in msg` loop below was already correct -
+        # msg simply never had the key to find), so the checkbox's own
+        # optimistic UI update got overwritten by the server's echoed-back
+        # permissions (still False) and immediately reverted - it looked
+        # like the checkbox couldn't be checked at all.
+        vol.Optional("can_delete_event"): bool,
+        vol.Optional("can_manage_own_routines"): bool,
+        vol.Optional("can_manage_any_routines"): bool,
     }
 )
 @websocket_api.async_response
@@ -1681,7 +1674,7 @@ async def ws_set_permissions(hass: HomeAssistant, connection: websocket_api.Acti
 
 
 # ---------------------------------------------------------------------------
-# Kiosk PIN login (task #29) - "Need a way to be able to log in as a
+# Kiosk PIN login () - "Need a way to be able to log in as a
 # specific user at a kiosk display... click a button at the top of chores
 # or rewards and be asked for a pin code that would then allow you to run
 # in an elevated permission state of whatever users code was entered."
@@ -1855,9 +1848,7 @@ async def ws_kiosk_deelevate(hass: HomeAssistant, connection: websocket_api.Acti
 def _can_write_routine_items(
     entry_data: dict[str, Any], connection: websocket_api.ActiveConnection, target_user_id: Optional[str]
 ) -> bool:
-    """v1.132.47+: household ask, verbatim - "Need a permission to add/
-    delete routines both add/delete self and all so someone can't modify
-    others." Shared by ws_create_routine_item/ws_update_routine_item/
+    """Shared by ws_create_routine_item/ws_update_routine_item/
     ws_delete_routine_item/ws_reorder_routine_items below - the one place
     this rule is decided, so all four stay consistent. target_user_id is
     whichever person's routine SECTION the write actually touches (the
@@ -1914,9 +1905,7 @@ async def ws_list_routines(hass: HomeAssistant, connection: websocket_api.Active
     )
 
 
-# v184+: household ask, verbatim - "Build a Routine Library - a common
-# library of routines that people can pick from to build out their day.
-# Brush teeth, make bed, etc etc etc." Read-only, no permission gate (same
+# Read-only, no permission gate (same
 # as ws_list_routines/ws_list_chores - it's just a menu of suggestions, not
 # anyone's actual data), served straight from routine_library.py's static
 # list. Picking an entry in the UI is just a faster way to fill in the
@@ -1937,7 +1926,7 @@ async def ws_list_routine_library(hass: HomeAssistant, connection: websocket_api
         vol.Required("user_id"): str,
         vol.Required("category"): str,
         vol.Required("title"): str,
-        # v136+: both optional, same shape/validation as routine_engine.py's
+        # both optional, same shape/validation as routine_engine.py's
         # _validate_due_time/_validate_days_of_week (recur_weekdays just
         # above is the precedent for [int] as the schema shape for a list
         # of weekday numbers).
@@ -1945,8 +1934,7 @@ async def ws_list_routine_library(hass: HomeAssistant, connection: websocket_api
         vol.Optional("days_of_week"): [int],
         vol.Optional("star_value"): int,
         vol.Optional("no_approval_required"): bool,
-        # v1.132.41+ (household ask, verbatim: "add the account to automate
-        # routine completion based on sensors like we do with chores") -
+        # v1.132.41+ ) -
         # same loose shape as ws_create_chore's auto_create_trigger/auto_
         # complete_trigger just above: any dict or None, the inner entity_
         # id/from_state/to_state fields aren't enforced here either, since
@@ -2074,7 +2062,7 @@ async def ws_toggle_routine_item(hass: HomeAssistant, connection: websocket_api.
         await _save_rewards(hass, entry_data)
     actor = _actor_id(connection)
     _fire_routine_event(hass, event="item_toggled", item=item, actor=actor, done=item.get("done"))
-    # v186+: "routine_completed" fires once, right on the transition into
+    # "routine_completed" fires once, right on the transition into
     # every today-due item for this user_id+category being done - see
     # routine_engine.is_routine_complete's own docstring for why it's
     # gated on was_done being False (never re-fires from toggling an
@@ -2114,7 +2102,7 @@ async def ws_approve_routine_item(hass: HomeAssistant, connection: websocket_api
 @websocket_api.websocket_command({vol.Required("type"): "family_hub/routines/delete", vol.Required("item_id"): str})
 @websocket_api.async_response
 async def ws_delete_routine_item(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    """v1.132.47+: same _can_write_routine_items gate as create/update above
+    """same _can_write_routine_items gate as create/update above
     (see that helper's own docstring) - looks up the existing item first,
     purely to read its "user_id" for the ownership check, same reasoning as
     ws_update_routine_item just above."""
@@ -2149,10 +2137,9 @@ async def ws_delete_routine_item(hass: HomeAssistant, connection: websocket_api.
 )
 @websocket_api.async_response
 async def ws_reorder_routine_items(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    """v211+: household ask, verbatim - "allow routine blocks to be drug
-    around and ordered in the routine modal" - persists a drag-and-drop
+    """- persists a drag-and-drop
     reorder of one person's one routine category (routine_engine.
-    reorder_items). v1.132.47+: same _can_write_routine_items gate as
+    reorder_items). same _can_write_routine_items gate as
     create/update/delete just above (see that helper's own docstring) -
     reordering is exactly as privileged an edit to a routine as any of
     those. The request already carries the target "user_id" directly (same
@@ -2459,7 +2446,7 @@ async def _notify_goal_rejected(hass: HomeAssistant, entry_data: dict[str, Any],
 
 
 # ---------------------------------------------------------------------------
-# Chore/reward timers (v1.110.0+) - "2 hours of gaming, when you click use
+# Chore/reward timers - "2 hours of gaming, when you click use
 # reward a timer would start and then a timer would go off at the end of the
 # 2 hours. Or if you have a chore thats like clean for 30 minutes, at the end
 # of 30 minutes it would set off a timer, and either go to approval mode or
@@ -2502,7 +2489,7 @@ async def _save_timers(hass: HomeAssistant, entry_data: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Native Home Assistant timer.* integration (v1.110.2+)
+# Native Home Assistant timer.* integration
 #
 # "this should use the home assistant native timer.*". See const.py's
 # TIMER_ENTITY_PREFIX for the full research note on why Family Hub ADOPTS
@@ -2655,7 +2642,7 @@ async def _adopt_native_timer(hass: HomeAssistant, entry_data: dict[str, Any], t
         entity_id = await _pick_native_timer(hass, entry_data, timer)
         if not entity_id:
             return
-        # v1.132.59+: duration_minutes can now be fractional (a sub-minute
+        # duration_minutes can now be fractional (a sub-minute
         # standalone timer - "can we make the timer accept seconds"), so
         # this is computed in total seconds rather than truncating via
         # int(minutes) first, which used to silently drop anything under a
@@ -2700,7 +2687,7 @@ async def _fire_timer(hass: HomeAssistant, entry_data: dict[str, Any], timer: di
     _fire_*_timer functions below are the same code that shipped in
     v1.110.0/v1.110.1, untouched.
     """
-    # v1.110.3+ - fire Family Hub's own event FIRST, before the kind-
+    # fire Family Hub's own event FIRST, before the kind-
     # specific action, so an automation reacting to it (see
     # EVENT_FAMILY_HUB_TIMER_FINISHED in const.py) sees this exactly once
     # per completion regardless of which of the three actions below does
@@ -2811,7 +2798,7 @@ async def _notify_targets_for_user(hass: HomeAssistant, entry_data: dict[str, An
 
 
 async def _timer_alarm_enabled_for_user(hass: HomeAssistant, entry_data: dict[str, Any], user_id: Optional[str]) -> bool:
-    """v1.119.0+: this person's own notifyTimerAlarm profile flag, read raw
+    """this person's own notifyTimerAlarm profile flag, read raw
     the same way _notify_targets_for_user reads notifyTargets - snapshotted
     onto the timer's own "alarm" field at start time (see timer_engine.py's
     own docstring for why every notify-relevant field on a timer is a
@@ -2844,7 +2831,7 @@ async def ws_list_timers(hass: HomeAssistant, connection: websocket_api.ActiveCo
     {
         vol.Required("type"): "family_hub/timers/start_chore",
         vol.Required("chore_id"): str,
-        # v1.119.0+: this tab's own per-browser-tab id, echoed back onto the
+        # this tab's own per-browser-tab id, echoed back onto the
         # timer as origin_client_id - see timer_engine.py's own docstring.
         vol.Optional("client_id"): str,
         vol.Optional("elevation_token"): str,
@@ -2895,7 +2882,7 @@ async def ws_start_chore_timer(hass: HomeAssistant, connection: websocket_api.Ac
             chore_id=msg["chore_id"],
             notify_targets=await _notify_targets_for_user(hass, entry_data, owner),
             alarm=await _timer_alarm_enabled_for_user(hass, entry_data, owner),
-            # v1.132.55+: snapshot the chore's own alarm_audience tier onto
+            # snapshot the chore's own alarm_audience tier onto
             # the timer at start time, same convention as "alarm" above -
             # see const.py's CHORE_KEY_ALARM_AUDIENCE and timer_engine.py's
             # own docstring for why this one field is snapshotted even
@@ -2977,7 +2964,7 @@ async def ws_start_reward_timer(hass: HomeAssistant, connection: websocket_api.A
             item_id=msg["item_id"],
             notify_targets=await _notify_targets_for_user(hass, entry_data, target_user_id),
             alarm=await _timer_alarm_enabled_for_user(hass, entry_data, target_user_id),
-            # v1.132.55+: same snapshot as ws_start_chore_timer above, off
+            # same snapshot as ws_start_chore_timer above, off
             # the reward catalog item's own alarm_audience field.
             alarm_audience=timer_engine.normalize_alarm_audience(item.get(REWARD_KEY_ALARM_AUDIENCE)),
             client_id=msg.get("client_id"),
@@ -3005,8 +2992,7 @@ async def ws_start_reward_timer(hass: HomeAssistant, connection: websocket_api.A
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "family_hub/timers/start_standalone",
-        # v1.132.59+: household ask, verbatim - "can we make the timer
-        # accept seconds" - was vol.Coerce(int), which silently truncated
+        # - was vol.Coerce(int), which silently truncated
         # away a fractional/sub-minute value (0.5 -> 0) before it ever
         # reached timer_engine.start_timer. The quick-timer modal combines
         # its minutes + seconds inputs into one fractional-minutes number
@@ -3016,8 +3002,7 @@ async def ws_start_reward_timer(hass: HomeAssistant, connection: websocket_api.A
         vol.Optional("user_id"): vol.Any(str, None),
         vol.Optional("client_id"): str,
         vol.Optional("elevation_token"): str,
-        # v1.132.57+: household ask, verbatim - "why dont household timers
-        # alert on the kiosks" - see const.py's CHORE_KEY_ALARM_AUDIENCE.
+        # - see const.py's CHORE_KEY_ALARM_AUDIENCE.
         vol.Optional("alarm_audience"): vol.Any(str, None),
     }
 )
@@ -3060,7 +3045,7 @@ async def ws_start_standalone_timer(hass: HomeAssistant, connection: websocket_a
             # _fire_standalone_timer).
             notify_targets=await _notify_targets_for_user(hass, entry_data, assigned_to) if assigned_to else [],
             alarm=await _timer_alarm_enabled_for_user(hass, entry_data, assigned_to) if assigned_to else False,
-            # v1.132.57+: unlike notify_targets/alarm just above, this one
+            # unlike notify_targets/alarm just above, this one
             # deliberately does NOT depend on whether the timer is assigned
             # - an unassigned "house" timer (the oven, whose turn it is) can
             # still widen to kiosks/everyone even though it has no owner to
@@ -3119,7 +3104,7 @@ async def ws_cancel_timer(hass: HomeAssistant, connection: websocket_api.ActiveC
     user_id, is_admin = await _effective_actor(hass, connection, entry_data, msg)
     kind = timer.get("kind")
     if kind == TIMER_KIND_STANDALONE:
-        # v1.110.1+: a standalone timer is household furniture, not
+        # a standalone timer is household furniture, not
         # somebody's property. An UNASSIGNED one (the oven, a board game)
         # can be stopped by anyone - it belongs to the room, and making
         # people hunt down whoever tapped Start to silence the kitchen
@@ -3148,7 +3133,7 @@ async def ws_cancel_timer(hass: HomeAssistant, connection: websocket_api.ActiveC
     cancelled = timer_engine.remove_timer(state, msg["uid"])
     timer_sensor.remove_timer_sensor(entry_data, msg["uid"])
     await _save_timers(hass, entry_data)
-    # v1.110.2+: hand the native entity back. Done AFTER removal so the
+    # hand the native entity back. Done AFTER removal so the
     # timer.cancelled event this triggers resolves to nothing and can't
     # double-handle what we already cleared.
     if cancelled:
@@ -3182,7 +3167,7 @@ async def _expire_due_timers(hass: HomeAssistant, entry_data: dict[str, Any]) ->
     await _save_timers(hass, entry_data)
     for timer in due:
         try:
-            # v1.110.2+: a timer backed by a native entity has almost
+            # a timer backed by a native entity has almost
             # certainly already fired through HA's own timer.finished event
             # by now and been removed - reaching it here means the event was
             # missed, so release the helper back to the pool as we go.
@@ -3230,18 +3215,16 @@ async def _fire_chore_timer(hass: HomeAssistant, entry_data: dict[str, Any], tim
         else f"Time's up on \"{completed.get('title')}\" - sent for approval."
     )
     if targets:
-        # v1.119.0+: alarm-style delivery for whoever opted into it on their
+        # alarm-style delivery for whoever opted into it on their
         # own profile (see timer.get("alarm")'s own docstring) - everyone
         # else keeps getting the plain, quiet push exactly as before.
         send = _send_alarm_notification if timer.get("alarm") else _send_instant_notification
         await send(hass, targets, "Family Hub chore timer", body)
-    # v1.132.55+/v1.132.57+: the WIDENED reach on top of the owner's own
+    # v1.132.55+/the WIDENED reach on top of the owner's own
     # phone push above - alarm devices, other people's phones, and the
     # dashboard ring. Called UNCONDITIONALLY (not gated on timer.get
     # ("alarm")) because _dispatch_timer_alarm's own audience check is
-    # the real gate - see its docstring. Household ask, verbatim: "if a
-    # kid starts a clean room for 30 minutes task they should get an
-    # alarm at the main kiosk" - that's the CHORE's own alarm_audience
+    # the real gate - see its docstring. - that's the CHORE's own alarm_audience
     # setting speaking, not the kid's personal notifyTimerAlarm opt-in
     # for their own phone (those are deliberately independent: a chore
     # can widen to kiosks even if its owner never turned on alarm-style
@@ -3259,7 +3242,7 @@ async def _fire_reward_timer(hass: HomeAssistant, entry_data: dict[str, Any], ti
     if targets:
         send = _send_alarm_notification if timer.get("alarm") else _send_instant_notification
         await send(hass, targets, "Family Hub reward timer", body)
-    # v1.132.55+/v1.132.57+: see _fire_chore_timer's matching block above -
+    # v1.132.55+/see _fire_chore_timer's matching block above -
     # unconditional, gated by _dispatch_timer_alarm's own audience check.
     await _dispatch_timer_alarm(hass, entry_data, timer, "Family Hub reward timer", body)
 
@@ -3290,8 +3273,7 @@ async def _fire_standalone_timer(hass: HomeAssistant, entry_data: dict[str, Any]
         # plain push.
         send = _send_alarm_notification if timer.get("alarm") else _send_instant_notification
         await send(hass, targets, "Family Hub timer", body)
-    # v1.132.57+: household ask, verbatim - "why dont household timers
-    # alert on the kiosks" - a household/standalone timer (the oven, a
+    # - a household/standalone timer (the oven, a
     # board game, whose turn it is - see TIMER_KIND_STANDALONE) can now
     # carry the same "Who hears this alarm" tier as a chore/reward timer
     # (see ws_start_standalone_timer), and this is what actually acts on
@@ -3319,7 +3301,7 @@ async def _all_household_notify_targets(hass: HomeAssistant, entry_data: dict[st
 
 
 def _active_alarms(entry_data: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """v1.132.55+: in-memory-only registry of currently-ringing timer
+    """in-memory-only registry of currently-ringing timer
     alarms, keyed by timer uid - deliberately not Store-persisted,
     mirroring _kiosk_elevations above: a restart forgetting an
     in-progress alarm is the correct failure mode here, not a bug (nobody
@@ -3394,11 +3376,7 @@ async def _dispatch_timer_alarm(
     """The WIDENED half of a timer alarm, on top of the owner's own phone
     push _fire_chore_timer/_fire_reward_timer/_fire_standalone_timer
     already sent (if any - an unassigned standalone timer has no owner
-    push at all). Household ask, verbatim: "if a kid starts a clean room
-    for 30 minutes task they should get an alarm at the main kiosk, but if
-    they have siblings the siblings don't need that alarm. But maybe
-    parents want alarms to trigger everywhere." Follow-up, also verbatim:
-    "why dont household timers alert on the kiosks" - answered by giving
+    push at all). Follow-up, - answered by giving
     every timer kind the same alarm_audience tier, not just chores/rewards.
     See const.py's CHORE_KEY_ALARM_AUDIENCE for the full three-tier picture
     this implements.
@@ -3630,13 +3608,13 @@ ALL_COMMANDS = (
     ws_approve_goal,
     ws_archive_goal,
     ws_reject_goal,
-    # v1.110.0+: chore/reward timers.
+    # chore/reward timers.
     ws_list_timers,
     ws_start_chore_timer,
     ws_start_reward_timer,
     ws_start_standalone_timer,
     ws_cancel_timer,
-    # v1.132.55+: household-wide timer alarms (speakers, Assist satellites,
+    # household-wide timer alarms (speakers, Assist satellites,
     # dashboard ring) - see _dispatch_timer_alarm's own docstring.
     ws_dismiss_timer_alarm,
     ws_list_active_alarms,

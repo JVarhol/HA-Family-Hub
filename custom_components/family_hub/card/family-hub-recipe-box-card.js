@@ -1,4 +1,4 @@
-// Family Hub Recipe Box card (v1.110.6+) - "Create a card for the menu box in
+// Family Hub Recipe Box card - "Create a card for the menu box in
 // case people want to see it as its own tab of the dashboard, it should use
 // the same exact code from the modal so changing the modal changes the
 // card."
@@ -48,10 +48,8 @@
 // already in the Recipe Box.
 // The screensaver idle-timer reset the modal does on open/close is a no-op
 // here (this card has no screensaver feature to protect).
-// v1.118.0+: the full in-card Grocy Recipe Viewer is NOT out of scope
-// anymore - household report: "the recipe box card tries to send you to the
-// external grocy link for recipes. this needs to use the internal recipe
-// viewer." Tapping a Grocy-linked dish's recipe link here now opens the
+// the full in-card Grocy Recipe Viewer is NOT out of scope
+// anymore - Tapping a Grocy-linked dish's recipe link here now opens the
 // exact same live viewer (fetches the recipe fresh from Grocy, lets you
 // scale servings, mark it consumed, etc.) as the calendar card's own -
 // shared via window.__familyHubRecipeBoxShared, see that block's own
@@ -68,8 +66,8 @@
 // does.
 
 // -------------------------------------------------------------------------
-// Recipe Box ("Loved Dishes") shared logic (v1.110.6+) - "the menu box" the
-// household asked to also see as its own dashboard tab. There is no literal
+// Recipe Box ("Loved Dishes") shared logic - "the menu box"
+// as its own dashboard tab. There is no literal
 // "menu box" anywhere else in this codebase; this modal - searchable/
 // filterable/sortable, add/edit/delete a dish, heart it, suggest it for a
 // meal - is the only self-contained thing that reads as a "box" someone
@@ -145,10 +143,10 @@ grocyRecipeId: parsed.grocyRecipeId || null,
 // for how this becomes a real (persistent) edit to the recipe in
 // Grocy at push time.
 servings: typeof parsed.servings === "number" ? parsed.servings : null,
-// v141+: leftovers - how many EXTRA days (beyond the day it's actually
+// leftovers - how many EXTRA days (beyond the day it's actually
 // entered on) this same meal should keep showing for, same block, on
 // the immediately following days. 1 (the default) means "just this one
-// day," identical to every meal entered before this existed. v144.10+:
+// day," identical to every meal entered before this existed.
 // superseded by leftoverDates below for anything saved from here on
 // (an explicit, non-contiguous day picker instead of "the next N days
 // in a row") - spanDays is kept ONLY so pre-v144.10 data (which never
@@ -156,7 +154,7 @@ servings: typeof parsed.servings === "number" ? parsed.servings : null,
 // did; see _fetchMealPlan for the actual fallback logic, since a single
 // number here can no longer represent an arbitrary day selection.
 spanDays: typeof parsed.spanDays === "number" && parsed.spanDays > 1 ? parsed.spanDays : 1,
-// v144.10+: "leftovers should let you choose what days you have the
+// "leftovers should let you choose what days you have the
 // leftovers on" - an explicit list of "YYYY-MM-DD" date keys this same
 // meal should ALSO show on (same block), replacing spanDays' "next N
 // days in a row" assumption with an arbitrary pick of any day(s), not
@@ -164,7 +162,7 @@ spanDays: typeof parsed.spanDays === "number" && parsed.spanDays > 1 ? parsed.sp
 // Malformed/non-string entries are dropped defensively, same reasoning
 // as additionalRecipes just below.
 leftoverDates: Array.isArray(parsed.leftoverDates) ? parsed.leftoverDates.filter((d) => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d)) : [],
-// v142+: "additional recipes" - any number of side/dessert/sauce
+// "additional recipes" - any number of side/dessert/sauce
 // recipes attached alongside this one main recipe (see _upsertMealPlan
 // and the day/menu editor's Additional Recipes field). Each entry is
 // {name, link, grocyRecipeId} - name-less/malformed entries are
@@ -424,7 +422,7 @@ await this._addSuggestion(recipe.name, recipe.description, recipe.link, recipe.g
 this._renderLoved();
 },
 _openLoved(pickerMode) {
-// v142+: pickerMode is now also allowed to be the string "additional"
+// pickerMode is now also allowed to be the string "additional"
 // (the day/menu editor's "+ From Recipe Box" additional-recipe button -
 // see _addAdditionalRecipeFromLoved), on top of the existing true/false.
 // Both true and "additional" are equally "picker mode" for every
@@ -572,10 +570,7 @@ this._addAdditionalRecipeFromLoved(recipe);
 } else if (this._pickerMode) {
 this._selectLovedDish(recipe);
 } else if (recipe.grocyRecipeId) {
-// v1.129.0+: household report, verbatim: "the recipe box card open
-// a menu in a modal but the recipe modal in the calendar opens the
-// recipe full screen, the recipe box card needs to function the
-// same." Root cause: browsing the Recipe Box always opened the
+// Root cause: browsing the Recipe Box always opened the
 // small `.dish-detail-overlay` "menu" first (name/photo/rating/
 // description plus Suggest/Edit/Delete and a "View recipe" link) -
 // reaching the actual full-screen Grocy Recipe Viewer took a
@@ -875,16 +870,13 @@ new Set((this._recipes || []).map((r) => (r.category || "").trim()).filter(Boole
 ).sort((a, b) => a.localeCompare(b));
 datalist.innerHTML = categories.map((c) => `<option value="${c.replace(/"/g, "&quot;")}"></option>`).join("");
 },
-// v1.118.0+: the full in-card Grocy Recipe Viewer, moved here from being
+// the full in-card Grocy Recipe Viewer, moved here from being
 // a FamilyWeekCalendarCard-only set of methods so this card can open the
 // exact same live viewer for a Grocy-linked dish instead of just opening
-// the plain external Grocy link (household report: "the recipe box card
-// tries to send you to the external grocy link for recipes. this needs
-// to use the internal recipe viewer"). Not shared: _selectGrocyRecipe/
+// the plain external Grocy link (). Not shared: _selectGrocyRecipe/
 // _renderGrocyPicker (the "Add from Grocy" search picker) - this card has
 // no such picker and doesn't need one, same as before.
-// v1.121.0+: household report, verbatim: "recipe card opens recipes in a
-// modal instead of the full screen like the recipe modal does." Root
+// Root
 // cause: wherever this shared viewer is running, if the card sits in a
 // normal masonry/sections dashboard grid (rather than filling the whole
 // screen, which is how a panel-view deployment usually hides this
@@ -968,7 +960,7 @@ _openGrocyRecipeViewer(recipeId, fallbackName, fallbackLink, isPreview, tabs, so
 if (!recipeId) return;
 this._grocyRecipeViewerRecipeId = recipeId;
 this._grocyRecipeViewerFallbackLink = fallbackLink || "";
-// v1.129.0+: the actual Recipe Box entry this viewer was opened FROM, if
+// the actual Recipe Box entry this viewer was opened FROM, if
 // any - only ever passed by the Recipe Box's own primary browse click
 // (see that click handler's own comment, just below in this file), never
 // by a meal-preview/Expiring-Soon/additional-recipe call site elsewhere,
@@ -977,7 +969,7 @@ this._grocyRecipeViewerFallbackLink = fallbackLink || "";
 // see the .grocy-recipe-viewer-recipe-actions toggle a few lines down.
 this._grocyRecipeViewerSourceRecipe = sourceRecipe || null;
 const overlay = this._grocyViewerOverlay();
-// Preview mode (task #177's picker preview icon) opens the exact same
+// Preview mode ('s picker preview icon) opens the exact same
 // viewer, but over a picker that's deliberately left open underneath -
 // show a "Back" button instead of relying on the plain close (X) to
 // implicitly reveal it, so it reads as "look, then come back" rather
@@ -988,7 +980,7 @@ overlay.classList.toggle("preview-mode", !!isPreview);
 // the inline style here would silently leave it hidden even in preview
 // mode instead of showing it.
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-back-btn").style.display = isPreview ? "block" : "none";
-// v1.129.0+: same "block", not "" gotcha as the back button above -
+// same "block", not "" gotcha as the back button above -
 // .grocy-recipe-viewer-recipe-actions defaults to display:none in CSS.
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-recipe-actions").style.display = this._grocyRecipeViewerSourceRecipe ? "flex" : "none";
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = fallbackName || "Recipe";
@@ -1057,7 +1049,7 @@ this._resetScreenSaverIdleTimer();
 },
 _closeGrocyRecipeViewer() {
 this._grocyViewerOverlay().classList.remove("open");
-// v1.129.0+: don't let a stale Recipe Box entry leak into the NEXT
+// don't let a stale Recipe Box entry leak into the NEXT
 // viewer open (a bare-recipe-id call site, e.g. a meal preview, that
 // forgets to pass a 6th argument would otherwise inherit whatever was
 // last set here rather than correctly showing no Suggest/Edit/Delete
@@ -1231,7 +1223,7 @@ photoEl.style.display = "none";
 photoEl.src = "";
 }
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = recipe.name || "Recipe";
-// Prep/Cook/Total stat pills (task #250/mockup) - only the ones this
+// Prep/Cook/Total stat pills (/mockup) - only the ones this
 // recipe actually has real data for; a manually-typed Grocy recipe with
 // none of the three published just gets an empty (and, per the
 // :empty CSS rule, invisible) stats row instead of a placeholder.
@@ -1254,7 +1246,7 @@ this._grocyRecipeViewerFallbackLink = recipe.link || this._grocyRecipeViewerFall
 
 const ingredients = Array.isArray(recipe.ingredients) ? recipe.ingredients : [];
 this._grocyRecipeViewerIngredients = ingredients;
-// The scaler (task #173) works off the recipe's own base_servings - the
+// The scaler () works off the recipe's own base_servings - the
 // serving count Grocy's recipes_pos amounts are actually calibrated for -
 // separate from "servings" above, which can reflect a previously-saved
 // desired_servings override instead. Falls back gracefully to whatever's
@@ -1272,7 +1264,7 @@ this._renderGrocyRecipeIngredients();
 // The description/instructions HTML can itself embed a plain-text
 // ingredients list (see _createImportedGrocyRecipe's "Ingredients"
 // <ul> block, added for recipes imported via the card's "Import a
-// recipe from a link" flow, task #158) - kept unscaled here so
+// recipe from a link" flow, ) - kept unscaled here so
 // _renderGrocyRecipeDescription can re-derive the scaled version from
 // the original every time the stepper changes, rather than scaling an
 // already-scaled string a second time.
@@ -1283,7 +1275,7 @@ this._renderGrocyRecipeDescription();
 // servings ratio - mirrors _renderGrocyRecipeIngredients, but for the
 // plain-text "Ingredients" list some recipes also carry inside their
 // description HTML (see the comment above). Recipes without that exact
-// block (hand-typed directly in Grocy, or from before task #158) simply
+// block (hand-typed directly in Grocy, or from before) simply
 // pass through _scaleIngredientsDescriptionHtml unchanged.
 _renderGrocyRecipeDescription() {
 if (!this._root) return;
@@ -1302,7 +1294,7 @@ const ratio = baseServings > 0 ? servings / baseServings : 1;
 let html = this._scaleIngredientsDescriptionHtml(raw, ratio);
 
 // Recipes imported via this card's own "Import a recipe from a link"
-// flow (_createImportedGrocyRecipe, task #158/#223) write a predictable
+// flow (_createImportedGrocyRecipe, /#223) write a predictable
 // "<p><strong>Preparation</strong></p><p>step 1</p><p>step 2</p>..."
 // block, followed by (optionally) the Prep/Cook line and/or a Source
 // line, each of which starts with its own "<p><strong>". Recipes without
@@ -1341,8 +1333,7 @@ steps
 // _ws_create_grocy_recipe's "skipped" list), so the structured list
 // above can be a strict SUBSET of what's in the raw text - and outright
 // removing the raw block used to hide those skipped ingredients
-// entirely (a real household report: "not including the ingredients in
-// the preparation section"). Rather than try to judge redundancy and
+// entirely (a real ). Rather than try to judge redundancy and
 // hide it, this always keeps the raw written-out list available - just
 // tucked behind a collapsed-by-default accordion, so it's a tap away
 // when needed (a skipped ingredient, double-checking exact wording,
@@ -1409,7 +1400,7 @@ return html.slice(0, match.index) + match[1] + scaledItems + match[3] + html.sli
 // "1 1/2" / "1/2" / "1½" / "½" / "2" / "2.5" / "1-2" -> a plain decimal.
 // A plain range ("1-2", "3-4") resolves to its upper bound rather than
 // failing outright - see the backend's _parse_quantity_token (kept in
-// sync deliberately) for why: a household reported ordinary countable
+// sync deliberately) for why: the old behavior left ordinary countable
 // ingredients like "1-2 russet potatoes" defaulting to "Don't count
 // toward stock" every time, since that checkbox's own default just
 // follows whether a usable number came back at all. Returns null for
@@ -1498,7 +1489,7 @@ if (group) groupHtml = `<div class="grocy-recipe-ingredient-group">${group}</div
 }
 const note = ing.note ? ` <span class="grocy-recipe-ingredient-note">(${ing.note})</span>` : "";
 const amountText = this._formatScaledIngredientAmount(ing, ratio);
-// Numbered circular badge (task #251/mockup) in place of the amount
+// Numbered circular badge (/mockup) in place of the amount
 // leading the row - the amount itself moves down alongside the
 // product name so nothing shown before is lost.
 return `${groupHtml}<div class="grocy-recipe-ingredient-row"><span class="grocy-recipe-ingredient-badge">${idx + 1}</span><span><span class="grocy-recipe-ingredient-amount">${amountText}</span> ${ing.product || ""}${note}</span></div>`;
@@ -1532,9 +1523,7 @@ this._renderGrocyRecipeDescription();
 // Household-wide timer alarm sound+modal (v1.119.0+, widened in
 // v1.132.55+) - see family-hub-active-timers-card.js's own top comment
 // above this same block for the full design note. Added here in
-// v1.132.59+ after a household bug report, verbatim: "a household
-// alarm or an assigned alarm set to them plus kiosk doesnt alarm on the
-// kiosk" - this card never carried this singleton or subscribed to
+// v1.132.59+ after a - this card never carried this singleton or subscribed to
 // the widened-alarm broadcast at all, so a kiosk whose dashboard shows
 // it silently never rang for anyone else's widened timer alarm. Kept
 // byte-identical to every other card's copy on purpose.
@@ -1576,8 +1565,7 @@ if (!window.__familyHubTimerAlarm) {
     // ship or for a self-hosted install's network policy to worry about,
     // and it sounds identical on every install.
     //
-    // Household ask, verbatim: "can we make it sound more like an alarm
-    // and less like a ticking bomb." The original v1.119.0+ sound was one
+    // The original v1.119.0+ sound was one
     // flat square-wave tone repeated once a second - metronomic, which is
     // exactly what read as a countdown-bomb tick rather than an alarm. This
     // plays a quick alternating two-pitch TRIPLET (a classic digital-alarm-
@@ -1612,7 +1600,7 @@ if (!window.__familyHubTimerAlarm) {
         // the primary alarm; sound is a bonus on top of it, not required.
       }
     }
-    // v1.132.55+: which hass connection to tell "dismiss this everywhere"
+    // which hass connection to tell "dismiss this everywhere"
     // when Stop is tapped - set by whichever card most recently called
     // ring()/check() with one, since this singleton is shared across every
     // card on the dashboard and any of them may have `hass` by now. Best-
@@ -1632,7 +1620,7 @@ if (!window.__familyHubTimerAlarm) {
         beepHandle = null;
       }
       if (modalEl) modalEl.style.display = "none";
-      // v1.132.55+: household's explicit choice - "first tap wins, from
+      // household's explicit choice - "first tap wins, from
       // anyone" - so tapping Stop here also clears the alarm everywhere
       // else (other kiosks, other people's phones-that-are-dashboards)
       // rather than just silencing this one tab. No permission gate, by
@@ -1641,14 +1629,11 @@ if (!window.__familyHubTimerAlarm) {
         lastHass.connection.sendMessagePromise({ type: "family_hub/timers/dismiss_alarm", uid }).catch(() => {});
       }
     }
-    // Household bug report, verbatim: "a household alarm or an assigned
-    // alarm set to them plus kiosk doesnt alarm on the kiosk, it should end
-    // the screen saver and pop up the timer ended modal and make noise."
     // This modal already outranks the screensaver's own overlay (z-index
     // 2147483647 vs 2147483000, set in ensureModal() above), so it was
     // always painting on top of it - but a screensaver left running
-    // underneath still means its video/camera poll keeps going, and the
-    // household asked for it to actually END, not just be covered up.
+    // underneath still means its video/camera poll keeps going, so it
+    // needs to actually END, not just be covered up.
     // There are THREE independent screensaver implementations in this
     // project (the calendar card's own, the shared window.__familyHub
     // ScreenSaver controller used by Chores/Rewards/My Chores/etc., and the
@@ -1709,7 +1694,7 @@ if (!window.__familyHubTimerAlarm) {
         if (!mine || dismissedUids.has(mine.uid)) return;
         if (remainingSecondsFn(mine) <= 0) start(mine, hass);
       },
-      // v1.132.55+: the WIDENED half - a household_timer_alarm_ring bus
+      // the WIDENED half - a household_timer_alarm_ring bus
       // event (fired by chores_websocket_api.py's _dispatch_timer_alarm/
       // _reannounce_active_alarms) that THIS login should also ring for,
       // because it's either the timer's own owner, a login flagged as an
@@ -1743,10 +1728,7 @@ if (!window.__familyHubTimerAlarm) {
   })();
 }
 
-// Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
-// "When you load a card it tends to load the default theme first then it
-// switches over to the theme you set how can we always make it load the
-// set theme first." Root cause: EVERY themed card's first paint happens
+// Theme flash-of-default fix - Root cause: EVERY themed card's first paint happens
 // with no theme CSS vars set at all (falls back to _defaultTheme()'s own
 // hardcoded palette), because resolving the household's actual theme
 // takes two sequential, awaited websocket round trips after `hass` is
@@ -1842,7 +1824,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
   setConfig(config) {
     this._config = {
       title: (config && config.title) || "Recipe Box",
-      // v1.111.0+: per-card Theme override - see family-hub-goals-card.js's
+      // per-card Theme override - see family-hub-goals-card.js's
       // identical field/comment for the full precedence story. This card
       // never had any theming at all before this (see _css's hardcoded
       // :host custom properties) - _defaultTheme/_resolveTheme/
@@ -1881,7 +1863,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
     if (first) this._firstLoadPromise = this._initFirstLoad();
   }
   async _initFirstLoad() {
-    // v1.111.0+: baseline theming, new for this card - see setConfig's own
+    // baseline theming, new for this card - see setConfig's own
     // comment. Fetched alongside everything else so a per-card
     // theme_override resolves on first paint, same as every other
     // standalone Family Hub card.
@@ -1891,14 +1873,13 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
     await this._fetchRecipes();
     await this._fetchSuggestions();
     this._startPolling();
-    // Household bug report, verbatim: "a household alarm or an assigned
-    // alarm set to them plus kiosk doesnt alarm on the kiosk" - see this
+    // - see this
     // file's own copy of the window.__familyHubTimerAlarm singleton
     // (below) for the full design note. Kept byte-identical to every
     // other card's copy on purpose.
     this._subscribeAlarmEvents();
   }
-  // v1.132.59+: household-wide timer alarms - subscribe to the two bus
+  // household-wide timer alarms - subscribe to the two bus
   // events chores_websocket_api.py's _dispatch_timer_alarm/
   // _reannounce_active_alarms fire (see const.py's
   // EVENT_FAMILY_HUB_TIMER_ALARM_RING/_STOP), and hand each one to the
@@ -1965,7 +1946,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
   disconnectedCallback() {
     if (this._interval) clearInterval(this._interval);
     this._interval = null;
-    // v1.121.0+: the Grocy Recipe Viewer's portal (see _grocyViewerOverlay's
+    // the Grocy Recipe Viewer's portal (see _grocyViewerOverlay's
     // own comment) lives on document.body, outside this card's own DOM
     // entirely - it must be torn down here explicitly, or a dashboard edit/
     // Lovelace re-creating this element would leave an orphaned full-screen
@@ -2007,7 +1988,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
     // _openDishDetail/_closeDishDetail call this unconditionally, same as
     // on the calendar card, where it actually does something.
   }
-  // v1.118.0+: _openGrocyRecipeViewer itself (and its whole supporting cast)
+  // _openGrocyRecipeViewer itself (and its whole supporting cast)
   // is no longer a card-local stub here - it's the real, shared implementation
   // from window.__familyHubRecipeBoxShared (assigned onto this prototype
   // below), same live viewer the calendar card uses. See this file's own top
@@ -2092,7 +2073,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
   // -------------------------------------------------------------------------
   _build() {
     this._built = true;
-    // v1.126.0+: applied BEFORE attachShadow/the first innerHTML paint -
+    // applied BEFORE attachShadow/the first innerHTML paint -
     // see _applyCachedThemeVarsIfAny's own comment and window.__familyHub
     // ThemeCache's above the class for why this is what actually fixes
     // the household's reported "loads the default theme first" flash.
@@ -2234,7 +2215,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
       this._deleteDish(recipe.uid, recipe.grocyRecipeId);
       this._closeDishDetail();
     });
-    // v1.118.0+: the same Grocy Recipe Viewer wiring as family-week-calendar-
+    // the same Grocy Recipe Viewer wiring as family-week-calendar-
     // card.js's own connectedCallback (see that file's own comment on this
     // exact block) - the viewer's methods are shared, but each card still
     // wires its own overlay's buttons since they're two separate DOM trees.
@@ -2251,7 +2232,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
     root.querySelector(".grocy-recipe-viewer-consume-btn").addEventListener("click", () => this._consumeGrocyRecipeIngredients());
     root.querySelector(".grocy-recipe-viewer-scale-down").addEventListener("click", () => this._adjustGrocyRecipeViewerServings(-1));
     root.querySelector(".grocy-recipe-viewer-scale-up").addEventListener("click", () => this._adjustGrocyRecipeViewerServings(1));
-    // v1.129.0+: Suggest/Edit/Delete for whichever Recipe Box entry this
+    // Suggest/Edit/Delete for whichever Recipe Box entry this
     // viewer was opened FROM (see _openGrocyRecipeViewer's own comment on
     // _grocyRecipeViewerSourceRecipe) - only ever visible when there IS
     // one, i.e. when the viewer was opened by tapping a recipe straight
@@ -2301,7 +2282,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
     this._renderRecipeBoxCategoryChips();
     this._updateRecipeBoxViewButtons();
     this._renderLoved();
-    // v1.126.0+: this used to unconditionally call `_applyThemeVars()` here
+    // this used to unconditionally call `_applyThemeVars()` here
     // too, but that ran the REAL theme resolution before `_hass`/
     // `_globalThemes` could possibly have anything in them yet, so it
     // always resolved to the plain local default - harmless on its own
@@ -2362,7 +2343,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
-    // v1.111.0+: a per-card-placement Theme override (set from this card's
+    // a per-card-placement Theme override (set from this card's
     // own native "Edit Card" dialog) wins over everything else, including
     // this device's own override and the household's Global Theme.
     const cardOverride = this._config && this._config.theme_override;
@@ -2387,7 +2368,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
     const a = Math.max(0, Math.min(1, typeof alpha === "number" ? alpha : 1));
     return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
-  // v1.126.0+ - see window.__familyHubThemeCache's own comment above the
+  // see window.__familyHubThemeCache's own comment above the
   // class for the full "why a key, not one shared blob" reasoning. Called
   // identically from here (after resolving the REAL theme) and from
   // `_build()` (before the real theme is known yet, to look up whatever
@@ -2406,7 +2387,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
     const theme = this._resolveTheme(this._getSettings());
     const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
     const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
-    // v1.126.0+: built as a plain object first (rather than each var going
+    // built as a plain object first (rather than each var going
     // straight into its own setProperty call, as before) purely so the
     // exact same values that get applied here also get cached - see
     // window.__familyHubThemeCache's own comment for why this fixes the
@@ -2426,7 +2407,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
       "--fc-glass-blur": `${glassBlur}px`,
     };
     Object.keys(vars).forEach((name) => this.style.setProperty(name, vars[name]));
-    // v1.126.0+: only cache once `_hass` is actually set. `_build()` (see its
+    // only cache once `_hass` is actually set. `_build()` (see its
     // own comment) calls this method once synchronously, before `hass` is
     // ever assigned, purely so a brand-new card with nothing cached yet
     // still shows SOME accent color instead of nothing at all. At that
@@ -2439,7 +2420,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
     // actually-resolved value.
     if (this._hass && window.__familyHubThemeCache) window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
   }
-  // v1.126.0+: applies whatever theme this device/placement last actually
+  // applies whatever theme this device/placement last actually
   // resolved to, SYNCHRONOUSLY, before the real fetches that would
   // otherwise be the only way to know it - see window.__familyHubTheme
   // Cache's own comment above the class. Called once from `_build()`,
@@ -2633,7 +2614,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
       .rating-row { display: flex; gap: 10px; margin-top: 12px; }
       .rating-btn { flex: 1 1 auto; min-height: 48px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); font-size: 22px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; box-shadow: var(--fc-shadow); }
       .rating-btn.active-up { background: #f2ddd4; border-color: #cf8f6c; }
-      // v1.118.0+: the full in-card Grocy Recipe Viewer's CSS, copied
+      // the full in-card Grocy Recipe Viewer's CSS, copied
       // verbatim from family-week-calendar-card.js's own rules for these
       // same classes (the markup and the shared methods that populate it
       // are the exact same ones too) - see this file's own top comment.
@@ -2678,7 +2659,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
       .grocy-recipe-viewer-photo { display: none; flex: 1 1 260px; min-width: 220px; max-width: 100%; max-height: 320px; object-fit: cover; border-radius: 12px; align-self: flex-start; }
       .grocy-recipe-viewer-status { font-size: 12px; color: var(--fc-text-secondary); padding: 2px 2px 10px; text-align: center; }
       .grocy-recipe-viewer-status.is-error { color: #b5583c; }
-      /* Prep/Cook/Total stat pills (task #250) - only ever populated with real
+      /* Prep/Cook/Total stat pills () - only ever populated with real
       values parsed off the recipe (see _renderGrocyRecipeDetail); a recipe with
       none of the three published stays an empty, invisible row via :empty
       rather than showing a blank card, same treatment as every other optional
@@ -2688,7 +2669,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
       .grocy-recipe-stat { background: var(--fc-surface-alt); border: 1px solid var(--fc-border); border-radius: 10px; padding: 8px 18px; text-align: center; min-width: 78px; }
       .grocy-recipe-stat-label { display: block; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fc-text-secondary); margin-bottom: 2px; }
       .grocy-recipe-stat-value { display: block; font-size: 15px; font-weight: 800; color: var(--fc-text); }
-      /* Two-column reading layout (task #251) - ingredients (with their own
+      /* Two-column reading layout () - ingredients (with their own
       scaler) on one side, hero photo on the other; wraps to a single stacked
       column on narrow widths via flex-wrap, and the photo simply isn't in the
       DOM's visible flow at all when the recipe has none (display:none above),
@@ -2705,14 +2686,14 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
       .grocy-recipe-ingredient-group { font-size: 12px; font-weight: 700; color: var(--fc-text-secondary); text-transform: uppercase; letter-spacing: 0.03em; margin: 10px 0 4px; }
       .grocy-recipe-ingredient-group:first-child { margin-top: 0; }
       .grocy-recipe-ingredient-row { display: flex; align-items: flex-start; gap: 10px; padding: 6px 0; font-size: 14px; color: var(--fc-text); border-bottom: 1px solid var(--fc-border); }
-      /* Numbered circular badge (task #251/mockup) standing in for the plain
+      /* Numbered circular badge (/mockup) standing in for the plain
       amount text that used to lead each row - the amount itself moved into the
       row's second line/span alongside the product name so nothing that used to
       be shown is lost, just restyled. */
       .grocy-recipe-ingredient-badge { flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
       .grocy-recipe-ingredient-amount { font-weight: 600; color: var(--fc-text-secondary); }
       .grocy-recipe-ingredient-note { font-size: 12px; color: var(--fc-text-secondary); font-style: italic; }
-      /* Numbered Instructions steps (task #252) - parsed from the recipe's own
+      /* Numbered Instructions steps () - parsed from the recipe's own
       "Preparation" block when it has one (see _renderGrocyRecipeDescription);
       recipes without that exact structure never populate this element at all,
       so it stays empty/invisible via :empty and the raw description below
@@ -2767,7 +2748,7 @@ class FamilyHubRecipeBoxCardEditor extends HTMLElement {
     if (this._form) this._form.hass = hass;
     if (!this._themeOptions) this._fetchThemeOptions();
   }
-  // v1.111.0+: per-card Theme override options - duplicated (not shared/
+  // per-card Theme override options - duplicated (not shared/
   // imported) from family-hub-goals-card.js's own editor, same
   // "independently loaded resources duplicate small helpers" convention.
   async _fetchThemeOptions() {
@@ -2837,7 +2818,7 @@ class FamilyHubRecipeBoxCardEditor extends HTMLElement {
   }
 }
 
-// v1.110.6+: applies the Recipe Box shared-logic object above onto this
+// applies the Recipe Box shared-logic object above onto this
 // card's own prototype - see that object's own comment for why this is
 // real sharing (same Function references), not a copy.
 Object.assign(FamilyHubRecipeBoxCard.prototype, window.__familyHubRecipeBoxShared);

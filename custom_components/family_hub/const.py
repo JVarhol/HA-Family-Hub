@@ -32,7 +32,7 @@ REMINDERS_STORAGE_VERSION = 1
 REMINDER_OVERRIDES_STORAGE_KEY_PREFIX = "family_hub_reminder_overrides"
 REMINDER_OVERRIDES_STORAGE_VERSION = 1
 
-# v129+: multi-person events. Each person's calendar is a real external
+# multi-person events. Each person's calendar is a real external
 # calendar (their own Google Calendar, etc.) reached through exactly one
 # `calendar.*` entity - there is no Family Hub-side event storage, and an
 # event physically only ever exists on the ONE calendar it was created on.
@@ -49,7 +49,7 @@ REMINDER_OVERRIDES_STORAGE_VERSION = 1
 EVENT_PEOPLE_OVERRIDES_STORAGE_KEY_PREFIX = "family_hub_event_people_overrides"
 EVENT_PEOPLE_OVERRIDES_STORAGE_VERSION = 1
 
-# v1.132.63+: attachable checklists ("baseball practice needs cleats, a
+# attachable checklists ("baseball practice needs cleats, a
 # water bottle, a glove packed") for calendar events and standalone
 # Reminders to-do items alike. Same "can't rewrite an existing event's own
 # data" constraint as the two overrides stores just above, so this is the
@@ -122,6 +122,22 @@ DAILY_DIGEST_NOTIFY_KEY = "__family_hub_digest__"
 DAILY_DIGEST_STORAGE_KEY_PREFIX = "family_hub_daily_digest_sent"
 DAILY_DIGEST_STORAGE_VERSION = 1
 
+# Bus event fired by
+# button.py's FamilyHubDailyDigestButton.async_press (one button entity per
+# real Home Assistant user account, see that module's own docstring for why
+# it's per-user rather than one shared button) - any currently-open card
+# whose own logged-in user (_myUserId() in the JS) matches user_id here
+# opens its Daily Digest modal live, exactly the same "any open dashboard
+# reacts, nothing persisted for one that isn't" shape as
+# _subscribeAlarmEvents' timer-alarm broadcast. Deliberately NOT given a
+# pending/catch-up backstop the way DEVICE_SETTINGS_EVENT_PUSH has one -
+# that one exists because a missed push would silently corrupt a device's
+# own persisted local settings; a missed digest-open event just means the
+# modal didn't pop up on a screen nobody was looking at, which the in-card
+# button (see DEVICE_SETTINGS_FIELDS' familyCalendarShowDigestButtonLocal-
+# gated More-menu item) or the household's push notification already cover.
+DAILY_DIGEST_EVENT_OPEN = "family_hub_daily_digest_open"
+
 # The card's Settings blob (theme, badges, digest config, block layout, etc.)
 # used to live ONLY as JSON stuffed into a hidden "Settings" to-do item's
 # description (settings_entity, a card-config field - the backend has no
@@ -172,9 +188,9 @@ CHORES_BACKUP_FILENAME = "chores_backup.json"
 REWARDS_BACKUP_FILENAME = "rewards_backup.json"
 PERMISSIONS_BACKUP_FILENAME = "permissions_backup.json"
 ROUTINES_BACKUP_FILENAME = "routines_backup.json"
-# v133+ - see the "--- Goals ---" section below for what this store holds.
+# see the "--- Goals ---" section below for what this store holds.
 GOALS_BACKUP_FILENAME = "goals_backup.json"
-# v144.13+ - see pantry_engine.py's own module docstring for what this store
+# see pantry_engine.py's own module docstring for what this store
 # holds (the "Also Tracking" extras list only - the main Pantry stock list
 # is Grocy's own numbers, not owned by this project at all, so there's
 # nothing of its own to back up there).
@@ -200,7 +216,7 @@ RECIPES_STORAGE_VERSION = 1
 SUGGESTIONS_STORAGE_KEY_PREFIX = "family_hub_suggestions"
 SUGGESTIONS_STORAGE_VERSION = 1
 
-# To-Do Lists card's own list selection (v146.5+; family_hub/get_todo_card_
+# To-Do Lists card's own list selection (family_hub/get_todo_card_
 # config and family_hub/set_todo_card_config in __init__.py) - which todo.*
 # entities and which Grocy shopping lists the FAB's List(s) tab has picked.
 # Deliberately its OWN small Store, separate from SETTINGS_STORAGE_KEY_PREFIX
@@ -219,7 +235,7 @@ SUGGESTIONS_STORAGE_VERSION = 1
 TODO_CARD_CONFIG_STORAGE_KEY_PREFIX = "family_hub_todo_card_config"
 TODO_CARD_CONFIG_STORAGE_VERSION = 1
 
-# Wish Lists (v1.122.0+) - the household's own ask: "home assistant has
+# Wish Lists - the household's own ask: "home assistant has
 # native list functionality and we use it a lot in family Hub but it's not
 # super robust. I want to use the native list functionality to be able to
 # do wish lists link name image description that kind of thing but all
@@ -266,7 +282,7 @@ TODO_CARD_CONFIG_STORAGE_VERSION = 1
 TODO_WISHLIST_CONFIG_STORAGE_KEY_PREFIX = "family_hub_todo_wishlist_config"
 TODO_WISHLIST_CONFIG_STORAGE_VERSION = 1
 
-# v1.110.5+: the store above used to hold exactly ONE record - fine when a
+# the store above used to hold exactly ONE record - fine when a
 # household only ever had a single To-Do Lists card, but a real bug once
 # people added a second instance (e.g. a grocery-focused card on the
 # kitchen tablet plus a personal to-do card on a kid's dashboard): both
@@ -292,7 +308,7 @@ TODO_WISHLIST_CONFIG_STORAGE_VERSION = 1
 # gets its own empty record - never the migrated one - since by definition
 # it never held that data before.
 
-# v1.109.9+: the most stacked rows the To-Do Lists card's board will spread
+# the most stacked rows the To-Do Lists card's board will spread
 # its list columns across - "add rows columns, etc so you can have your
 # lists shown how you want a line of lists, 2 stacks, 3 stacks etc." The
 # chosen count is stored as a `rows` field in the TODO_CARD_CONFIG store
@@ -306,7 +322,7 @@ TODO_WISHLIST_CONFIG_STORAGE_VERSION = 1
 # more rows stops being a layout and starts being a bug report.
 TODO_CARD_MAX_BOARD_ROWS = 4
 
-# Menu suggestions (v1.109.6+; family_hub/get_menu_suggestions,
+# Menu suggestions (family_hub/get_menu_suggestions,
 # add_menu_suggestion, apply_menu_suggestion and remove_menu_suggestion in
 # __init__.py) - the "anyone can suggest, only someone with
 # PERMISSION_EDIT_MENU can actually put it on the menu" half of the new
@@ -329,7 +345,7 @@ TODO_CARD_MAX_BOARD_ROWS = 4
 MENU_SUGGESTIONS_STORAGE_KEY_PREFIX = "family_hub_menu_suggestions"
 MENU_SUGGESTIONS_STORAGE_VERSION = 1
 
-# Chore/reward timers (v1.110.0+; timer_engine.py, the family_hub/timers/*
+# Chore/reward timers (timer_engine.py, the family_hub/timers/*
 # websocket commands in chores_websocket_api.py, and the dedicated sweep
 # registered in __init__.py's async_setup_entry) - "We need to be able to
 # make chores and rewards have timer associated to them... 2 hours of
@@ -356,7 +372,7 @@ TIMERS_STORAGE_KEY_PREFIX = "family_hub_timers"
 TIMERS_STORAGE_VERSION = 1
 
 # ---------------------------------------------------------------------------
-# v1.110.2+: native Home Assistant `timer.*` integration - "this should use
+# native Home Assistant `timer.*` integration - "this should use
 # the home assistant native timer.*"
 #
 # RESEARCH FINDING, recorded here because it is the whole reason this is
@@ -412,7 +428,7 @@ TIMERS_STORAGE_VERSION = 1
 TIMER_ENTITY_PREFIX = "timer.family_hub"
 
 # ---------------------------------------------------------------------------
-# v1.110.3+: CORRECTION AND EXTENSION of the note above - "Creating a user
+# CORRECTION AND EXTENSION of the note above - "Creating a user
 # should automatically create a timer helper for family hub a
 # timer.family_hub.Username and there should be an additional 4 timer
 # entities for family these are for is you need a timer and dont set a
@@ -504,7 +520,7 @@ TIMER_HELPER_NAME_PREFIX = "Family Hub "
 NATIVE_TIMER_EVENT_FINISHED = "timer.finished"
 NATIVE_TIMER_EVENT_CANCELLED = "timer.cancelled"
 
-# v1.110.3+ - Family Hub's OWN event, fired once for every timer of any
+# Family Hub's OWN event, fired once for every timer of any
 # kind (chore/reward/standalone) that actually completes - see sensor.py's
 # module docstring and chores_websocket_api.py's _fire_timer for the full
 # design note. This is the idiomatic "trigger: event" an automation like
@@ -528,7 +544,7 @@ EVENT_FAMILY_HUB_TIMER_FINISHED = "family_hub_timer_finished"
 # no network or entity work, so 30s costs effectively nothing. See
 # _expire_due_timers in chores_websocket_api.py.
 #
-# v1.110.2+: for a timer backed by a native timer.* entity this sweep is a
+# for a timer backed by a native timer.* entity this sweep is a
 # BACKSTOP rather than the primary mechanism - HA's own timer.finished
 # event fires first and does the work. It still runs, because (a) most
 # timers have no native entity behind them, and (b) an event can be missed
@@ -545,8 +561,7 @@ TIMER_SWEEP_SECONDS = 30
 # since neither of those UIs offers a seconds input.
 TIMER_MIN_MINUTES = 1
 TIMER_MAX_MINUTES = 24 * 60
-# v1.132.59+: household ask, verbatim - "can we make the timer accept
-# seconds." A standalone quick timer can now be entered down to whole
+# A standalone quick timer can now be entered down to whole
 # seconds (e.g. "30 sec" with no minutes at all), so
 # timer_engine.normalize_timer_minutes uses this floor instead of
 # TIMER_MIN_MINUTES for a sub-minute request - see its own docstring.
@@ -554,7 +569,7 @@ TIMER_MIN_SECONDS = 1
 
 TIMER_KIND_CHORE = "chore"
 TIMER_KIND_REWARD = "reward"
-# v1.110.1+: a general-purpose household timer with no chore or reward
+# a general-purpose household timer with no chore or reward
 # behind it at all - "an active timers card... a pop up modal that has 3-4
 # common timer times, optional assign to user and optional add time." The
 # oven, a board game, a kid's turn on the tablet. Deliberately a third KIND
@@ -593,13 +608,9 @@ TIMER_LABEL_MAX_LENGTH = 60
 CHORE_KEY_TIMER_MINUTES = "timer_minutes"
 REWARD_KEY_TIMER_MINUTES = "timer_minutes"
 
-# --- Timer alarm audience (v1.132.55+) ---------------------------------------
+# --- Timer alarm audience ---------------------------------------
 #
-# Household ask, verbatim: "I want to have chores and rewards use timers and
-# be able to notify on people's devices but also things like Google homes,
-# Amazon Alexa's or even devices running Assist or the Home Assistant app or
-# even the website... I want to be able to alarm and notify a user when it
-# goes off and they need to click a button to make the alarm stop." A
+# A
 # follow-up narrowed the actual requirement: "if a kid starts a clean room
 # task they should get an alarm and the main kiosk, but if they have
 # siblings the siblings don't need that alarm. But maybe parents want alarms
@@ -736,7 +747,7 @@ CONF_AUTO_CREATE_TODO_LISTS = "auto_create_todo_lists"
 DEFAULT_MEAL_PLAN_LIST_NAME = "Family Meal Plan"
 DEFAULT_REMINDERS_LIST_NAME = "Family Reminders"
 
-# v138+: the first-time setup wizard's "which features do you want" step
+# the first-time setup wizard's "which features do you want" step
 # (async_step_features) conditionally routes to async_step_users ->
 # async_step_member_profile (one screen per picked member: board color +
 # Include in Chores) -> async_step_chores_features (the same Routines/
@@ -800,10 +811,7 @@ CONF_NOTIFICATION_CLICK_PATH = "notification_click_path"
 # after that, for as long as it stays uncompleted.
 REMINDER_ROLLOVER_MARKER_PATTERN = r"<!--rollover:1-->"
 
-# v185+: household ask, verbatim - "Better roll over to next day for
-# reminders that allows you to select what days you want it to apply to.
-# Maybe you only want something to remind on friday saturday sunday, or
-# mondays, etc." A SECOND, optional marker alongside the one above -
+# A SECOND, optional marker alongside the one above -
 # present only when rollover is restricted to specific weekdays (0=Monday..
 # 6=Sunday, matching CHORE_RECUR_TYPE_WEEKDAYS's identical 0-6 convention
 # elsewhere in this file). Absent (every reminder created before this
@@ -854,8 +862,8 @@ REMINDER_NOTIFY_KEY = "__family_hub_reminders__"
 # reminder to be silently skipped entirely.
 POLL_QUERY_GRACE_MINUTES = 15
 
-PANEL_URL = "family-hub-theme-builder"
-PANEL_TITLE = "Family Hub Theme Builder"
+PANEL_URL = "theme-builder"
+PANEL_TITLE = "Theme Builder"
 PANEL_ICON = "mdi:palette"
 PANEL_JS_URL = "/family_hub_panel/theme-builder-panel.js"
 
@@ -983,7 +991,7 @@ GROCY_CONVERSIONS_SYNC_STORAGE_VERSION = 1
 #       ...
 #   }
 #
-# remindersSubscriptions (v130+) is how ONE person's individual to-do-list
+# remindersSubscriptions is how ONE person's individual to-do-list
 # reminders (settings["people"][i]["remindersEntity"] - see the comment
 # above SETTINGS_KEY_PEOPLE_REMINDERS_ENTITY_NOTE below) become visible to
 # OTHER people, without duplicating anything: subscribing doesn't copy or
@@ -1018,7 +1026,7 @@ REMINDER_SUBSCRIPTION_CALENDAR = "calendar"
 REMINDER_SUBSCRIPTION_CALENDAR_ALERT = "calendar_alert"
 REMINDER_SUBSCRIPTION_LEVELS = (REMINDER_SUBSCRIPTION_CALENDAR, REMINDER_SUBSCRIPTION_CALENDAR_ALERT)
 #
-# v130+: settings["people"][i]["remindersEntity"] - settings["people"] itself
+# settings["people"][i]["remindersEntity"] - settings["people"] itself
 # has no single top-level key (it's a plain list the card owns entirely,
 # same as ever - see _get_people below for the backend's own defensive
 # reader). Same shape as that person's existing "entity" field (their
@@ -1032,7 +1040,7 @@ REMINDER_SUBSCRIPTION_LEVELS = (REMINDER_SUBSCRIPTION_CALENDAR, REMINDER_SUBSCRI
 # reminders) are deliberately independent so a person's calendar and their
 # to-do list can even live on different HA integrations if that's how the
 # household set them up.
-# v1.132.0+: this field's own editable UI (the Calendars tab's per-row
+# this field's own editable UI (the Calendars tab's per-row
 # "their own Reminders list" input) is gone from the card - it now lives
 # only on that person's userProfiles[uid]["remindersEntity"] instead (see
 # that key's own comment below for the migration that moves an
@@ -1040,17 +1048,16 @@ REMINDER_SUBSCRIPTION_LEVELS = (REMINDER_SUBSCRIPTION_CALENDAR, REMINDER_SUBSCRI
 # key still exists in storage and is still read (a row whose calendar
 # isn't claimed as anyone's primaryCalendar has nowhere to migrate its
 # value to), it just can no longer be SET from the Calendars tab.
-# notifyRewardClaimed/notifyChoreApproved/notifyChoreRejected (v123+, v128+
-# for the last one) are instant, one-shot pushes - NOT digest-batched, and
+# notifyRewardClaimed/notifyChoreApproved/notifyChoreRejected are instant, one-shot pushes - NOT digest-batched, and
 # NOT gated by digestEnabled - sent the moment the underlying event happens
 # rather than folded into the next morning's Daily Digest. notifyChoreDue
-# (v131+) is the odd one out of the six: it's evaluated on the regular
+# is the odd one out of the six: it's evaluated on the regular
 # poll tick (same cadence/mechanism as calendar-event reminders, not a
 # synchronous send-at-the-triggering-action like the others) and, per
 # chore, can fire MORE than once - once per lead time in that chore's own
 # reminder_minutes (see CHORE_KEY_REMINDER_MINUTES below), e.g. once at 30
 # minutes before and again at 10 minutes before. notifyGoalApproved/
-# notifyGoalRejected (v133+) are the Goals-feature counterparts of
+# notifyGoalRejected are the Goals-feature counterparts of
 # notifyChoreApproved/notifyChoreRejected - see GOAL_STATUS_* below and
 # chores_websocket_api.py's _notify_goal_approved/_notify_goal_rejected
 # (Goals' websocket commands live in that same unified file alongside
@@ -1094,7 +1101,7 @@ REMINDER_SUBSCRIPTION_LEVELS = (REMINDER_SUBSCRIPTION_CALENDAR, REMINDER_SUBSCRI
 #     hear back" scoping as the chore pair, and the same optional
 #     reject_reason-in-the-message-body treatment. See goal_engine.py's
 #     module docstring for how Goals itself differs from Chores.
-#   - notifyTimerAlarm (v1.119.0+): NOT its own notification - it changes
+#   - notifyTimerAlarm: NOT its own notification - it changes
 #     HOW the three existing end-of-timer pushes (chore timer, reward timer,
 #     an ASSIGNED standalone timer) are delivered to THIS person when one of
 #     THEIR OWN timers goes off: alarm-style (Android alarm-stream channel /
@@ -1102,9 +1109,8 @@ REMINDER_SUBSCRIPTION_LEVELS = (REMINDER_SUBSCRIPTION_CALENDAR, REMINDER_SUBSCRI
 #     _send_alarm_notification) instead of the plain quiet push everyone
 #     else still gets. Snapshotted onto the timer itself at start time
 #     (timer_engine.py's "alarm" field), same reasoning as notify_targets/
-#     title being snapshots there. Household ask: "route this through alarm
-#     notifications for the person the timer is for."
-#   - isAlarmKiosk (v1.132.55+): unrelated to notification STYLE (that's
+#     title being snapshots there.
+#   - isAlarmKiosk: unrelated to notification STYLE (that's
 #     notifyTimerAlarm above) - this is about SCOPE. See
 #     TIMER_ALARM_AUDIENCE_KIOSKS's own comment near CHORE_KEY_ALARM_AUDIENCE
 #     for the full picture; in short, a dashboard logged into a login with
@@ -1128,10 +1134,8 @@ REMINDER_SUBSCRIPTION_LEVELS = (REMINDER_SUBSCRIPTION_CALENDAR, REMINDER_SUBSCRI
 # data (nothing is destroyed, and Configure's old "Calendar reminders"
 # screen still shows exactly what it always did) - it just stops being what
 # the poller actually reads once this key exists.
-# v1.131.0+: userProfiles[uid]["remindersEntity"] / ["wishlistEntity"] /
-# ["badges"] - household ask, verbatim: *"I would like to be able to set a
-# user calendar, a user reminder todo list and a user wish list all under
-# their settings."* Before this, a person's own calendar/reminders/wish-list
+# userProfiles[uid]["remindersEntity"] / ["wishlistEntity"] /
+# ["badges"] - Before this, a person's own calendar/reminders/wish-list
 # setup was scattered across three different, only loosely-connected
 # places left over from this project's original calendar-only design:
 #   - their CALENDAR was only ever "whichever settings.people[] row they
@@ -1156,13 +1160,9 @@ REMINDER_SUBSCRIPTION_LEVELS = (REMINDER_SUBSCRIPTION_CALENDAR, REMINDER_SUBSCRI
 #     people[i].remindersEntity lookup (matched via primaryCalendar) by
 #     every call site that resolves "this profile's own reminders list" -
 #     see _resolve_profile_reminders_entity.
-#     v1.132.0+: the Calendars tab's own "their own Reminders list" field
+#     the Calendars tab's own "their own Reminders list" field
 #     (the settings.people[i].remindersEntity fallback just mentioned) is
-#     gone from the card's UI - household ask, verbatim: *"move the linked
-#     reminders off of the calendar accordion... make sure that if there
-#     is a currently linked todo list on a calendar and a user that
-#     selected a calendar as theirs it transfers over to the new calendars
-#     and reminders area."* _migrate_people_reminders_into_profiles (in
+#     gone from the card's UI - _migrate_people_reminders_into_profiles (in
 #     __init__.py, run on every Settings load AND save) does exactly that
 #     transfer: for each people[] row with its own remindersEntity still
 #     set, it copies that value onto every profile whose primaryCalendar
@@ -1208,14 +1208,14 @@ DEFAULT_DIGEST_SECTIONS = {
     "meals": True,
     "grocyExpiring": True,
     "grocyLowStock": True,
-    # v112+: that person's own pending (status "open", assigned directly to
+    # that person's own pending (status "open", assigned directly to
     # them - not sitting unclaimed in the Chore Bin) chores. Defaults True
     # like every other section here, so nobody has to go find a new setting
     # just to keep getting what they'd reasonably expect once Chores exists.
     "chores": True,
 }
 
-# v115+: explicit Family Hub membership, stored as its own top-level key in
+# explicit Family Hub membership, stored as its own top-level key in
 # the Settings blob (not nested under a person's profile - unlike everything
 # in SETTINGS_KEY_USER_PROFILES above, this has to exist independently of
 # whether a profile has ever been created for that user):
@@ -1261,7 +1261,7 @@ DEFAULT_DIGEST_SECTIONS = {
 # if the household had to opt every person in by hand.
 SETTINGS_KEY_MEMBER_USER_IDS = "memberUserIds"
 
-# v1.132.5+: guards _maybe_migrate_wishlist_claims_permission_default in
+# guards _maybe_migrate_wishlist_claims_permission_default in
 # __init__.py (see PERMISSION_SEE_WISHLIST_CLAIMS's own comment above for
 # why that migration exists at all) - same "presence, not a separate
 # migrated-boolean-per-user" idea SETTINGS_KEY_MEMBER_USER_IDS itself uses,
@@ -1274,7 +1274,7 @@ SETTINGS_KEY_MEMBER_USER_IDS = "memberUserIds"
 # starts without the grant, same as any other permission.
 SETTINGS_KEY_WISHLIST_CLAIMS_PERMISSION_MIGRATED = "wishlistClaimsPermissionMigrated"
 
-# v121+: a second, NARROWER opt-out living UNDER Family Hub membership above,
+# a second, NARROWER opt-out living UNDER Family Hub membership above,
 # for a household that wants someone (most often a shared kiosk/wall-tablet
 # HA login, not a real person) added to Family Hub - so it shows up on the
 # Users tab and can be granted Permissions - without also cluttering the
@@ -1363,6 +1363,96 @@ GOALS_STORAGE_VERSION = 1
 PANTRY_EXTRAS_STORAGE_KEY_PREFIX = "family_hub_pantry_extras"
 PANTRY_EXTRAS_STORAGE_VERSION = 1
 
+# Device Settings admin dashboard - Every setting this covers (DEVICE_SETTINGS_FIELDS
+# below) already lived ONLY in each dashboard's own browser localStorage
+# (see family-week-calendar-card.js's _getWeekViewDayCount/
+# _getCurrentDayFirst/_getWeekRows/etc.) - the backend never saw it and
+# had no way to change it remotely. This store is a thin mirror/staging
+# area, not the source of truth for any single device (each device's own
+# localStorage still is, and still works completely standalone with no
+# admin/backend involvement): devices report their current values in here
+# so the admin dashboard has something to show/copy into a preset
+# (device_settings_websocket_api.ws_report), and an admin's edit or
+# "apply preset" click stages a "pending push" here that a live-open device
+# picks up instantly via the family_hub_device_settings_push bus event, and
+# any device (open or not at push time) picks up the next time its
+# dashboard loads (ws_get_pending, compared against the device's own
+# last-applied sequence number - see the card's _applyPendingDeviceSettings).
+#
+# No durable backup.json restore machinery (unlike chores/rewards/
+# permissions/goals/routines/pantry_extras above) - deliberately: losing
+# this store only means losing the admin's presets and the dashboard's
+# last-known snapshot of each device, never a working device's own actual
+# settings (those live independently in that device's localStorage either
+# way), so the extra restore-on-reinstall complexity isn't worth it here.
+DEVICE_SETTINGS_STORAGE_KEY_PREFIX = "family_hub_device_settings"
+DEVICE_SETTINGS_STORAGE_VERSION = 1
+DEVICE_SETTINGS_EVENT_PUSH = "family_hub_device_settings_push"
+# v1.134.x+ "Identify" (household ask: the Devices tab's rows were hard to
+# tell apart, so add "an identify button that posts a modal to that device
+# with its ID name"). Deliberately a separate, unrelated event from
+# DEVICE_SETTINGS_EVENT_PUSH above rather than reusing it: identify never
+# touches device_settings storage at all (no pending_seq bump, no settings
+# change, nothing to persist or catch up on later) - it's a pure "ring this
+# one device's doorbell right now" signal for a live-open dashboard, sent
+# purely so the person standing in front of the physical screen can match
+# it to the row they clicked. A device that's closed/asleep at the moment
+# an admin clicks Identify simply never sees it - there is deliberately no
+# get_pending-style catch-up for this event, unlike a settings push.
+DEVICE_SETTINGS_EVENT_IDENTIFY = "family_hub_device_settings_identify"
+
+# The whitelist of this-device-only localStorage keys the admin dashboard is
+# allowed to read/display/push - deliberately NOT every "*Local" key in the
+# card JS (e.g. familyHubRecipeBoxView/familyHubShoppingListTab are just
+# remembered UI tab state, not something a household admin would ever want
+# to standardize across tablets or bundle into a preset). Each entry names
+# its own validation shape so device_settings_websocket_api.py can reject a
+# bad push/preset value with the same rigor CHORE_PERMISSIONS-style
+# allowlists get elsewhere in this project, and the card's own Settings
+# "Devices" admin tab renders its per-field controls generically from this
+# same registry rather than hand-coding one per field.
+DEVICE_SETTINGS_FIELDS = {
+    "familyCalendarCurrentDayFirstLocal": {
+        "type": "enum", "choices": ["on", "off"], "default": "off",
+        "label": "Current day always first",
+    },
+    "familyCalendarWeekDayCountLocal": {
+        "type": "int", "min": 2, "max": 14, "default": 7,
+        "label": "Days shown in Week view",
+    },
+    "familyCalendarWeekRowsLocal": {
+        "type": "int", "min": 1, "max": 7, "default": 1,
+        "label": "Rows shown in Week view",
+    },
+    "familyCalendarWeekViewVariantLocal": {
+        "type": "enum", "choices": ["week", "planner"], "default": "week",
+        "label": "Week button shows",
+    },
+    "familyCalendarMonthViewVariantLocal": {
+        "type": "enum", "choices": ["month", "split"], "default": "month",
+        "label": "Month button shows",
+    },
+    "familyCalendarShowTimelineLocal": {
+        "type": "enum", "choices": ["on", "off"], "default": "off",
+        "label": "Timeline view",
+    },
+    "familyCalendarSmallScreenModeLocal": {
+        "type": "enum", "choices": ["on", "off"], "default": "off",
+        "label": "Small screen mode",
+    },
+    # Off
+    # by default like every other opt-in visual addition here (Show hours,
+    # Small screen mode) - turning it on adds a "Daily Digest" item to the
+    # card's More menu (see the JS's _toggleMoreMenu) that opens that
+    # signed-in user's own Daily Digest as a modal. Independent of - not a
+    # replacement for - DAILY_DIGEST_EVENT_OPEN's live button-entity-press
+    # path just above, which works regardless of this setting.
+    "familyCalendarShowDigestButtonLocal": {
+        "type": "enum", "choices": ["on", "off"], "default": "off",
+        "label": "Daily Digest button on calendar screen",
+    },
+}
+
 # Same three-stage shape as CHORE_STATUS_* above, reused deliberately (same
 # meaning: "still being worked toward" -> "hit the target, waiting on a
 # parent to confirm it's real" -> "confirmed, reward paid out") rather than
@@ -1371,10 +1461,10 @@ PANTRY_EXTRAS_STORAGE_VERSION = 1
 GOAL_STATUS_OPEN = "open"
 GOAL_STATUS_PENDING_VERIFICATION = "pending_verification"
 GOAL_STATUS_APPROVED = "approved"
-# v144.13+: a fourth, terminal stage - "approved" used to be the end of the
-# line forever (see goal_engine.archive_goal's own docstring for the
-# household report this fixes: approved goals just piled up at the bottom
-# of My Goals with no way to tidy them away). No reward side effects here -
+# a fourth, terminal stage - "approved" used to be the end of the
+# line forever (see goal_engine.archive_goal's own docstring: approved
+# goals just piled up at the bottom of My Goals with no way to tidy
+# them away). No reward side effects here -
 # approve_goal already disbursed the reward the moment it happened; this is
 # purely "I've seen it, get it out of my active list."
 GOAL_STATUS_ARCHIVED = "archived"
@@ -1419,7 +1509,7 @@ ROUTINE_CATEGORY_LABELS = {
 # accordion rows, no Routines websocket calls made at all.
 SETTINGS_KEY_ROUTINES_ENABLED = "routinesEnabled"
 
-# v134+: household-wide on/off switches for embedding Goals inside the
+# household-wide on/off switches for embedding Goals inside the
 # Chores board and/or the Rewards page, same schema-free General-tab
 # pattern/off-by-default reasoning as SETTINGS_KEY_ROUTINES_ENABLED just
 # above - a brand new install (or a household that's never touched Goals)
@@ -1474,7 +1564,7 @@ CHORE_KEY_APPROVED_BY = "approved_by"
 CHORE_KEY_APPROVED_AT = "approved_at"
 CHORE_KEY_UPDATED_AT = "updated_at"
 
-# v131+: "remind me N minutes before this is due" - a plain, editable schema
+# "remind me N minutes before this is due" - a plain, editable schema
 # field (like due_date/star_value, NOT internal bookkeeping), set by
 # whoever creates/edits the chore via the Create/Edit Chore modal's own
 # "Remind me" checkboxes - deliberately the exact same lead-time values the
@@ -1497,7 +1587,7 @@ CHORE_KEY_REMINDER_MINUTES = "reminder_minutes"
 # reasoning it already resets overdue_penalty_applied.
 CHORE_KEY_REMINDERS_FIRED = "reminders_fired"
 
-# v128+: the reject half of the verification gate - see chore_engine.py's
+# the reject half of the verification gate - see chore_engine.py's
 # reject_chore. A verifier can send a pending_verification chore back to
 # "open" instead of approving it (no stars disbursed, no streak/rotation
 # change - nothing was ever earned). rejected_by/rejected_at record who and
@@ -1530,17 +1620,13 @@ CHORE_KEY_NO_APPROVAL_REQUIRED = "no_approval_required"
 CHORE_KEY_QUANTITY_TOTAL = "quantity_total"
 CHORE_KEY_QUANTITY_REMAINING = "quantity_remaining"
 
-# v184+: household ask, verbatim - "Ability to Mark Chores Important. Chore
-# will have a red ! denoting importance, they always go to the top of the
-# list." Plain opt-in boolean, editable via update_chore like every other
+# Plain opt-in boolean, editable via update_chore like every other
 # simple flag here - the actual "sorts to the top" behavior lives entirely
 # on the frontend (family-hub-chores-card.js's _sortChoresForColumn), the
 # backend just stores and passes it through.
 CHORE_KEY_IMPORTANT = "important"
 
-# v184+: household ask, verbatim - "Ability to Assign chores to multiple
-# people. Each person is rewarded individually. Chore can be marked
-# completed for each person individually." Implemented as fan-out: one
+# Implemented as fan-out: one
 # ordinary single-assignee chore is created PER assignee (reusing the
 # entire existing single-assignee state machine - assign/claim/complete/
 # approve/reward - completely unchanged), with every chore created from the
@@ -1564,9 +1650,7 @@ CHORE_KEY_GROUP_ID = "group_id"
 # open, since "waiting to recur" only describes an approved chore sitting
 # idle, never one that's currently active again.
 CHORE_RECUR_TYPE_INTERVAL = "interval"
-# v187+: household ask, verbatim - "chore scheduling needs some more work
-# potentially want to do every 2 months or every 3 months, every 4th week
-# or 7th week, every other day etc." The "interval" schedule used to ALWAYS
+# The "interval" schedule used to ALWAYS
 # mean "every N days" (recur_interval_days alone) - "every other day"
 # already worked (recur_interval_days=2), but "every N weeks"/"every N
 # months" had no way to express at all. CHORE_KEY_RECUR_INTERVAL_UNIT adds
@@ -1586,9 +1670,7 @@ CHORE_RECUR_INTERVAL_UNIT_MONTHS = "months"
 CHORE_RECUR_INTERVAL_UNITS = (CHORE_RECUR_INTERVAL_UNIT_DAYS, CHORE_RECUR_INTERVAL_UNIT_WEEKS, CHORE_RECUR_INTERVAL_UNIT_MONTHS)
 CHORE_KEY_RECUR_INTERVAL_UNIT = "recur_interval_unit"
 CHORE_RECUR_TYPE_WEEKDAYS = "weekdays"
-# v185+: household ask, verbatim - "Better chore scheduling so you can
-# choose things like every third Wednesday or the first weekend of every
-# month. Very similar to how Google calendar does it now." Google Calendar's
+# Google Calendar's
 # own "Monthly on the third Wednesday" option picks exactly one weekday;
 # this reuses the existing CHORE_KEY_RECUR_WEEKDAYS field (see chore_engine.
 # _compute_next_recur_due) to allow MORE than one, so "the first weekend"
@@ -1604,9 +1686,7 @@ CHORE_KEY_RECUR_MONTH_NTH = "recur_month_nth"
 CHORE_RECUR_MONTH_NTH_VALUES = (1, 2, 3, 4, -1)
 CHORE_KEY_RECUR_NEXT_DUE = "recur_next_due"
 
-# v186+: household ask, verbatim - "Chores due x amount time before due on
-# recurring chores. This will set the due date based on when the chore is
-# recurred instead of when the chore was created." Before this, a recurring
+# Before this, a recurring
 # chore's due_date was set once (at creation, or whenever someone last
 # hand-edited it) and never touched again by recurrence itself - so a
 # chore due "in 3 days" at creation stayed due on that same fixed calendar
@@ -1632,8 +1712,7 @@ CHORE_KEY_RECUR_DUE_OFFSET_MINUTES = "recur_due_offset_minutes"
 # chore_engine._fire_chore_event for the full payload.
 CHORE_EVENT_TYPE = "family_hub_chore_event"
 
-# v186+: household ask, verbatim - "Routines should be able to be triggers
-# for automations." Chores already had CHORE_EVENT_TYPE above; Routines
+# Chores already had CHORE_EVENT_TYPE above; Routines
 # (routine_engine.py's per-person daily checklists) never fired anything
 # onto hass.bus at all, so there was no native "Event" trigger a household
 # could point an automation at. routine_engine.py deliberately stays
@@ -1681,7 +1760,7 @@ SERVICE_NUDGE_USER = "nudge_user"
 PERMISSION_ASSIGN = "can_assign"
 PERMISSION_VERIFY = "can_verify"
 PERMISSION_REWARD_OVERRIDE = "can_override_rewards"
-# v121+: split out of PERMISSION_VERIFY on request - "mark any chore done"
+# split out of PERMISSION_VERIFY on request - "mark any chore done"
 # (completing it on someone else's behalf) used to be bundled with "approve/
 # verify a completed chore" (which finalizes the star reward), so there was
 # no way to grant one without the other. A household running a shared wall-
@@ -1693,7 +1772,7 @@ PERMISSION_REWARD_OVERRIDE = "can_override_rewards"
 # before for a household that never bothers with this new, narrower grant),
 # OR has this.
 PERMISSION_COMPLETE_ANY = "can_complete_any"
-# v127+: split out of PERMISSION_REWARD_OVERRIDE on request, same precedent
+# split out of PERMISSION_REWARD_OVERRIDE on request, same precedent
 # as PERMISSION_COMPLETE_ANY splitting out of PERMISSION_VERIFY above - a
 # household wanted to grant "can add a new reward to the catalog with a
 # price" to someone (e.g. an older sibling) WITHOUT also handing them
@@ -1721,7 +1800,7 @@ PERMISSION_REWARD_ADD = "can_add_rewards"
 # separate dicts (this one keyed by user_id in the Permissions store,
 # that one a field on the chore record itself) so there's no collision.
 PERMISSION_AUTO_APPROVE = "no_approval_required"
-# v144.4+: split out of PERMISSION_ASSIGN on request, same precedent as
+# split out of PERMISSION_ASSIGN on request, same precedent as
 # PERMISSION_COMPLETE_ANY/PERMISSION_REWARD_ADD splitting out of their own
 # broader permissions above - a household wanted to grant someone (e.g. an
 # older kid) the ability to CREATE and assign new chores without that same
@@ -1735,7 +1814,7 @@ PERMISSION_AUTO_APPROVE = "no_approval_required"
 # convenience, same as PERMISSION_ASSIGN's own comment there already
 # explains).
 PERMISSION_EDIT_CHORE = "can_edit_chore"
-# v144.4+: gates the one specific field on chore create/update that's
+# gates the one specific field on chore create/update that's
 # actually dangerous to hand out loosely - CHORE_KEY_NO_APPROVAL_REQUIRED
 # (see chore_engine.chore_skips_verification). Without PERMISSION_ASSIGN/
 # PERMISSION_EDIT_CHORE a kid can't create or edit a chore at all; but
@@ -1754,7 +1833,7 @@ PERMISSION_EDIT_CHORE = "can_edit_chore"
 # someone they trust); this instead controls who's allowed to author a
 # CHORE that skips verification for whoever completes it.
 PERMISSION_STAR_OVERRIDE = "can_star_override"
-# v146.6+: gates editing the weekly meal plan ("the menu") on the calendar
+# gates editing the weekly meal plan ("the menu") on the calendar
 # card - "need a permission to edit menu, prevents kids from messing with
 # the menu, anyone can suggest but only ones with edit menu permission can
 # edit." A household member without this (and without real HA admin) can
@@ -1767,9 +1846,7 @@ PERMISSION_STAR_OVERRIDE = "can_star_override"
 # block. Standalone, not split out of anything - the menu has never had
 # ANY permission gating before this.
 PERMISSION_EDIT_MENU = "can_edit_menu"
-# v1.132.5+: household ask, verbatim (after a kiosk-specific "hide until
-# login" toggle in v1.132.4 already closed most of the gap): "it should be
-# a user setting under permissions instead." Whether someone can see who's
+# Whether someone can see who's
 # claimed what on a wish list that isn't their own (family-hub-todo-
 # card.js's _wishlistItemHtml/_toggleWishlistClaim) - the list's own OWNER
 # already has claim status hidden from them unconditionally (see
@@ -1791,11 +1868,7 @@ PERMISSION_EDIT_MENU = "can_edit_menu"
 # after the migration has already run, correctly starts blind to claim
 # status until an admin explicitly turns it on for them.
 PERMISSION_SEE_WISHLIST_CLAIMS = "can_see_wishlist_claims"
-# v1.132.43+: household ask, verbatim - "Deleting calendar events (Needs
-# permission) if the calendar integration you're using supports delete,
-# else gray out and when click give a pop up that says delete is not
-# supported with your current integration please use [INTEGRATION] app to
-# delete." Gates the new Delete button in family-week-calendar-card.js's
+# Gates the new Delete button in family-week-calendar-card.js's
 # event-info popup (_openEventInfo) - same standalone-permission shape as
 # PERMISSION_EDIT_MENU just above (deleting a calendar event has never had
 # ANY permission gating before this, because there was no delete feature at
@@ -1812,8 +1885,6 @@ PERMISSION_SEE_WISHLIST_CLAIMS = "can_see_wishlist_claims"
 # CalendarEntityFeature.DELETE_EVENT at all, so even someone WITH this
 # permission sees the popup instead of a working button on those.
 PERMISSION_DELETE_EVENT = "can_delete_event"
-# v1.132.47+: household ask, verbatim - "Need a permission to add/delete
-# routines both add/delete self and all so someone can't modify others."
 # Before this, every routine-item write (create/update/delete/reorder - see
 # chores_websocket_api.py's ws_create_routine_item/ws_update_routine_item/
 # ws_delete_routine_item/ws_reorder_routine_items) was gated on the single,
@@ -1856,7 +1927,7 @@ CHORE_PERMISSIONS = (
     PERMISSION_ROUTINES_MANAGE_ANY,
 )
 
-# v1.132.43+: HA core's `calendar` component defines a CalendarEntityFeature
+# HA core's `calendar` component defines a CalendarEntityFeature
 # IntFlag on CalendarEntity (CREATE_EVENT=1, DELETE_EVENT=2, UPDATE_EVENT=4);
 # a calendar entity that implements async_delete_event exposes this bit in
 # its own state's `supported_features` attribute, which is what
@@ -1886,7 +1957,7 @@ CALENDAR_PLATFORM_FRIENDLY_NAMES = {
     "remote_calendar": "your remote calendar's own app",
 }
 
-# v128+: a catalog item's redeem_mode - see reward_engine.py's own module
+# a catalog item's redeem_mode - see reward_engine.py's own module
 # docstring for the full picture. Every reward has exactly one:
 #   - "instant" (the default, and the ONLY mode that existed before v128):
 #     redeem any time, no limit on how many times, nothing tracked beyond
@@ -1919,9 +1990,9 @@ REWARD_REDEEM_MODES = (REWARD_REDEEM_MODE_INSTANT, REWARD_REDEEM_MODE_BANKED, RE
 CHORES_CARD_JS_URL = "/family_hub_chores_card/family-hub-chores-card.js"
 MY_CHORES_CARD_JS_URL = "/family_hub_my_chores_card/family-hub-my-chores-card.js"
 REWARDS_CARD_JS_URL = "/family_hub_rewards_card/family-hub-rewards-card.js"
-# v133+ - see goal_engine.py's own module docstring for what Goals is.
+# see goal_engine.py's own module docstring for what Goals is.
 GOALS_CARD_JS_URL = "/family_hub_goals_card/family-hub-goals-card.js"
-# v140+ - the My Pantry card (see pantry_engine.py's own module docstring).
+# the My Pantry card (see pantry_engine.py's own module docstring).
 # Added here in v144.3 after discovering the card was shipped in v140-v142/
 # 1.107.0 with working code and passing tests, but was NEVER actually wired
 # into async_setup_entry's static-path/dashboard-resource registration below
@@ -1930,7 +2001,7 @@ GOALS_CARD_JS_URL = "/family_hub_goals_card/family-hub-goals-card.js"
 # matter what the user searched for. See async_setup_entry's own comment
 # at the fix site for the fuller story.
 PANTRY_CARD_JS_URL = "/family_hub_pantry_card/family-hub-pantry-card.js"
-# v146+ - the To-Do Lists card (see family-hub-todo-card.js's own module
+# the To-Do Lists card (see family-hub-todo-card.js's own module
 # docstring): a themed board over whichever native todo.* entities the
 # household points it at. No backend storage of its own (everything reads/
 # writes straight through the native `todo` domain's services), so this is
@@ -1939,7 +2010,7 @@ PANTRY_CARD_JS_URL = "/family_hub_pantry_card/family-hub-pantry-card.js"
 # new websocket commands to register alongside it.
 TODO_CARD_JS_URL = "/family_hub_todo_card/family-hub-todo-card.js"
 
-# v1.110.1+ - the Active Timers card (see
+# the Active Timers card (see
 # family-hub-active-timers-card.js's own module docstring): every running
 # timer in the house on one board, colour-coded by whoever it's assigned
 # to, plus the quick-timer modal that starts a standalone one. Reads the
@@ -1948,7 +2019,7 @@ TODO_CARD_JS_URL = "/family_hub_todo_card/family-hub-todo-card.js"
 # plus the three family_hub/timers/* standalone commands.
 ACTIVE_TIMERS_CARD_JS_URL = "/family_hub_active_timers_card/family-hub-active-timers-card.js"
 
-# v1.110.6+ - the standalone Recipe Box card (see
+# the standalone Recipe Box card (see
 # family-hub-recipe-box-card.js's own module docstring for "the menu box"
 # naming decision): the household's Recipe Box ("Loved Dishes") from the
 # weekly calendar card's own modal, as its own dashboard tab. Runs on the

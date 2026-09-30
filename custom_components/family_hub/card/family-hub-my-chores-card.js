@@ -38,11 +38,48 @@ if (!window.__familyHubScreenSaver) {
     let activityBound = false;
     let boundActivity = null;
     let settingsSnapshot = null;
+    let widgetEls = {};
 
     function defaultSettings() {
-      return { screenSaver: { sourceType: "video", videoUrl: "", cameraEntity: "", idleSeconds: 180, usersEnabled: {}, returnDashboardPath: "" } };
+      return { screenSaver: { sourceType: "video", videoUrl: "", cameraEntity: "", idleSeconds: 180, usersEnabled: {}, returnDashboardPath: "" }, screenSaverWidgets: [] };
     }
-    // v1.132.36+: same helper as the calendar card's/standalone screensaver
+    // Same this-device-only localStorage key as the main calendar card's
+    // own _getScreenSaverHiddenWidgetIds - kept in sync by hand, not by
+    // import, per this project's copy-into-every-resource convention.
+    function getScreenSaverHiddenWidgetIds() {
+      let raw = null;
+      try {
+        raw = localStorage.getItem("familyCalendarScreenSaverHiddenWidgetIdsLocal");
+      } catch (e) {
+      }
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.filter((id) => typeof id === "string" && id) : [];
+      } catch (e) {
+        return [];
+      }
+    }
+    // Same clamped-percentage, drop-malformed-entries normalization as the
+    // main calendar card's own screenSaverWidgets handling.
+    function normalizeScreenSaverWidgets(parsed) {
+      if (!Array.isArray(parsed)) return [];
+      const clampPct = (v, fallback) => {
+        const n = typeof v === "number" ? v : parseFloat(v);
+        return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : fallback;
+      };
+      return parsed
+        .filter((w) => w && typeof w === "object" && w.config && typeof w.config === "object" && typeof w.config.type === "string" && w.config.type)
+        .map((w) => ({
+          id: typeof w.id === "string" && w.id ? w.id : `sw-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+          config: w.config,
+          x: clampPct(w.x, 5),
+          y: clampPct(w.y, 5),
+          w: clampPct(w.w, 30),
+          h: clampPct(w.h, 20),
+        }));
+    }
+    // same helper as the calendar card's/standalone screensaver
     // card's own _normalizeDashboardPath - a value missing its leading "/"
     // resolves as relative to whatever's currently showing rather than
     // root-relative, silently breaking navigation.
@@ -69,7 +106,8 @@ if (!window.__familyHubScreenSaver) {
         });
       }
       const returnDashboardPath = normalizeDashboardPath(ss.returnDashboardPath);
-      return { screenSaver: { sourceType, videoUrl, cameraEntity, idleSeconds, usersEnabled, returnDashboardPath } };
+      const screenSaverWidgets = normalizeScreenSaverWidgets(parsed.screenSaverWidgets);
+      return { screenSaver: { sourceType, videoUrl, cameraEntity, idleSeconds, usersEnabled, returnDashboardPath }, screenSaverWidgets };
     }
     function getSettings() {
       return settingsCache || defaultSettings();
@@ -84,7 +122,7 @@ if (!window.__familyHubScreenSaver) {
       }
       maybeResetIdleTimer();
     }
-    // v144.12+: this used to call resetIdleTimer() unconditionally on every
+    // this used to call resetIdleTimer() unconditionally on every
     // single poll tick (startPolling, every 60s), whether or not anything
     // about the screenSaver settings had actually changed. That meant any
     // household with idleSeconds set above 60 (the poll interval - and the
@@ -160,15 +198,66 @@ if (!window.__familyHubScreenSaver) {
       Object.assign(img.style, { width: "100%", height: "100%", objectFit: "cover", background: "#000", display: "none" });
       el.appendChild(video);
       el.appendChild(img);
+      const widgetsLayer = document.createElement("div");
+      widgetsLayer.className = "screensaver-widgets";
+      Object.assign(widgetsLayer.style, { position: "absolute", top: "0", left: "0", right: "0", bottom: "0", pointerEvents: "none" });
+      el.appendChild(widgetsLayer);
       el.addEventListener("pointerdown", hideScreenSaver);
       document.body.appendChild(el);
       overlayEl = el;
       return el;
     }
+    // Same dynamic-card-hosting approach as the main calendar card's own
+    // _renderScreenSaverWidgets (loadCardHelpers/createCardElement) - see
+    // that file's comment for the full "why".
+    async function renderWidgets(overlay) {
+      const layer = overlay && overlay.querySelector(".screensaver-widgets");
+      if (!layer) return;
+      const widgets = getSettings().screenSaverWidgets || [];
+      const hiddenIds = getScreenSaverHiddenWidgetIds();
+      const visible = widgets.filter((w) => !hiddenIds.includes(w.id));
+      if (!visible.length) {
+        layer.innerHTML = "";
+        widgetEls = {};
+        return;
+      }
+      if (typeof window.loadCardHelpers !== "function") return;
+      const helpers = await window.loadCardHelpers();
+      const seenIds = {};
+      for (const widget of visible) {
+        seenIds[widget.id] = true;
+        let wrap = widgetEls[widget.id];
+        if (!wrap || !wrap.isConnected) {
+          wrap = document.createElement("div");
+          wrap.setAttribute("data-screensaver-widget-id", widget.id);
+          Object.assign(wrap.style, { position: "absolute", overflow: "hidden" });
+          try {
+            const cardEl = helpers.createCardElement(widget.config);
+            cardEl.hass = hass;
+            wrap.appendChild(cardEl);
+          } catch (e) {
+          }
+          layer.appendChild(wrap);
+          widgetEls[widget.id] = wrap;
+        } else {
+          const cardEl = wrap.firstElementChild;
+          if (cardEl) cardEl.hass = hass;
+        }
+        Object.assign(wrap.style, { left: `${widget.x}%`, top: `${widget.y}%`, width: `${widget.w}%`, height: `${widget.h}%` });
+      }
+      Object.keys(widgetEls).forEach((id) => {
+        if (!seenIds[id]) {
+          const wrap = widgetEls[id];
+          if (wrap && wrap.parentNode) wrap.parentNode.removeChild(wrap);
+          delete widgetEls[id];
+        }
+      });
+    }
     function showScreenSaver() {
       if (!applicable()) return;
       const overlay = ensureOverlay();
       const ss = getSettings().screenSaver;
+      renderWidgets(overlay);
       const videoEl = overlay.querySelector(".screensaver-video");
       const imgEl = overlay.querySelector(".screensaver-camera-image");
       if (ss.sourceType === "camera") {
@@ -191,10 +280,7 @@ if (!window.__familyHubScreenSaver) {
       }
       overlay.style.display = "flex";
     }
-    // v1.132.36+: household bug report, verbatim - "the navigate back to
-    // page workes on the calendar page the card that has the actual
-    // settings button but it doesnt work when the screen saver is called
-    // by like chores or rewards card." Root cause: this shared singleton
+    // Root cause: this shared singleton
     // (the screensaver that actually runs when a Chores/Rewards/My Chores
     // card - not the calendar card - is what's on screen when it's idle)
     // never had ANY return-dashboard navigation at all - the calendar
@@ -225,9 +311,7 @@ if (!window.__familyHubScreenSaver) {
       if (!path) return;
       navigateWithFallback(path);
     }
-    // v1.132.63+: household bug report, verbatim - "Need to make it if
-    // screensaver is set to return to the dashboard page it's currently
-    // on it does nothing." See family-week-calendar-card.js's own
+    // See family-week-calendar-card.js's own
     // identical copy of this method for the full root-cause note - v193
     // onward's soft-route-with-hard-fallback mechanism, v1.132.61's own
     // attempted fix of skipping this function entirely when already on
@@ -314,6 +398,7 @@ if (!window.__familyHubScreenSaver) {
         overlayEl.remove();
         overlayEl = null;
       }
+      widgetEls = {};
       teardownActivityListeners();
     }
     return {
@@ -351,6 +436,10 @@ if (!window.__familyHubScreenSaver) {
       // don't talk to each other.
       updateHass(clientHass) {
         if (clientHass) hass = clientHass;
+        Object.values(widgetEls).forEach((wrap) => {
+          const cardEl = wrap && wrap.firstElementChild;
+          if (cardEl) cardEl.hass = hass;
+        });
       },
       // Test-only hooks - not used by any real card. Lets a jsdom test
       // drive this shared controller directly (no full card element
@@ -388,9 +477,7 @@ const CHORE_BIN_SENTINEL = "chore_bin";
 // Household-wide timer alarm sound+modal (v1.119.0+, widened in
 // v1.132.55+) - see family-hub-active-timers-card.js's own top comment
 // above this same block for the full design note. Added here in
-// v1.132.59+ after a household bug report, verbatim: "a household
-// alarm or an assigned alarm set to them plus kiosk doesnt alarm on the
-// kiosk" - this card never carried this singleton or subscribed to
+// v1.132.59+ after a - this card never carried this singleton or subscribed to
 // the widened-alarm broadcast at all, so a kiosk whose dashboard shows
 // it silently never rang for anyone else's widened timer alarm. Kept
 // byte-identical to every other card's copy on purpose.
@@ -432,8 +519,7 @@ if (!window.__familyHubTimerAlarm) {
     // ship or for a self-hosted install's network policy to worry about,
     // and it sounds identical on every install.
     //
-    // Household ask, verbatim: "can we make it sound more like an alarm
-    // and less like a ticking bomb." The original v1.119.0+ sound was one
+    // The original v1.119.0+ sound was one
     // flat square-wave tone repeated once a second - metronomic, which is
     // exactly what read as a countdown-bomb tick rather than an alarm. This
     // plays a quick alternating two-pitch TRIPLET (a classic digital-alarm-
@@ -468,7 +554,7 @@ if (!window.__familyHubTimerAlarm) {
         // the primary alarm; sound is a bonus on top of it, not required.
       }
     }
-    // v1.132.55+: which hass connection to tell "dismiss this everywhere"
+    // which hass connection to tell "dismiss this everywhere"
     // when Stop is tapped - set by whichever card most recently called
     // ring()/check() with one, since this singleton is shared across every
     // card on the dashboard and any of them may have `hass` by now. Best-
@@ -488,7 +574,7 @@ if (!window.__familyHubTimerAlarm) {
         beepHandle = null;
       }
       if (modalEl) modalEl.style.display = "none";
-      // v1.132.55+: household's explicit choice - "first tap wins, from
+      // household's explicit choice - "first tap wins, from
       // anyone" - so tapping Stop here also clears the alarm everywhere
       // else (other kiosks, other people's phones-that-are-dashboards)
       // rather than just silencing this one tab. No permission gate, by
@@ -497,14 +583,11 @@ if (!window.__familyHubTimerAlarm) {
         lastHass.connection.sendMessagePromise({ type: "family_hub/timers/dismiss_alarm", uid }).catch(() => {});
       }
     }
-    // Household bug report, verbatim: "a household alarm or an assigned
-    // alarm set to them plus kiosk doesnt alarm on the kiosk, it should end
-    // the screen saver and pop up the timer ended modal and make noise."
     // This modal already outranks the screensaver's own overlay (z-index
     // 2147483647 vs 2147483000, set in ensureModal() above), so it was
     // always painting on top of it - but a screensaver left running
-    // underneath still means its video/camera poll keeps going, and the
-    // household asked for it to actually END, not just be covered up.
+    // underneath still means its video/camera poll keeps going, so it
+    // needs to actually END, not just be covered up.
     // There are THREE independent screensaver implementations in this
     // project (the calendar card's own, the shared window.__familyHub
     // ScreenSaver controller used by Chores/Rewards/My Chores/etc., and the
@@ -565,7 +648,7 @@ if (!window.__familyHubTimerAlarm) {
         if (!mine || dismissedUids.has(mine.uid)) return;
         if (remainingSecondsFn(mine) <= 0) start(mine, hass);
       },
-      // v1.132.55+: the WIDENED half - a household_timer_alarm_ring bus
+      // the WIDENED half - a household_timer_alarm_ring bus
       // event (fired by chores_websocket_api.py's _dispatch_timer_alarm/
       // _reannounce_active_alarms) that THIS login should also ring for,
       // because it's either the timer's own owner, a login flagged as an
@@ -599,10 +682,7 @@ if (!window.__familyHubTimerAlarm) {
   })();
 }
 
-// Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
-// "When you load a card it tends to load the default theme first then it
-// switches over to the theme you set how can we always make it load the
-// set theme first." Root cause: EVERY themed card's first paint happens
+// Theme flash-of-default fix - Root cause: EVERY themed card's first paint happens
 // with no theme CSS vars set at all (falls back to _defaultTheme()'s own
 // hardcoded palette), because resolving the household's actual theme
 // takes two sequential, awaited websocket round trips after `hass` is
@@ -686,7 +766,7 @@ class FamilyHubMyChoresCard extends HTMLElement {
   static getStubConfig() {
     return { title: "My Chores" };
   }
-  // v1.111.0+: switched to getConfigElement (a real custom element) so the
+  // switched to getConfigElement (a real custom element) so the
   // new theme_override field can offer a live-fetched theme list.
   static getConfigElement() {
     return document.createElement("family-hub-my-chores-card-editor");
@@ -717,20 +797,19 @@ class FamilyHubMyChoresCard extends HTMLElement {
     await Promise.all([this._fetchSettings(), this._fetchChores()]);
     await this._fetchTimers();
     this._startTimerTicker();
-    // v1.111.0+: always fetched now - a per-card theme_override needs this
+    // always fetched now - a per-card theme_override needs this
     // list regardless of the household's own useGlobalTheme setting.
     await this._fetchGlobalThemes();
     this._startPolling();
     this._registerScreenSaver();
-    // Household bug report, verbatim: "a household alarm or an assigned
-    // alarm set to them plus kiosk doesnt alarm on the kiosk" - see this
+    // - see this
     // file's own copy of the window.__familyHubTimerAlarm singleton
     // (below) for the full design note. Kept byte-identical to every
     // other card's copy on purpose.
     this._subscribeAlarmEvents();
     this._render();
   }
-  // v1.132.59+: household-wide timer alarms - subscribe to the two bus
+  // household-wide timer alarms - subscribe to the two bus
   // events chores_websocket_api.py's _dispatch_timer_alarm/
   // _reannounce_active_alarms fire (see const.py's
   // EVENT_FAMILY_HUB_TIMER_ALARM_RING/_STOP), and hand each one to the
@@ -830,7 +909,7 @@ class FamilyHubMyChoresCard extends HTMLElement {
   _getSettings() {
     return this._settingsCache || this._defaultSettings();
   }
-  // v144.6+: "This device's theme" - a device-local override of the shared
+  // "This device's theme" - a device-local override of the shared
   // Settings > Appearance theme choice, same key/mechanism
   // family-week-calendar-card.js's own _getDeviceThemeOverride uses (see
   // its own comment) and configured from that card's Settings modal (this
@@ -872,7 +951,7 @@ class FamilyHubMyChoresCard extends HTMLElement {
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
-    // v1.111.0+: a per-card-placement Theme override (from this card's own
+    // a per-card-placement Theme override (from this card's own
     // native "Edit Card" dialog) wins over this device's own override and
     // the household's Global Theme.
     const overrideEntry = this._cardOverrideThemeEntry();
@@ -894,7 +973,7 @@ class FamilyHubMyChoresCard extends HTMLElement {
     const a = Math.max(0, Math.min(1, typeof alpha === "number" ? alpha : 1));
     return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
-  // v1.126.0+ - see window.__familyHubThemeCache's own comment above the
+  // see window.__familyHubThemeCache's own comment above the
   // class for the full "why a key, not one shared blob" reasoning. Called
   // identically from here (after resolving the REAL theme) and from
   // `_build()` (before the real theme is known yet, to look up whatever
@@ -910,14 +989,14 @@ class FamilyHubMyChoresCard extends HTMLElement {
   }
   _applyThemeVars() {
     const theme = this._resolveTheme(this._getSettings());
-    // v144.5+: same "liquid glass" support family-week-calendar-card.js has
+    // same "liquid glass" support family-week-calendar-card.js has
     // - a theme's cardOpacity/glassBlur (100/0 defaults, both no-ops) turn
     // the card/surface backgrounds translucent and blur whatever shows
     // through them, so picking a Liquid Glass theme actually looks glassy
     // on this card too, not just the calendar.
     const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
     const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
-    // v1.126.0+: built as a plain object first (rather than each var going
+    // built as a plain object first (rather than each var going
     // straight into its own setProperty call, as before) purely so the
     // exact same values that get applied here also get cached - see
     // window.__familyHubThemeCache's own comment for why this fixes the
@@ -944,7 +1023,7 @@ class FamilyHubMyChoresCard extends HTMLElement {
       // mirrors the calendar card's own _resolveTheme font-fallback logic
       // (including the global-theme case) without pulling in this card's
       // full font set, since nothing else here is theme-font-driven yet.
-      // Cached and re-applied along with the rest (v1.126.0+) so a reload
+      // Cached and re-applied along with the rest so a reload
       // doesn't ALSO flash the header title back to 18px before this
       // resolves for real, same reasoning as every other var here.
       "--fs-header-title": `${this._headerTitleFontSize(this._getSettings())}px`,
@@ -952,7 +1031,7 @@ class FamilyHubMyChoresCard extends HTMLElement {
     Object.keys(vars).forEach((name) => this.style.setProperty(name, vars[name]));
     if (window.__familyHubThemeCache) window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
   }
-  // v1.126.0+: applies whatever theme this device/placement last actually
+  // applies whatever theme this device/placement last actually
   // resolved to, SYNCHRONOUSLY, before the real fetches that would
   // otherwise be the only way to know it - see window.__familyHubTheme
   // Cache's own comment above the class. Called once from `_build()`,
@@ -974,12 +1053,12 @@ class FamilyHubMyChoresCard extends HTMLElement {
       const n = fonts && Number(fonts.headerTitle);
       return Number.isFinite(n) && n >= 6 && n <= 72 ? n : fallback;
     };
-    // v1.111.0+: a per-card theme_override wins here too, same precedence
+    // a per-card theme_override wins here too, same precedence
     // as _resolveTheme, so the header font size always matches whichever
     // theme actually ends up applied to this specific card.
     const overrideEntry = this._cardOverrideThemeEntry();
     if (overrideEntry) return fromFonts(overrideEntry.fonts);
-    // v144.6+: same device-theme-override precedence _resolveTheme uses,
+    // same device-theme-override precedence _resolveTheme uses,
     // so the header font size always matches whichever theme (household's
     // or this device's own override) actually ends up applied.
     const override = this._getDeviceThemeOverride();
@@ -1010,7 +1089,7 @@ class FamilyHubMyChoresCard extends HTMLElement {
     } catch (e) {
       custom = [];
     }
-    // v1.111.0+: also merge in every installed native Home Assistant theme.
+    // also merge in every installed native Home Assistant theme.
     this._globalThemes = custom.concat(this._nativeHaThemeEntries());
     this._applyThemeVars();
   }
@@ -1101,7 +1180,7 @@ class FamilyHubMyChoresCard extends HTMLElement {
 
   _build() {
     this._built = true;
-    // v1.126.0+: applied BEFORE attachShadow/the first innerHTML paint -
+    // applied BEFORE attachShadow/the first innerHTML paint -
     // see _applyCachedThemeVarsIfAny's own comment and window.__familyHub
     // ThemeCache's above the class for why this is what actually fixes
     // the household's reported "loads the default theme first" flash.
@@ -1157,7 +1236,7 @@ class FamilyHubMyChoresCard extends HTMLElement {
     return div.innerHTML;
   }
 
-  // --- Timers (v1.110.0+) ---------------------------------------------------
+  // --- Timers ---------------------------------------------------
   // This card is the "just show me my list" surface, so it deliberately
   // shows timers READ-ONLY: a running chore timer's countdown, and a small
   // banner for a running reward timer. Starting and cancelling live on the
@@ -1187,7 +1266,7 @@ class FamilyHubMyChoresCard extends HTMLElement {
   }
   _timerRemainingSeconds(timer) {
     if (!timer) return 0;
-    // v1.110.2+: when this timer is running on an adopted native HA
+    // when this timer is running on an adopted native HA
     // timer.* helper, Home Assistant already publishes the authoritative
     // finish time as a `finishes_at` state attribute - so read HA's own
     // number rather than recomputing it. Falls back to the original
@@ -1268,7 +1347,7 @@ class FamilyHubMyChoresCard extends HTMLElement {
     this._root.querySelector(".title").textContent = this._config.title;
     const mine = this._myChores();
     const bin = this._binChores();
-    // v1.110.0+: a running reward timer of your own, shown above the list -
+    // a running reward timer of your own, shown above the list -
     // "your 2 hours of gaming has 41 minutes left" is exactly the kind of
     // thing this card exists to answer at a glance.
     const rewardSlot = this._root.querySelector(".reward-timer-slot");
@@ -1289,7 +1368,7 @@ class FamilyHubMyChoresCard extends HTMLElement {
         --fc-surface-alt: #efe6cf; --fc-surface2: #f2eede; }
       ha-card { background: var(--fc-bg); color: var(--fc-text); padding: 14px; height: 100%; box-sizing: border-box; overflow-y: auto; }
       .header { margin-bottom: 8px; }
-      /* v1.110.0+: read-only timer surfaces (start/cancel live on the full
+      /* read-only timer surfaces (start/cancel live on the full
          boards - see _fetchTimers' own comment). Tabular figures so the
          ticking seconds don't reflow the row. */
       .reward-timer-banner { display: flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 700; color: var(--fc-accent2); background: var(--fc-surface-alt); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
@@ -1298,7 +1377,7 @@ class FamilyHubMyChoresCard extends HTMLElement {
       .section { margin-top: 12px; }
       .section-title { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; color: var(--fc-text-secondary); margin-bottom: 6px; }
       .chore-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; background: var(--fc-card); border-radius: 10px; padding: 8px 10px; margin-bottom: 6px; box-shadow: var(--fc-shadow, 0 2px 5px rgba(0,0,0,0.08)); }
-      /* v144.5+: "Liquid glass" support, same convention as
+      /* "Liquid glass" support, same convention as
          family-week-calendar-card.js - see that file's own comment on its
          backdrop-filter rule for the full reasoning. Zero-cost for every
          existing theme (blur(0px) is a no-op); -webkit- prefix needed for
@@ -1322,7 +1401,7 @@ if (!customElements.get("family-hub-my-chores-card")) {
   customElements.define("family-hub-my-chores-card", FamilyHubMyChoresCard);
 }
 
-// v1.111.0+: native "Edit Card" config editor - a thin wrapper around
+// native "Edit Card" config editor - a thin wrapper around
 // Home Assistant's own <ha-form>, needed only because the new
 // theme_override field's option list has to be fetched live.
 class FamilyHubMyChoresCardEditor extends HTMLElement {

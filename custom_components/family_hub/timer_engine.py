@@ -1,4 +1,4 @@
-"""Chore/reward countdown timers (v1.110.0+).
+"""Chore/reward countdown timers.
 
 The household's ask: "We need to be able to make chores and rewards have
 timer associated to them. This would allow some interesting things like 2
@@ -30,7 +30,7 @@ RUNNING timer:
       "duration_minutes": int
       "notify_targets":   list of notify.* targets, snapshotted at start
                           for the same reason as title
-      "entity_id":        v1.110.2+ - the native HA `timer.*` helper entity
+      "entity_id":        the native HA `timer.*` helper entity
                           actually running this countdown, when one was
                           free to adopt at start time. None/absent means
                           this timer runs off the store plus the backend
@@ -38,7 +38,7 @@ RUNNING timer:
                           existed. See const.py's TIMER_ENTITY_PREFIX for
                           the full research note on why Family Hub adopts
                           native timer entities rather than creating them.
-      "alarm":            v1.119.0+ - snapshot of the owner's own
+      "alarm":            snapshot of the owner's own
                           notifyTimerAlarm profile flag at start time (same
                           "snapshot, don't re-check later" reasoning as
                           notify_targets/title above). When true, firing
@@ -46,7 +46,7 @@ RUNNING timer:
                           alarm-stream channel / iOS critical alert)
                           instead of the plain one - see
                           chores_websocket_api.py's _send_alarm_notification.
-      "alarm_audience":   v1.132.55+ - snapshot of the chore's/reward's own
+      "alarm_audience":   snapshot of the chore's/reward's own
                           alarm_audience field at start time (chore/reward
                           timers only - a standalone timer always gets
                           "self", see ws_start_standalone_timer). Governs
@@ -61,7 +61,7 @@ RUNNING timer:
                           read live when the timer fires, not frozen at
                           start - a speaker or kiosk login added mid-
                           countdown should still ring).
-      "origin_client_id": v1.119.0+ - an opaque per-browser-tab id the
+      "origin_client_id": an opaque per-browser-tab id the
                           frontend generates once (sessionStorage-backed,
                           so it's stable across a reload but gone once that
                           tab actually closes) and sends when starting a
@@ -86,8 +86,8 @@ itself; a fired reward timer's is in the redemption log).
 Two rules worth stating explicitly, because they are decisions and not
 accidents:
 
-  - ONE ACTIVE TIMER PER PERSON PER KIND. The household asked for one
-    running reward timer per person ("2 hours of gaming" shouldn't be
+  - ONE ACTIVE TIMER PER PERSON PER KIND. Only one
+    running reward timer per person is allowed ("2 hours of gaming" shouldn't be
     startable twice), and the same reasoning applies to chore timers - you
     cannot "clean for 30 minutes" at two different things simultaneously,
     and without the cap a kid can start five timers and wander off. The
@@ -149,8 +149,7 @@ def normalize_timer_minutes(value: Any) -> Optional[float]:
     out-of-range number IS clamped rather than dropped, since someone who
     typed 5000 clearly wanted "a long time," not "no timer at all."
 
-    v1.132.59+: household ask, verbatim - "can we make the timer accept
-    seconds." `value` may now be fractional (e.g. 0.5 == 30 seconds) - the
+    `value` may now be fractional (e.g. 0.5 == 30 seconds) - the
     standalone quick-timer modal combines a minutes field and a seconds
     field into one fractional-minutes number before calling this. A
     fractional/sub-minute request is floored at TIMER_MIN_SECONDS (1
@@ -259,7 +258,7 @@ def ends_at(timer: dict[str, Any]) -> Optional[datetime]:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     minutes = timer.get("duration_minutes")
-    # v1.132.59+: this used to truncate via int(minutes), which silently
+    # this used to truncate via int(minutes), which silently
     # dropped a sub-minute timer's seconds (0.5 -> 0). timedelta() accepts
     # a float minutes value directly, so keep it as one.
     try:
@@ -311,7 +310,7 @@ def start_timer(
     nothing started."""
     if kind not in TIMER_KINDS:
         raise TimerError("invalid_kind", f"Unknown timer kind: {kind!r}")
-    # v1.110.1+: a standalone timer may be UNASSIGNED - "optional assign to
+    # a standalone timer may be UNASSIGNED - "optional assign to
     # user" - because plenty of household timers belong to the kitchen
     # rather than to a person. Chore and reward timers still must have an
     # owner: a chore timer completes somebody's chore and a reward timer

@@ -13,7 +13,7 @@
 // constant in family-week-calendar-card.js so the two cards agree.
 const TODAY_REMINDER_COLOR = "#b58cd9";
 
-// v1.132.65+: the 7 Mon-Sun day-toggle buttons used by the new Add Event
+// the 7 Mon-Sun day-toggle buttons used by the new Add Event
 // modal's reminder rollover-days picker - identical list to family-week-
 // calendar-card.js's own REMINDER_WEEKDAY_LABELS, kept as its own copy
 // since these are independently-loaded Lovelace resources, not ES modules
@@ -31,9 +31,7 @@ const REMINDER_WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"
 // Household-wide timer alarm sound+modal (v1.119.0+, widened in
 // v1.132.55+) - see family-hub-active-timers-card.js's own top comment
 // above this same block for the full design note. Added here in
-// v1.132.59+ after a household bug report, verbatim: "a household
-// alarm or an assigned alarm set to them plus kiosk doesnt alarm on the
-// kiosk" - this card never carried this singleton or subscribed to
+// v1.132.59+ after a - this card never carried this singleton or subscribed to
 // the widened-alarm broadcast at all, so a kiosk whose dashboard shows
 // it silently never rang for anyone else's widened timer alarm. Kept
 // byte-identical to every other card's copy on purpose.
@@ -75,8 +73,7 @@ if (!window.__familyHubTimerAlarm) {
     // ship or for a self-hosted install's network policy to worry about,
     // and it sounds identical on every install.
     //
-    // Household ask, verbatim: "can we make it sound more like an alarm
-    // and less like a ticking bomb." The original v1.119.0+ sound was one
+    // The original v1.119.0+ sound was one
     // flat square-wave tone repeated once a second - metronomic, which is
     // exactly what read as a countdown-bomb tick rather than an alarm. This
     // plays a quick alternating two-pitch TRIPLET (a classic digital-alarm-
@@ -111,7 +108,7 @@ if (!window.__familyHubTimerAlarm) {
         // the primary alarm; sound is a bonus on top of it, not required.
       }
     }
-    // v1.132.55+: which hass connection to tell "dismiss this everywhere"
+    // which hass connection to tell "dismiss this everywhere"
     // when Stop is tapped - set by whichever card most recently called
     // ring()/check() with one, since this singleton is shared across every
     // card on the dashboard and any of them may have `hass` by now. Best-
@@ -131,7 +128,7 @@ if (!window.__familyHubTimerAlarm) {
         beepHandle = null;
       }
       if (modalEl) modalEl.style.display = "none";
-      // v1.132.55+: household's explicit choice - "first tap wins, from
+      // household's explicit choice - "first tap wins, from
       // anyone" - so tapping Stop here also clears the alarm everywhere
       // else (other kiosks, other people's phones-that-are-dashboards)
       // rather than just silencing this one tab. No permission gate, by
@@ -140,14 +137,11 @@ if (!window.__familyHubTimerAlarm) {
         lastHass.connection.sendMessagePromise({ type: "family_hub/timers/dismiss_alarm", uid }).catch(() => {});
       }
     }
-    // Household bug report, verbatim: "a household alarm or an assigned
-    // alarm set to them plus kiosk doesnt alarm on the kiosk, it should end
-    // the screen saver and pop up the timer ended modal and make noise."
     // This modal already outranks the screensaver's own overlay (z-index
     // 2147483647 vs 2147483000, set in ensureModal() above), so it was
     // always painting on top of it - but a screensaver left running
-    // underneath still means its video/camera poll keeps going, and the
-    // household asked for it to actually END, not just be covered up.
+    // underneath still means its video/camera poll keeps going, so it
+    // needs to actually END, not just be covered up.
     // There are THREE independent screensaver implementations in this
     // project (the calendar card's own, the shared window.__familyHub
     // ScreenSaver controller used by Chores/Rewards/My Chores/etc., and the
@@ -208,7 +202,7 @@ if (!window.__familyHubTimerAlarm) {
         if (!mine || dismissedUids.has(mine.uid)) return;
         if (remainingSecondsFn(mine) <= 0) start(mine, hass);
       },
-      // v1.132.55+: the WIDENED half - a household_timer_alarm_ring bus
+      // the WIDENED half - a household_timer_alarm_ring bus
       // event (fired by chores_websocket_api.py's _dispatch_timer_alarm/
       // _reannounce_active_alarms) that THIS login should also ring for,
       // because it's either the timer's own owner, a login flagged as an
@@ -242,10 +236,7 @@ if (!window.__familyHubTimerAlarm) {
   })();
 }
 
-// Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
-// "When you load a card it tends to load the default theme first then it
-// switches over to the theme you set how can we always make it load the
-// set theme first." Root cause: EVERY themed card's first paint happens
+// Theme flash-of-default fix - Root cause: EVERY themed card's first paint happens
 // with no theme CSS vars set at all (falls back to _defaultTheme()'s own
 // hardcoded palette), because resolving the household's actual theme
 // takes two sequential, awaited websocket round trips after `hass` is
@@ -347,7 +338,7 @@ class FamilyTodayCard extends HTMLElement {
   // settings_entity's own Settings (see _getPeople) and only needs to be
   // set here directly for a rare standalone override, which is still fully
   // supported by hand-editing the YAML.
-  // v1.111.0+: static getConfigForm can't offer a live-fetched theme list
+  // static getConfigForm can't offer a live-fetched theme list
   // (no hass in scope when it's called), so this card now provides its own
   // config editor element instead - see FamilyTodayCardEditor at the
   // bottom of this file, which renders the exact same fields (via the
@@ -361,9 +352,7 @@ class FamilyTodayCard extends HTMLElement {
       { name: "weather_entity", selector: { entity: { domain: "weather" } } },
       { name: "calendar_dashboard_path", selector: { text: {} } },
       { name: "calendar_button_label", selector: { text: {} } },
-      // v1.132.64+: household ask, verbatim - "I want to add another view
-      // to Family today that is the same style as what the today area
-      // looks like on month + day view." That's the Month Split view's
+      // That's the Month Split view's
       // day-detail panel (family-week-calendar-card.js's own
       // _buildMonthSplitDetailHtml/.msd-* CSS) - a single scrolling list
       // mixing meals and events/reminders together by time, rather than
@@ -376,12 +365,7 @@ class FamilyTodayCard extends HTMLElement {
         { value: "sectioned", label: "Sectioned (Events / Meals / Reminders) - default" },
         { value: "compact", label: "Compact (Month view's Today panel style)" },
       ] } } },
-      // v1.132.65+: household ask, verbatim - "Can we add another item to
-      // the family today card. An option to have an add button. If turned
-      // on it appears next to the go to calendar button, allows you to add
-      // a reminder or calendar event, have it open the same modal as we
-      // use in the current calendar card to add reminder or calendar
-      // event." Off by default (like calendar_dashboard_path) so nothing
+      // Off by default (like calendar_dashboard_path) so nothing
       // new appears on an existing dashboard until a household opts in.
       { name: "show_add_button", selector: { boolean: {} } },
     ];
@@ -451,16 +435,16 @@ class FamilyTodayCard extends HTMLElement {
       meal_templates_entity: config.meal_templates_entity || "todo.meal_plan_templates",
       suggestions_entity: config.suggestions_entity || "todo.meal_suggestions",
       birthdays_entity: config.birthdays_entity || "calendar.birthdays",
-      // v1.111.0+: "" (default, untouched by every existing dashboard) =
+      // "" (default, untouched by every existing dashboard) =
       // "Use device settings" - falls straight through to the exact
       // pre-1.111.0 behavior (household Global Theme, else local). See
       // _resolveTheme below for where this takes priority.
       theme_override: typeof config.theme_override === "string" ? config.theme_override : "",
-      // v1.132.64+: "sectioned" (this card's original, unchanged layout)
+      // "sectioned" (this card's original, unchanged layout)
       // unless a household explicitly opted into "compact" - see
       // _configSchema's own comment on this field.
       layout: config.layout === "compact" ? "compact" : "sectioned",
-      // v1.132.65+: household ask, verbatim - see _configSchema's own
+      // see _configSchema's own
       // comment on this field. false (untouched) means every existing
       // dashboard looks exactly the same until a household opts in.
       show_add_button: !!config.show_add_button,
@@ -476,7 +460,7 @@ class FamilyTodayCard extends HTMLElement {
     if (this._recurringMeals === undefined) this._recurringMeals = [];
     if (this._firstLoadPromise === undefined) this._firstLoadPromise = null;
     if (!this._built) this._build();
-    // v1.132.64+: a full _render() (not just _renderHeader()) so toggling
+    // a full _render() (not just _renderHeader()) so toggling
     // the new layout field live in the card editor's preview actually
     // re-paints the body immediately, using whatever today's data was
     // already fetched to - _render() itself is cheap and safe to call
@@ -493,14 +477,13 @@ class FamilyTodayCard extends HTMLElement {
   }
   async _initFirstLoad() {
     await this._fetchSettings();
-    // v1.111.0+: always fetched now, not just when the household has
+    // always fetched now, not just when the household has
     // useGlobalTheme on - a per-card theme_override needs this list
     // regardless of the household's own Global Theme setting.
     await this._fetchGlobalThemes();
     this._refreshAll();
     this._startPolling();
-    // Household bug report, verbatim: "a household alarm or an assigned
-    // alarm set to them plus kiosk doesnt alarm on the kiosk" - see this
+    // - see this
     // file's own copy of the window.__familyHubTimerAlarm singleton
     // (below) for the full design note. Kept byte-identical to every
     // other card's copy on purpose.
@@ -509,7 +492,7 @@ class FamilyTodayCard extends HTMLElement {
   _myUserId() {
     return this._hass && this._hass.user ? this._hass.user.id : null;
   }
-  // v1.132.59+: household-wide timer alarms - subscribe to the two bus
+  // household-wide timer alarms - subscribe to the two bus
   // events chores_websocket_api.py's _dispatch_timer_alarm/
   // _reannounce_active_alarms fire (see const.py's
   // EVENT_FAMILY_HUB_TIMER_ALARM_RING/_STOP), and hand each one to the
@@ -758,7 +741,7 @@ class FamilyTodayCard extends HTMLElement {
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
-    // v1.111.0+: a per-card-placement Theme override (set from this card's
+    // a per-card-placement Theme override (set from this card's
     // own native "Edit Card" dialog) wins over the household's own Global
     // Theme setting - the most specific choice available. "" (the
     // untouched default) falls straight through to the exact pre-1.111.0
@@ -801,7 +784,7 @@ class FamilyTodayCard extends HTMLElement {
     }
     return layers.length ? layers.join(", ") : null;
   }
-  // v1.126.0+ - see window.__familyHubThemeCache's own comment above the
+  // see window.__familyHubThemeCache's own comment above the
   // class for the full "why a key, not one shared blob" reasoning. This
   // card has no per-device theme override concept (that lives only on the
   // full calendar/chores/rewards/goals/pantry/my-chores cards), so the key
@@ -852,7 +835,7 @@ class FamilyTodayCard extends HTMLElement {
       this.style.removeProperty("--fc-bg-image-opacity");
       this.style.removeProperty("--fc-bg-overlay-image");
     }
-    // v1.126.0+: snapshot exactly what was just set/removed above into the
+    // snapshot exactly what was just set/removed above into the
     // shared cache under this card/placement's key, so a future _build() can
     // apply the same values before the real fetches resolve - see
     // window.__familyHubThemeCache's own comment for the full reasoning. A
@@ -893,7 +876,7 @@ class FamilyTodayCard extends HTMLElement {
       window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
     }
   }
-  // v1.126.0+: applies whatever theme this device/placement last actually
+  // applies whatever theme this device/placement last actually
   // resolved to, SYNCHRONOUSLY, before the real fetches that would
   // otherwise be the only way to know it - see window.__familyHubTheme
   // Cache's own comment above the class. Called once from `_build()`,
@@ -947,7 +930,7 @@ class FamilyTodayCard extends HTMLElement {
     } catch (e) {
       custom = [];
     }
-    // v1.111.0+: also merge in every installed native Home Assistant theme
+    // also merge in every installed native Home Assistant theme
     // - duplicated (not shared/imported) from family-week-calendar-card.js's
     // own _fetchGlobalThemes/_nativeHaThemeEntries, same "independently
     // loaded Lovelace resources duplicate small helpers" convention used
@@ -1067,7 +1050,7 @@ class FamilyTodayCard extends HTMLElement {
   }
   _parseReminderRollover(raw) {
     const match = /<!--rollover:1-->/.exec(raw || "");
-    // v185+: a rollover reminder can now also carry a <!--rolldays:...-->
+    // a rollover reminder can now also carry a <!--rolldays:...-->
     // marker (see family-week-calendar-card.js's own _parseReminderRollover
     // for the read/write half of this) restricting which days it applies
     // to - this card only ever DISPLAYS a reminder's description, so it
@@ -1222,7 +1205,7 @@ class FamilyTodayCard extends HTMLElement {
     if (!best) return null;
     return { uid: best.uid, name: best.name, description: best.description, link: best.link, color: best.color, recur: "weekly" };
   }
-  // v144.2+ (task #21): mirrors the full calendar card's own v130+
+  // v144.2+ (): mirrors the full calendar card's own v130+
   // multi-list subscription rule (see family-week-calendar-card.js's
   // _fetchReminders) instead of only ever pulling from the one shared
   // family list. Every logged-in profile also sees, folded into the same
@@ -1388,11 +1371,7 @@ class FamilyTodayCard extends HTMLElement {
     const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
     return luminance > 0.6 ? "#3a2f00" : "#ffffff";
   }
-  // v1.132.65+: household ask, verbatim - "Can we add another item to the
-  // family today card. An option to have an add button. If turned on it
-  // appears next to the go to calendar button, allows you to add a
-  // reminder or calendar event, have it open the same modal as we use in
-  // the current calendar card to add reminder or calendar event." Ported
+  // Ported
   // from family-week-calendar-card.js's own Add Event modal (same class
   // names, same fields, same save logic) rather than a stripped-down
   // rebuild, so it really is "the same modal" - this card already shared
@@ -2028,7 +2007,7 @@ class FamilyTodayCard extends HTMLElement {
   }
   _build() {
     this._built = true;
-    // v1.126.0+: applied BEFORE attachShadow/the first innerHTML paint -
+    // applied BEFORE attachShadow/the first innerHTML paint -
     // see _applyCachedThemeVarsIfAny's own comment and window.__familyHub
     // ThemeCache's above the class for why this is what actually fixes
     // the household's reported "loads the default theme first" flash.
@@ -2087,7 +2066,7 @@ background-image: var(--fc-bg-overlay-image, none);
 .reminder-owner { font-size: 0.85em; color: var(--fc-text-secondary); font-weight: 400; }
 .row .done-btn { flex: 0 0 auto; border: none; border-radius: 8px; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 11px; font-weight: 700; padding: 6px 10px; cursor: pointer; }
 .empty { font-size: var(--fs-event, 14px); color: var(--fc-text-secondary); font-style: italic; padding: 4px 2px; }
-/* v1.132.64+: compact layout - same .msd-* class names/rules as the full
+/* compact layout - same .msd-* class names/rules as the full
    Family Week Calendar card's Month Split view day panel (see that
    file's own copy for the "why" - kept visually identical on purpose, so
    this really is "the same style", not just a similar one). This card's
@@ -2101,7 +2080,7 @@ background-image: var(--fc-bg-overlay-image, none);
 .msd-empty { font-size: 12px; color: var(--fc-text-secondary); font-style: italic; padding: 4px 0; }
 .footer-actions { flex: 0 0 auto; }
 .footer-actions:empty { display: none; }
-/* v1.132.65+: the "Go to Calendar" button and the new opt-in "+ Add"
+/* the "Go to Calendar" button and the new opt-in "+ Add"
    button share one row (see _renderFooterActions) rather than each being
    its own full-width block - flex: 1 1 auto splits the row evenly between
    whichever of the two are actually present. */
@@ -2118,7 +2097,7 @@ background-image: var(--fc-bg-overlay-image, none);
 .detail-row.secondary { color: var(--fc-text-secondary); }
 .detail-actions { margin-top: 12px; display: flex; gap: 8px; }
 .detail-open-link-btn, .detail-done-btn { flex: 1 1 auto; border: none; border-radius: 10px; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 13px; font-weight: 700; padding: 9px 12px; cursor: pointer; }
-/* v1.132.65+: the Add Event modal, ported from family-week-calendar-card.js
+/* the Add Event modal, ported from family-week-calendar-card.js
    (same class names on purpose - see that file's own copies of these
    rules) so it's visually identical to the full card's own modal, not
    just similar. .add-event-box only overrides the sizing that differs
@@ -2378,7 +2357,7 @@ background-image: var(--fc-bg-overlay-image, none);
     }
     this._renderFooterActions();
   }
-  // v1.132.64+: extracted out of _render()'s old inline click handlers so
+  // extracted out of _render()'s old inline click handlers so
   // both layouts (sectioned's per-list rows AND compact's single combined
   // list) can open the exact same detail popup for the exact same event,
   // rather than maintaining two copies of this logic.
@@ -2503,9 +2482,7 @@ background-image: var(--fc-bg-overlay-image, none);
       });
     }
   }
-  // v1.132.64+: household ask, verbatim - "I want to add another view to
-  // Family today that is the same style as what the today area looks
-  // like on month + day view." Mirrors family-week-calendar-card.js's own
+  // Mirrors family-week-calendar-card.js's own
   // _buildMonthSplitDetailHtml as closely as this card's own already-
   // fetched data allows: meal pills first, then events and reminders
   // combined into one time-sorted list (all-day items first, same
@@ -2543,7 +2520,7 @@ background-image: var(--fc-bg-overlay-image, none);
       ? combined
           .map(
             (it) =>
-              `<div class="msd-item" data-kind="${it.kind}" data-idx="${it.idx}" style="background:${it.color}">` +
+              `<div class="msd-item" data-kind="${it.kind}" data-idx="${it.idx}" style="background:${it.color};color:${this._textColorFor(it.color)}">` +
               `<span class="msd-item-time">${it.allDay ? "All day" : this._fmtTime(it.start)}</span>` +
               `<span class="msd-item-summary">${it.isReminder ? "&#128276; " : ""}${it.summary}</span>` +
               `</div>`
@@ -2578,8 +2555,6 @@ background-image: var(--fc-bg-overlay-image, none);
     const footerEl = this._root.querySelector(".footer-actions");
     if (!footerEl) return;
     const calendarPath = (this._config.calendar_dashboard_path || "").trim();
-    // v1.132.65+: household ask, verbatim - "An option to have an add
-    // button. If turned on it appears next to the go to calendar button."
     // Both buttons (either, neither, or both may be present depending on
     // config) live in one flex row rather than each being its own
     // full-width block, so "next to" is literal, not just "also in the
@@ -2608,7 +2583,7 @@ if (!customElements.get("family-today-card")) {
   customElements.define("family-today-card", FamilyTodayCard);
 }
 
-// v1.111.0+: native "Edit Card" config editor - a thin wrapper around
+// native "Edit Card" config editor - a thin wrapper around
 // Home Assistant's own <ha-form>, needed only because the new
 // theme_override field's option list has to be fetched live. See
 // FamilyTodayCard.getConfigElement above and FamilyHubGoalsCardEditor in

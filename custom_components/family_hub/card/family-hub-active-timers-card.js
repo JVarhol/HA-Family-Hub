@@ -1,4 +1,4 @@
-// Family Hub Active Timers card (v1.110.1+) - "We should also build an
+// Family Hub Active Timers card - "We should also build an
 // active timers card that shows all the timers active in the house, color
 // coded if they are assigned to someone based on their user color. You
 // should be able to have a pop up modal that has 3-4 common timer times,
@@ -16,12 +16,10 @@
 //     quick-timer modal. The oven, a board game, whose turn it is. See
 //     TIMER_KIND_STANDALONE in const.py for why it's a third `kind` in the
 //     existing store rather than storage of its own.
-//   - v1.120.0+: FOREIGN native `timer.*` entities - any HA timer helper
+//   - FOREIGN native `timer.*` entities - any HA timer helper
 //     currently active that ISN'T one Family Hub itself started/adopted
 //     (someone else's automation, a helper made from Developer Tools or
-//     HA's own UI, another integration entirely). Household ask, verbatim:
-//     "can we make the timers card show all active timers not just from
-//     family hub." These render read-only aside from an admin-only Stop
+//     HA's own UI, another integration entirely). These render read-only aside from an admin-only Stop
 //     (no ownership model exists for an arbitrary entity the way it does
 //     for Family Hub's own timers) and with a dashed border so it's
 //     obvious at a glance which timers this board actually manages vs. is
@@ -64,10 +62,6 @@ const PALETTE = ["#a9c6c2", "#dba99c", "#d9bf7e", "#a8bd93", "#b9a7c9", "#cf8f6c
 const TIMER_PRESETS = [5, 15, 30, 60];
 const UNASSIGNED_COLOR = "#c9c2b3";
 
-// v1.119.0+: household ask, verbatim: "route this through alarm
-// notifications for the person the timer is for, if its started by a
-// device with a kiosk still open can we make sounds and pop up a modal
-// that requires you to click stop?"
 //
 // The phone-push half of that (Android alarm-stream channel / iOS
 // critical alert) is entirely server-side - see chores_websocket_api.py's
@@ -134,8 +128,7 @@ if (!window.__familyHubTimerAlarm) {
     // ship or for a self-hosted install's network policy to worry about,
     // and it sounds identical on every install.
     //
-    // Household ask, verbatim: "can we make it sound more like an alarm
-    // and less like a ticking bomb." The original v1.119.0+ sound was one
+    // The original v1.119.0+ sound was one
     // flat square-wave tone repeated once a second - metronomic, which is
     // exactly what read as a countdown-bomb tick rather than an alarm. This
     // plays a quick alternating two-pitch TRIPLET (a classic digital-alarm-
@@ -170,7 +163,7 @@ if (!window.__familyHubTimerAlarm) {
         // the primary alarm; sound is a bonus on top of it, not required.
       }
     }
-    // v1.132.55+: which hass connection to tell "dismiss this everywhere"
+    // which hass connection to tell "dismiss this everywhere"
     // when Stop is tapped - set by whichever card most recently called
     // ring()/check() with one, since this singleton is shared across every
     // card on the dashboard and any of them may have `hass` by now. Best-
@@ -190,7 +183,7 @@ if (!window.__familyHubTimerAlarm) {
         beepHandle = null;
       }
       if (modalEl) modalEl.style.display = "none";
-      // v1.132.55+: household's explicit choice - "first tap wins, from
+      // household's explicit choice - "first tap wins, from
       // anyone" - so tapping Stop here also clears the alarm everywhere
       // else (other kiosks, other people's phones-that-are-dashboards)
       // rather than just silencing this one tab. No permission gate, by
@@ -199,14 +192,11 @@ if (!window.__familyHubTimerAlarm) {
         lastHass.connection.sendMessagePromise({ type: "family_hub/timers/dismiss_alarm", uid }).catch(() => {});
       }
     }
-    // Household bug report, verbatim: "a household alarm or an assigned
-    // alarm set to them plus kiosk doesnt alarm on the kiosk, it should end
-    // the screen saver and pop up the timer ended modal and make noise."
     // This modal already outranks the screensaver's own overlay (z-index
     // 2147483647 vs 2147483000, set in ensureModal() above), so it was
     // always painting on top of it - but a screensaver left running
-    // underneath still means its video/camera poll keeps going, and the
-    // household asked for it to actually END, not just be covered up.
+    // underneath still means its video/camera poll keeps going, so it
+    // needs to actually END, not just be covered up.
     // There are THREE independent screensaver implementations in this
     // project (the calendar card's own, the shared window.__familyHub
     // ScreenSaver controller used by Chores/Rewards/My Chores/etc., and the
@@ -267,7 +257,7 @@ if (!window.__familyHubTimerAlarm) {
         if (!mine || dismissedUids.has(mine.uid)) return;
         if (remainingSecondsFn(mine) <= 0) start(mine, hass);
       },
-      // v1.132.55+: the WIDENED half - a household_timer_alarm_ring bus
+      // the WIDENED half - a household_timer_alarm_ring bus
       // event (fired by chores_websocket_api.py's _dispatch_timer_alarm/
       // _reannounce_active_alarms) that THIS login should also ring for,
       // because it's either the timer's own owner, a login flagged as an
@@ -301,10 +291,7 @@ if (!window.__familyHubTimerAlarm) {
   })();
 }
 
-// Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
-// "When you load a card it tends to load the default theme first then it
-// switches over to the theme you set how can we always make it load the
-// set theme first." Root cause: EVERY themed card's first paint happens
+// Theme flash-of-default fix - Root cause: EVERY themed card's first paint happens
 // with no theme CSS vars set at all (falls back to _defaultTheme()'s own
 // hardcoded palette), because resolving the household's actual theme
 // takes two sequential, awaited websocket round trips after `hass` is
@@ -388,7 +375,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   static getStubConfig() {
     return { title: "Active Timers" };
   }
-  // v1.111.0+: switched to getConfigElement (a real custom element) so the
+  // switched to getConfigElement (a real custom element) so the
   // new theme_override field can offer a live-fetched theme list - see
   // FamilyHubActiveTimersCardEditor at the bottom of this file.
   static getConfigElement() {
@@ -397,7 +384,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   setConfig(config) {
     this._config = {
       title: (config && config.title) || "Active Timers",
-      // v1.111.0+: "" (default) = "Use device settings" - see
+      // "" (default) = "Use device settings" - see
       // _resolveTheme below for where this takes priority.
       theme_override: (config && typeof config.theme_override === "string") ? config.theme_override : "",
     };
@@ -420,10 +407,10 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   }
   async _initFirstLoad() {
     await Promise.all([this._fetchSettings(), this._fetchUsers(), this._fetchTimers(), this._fetchMyPermissions()]);
-    // v1.111.0+: always fetched now (not just when useGlobalTheme is on) -
+    // always fetched now (not just when useGlobalTheme is on) -
     // a per-card theme_override needs this list regardless.
     await this._fetchGlobalThemes();
-    // v1.110.3+ - backfill for a household that upgraded without re-saving
+    // backfill for a household that upgraded without re-saving
     // Settings (which is the calendar card's own trigger for this same
     // reconcile). Best-effort, never blocks the rest of first load.
     this._ensureTimerHelpers((this._getSettings().memberUserIds) || []).catch(() => {});
@@ -432,7 +419,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     this._subscribeAlarmEvents();
     this._render();
   }
-  // v1.132.55+: household-wide timer alarms - subscribe to the two bus
+  // household-wide timer alarms - subscribe to the two bus
   // events chores_websocket_api.py's _dispatch_timer_alarm/
   // _reannounce_active_alarms fire (see const.py's
   // EVENT_FAMILY_HUB_TIMER_ALARM_RING/_STOP), and hand each one to the
@@ -481,7 +468,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     }
   }
 
-  // v1.110.3+ - see family-week-calendar-card.js's copy of this function
+  // see family-week-calendar-card.js's copy of this function
   // for the full design note (why the frontend does this rather than
   // Python, the naming scheme, and why removal never deletes a helper).
   // Duplicated rather than shared, matching this project's established
@@ -592,7 +579,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   _getSettings() {
     return this._settingsCache || this._defaultSettings();
   }
-  // v144.6+: "This device's theme" - a device-local override of the shared
+  // "This device's theme" - a device-local override of the shared
   // Settings > Appearance theme choice, same key/mechanism
   // family-week-calendar-card.js's own _getDeviceThemeOverride uses (see
   // its own comment) and configured from that card's Settings modal (this
@@ -627,7 +614,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
-    // v1.111.0+: a per-card-placement Theme override (from this card's own
+    // a per-card-placement Theme override (from this card's own
     // native "Edit Card" dialog) wins over this device's own override and
     // the household's Global Theme - the most specific choice available.
     const cardOverride = this._config && this._config.theme_override;
@@ -652,7 +639,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     const a = Math.max(0, Math.min(1, typeof alpha === "number" ? alpha : 1));
     return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
-  // v1.126.0+ - see window.__familyHubThemeCache's own comment above the
+  // see window.__familyHubThemeCache's own comment above the
   // class for the full "why a key, not one shared blob" reasoning. Called
   // identically from here (after resolving the REAL theme) and from
   // `_build()` (before the real theme is known yet, to look up whatever
@@ -668,14 +655,14 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   }
   _applyThemeVars() {
     const theme = this._resolveTheme(this._getSettings());
-    // v144.5+: same "liquid glass" support family-week-calendar-card.js has
+    // same "liquid glass" support family-week-calendar-card.js has
     // - a theme's cardOpacity/glassBlur (100/0 defaults, both no-ops) turn
     // the card/surface backgrounds translucent and blur whatever shows
     // through them, so picking a Liquid Glass theme actually looks glassy
     // on this card too, not just the calendar.
     const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
     const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
-    // v1.126.0+: built as a plain object first (rather than each var going
+    // built as a plain object first (rather than each var going
     // straight into its own setProperty call, as before) purely so the
     // exact same values that get applied here also get cached - see
     // window.__familyHubThemeCache's own comment for why this fixes the
@@ -697,7 +684,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     Object.keys(vars).forEach((name) => this.style.setProperty(name, vars[name]));
     if (window.__familyHubThemeCache) window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
   }
-  // v1.126.0+: applies whatever theme this device/placement last actually
+  // applies whatever theme this device/placement last actually
   // resolved to, SYNCHRONOUSLY, before the real fetches that would
   // otherwise be the only way to know it - see window.__familyHubTheme
   // Cache's own comment above the class. Called once from `_build()`,
@@ -732,7 +719,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     } catch (e) {
       custom = [];
     }
-    // v1.111.0+: also merge in every installed native Home Assistant theme
+    // also merge in every installed native Home Assistant theme
     // - duplicated (not shared/imported) from family-week-calendar-card.js.
     this._globalThemes = custom.concat(this._nativeHaThemeEntries());
     this._applyThemeVars();
@@ -820,8 +807,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   // actually done. Derived rather than stored is also why a reload or a
   // Home Assistant restart mid-countdown resumes at the right number.
   //
-  // v1.120.0+: household ask, verbatim: "can we make the timers card show
-  // all active timers not just from family hub." Family Hub's own timers
+  // Family Hub's own timers
   // (chore/reward/standalone) still come from family_hub/timers/list below
   // exactly as before; _foreignTimerEntities/_allTimers layer in every
   // OTHER `timer.*` domain entity currently running in the house - a plain
@@ -906,7 +892,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     if (this._timerTicker) clearInterval(this._timerTicker);
     this._timerTicker = null;
   }
-  // v1.119.0+: this browser tab's own stable id - sessionStorage-backed
+  // this browser tab's own stable id - sessionStorage-backed
   // (survives a reload of this same tab, gone once the tab actually
   // closes), shared under the same fixed key across every Family Hub
   // card on the page so a timer started from the Chores card and watched
@@ -930,7 +916,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   }
   _timerRemainingSeconds(timer) {
     if (!timer) return 0;
-    // v1.110.2+: when this timer is running on an adopted native HA
+    // when this timer is running on an adopted native HA
     // timer.* helper, Home Assistant already publishes the authoritative
     // finish time as a `finishes_at` state attribute - so read HA's own
     // number rather than recomputing it. Falls back to the original
@@ -963,7 +949,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     const m = Number(minutes) || 0;
     if (m >= 60 && m % 60 === 0) return `${m / 60}h`;
     if (m > 60) return `${Math.floor(m / 60)}h${Math.round(m % 60)}m`;
-    // v1.132.59+: "can we make the timer accept seconds" - a sub-minute
+    // "can we make the timer accept seconds" - a sub-minute
     // (or otherwise non-whole-minute) duration now reads as "45s" / "1m30s"
     // instead of rounding down to a misleading "0m" / "1m".
     const totalSeconds = Math.round(m * 60);
@@ -976,7 +962,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   // re-render at that rate would fight scrolling and any open modal.
   _renderTimerCountdowns() {
     if (!this._root) return;
-    // v1.119.0+: kiosk-side sound+modal alarm for whichever ONE running
+    // kiosk-side sound+modal alarm for whichever ONE running
     // timer this exact browser tab started, if it opted into alarm-style
     // delivery - see window.__familyHubTimerAlarm's own top comment.
     // Deliberately every tick (not just on the local zero-crossing) so a
@@ -986,7 +972,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
       window.__familyHubTimerAlarm.check(this._timers, this._familyHubClientId(), (t) => this._timerRemainingSeconds(t), this._hass);
     }
     const allTimers = this._allTimers();
-    // v1.120.0+: a foreign HA timer.* entity can start or finish entirely
+    // a foreign HA timer.* entity can start or finish entirely
     // outside Family Hub (someone else's automation, a helper started from
     // Developer Tools, HA's own UI) with no family_hub/timers/list poll to
     // ever notice - so if the SET of what's currently running has changed
@@ -1076,7 +1062,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     if (!timer) return false;
     const me = this._myUserId();
     if (this._isAdmin()) return true;
-    // v1.120.0+: a foreign HA timer.* entity has no owner/permission model
+    // a foreign HA timer.* entity has no owner/permission model
     // at all (unlike Family Hub's own timers, which always have a user_id
     // or are explicitly "the room's") - admin-only to stop, same as any
     // other raw entity control a non-admin shouldn't get from this board.
@@ -1105,7 +1091,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   }
   async _cancelTimer(uid) {
     if (!uid || !this._hass) return;
-    // v1.120.0+: a foreign HA timer.* entity (synthetic uid "ha:<entity_id>",
+    // a foreign HA timer.* entity (synthetic uid "ha:<entity_id>",
     // see _foreignTimerEntities) has no family_hub/timers/cancel record at
     // all - stop it the plain HA way instead, straight through the timer
     // domain's own cancel service.
@@ -1174,8 +1160,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     const overlay = this._root.querySelector(".quick-timer-modal");
     const box = overlay.querySelector(".modal-box");
     this._draftMinutes = null;
-    // v1.132.57+: household ask, verbatim - "why dont household timers
-    // alert on the kiosks" - same 3-way "self/kiosks/everyone" tier
+    // - same 3-way "self/kiosks/everyone" tier
     // chores/rewards already have (see const.py's CHORE_KEY_ALARM_
     // AUDIENCE), now offered here too. Resets to "self" (the pre-existing
     // behavior) every time the modal opens, same as _draftMinutes above.
@@ -1252,8 +1237,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
       }
     }, 0);
   }
-  // v1.132.59+: household ask, verbatim - "can we make the timer accept
-  // seconds." Reads the modal's minutes + seconds custom-length boxes
+  // Reads the modal's minutes + seconds custom-length boxes
   // together and folds them into one fractional-minutes number (e.g. 1
   // min 30 sec -> 1.5), or null if both are empty - null means "use
   // whichever preset chip is active instead," same fallback the old
@@ -1283,7 +1267,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
         label: (box.querySelector(".q-label").value || "").trim(),
         user_id: box.querySelector(".q-user").value || null,
         client_id: this._familyHubClientId(),
-        // v1.132.57+: "who hears this alarm" - see the button row's own
+        // "who hears this alarm" - see the button row's own
         // comment above.
         alarm_audience: this._draftAlarmAudience || "self",
       });
@@ -1297,7 +1281,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
 
   _build() {
     this._built = true;
-    // v1.126.0+: applied BEFORE attachShadow/the first innerHTML paint -
+    // applied BEFORE attachShadow/the first innerHTML paint -
     // see _applyCachedThemeVarsIfAny's own comment and window.__familyHub
     // ThemeCache's above the class for why this is what actually fixes
     // the household's reported "loads the default theme first" flash.
@@ -1351,7 +1335,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
          countdown itself hard to read. */
       .timer-card { position: relative; border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--timer-color) 16%, var(--fc-card)); border: 2px solid var(--timer-color); box-shadow: var(--fc-shadow, 0 2px 5px rgba(0,0,0,0.06)); display: flex; flex-direction: column; gap: 2px; }
       .timer-card.unassigned { background: var(--fc-surface2); border-color: var(--fc-border); }
-      /* v1.120.0+: a plain HA timer.* entity, not one of Family Hub's own -
+      /* a plain HA timer.* entity, not one of Family Hub's own -
          dashed rather than solid so it's visually obvious at a glance which
          timers this board actually owns/can manage vs. is just reporting on. */
       .timer-card.foreign-timer { border-style: dashed; }
@@ -1379,13 +1363,13 @@ class FamilyHubActiveTimersCard extends HTMLElement {
       .preset-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
       .preset-btn { border: 2px solid var(--fc-border); border-radius: 10px; padding: 10px 4px; font-size: 13px; font-weight: 800; background: var(--fc-surface2); color: var(--fc-text); cursor: pointer; }
       .preset-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
-      /* v1.132.59+: "can we make the timer accept seconds" - the custom
+      /* "can we make the timer accept seconds" - the custom
          length row is now two inputs (min/sec) side by side instead of
          one; override the generic 100%-width input rule above so they
          share the row instead of each claiming the full width. */
       .q-custom-row { display: flex; gap: 8px; margin-top: 4px; }
       .q-custom-row input { width: auto; flex: 1 1 0; margin-top: 0; }
-      /* v1.132.57+: "Who hears this alarm" 3-way row - same visual idiom
+      /* "Who hears this alarm" 3-way row - same visual idiom
          as .preset-btn above (a small pill button group), for the quick-
          timer modal's new alarm_audience picker. */
       .q-audience-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
@@ -1403,7 +1387,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
 
 customElements.define("family-hub-active-timers-card", FamilyHubActiveTimersCard);
 
-// v1.111.0+: native "Edit Card" config editor - a thin wrapper around
+// native "Edit Card" config editor - a thin wrapper around
 // Home Assistant's own <ha-form>, needed only because the new
 // theme_override field's option list has to be fetched live. See
 // FamilyHubGoalsCardEditor in family-hub-goals-card.js for the identical

@@ -1,4 +1,4 @@
-"""My Pantry "extras" (v141+) - items a household wants to see on the My
+"""My Pantry "extras" - items a household wants to see on the My
 Pantry card WITHOUT them being real Grocy stock. The card's main list is
 backed directly by Grocy's own stock (see __init__.py's
 _fetch_pantry_stock/_ws_get_pantry_stock and friends, right next to this

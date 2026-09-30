@@ -1,5 +1,5 @@
 """sensor platform: one read-only sensor entity per currently-ACTIVE Family
-Hub timer (v1.110.3+).
+Hub timer.
 
 Why this exists - the household's own words: "We also need to have a way to
 understand what the timer is doing to tie into automations, maybe there is

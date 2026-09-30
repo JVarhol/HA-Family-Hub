@@ -41,7 +41,7 @@ class RoutineError(Exception):
         self.code = code
 
 
-# v136+: an item can optionally carry a due_time ("HH:MM", 24-hour, local
+# an item can optionally carry a due_time ("HH:MM", 24-hour, local
 # wall-clock - deliberately not a full datetime, since a routine item
 # recurs every day rather than pointing at one specific date the way a
 # chore's due_date does) and/or days_of_week (a list of Python weekday
@@ -92,8 +92,7 @@ def _validate_star_value(star_value: Any) -> int:
     return max(0, n)
 
 
-# v1.132.41+ (household ask, verbatim: "add the account to automate routine
-# completion based on sensors like we do with chores"): a routine item's own
+# v1.132.41+ ): a routine item's own
 # equivalent of a chore's auto_complete_trigger - {"entity_id": ...,
 # "from_state": ..., "to_state": ...}, checked by __init__.py's
 # _sensor_trigger_matches (shared with chores) whenever the matching entity
@@ -163,9 +162,7 @@ def create_item(
         "done": False,
         "due_time": due_time,
         "days_of_week": days_of_week,
-        # v211+: household ask, verbatim - "allow routine blocks to be drug
-        # around and ordered in the routine modal, default is routine items
-        # with time are sorted by when their time is." sort_order is None
+        # sort_order is None
         # (unset) until a household actually drags something in this
         # user_id+category section (see reorder_items) - while it's None on
         # every item in a section, the frontend falls back to its own
@@ -209,7 +206,7 @@ def update_item(
 ) -> dict[str, Any]:
     """Edit an existing item's title/due_time/days_of_week/star_value/
     no_approval_required/auto_complete_trigger in place - the "manage
-    items" flow from the Routine tab of the Chores card's FAB modal (v136+).
+    items" flow from the Routine tab of the Chores card's FAB modal.
     Deliberately does NOT allow moving an item to a different user_id/
     category - those are set once at creation (matches the picker-driven
     "which person/category am I managing right now" UI, which just
@@ -224,7 +221,7 @@ def update_item(
     under the old settings; the new value only takes effect the next time
     the item is toggled.
 
-    auto_complete_trigger (v1.132.41+) always gets (re)written from
+    auto_complete_trigger always gets (re)written from
     whatever's passed - unlike star_value/no_approval_required there's no
     "in progress today" state tied to it, so clearing it (passing None)
     genuinely turns automation off immediately, same as a chore's
@@ -261,7 +258,7 @@ def toggle_item(
     wins" race-safety concern since checking your own already-checked item
     again is harmless).
 
-    v141+: takes `rewards` now (previously just `routines`) for the
+    takes `rewards` now (previously just `routines`) for the
     optional star_value payout. Unchecking (done=False) never pays or
     claws back anything - it just clears pending_approval (so re-checking
     later asks for approval fresh) and leaves stars_disbursed_today alone
@@ -399,8 +396,7 @@ def is_item_due_today(item: dict[str, Any], today_weekday: Optional[int] = None)
 def is_routine_complete(
     routines: dict[str, Any], user_id: str, category: str, today_weekday: Optional[int] = None
 ) -> bool:
-    """v186+: household ask, verbatim - "Routines should be able to be
-    triggers for automations." True once every item belonging to
+    """True once every item belonging to
     `user_id`'s `category` routine that's actually due today (is_item_due_
     today) is checked off - the natural "is this person's Morning Routine
     done" a household would want to point an automation at, not a raw

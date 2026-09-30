@@ -38,11 +38,48 @@ if (!window.__familyHubScreenSaver) {
     let activityBound = false;
     let boundActivity = null;
     let settingsSnapshot = null;
+    let widgetEls = {};
 
     function defaultSettings() {
-      return { screenSaver: { sourceType: "video", videoUrl: "", cameraEntity: "", idleSeconds: 180, usersEnabled: {}, returnDashboardPath: "" } };
+      return { screenSaver: { sourceType: "video", videoUrl: "", cameraEntity: "", idleSeconds: 180, usersEnabled: {}, returnDashboardPath: "" }, screenSaverWidgets: [] };
     }
-    // v1.132.36+: same helper as the calendar card's/standalone screensaver
+    // Same this-device-only localStorage key as the main calendar card's
+    // own _getScreenSaverHiddenWidgetIds - kept in sync by hand, not by
+    // import, per this project's copy-into-every-resource convention.
+    function getScreenSaverHiddenWidgetIds() {
+      let raw = null;
+      try {
+        raw = localStorage.getItem("familyCalendarScreenSaverHiddenWidgetIdsLocal");
+      } catch (e) {
+      }
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.filter((id) => typeof id === "string" && id) : [];
+      } catch (e) {
+        return [];
+      }
+    }
+    // Same clamped-percentage, drop-malformed-entries normalization as the
+    // main calendar card's own screenSaverWidgets handling.
+    function normalizeScreenSaverWidgets(parsed) {
+      if (!Array.isArray(parsed)) return [];
+      const clampPct = (v, fallback) => {
+        const n = typeof v === "number" ? v : parseFloat(v);
+        return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : fallback;
+      };
+      return parsed
+        .filter((w) => w && typeof w === "object" && w.config && typeof w.config === "object" && typeof w.config.type === "string" && w.config.type)
+        .map((w) => ({
+          id: typeof w.id === "string" && w.id ? w.id : `sw-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+          config: w.config,
+          x: clampPct(w.x, 5),
+          y: clampPct(w.y, 5),
+          w: clampPct(w.w, 30),
+          h: clampPct(w.h, 20),
+        }));
+    }
+    // same helper as the calendar card's/standalone screensaver
     // card's own _normalizeDashboardPath - a value missing its leading "/"
     // resolves as relative to whatever's currently showing rather than
     // root-relative, silently breaking navigation.
@@ -69,7 +106,8 @@ if (!window.__familyHubScreenSaver) {
         });
       }
       const returnDashboardPath = normalizeDashboardPath(ss.returnDashboardPath);
-      return { screenSaver: { sourceType, videoUrl, cameraEntity, idleSeconds, usersEnabled, returnDashboardPath } };
+      const screenSaverWidgets = normalizeScreenSaverWidgets(parsed.screenSaverWidgets);
+      return { screenSaver: { sourceType, videoUrl, cameraEntity, idleSeconds, usersEnabled, returnDashboardPath }, screenSaverWidgets };
     }
     function getSettings() {
       return settingsCache || defaultSettings();
@@ -84,7 +122,7 @@ if (!window.__familyHubScreenSaver) {
       }
       maybeResetIdleTimer();
     }
-    // v144.12+: this used to call resetIdleTimer() unconditionally on every
+    // this used to call resetIdleTimer() unconditionally on every
     // single poll tick (startPolling, every 60s), whether or not anything
     // about the screenSaver settings had actually changed. That meant any
     // household with idleSeconds set above 60 (the poll interval - and the
@@ -160,15 +198,66 @@ if (!window.__familyHubScreenSaver) {
       Object.assign(img.style, { width: "100%", height: "100%", objectFit: "cover", background: "#000", display: "none" });
       el.appendChild(video);
       el.appendChild(img);
+      const widgetsLayer = document.createElement("div");
+      widgetsLayer.className = "screensaver-widgets";
+      Object.assign(widgetsLayer.style, { position: "absolute", top: "0", left: "0", right: "0", bottom: "0", pointerEvents: "none" });
+      el.appendChild(widgetsLayer);
       el.addEventListener("pointerdown", hideScreenSaver);
       document.body.appendChild(el);
       overlayEl = el;
       return el;
     }
+    // Same dynamic-card-hosting approach as the main calendar card's own
+    // _renderScreenSaverWidgets (loadCardHelpers/createCardElement) - see
+    // that file's comment for the full "why".
+    async function renderWidgets(overlay) {
+      const layer = overlay && overlay.querySelector(".screensaver-widgets");
+      if (!layer) return;
+      const widgets = getSettings().screenSaverWidgets || [];
+      const hiddenIds = getScreenSaverHiddenWidgetIds();
+      const visible = widgets.filter((w) => !hiddenIds.includes(w.id));
+      if (!visible.length) {
+        layer.innerHTML = "";
+        widgetEls = {};
+        return;
+      }
+      if (typeof window.loadCardHelpers !== "function") return;
+      const helpers = await window.loadCardHelpers();
+      const seenIds = {};
+      for (const widget of visible) {
+        seenIds[widget.id] = true;
+        let wrap = widgetEls[widget.id];
+        if (!wrap || !wrap.isConnected) {
+          wrap = document.createElement("div");
+          wrap.setAttribute("data-screensaver-widget-id", widget.id);
+          Object.assign(wrap.style, { position: "absolute", overflow: "hidden" });
+          try {
+            const cardEl = helpers.createCardElement(widget.config);
+            cardEl.hass = hass;
+            wrap.appendChild(cardEl);
+          } catch (e) {
+          }
+          layer.appendChild(wrap);
+          widgetEls[widget.id] = wrap;
+        } else {
+          const cardEl = wrap.firstElementChild;
+          if (cardEl) cardEl.hass = hass;
+        }
+        Object.assign(wrap.style, { left: `${widget.x}%`, top: `${widget.y}%`, width: `${widget.w}%`, height: `${widget.h}%` });
+      }
+      Object.keys(widgetEls).forEach((id) => {
+        if (!seenIds[id]) {
+          const wrap = widgetEls[id];
+          if (wrap && wrap.parentNode) wrap.parentNode.removeChild(wrap);
+          delete widgetEls[id];
+        }
+      });
+    }
     function showScreenSaver() {
       if (!applicable()) return;
       const overlay = ensureOverlay();
       const ss = getSettings().screenSaver;
+      renderWidgets(overlay);
       const videoEl = overlay.querySelector(".screensaver-video");
       const imgEl = overlay.querySelector(".screensaver-camera-image");
       if (ss.sourceType === "camera") {
@@ -191,10 +280,7 @@ if (!window.__familyHubScreenSaver) {
       }
       overlay.style.display = "flex";
     }
-    // v1.132.36+: household bug report, verbatim - "the navigate back to
-    // page workes on the calendar page the card that has the actual
-    // settings button but it doesnt work when the screen saver is called
-    // by like chores or rewards card." Root cause: this shared singleton
+    // Root cause: this shared singleton
     // (the screensaver that actually runs when a Chores/Rewards/My Chores
     // card - not the calendar card - is what's on screen when it's idle)
     // never had ANY return-dashboard navigation at all - the calendar
@@ -225,9 +311,7 @@ if (!window.__familyHubScreenSaver) {
       if (!path) return;
       navigateWithFallback(path);
     }
-    // v1.132.63+: household bug report, verbatim - "Need to make it if
-    // screensaver is set to return to the dashboard page it's currently
-    // on it does nothing." See family-week-calendar-card.js's own
+    // See family-week-calendar-card.js's own
     // identical copy of this method for the full root-cause note - v193
     // onward's soft-route-with-hard-fallback mechanism, v1.132.61's own
     // attempted fix of skipping this function entirely when already on
@@ -314,6 +398,7 @@ if (!window.__familyHubScreenSaver) {
         overlayEl.remove();
         overlayEl = null;
       }
+      widgetEls = {};
       teardownActivityListeners();
     }
     return {
@@ -351,6 +436,10 @@ if (!window.__familyHubScreenSaver) {
       // don't talk to each other.
       updateHass(clientHass) {
         if (clientHass) hass = clientHass;
+        Object.values(widgetEls).forEach((wrap) => {
+          const cardEl = wrap && wrap.firstElementChild;
+          if (cardEl) cardEl.hass = hass;
+        });
       },
       // Test-only hooks - not used by any real card. Lets a jsdom test
       // drive this shared controller directly (no full card element
@@ -381,7 +470,7 @@ if (!window.__familyHubScreenSaver) {
 // Chore Bin column, drag-and-drop between them, and a chore-creation form
 // with an Advanced Settings accordion (sensor triggers + dependencies).
 //
-// v112+: this card has no Settings of its own anymore - card title comes
+// this card has no Settings of its own anymore - card title comes
 // from the native "Edit Card" dialog (getConfigForm below), and Permissions
 // management moved into the main Family Hub calendar card's own Settings
 // (a new "Permissions" tab there, admin-only) per the household's own
@@ -403,10 +492,7 @@ if (!window.__familyHubScreenSaver) {
 // family_hub/rewards/*, and family_hub/permissions/* websocket commands
 // (see family_hub/chores_websocket_api.py) - no entity config needed beyond
 // a title, matching family-hub-my-chores-card.js/family-hub-rewards-card.js.
-// v211+: household ask, verbatim - "Chore assignments should be Direct,
-// Auto Rotation, and Chore Bin (anyone can claim) remove chore bin from
-// the assign to when using direct mode. make assignment mode buttons
-// instead of a drop down". Down to 3 modes from 4 - "First come, first
+// Down to 3 modes from 4 - "First come, first
 // served" is gone as a separate mode, folded into Chore Bin instead. The
 // two were already functionally identical everywhere that mattered: both
 // only ever did `assigned_to = CHORE_BIN_SENTINEL` at creation
@@ -430,7 +516,7 @@ const ASSIGNMENT_MODES = [
   { value: "chore_bin", label: "Chore Bin (anyone can claim)", title: "Sits unassigned until someone taps Claim" },
 ];
 const CHORE_BIN_SENTINEL = "chore_bin";
-// v131+: "remind me N minutes before this is due" - the exact same lead-
+// "remind me N minutes before this is due" - the exact same lead-
 // time values the calendar card offers for its own event reminders (see
 // that file's own minutesOptions in _renderEventInfoRemindSection), kept
 // as a literal here rather than imported since this card is an
@@ -444,7 +530,7 @@ const PALETTE = ["#a9c6c2", "#dba99c", "#d9bf7e", "#a8bd93", "#b9a7c9", "#cf8f6c
 // _normalize_recur_weekdays) - so these indices round-trip to the server
 // with no day-of-week convention translation anywhere.
 const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-// v1.132.38+: same index convention as WEEKDAY_LABELS just above (Monday=0
+// same index convention as WEEKDAY_LABELS just above (Monday=0
 // ...Sunday=6) - full names for the new "Recurs" preset dropdown's dynamic
 // option text ("Weekly on Tuesday"), where an abbreviation would read oddly
 // next to plain English sentences the way it doesn't in a compact button row.
@@ -453,9 +539,7 @@ const WEEKDAY_FULL_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Frid
 // nthOptions - "The 1st"/"The 2nd"/.../"The last") but lowercase and without
 // "The", for use inline in a sentence ("Monthly on the fourth Tuesday").
 const RECUR_NTH_WORDS = { "1": "first", "2": "second", "3": "third", "4": "fourth", "-1": "last" };
-// v186+: household ask, verbatim - "Chores due x amount time before due on
-// recurring chores. This will set the due date based on when the chore is
-// recurred instead of when the chore was created." Presets for
+// Presets for
 // recur_due_offset_minutes (see chore_engine.CHORE_KEY_RECUR_DUE_OFFSET_
 // MINUTES) - "0" (the default) means "due the moment it reopens." Minute
 // counts rather than day-only granularity so a short-turnaround chore
@@ -480,13 +564,13 @@ const RECUR_DUE_OFFSET_OPTIONS = [
 // checklists per person.
 const ROUTINE_CATEGORIES = ["morning", "afternoon", "night"];
 const ROUTINE_CATEGORY_LABELS = { morning: "Morning Routine", afternoon: "Afternoon Routine", night: "Night Routine" };
-// v134+: mirrors const.py's GOAL_STATUS_* (same duplicated-across-
+// mirrors const.py's GOAL_STATUS_* (same duplicated-across-
 // independently-loaded-files convention as everything else on this line) -
 // powers the optional per-person Goals block (see _goalsBlockHtml).
 const GOAL_STATUS_OPEN = "open";
 const GOAL_STATUS_PENDING_VERIFICATION = "pending_verification";
 const GOAL_STATUS_APPROVED = "approved";
-// v144.15+: mirrors const.py's GOAL_STATUS_ARCHIVED - see
+// mirrors const.py's GOAL_STATUS_ARCHIVED - see
 // family-hub-goals-card.js's own comment on this same constant for the
 // full "Complete" button reasoning; here it's just used to hide an
 // archived goal from this condensed embedded block entirely (see
@@ -572,7 +656,7 @@ if (!window.__familyHubFabCoordinator) {
         if (oa !== ob) return oa - ob;
         return a[1].seq - b[1].seq;
       });
-      // v1.110.7+: entries with takesSlot:false (a fab_position: "card"
+      // entries with takesSlot:false (a fab_position: "card"
       // client - see registerClient's own doc below) are skipped when
       // handing out stacking slots/offsets, but still walked here so they
       // still see otherProvidesGoalTab and still get an onUpdate call.
@@ -598,7 +682,7 @@ if (!window.__familyHubFabCoordinator) {
       // register/unregister/updateClientMeta from ANY card, since adding a
       // second FAB changes where the first one's slot is too.
       //
-      // v1.110.7+: `opts.takesSlot` (default true) - pass `{ takesSlot:
+      // `opts.takesSlot` (default true) - pass `{ takesSlot:
       // false }` for a card whose FAB has opted out of the shared
       // viewport-corner stack (fab_position: "card" - anchored to its own
       // card's box instead, see each card's own _registerFabCoordinator).
@@ -641,8 +725,8 @@ if (!window.__familyHubFabCoordinator) {
 // To-Do/Active Timers have no kiosk elevation UI of their own), guarded so
 // only the first copy to actually load sets anything up.
 //
-// v1.110.8: fixes "Chores and rewards have a login button, logging into
-// one logs into both. It should." Before this, `this._kioskElevation` was
+// Chores and Rewards used to each track their own kiosk login separately,
+// so logging into one didn't log into the other. Before this, `this._kioskElevation` was
 // a plain instance field private to each card - logging in via Chores'
 // own button had no way to reach Rewards' separate instance (or vice
 // versa), so the same household member had to log in twice, once per
@@ -775,10 +859,6 @@ if (!window.__familyHubKioskSession) {
   })();
 }
 
-// v1.119.0+: household ask, verbatim: "route this through alarm
-// notifications for the person the timer is for, if its started by a
-// device with a kiosk still open can we make sounds and pop up a modal
-// that requires you to click stop?"
 //
 // The phone-push half of that (Android alarm-stream channel / iOS
 // critical alert) is entirely server-side - see chores_websocket_api.py's
@@ -845,8 +925,7 @@ if (!window.__familyHubTimerAlarm) {
     // ship or for a self-hosted install's network policy to worry about,
     // and it sounds identical on every install.
     //
-    // Household ask, verbatim: "can we make it sound more like an alarm
-    // and less like a ticking bomb." The original v1.119.0+ sound was one
+    // The original v1.119.0+ sound was one
     // flat square-wave tone repeated once a second - metronomic, which is
     // exactly what read as a countdown-bomb tick rather than an alarm. This
     // plays a quick alternating two-pitch TRIPLET (a classic digital-alarm-
@@ -881,7 +960,7 @@ if (!window.__familyHubTimerAlarm) {
         // the primary alarm; sound is a bonus on top of it, not required.
       }
     }
-    // v1.132.55+: which hass connection to tell "dismiss this everywhere"
+    // which hass connection to tell "dismiss this everywhere"
     // when Stop is tapped - set by whichever card most recently called
     // ring()/check() with one, since this singleton is shared across every
     // card on the dashboard and any of them may have `hass` by now. Best-
@@ -901,7 +980,7 @@ if (!window.__familyHubTimerAlarm) {
         beepHandle = null;
       }
       if (modalEl) modalEl.style.display = "none";
-      // v1.132.55+: household's explicit choice - "first tap wins, from
+      // household's explicit choice - "first tap wins, from
       // anyone" - so tapping Stop here also clears the alarm everywhere
       // else (other kiosks, other people's phones-that-are-dashboards)
       // rather than just silencing this one tab. No permission gate, by
@@ -910,14 +989,11 @@ if (!window.__familyHubTimerAlarm) {
         lastHass.connection.sendMessagePromise({ type: "family_hub/timers/dismiss_alarm", uid }).catch(() => {});
       }
     }
-    // Household bug report, verbatim: "a household alarm or an assigned
-    // alarm set to them plus kiosk doesnt alarm on the kiosk, it should end
-    // the screen saver and pop up the timer ended modal and make noise."
     // This modal already outranks the screensaver's own overlay (z-index
     // 2147483647 vs 2147483000, set in ensureModal() above), so it was
     // always painting on top of it - but a screensaver left running
-    // underneath still means its video/camera poll keeps going, and the
-    // household asked for it to actually END, not just be covered up.
+    // underneath still means its video/camera poll keeps going, so it
+    // needs to actually END, not just be covered up.
     // There are THREE independent screensaver implementations in this
     // project (the calendar card's own, the shared window.__familyHub
     // ScreenSaver controller used by Chores/Rewards/My Chores/etc., and the
@@ -978,7 +1054,7 @@ if (!window.__familyHubTimerAlarm) {
         if (!mine || dismissedUids.has(mine.uid)) return;
         if (remainingSecondsFn(mine) <= 0) start(mine, hass);
       },
-      // v1.132.55+: the WIDENED half - a household_timer_alarm_ring bus
+      // the WIDENED half - a household_timer_alarm_ring bus
       // event (fired by chores_websocket_api.py's _dispatch_timer_alarm/
       // _reannounce_active_alarms) that THIS login should also ring for,
       // because it's either the timer's own owner, a login flagged as an
@@ -1012,10 +1088,7 @@ if (!window.__familyHubTimerAlarm) {
   })();
 }
 
-// Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
-// "When you load a card it tends to load the default theme first then it
-// switches over to the theme you set how can we always make it load the
-// set theme first." Root cause: EVERY themed card's first paint happens
+// Theme flash-of-default fix - Root cause: EVERY themed card's first paint happens
 // with no theme CSS vars set at all (falls back to _defaultTheme()'s own
 // hardcoded palette), because resolving the household's actual theme
 // takes two sequential, awaited websocket round trips after `hass` is
@@ -1099,13 +1172,13 @@ class FamilyHubChoresCard extends HTMLElement {
   static getStubConfig() {
     return { title: "Chores" };
   }
-  // v1.111.0+: switched to getConfigElement (a real custom element) so the
+  // switched to getConfigElement (a real custom element) so the
   // Theme picker below can list live Theme Builder + native HA themes -
   // see family-hub-goals-card.js's identical comment for the full reasoning.
   static getConfigElement() {
     return document.createElement("family-hub-chores-card-editor");
   }
-  // v1.110.7+: "dashboard" (default) pins the + FAB to the viewport's
+  // "dashboard" (default) pins the + FAB to the viewport's
   // bottom-right corner, stacked with every other Family Hub card's FAB
   // via the shared window.__familyHubFabCoordinator (unchanged behavior
   // from v1.110.4) - "card" instead anchors it to THIS card's own box, for
@@ -1126,7 +1199,7 @@ class FamilyHubChoresCard extends HTMLElement {
     if (this._chores === undefined) this._chores = [];
     if (this._users === undefined) this._users = [];
     if (this._myPermissions === undefined) this._myPermissions = {};
-    // v1.110.0+: running chore/reward timers, household-wide, straight from
+    // running chore/reward timers, household-wide, straight from
     // family_hub/timers/list. The VISIBLE countdown is computed from each
     // timer's started_at + duration_minutes on every tick (see
     // _timerRemainingSeconds) rather than from these fetches, so the number
@@ -1147,7 +1220,7 @@ class FamilyHubChoresCard extends HTMLElement {
     // column (person) id - same "lives on the instance, survives the
     // poll-driven re-renders" reasoning as _openRoutineSections above.
     if (this._openCompletedSections === undefined) this._openCompletedSections = new Set();
-    // v134+: Goals, optionally embedded per-person on the Chores board (see
+    // Goals, optionally embedded per-person on the Chores board (see
     // _goalsInChoresEnabled/_goalsBlockHtml) - only ever fetched/rendered
     // when the household's own goalsShowInChores Settings toggle is on,
     // same "don't pay for a feature nobody turned on" principle as Routines
@@ -1168,7 +1241,7 @@ class FamilyHubChoresCard extends HTMLElement {
   }
   async _initFirstLoad() {
     await Promise.all([this._fetchSettings(), this._fetchUsers(), this._fetchChores()]);
-    // v1.111.0+: always fetch (not just when useGlobalTheme is on) so a
+    // always fetch (not just when useGlobalTheme is on) so a
     // per-card theme_override can resolve even when the household hasn't
     // turned on Global Theme - same change as every other themed card.
     await this._fetchGlobalThemes();
@@ -1178,7 +1251,7 @@ class FamilyHubChoresCard extends HTMLElement {
     if (this._showRewardsColumn()) await this._fetchRewardsState();
     if (this._routinesEnabled()) await this._fetchRoutines();
     if (this._goalsInChoresEnabled()) await this._fetchGoals();
-    // v144+ task #29: who (if anyone) can kiosk-PIN-login on this board -
+    // who (if anyone) can kiosk-PIN-login on this board -
     // decides whether the Login button even shows at all (see
     // _updateKioskLoginUi). Awaited, same as every other first-load fetch
     // here - _fetchKioskLoginUsers already fails soft (an empty list) on
@@ -1190,8 +1263,7 @@ class FamilyHubChoresCard extends HTMLElement {
     this._registerScreenSaver();
     this._registerFabCoordinator();
     this._registerKioskSession();
-    // Household bug report, verbatim: "a household alarm or an assigned
-    // alarm set to them plus kiosk doesnt alarm on the kiosk" - a widened
+    // - a widened
     // (kiosks/everyone) timer alarm only ever reached a dashboard through
     // this subscription, and until now only family-hub-active-timers-
     // card.js ever set it up. A kiosk whose dashboard shows Chores instead
@@ -1201,7 +1273,7 @@ class FamilyHubChoresCard extends HTMLElement {
     this._subscribeAlarmEvents();
     this._render();
   }
-  // v1.132.55+: household-wide timer alarms - subscribe to the two bus
+  // household-wide timer alarms - subscribe to the two bus
   // events chores_websocket_api.py's _dispatch_timer_alarm/
   // _reannounce_active_alarms fire (see const.py's
   // EVENT_FAMILY_HUB_TIMER_ALARM_RING/_STOP), and hand each one to the
@@ -1249,7 +1321,7 @@ class FamilyHubChoresCard extends HTMLElement {
       }
     }
   }
-  // v1.110.8+: joins the shared kiosk-login session (see the singleton
+  // joins the shared kiosk-login session (see the singleton
   // block above this class) instead of tracking elevation as a private
   // instance field - registerClient immediately calls back with whatever
   // the CURRENT shared elevation is (null, or someone already logged in
@@ -1268,13 +1340,13 @@ class FamilyHubChoresCard extends HTMLElement {
   _registerScreenSaver() {
     if (window.__familyHubScreenSaver && this._hass) window.__familyHubScreenSaver.registerClient(this, this._hass);
   }
-  // v1.110.4+: joins the shared FAB-stacking coordinator (see the singleton
+  // joins the shared FAB-stacking coordinator (see the singleton
   // block above this class) so this card's add-chore-fab gets a non-
   // overlapping slot when other Family Hub cards with their own FAB share
   // the same dashboard view. Safe to call more than once (a plain Map
   // keyed by `this`), same reasoning as _registerScreenSaver above.
   _registerFabCoordinator() {
-    // v1.110.7+: fab_position "card" toggles the [fab-position="card"]
+    // fab_position "card" toggles the [fab-position="card"]
     // host attribute the CSS below keys off of (position:fixed -> :host-
     // relative position:absolute) and registers with takesSlot:false - it
     // stays a coordinator member (so Goal-tab de-duplication still works
@@ -1295,7 +1367,7 @@ class FamilyHubChoresCard extends HTMLElement {
       { takesSlot: !cardRelative }
     );
   }
-  // v144.9+: the actual poll-refresh body, pulled out of _startPolling's
+  // the actual poll-refresh body, pulled out of _startPolling's
   // setInterval callback so connectedCallback (below) can also fire it
   // IMMEDIATELY on reconnect - rather than only via _startPolling(), whose
   // setInterval doesn't invoke its callback until the first tick 20s
@@ -1350,7 +1422,7 @@ class FamilyHubChoresCard extends HTMLElement {
     if (window.__familyHubScreenSaver) window.__familyHubScreenSaver.unregisterClient(this);
     if (window.__familyHubFabCoordinator) window.__familyHubFabCoordinator.unregisterClient(this);
     if (window.__familyHubKioskSession) window.__familyHubKioskSession.unregisterClient(this);
-    // v190.1+: _fireConfetti's portals live in document.body, outside this
+    // _fireConfetti's portals live in document.body, outside this
     // card's own shadow root (see that method's own comment for why) -
     // they're normally short-lived enough to just self-remove via their
     // own setTimeout, but a card torn down mid-burst (dashboard edit,
@@ -1366,8 +1438,8 @@ class FamilyHubChoresCard extends HTMLElement {
   getGridOptions() {
     return { columns: 12, min_columns: 8, max_columns: 12, min_rows: 8 };
   }
-  // v144+ task #29: while a kiosk PIN elevation is active (this._kioskElevation -
-  // v1.110.8+: a local mirror of window.__familyHubKioskSession's shared
+  // while a kiosk PIN elevation is active (this._kioskElevation -
+  // a local mirror of window.__familyHubKioskSession's shared
   // state, kept in sync via _onKioskElevationChanged, see that singleton's
   // own docstring above), _isAdmin/_myUserId/_hasPermission all answer AS
   // that elevated household member instead of the real (usually shared,
@@ -1388,7 +1460,7 @@ class FamilyHubChoresCard extends HTMLElement {
     if (this._kioskElevation) return this._kioskElevation.user_id;
     return this._hass && this._hass.user ? this._hass.user.id : null;
   }
-  // v127+: reads this._myPermissions (see _fetchMyPermissions below), the
+  // reads this._myPermissions (see _fetchMyPermissions below), the
   // CALLER's own effective grants - {permission: bool}, already resolved
   // server-side (admin-or-not, granted-or-not) rather than this card
   // looking itself up inside the full permissions store the way it used
@@ -1408,7 +1480,7 @@ class FamilyHubChoresCard extends HTMLElement {
   // this repo - none of the 11 card files share code. Chores-card UI
   // strings live under the SAME "frontend" translation category as the
   // Calendar card, namespaced "chores.*" so the two never collide. ---
-  // v1.132.49+: v1.132.48's fix for the "Failed to format translation ...
+  // v1.132.48's fix for the "Failed to format translation ...
   // [formatjs Error: MISSING_VALUE]" log spam (see that version's own
   // changelog entry) turned out to be WRONG and didn't actually stop it -
   // confirmed still logging on the household's instance after installing
@@ -1427,8 +1499,7 @@ class FamilyHubChoresCard extends HTMLElement {
   // Mirrors the identical fix in family-week-calendar-card.js's own copy
   // of this same trio.
   //
-  // v1.132.51+: household report, verbatim - "I set my language to German
-  // but the calendar and settings are still English" - confirmed Home
+  // - confirmed Home
   // Assistant's own core UI (sidebar, other native pages) DID switch to
   // German, so hass.language really is "de" and the per-user profile
   // setting genuinely took effect; only Family Hub's own strings stayed
@@ -1510,7 +1581,7 @@ class FamilyHubChoresCard extends HTMLElement {
       })
       .catch((e) => {
         this._i18nLoading = null;
-        // v1.132.51+: this used to fail completely silently (see _t's own
+        // this used to fail completely silently (see _t's own
         // comment above) - a real load failure now at least leaves a
         // trace in the browser console instead of just staying English
         // with no way to tell why.
@@ -1534,7 +1605,7 @@ class FamilyHubChoresCard extends HTMLElement {
       if (el.hasAttribute("aria-label")) el.setAttribute("aria-label", translated);
     });
   }
-  // v144+ task #29: kiosk PIN login. this._kioskElevation is null when
+  // kiosk PIN login. this._kioskElevation is null when
   // nobody's elevated, else {token, user_id, name, is_admin, permissions,
   // expires_in} - exactly what family_hub/kiosk/elevate returns (see
   // chores_websocket_api.py's own ws_kiosk_elevate docstring). Every
@@ -1634,7 +1705,7 @@ class FamilyHubChoresCard extends HTMLElement {
       return;
     }
     try {
-      // v1.110.8+: the actual elevate round trip and the shared elevation
+      // the actual elevate round trip and the shared elevation
       // state now live in window.__familyHubKioskSession (see its own
       // docstring above) - login() stores the result and broadcasts it to
       // every registered card (this one included), which is what actually
@@ -1651,7 +1722,7 @@ class FamilyHubChoresCard extends HTMLElement {
       }
     }
   }
-  // v1.110.8+: called whenever window.__familyHubKioskSession's shared
+  // called whenever window.__familyHubKioskSession's shared
   // elevation changes - from THIS card's own login/logout, or from
   // another kiosk-login-bearing card's (see registerClient's own
   // immediate-call-on-register behavior too, which is what makes a card
@@ -1672,7 +1743,7 @@ class FamilyHubChoresCard extends HTMLElement {
     // reflect whoever is (or isn't) logged in.
     this._render();
   }
-  // v1.110.8+: the 45-second inactivity timer and its document-wide
+  // the 45-second inactivity timer and its document-wide
   // activity listeners now live entirely in window.__familyHubKioskSession
   // (see its own docstring above on why - a shared session needs ONE
   // shared clock, not one independent clock per card that could each
@@ -1686,8 +1757,6 @@ class FamilyHubChoresCard extends HTMLElement {
   _canAssign() {
     return this._hasPermission("can_assign");
   }
-  // v1.132.47+: household ask, verbatim - "Need a permission to add/delete
-  // routines both add/delete self and all so someone can't modify others."
   // Mirrors chores_websocket_api.py's _can_write_routine_items(...) exactly
   // (see that function's own docstring for the full reasoning) - this is a
   // client-side echo of the same rule for showing/hiding routine-item
@@ -1704,7 +1773,7 @@ class FamilyHubChoresCard extends HTMLElement {
     if (this._hasPermission("can_manage_own_routines") && userId === this._myUserId()) return true;
     return false;
   }
-  // v1.132.47+: true if the viewer has ANY routine-write grant at all (own,
+  // true if the viewer has ANY routine-write grant at all (own,
   // any, or plain can_assign) - used to decide whether the "+" FAB and the
   // Routine tab inside it should be reachable for someone who has ONLY a
   // routines permission and not can_assign (see _render()'s FAB-visibility
@@ -1715,7 +1784,7 @@ class FamilyHubChoresCard extends HTMLElement {
   _canVerify() {
     return this._hasPermission("can_verify");
   }
-  // v144.4+: PERMISSION_EDIT_CHORE was split out of PERMISSION_ASSIGN -
+  // PERMISSION_EDIT_CHORE was split out of PERMISSION_ASSIGN -
   // can_assign alone is only enough to create/assign brand new chores now;
   // editing an EXISTING open chore needs this separate grant (or a real
   // admin, via _hasPermission's own admin bypass). Mirrors
@@ -1723,7 +1792,7 @@ class FamilyHubChoresCard extends HTMLElement {
   _canEditChore() {
     return this._hasPermission("can_edit_chore");
   }
-  // v144.4+: PERMISSION_STAR_OVERRIDE - gates the one specific field
+  // PERMISSION_STAR_OVERRIDE - gates the one specific field
   // (no_approval_required) that lets a chore's stars pay out instantly with
   // no verification step, on both create and edit. Mirrors the same
   // no_approval_required gate ws_create_chore/ws_update_chore enforce
@@ -1731,9 +1800,7 @@ class FamilyHubChoresCard extends HTMLElement {
   _canStarOverride() {
     return this._hasPermission("can_star_override");
   }
-  // v1.132.53+: household ask, verbatim - "For chores and routines make
-  // needs approval check box 2 buttons one for requires approval and one
-  // for don't require approval." Replaces the old single "Doesn't require
+  // Replaces the old single "Doesn't require
   // approval" checkbox with a 2-button toggle group (same active/inactive
   // visual pattern as .f-mode-btn-group's Direct/Auto Rotation/Chore Bin
   // buttons) in all four places it appears: the create-chore modal, the
@@ -1777,10 +1844,7 @@ class FamilyHubChoresCard extends HTMLElement {
       });
     });
   }
-  // v1.132.55+: household ask, verbatim - "if a kid starts a clean room
-  // for 30 minutes task they should get an alarm at the main kiosk, but if
-  // they have siblings the siblings don't need that alarm. But maybe
-  // parents want alarms to trigger everywhere." Same visual convention as
+  // Same visual convention as
   // _approvalToggleHtml above (a hidden field driven by a row of buttons),
   // but three options instead of two, since there are three tiers - see
   // const.py's CHORE_KEY_ALARM_AUDIENCE. The hidden field is a plain text
@@ -1839,8 +1903,7 @@ class FamilyHubChoresCard extends HTMLElement {
     };
   }
   _defaultSettings() {
-    // v200+: household report, verbatim - "the confetti animation is still
-    // not working." Root cause: choresConfettiOnComplete is a schema-free
+    // Root cause: choresConfettiOnComplete is a schema-free
     // Settings key with no backend-side default at all (see
     // _confettiOnCompleteEnabled's own comment) - the ONLY place "defaults
     // to on" was ever actually implemented was family-week-calendar-card.js's
@@ -1862,7 +1925,7 @@ class FamilyHubChoresCard extends HTMLElement {
   _getSettings() {
     return this._settingsCache || this._defaultSettings();
   }
-  // v144.6+: "This device's theme" - a device-local override of the shared
+  // "This device's theme" - a device-local override of the shared
   // Settings > Appearance theme choice, same key/mechanism
   // family-week-calendar-card.js's own _getDeviceThemeOverride uses (see
   // its own comment) and configured from that card's Settings modal (this
@@ -1890,7 +1953,7 @@ class FamilyHubChoresCard extends HTMLElement {
       const v = g.colors && g.colors[k];
       colors[k] = typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v) ? v : defaultTheme.colors[k];
     });
-    // v144.5+: cardOpacity/glassBlur (the "liquid glass" look - see the
+    // cardOpacity/glassBlur (the "liquid glass" look - see the
     // Liquid Glass/Liquid Glass Dark built-in presets) aren't part of
     // defaultTheme (a local/custom theme with neither set just means
     // "fully opaque, no blur"), so they're read straight off the global
@@ -1903,7 +1966,7 @@ class FamilyHubChoresCard extends HTMLElement {
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
-    // v1.111.0+: a per-card-placement Theme override (set from this card's
+    // a per-card-placement Theme override (set from this card's
     // own native "Edit Card" dialog) wins over everything else, including
     // this device's own override and the household's Global Theme.
     const cardOverride = this._config && this._config.theme_override;
@@ -1928,7 +1991,7 @@ class FamilyHubChoresCard extends HTMLElement {
     const a = Math.max(0, Math.min(1, typeof alpha === "number" ? alpha : 1));
     return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
-  // v1.126.0+ - see window.__familyHubThemeCache's own comment above the
+  // see window.__familyHubThemeCache's own comment above the
   // class for the full "why a key, not one shared blob" reasoning. Called
   // identically from here (after resolving the REAL theme) and from
   // `_build()` (before the real theme is known yet, to look up whatever
@@ -1944,14 +2007,14 @@ class FamilyHubChoresCard extends HTMLElement {
   }
   _applyThemeVars() {
     const theme = this._resolveTheme(this._getSettings());
-    // v144.5+: same "liquid glass" support family-week-calendar-card.js has
+    // same "liquid glass" support family-week-calendar-card.js has
     // - a theme's cardOpacity/glassBlur (100/0 defaults, both no-ops) turn
     // the card/surface backgrounds translucent and blur whatever shows
     // through them, so picking a Liquid Glass theme actually looks glassy
     // on this card too, not just the calendar.
     const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
     const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
-    // v1.126.0+: built as a plain object first (rather than each var going
+    // built as a plain object first (rather than each var going
     // straight into its own setProperty call, as before) purely so the
     // exact same values that get applied here also get cached - see
     // window.__familyHubThemeCache's own comment for why this fixes the
@@ -1973,7 +2036,7 @@ class FamilyHubChoresCard extends HTMLElement {
     Object.keys(vars).forEach((name) => this.style.setProperty(name, vars[name]));
     if (window.__familyHubThemeCache) window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
   }
-  // v1.126.0+: applies whatever theme this device/placement last actually
+  // applies whatever theme this device/placement last actually
   // resolved to, SYNCHRONOUSLY, before the real fetches that would
   // otherwise be the only way to know it - see window.__familyHubTheme
   // Cache's own comment above the class. Called once from `_build()`,
@@ -1999,7 +2062,7 @@ class FamilyHubChoresCard extends HTMLElement {
       if (!this._settingsCache) this._settingsCache = this._defaultSettings();
     }
     this._applyThemeVars();
-    // v1.110.4+: goalsShowInChores can change out from under a card that's
+    // goalsShowInChores can change out from under a card that's
     // already on screen (someone flips it in Settings and Saves without
     // reloading the dashboard) - keep the FAB coordinator's picture of
     // "does this card currently offer a Goal tab" in sync so the
@@ -2016,7 +2079,7 @@ class FamilyHubChoresCard extends HTMLElement {
     } catch (e) {
       custom = [];
     }
-    // v1.111.0+: also merge in every installed native Home Assistant theme -
+    // also merge in every installed native Home Assistant theme -
     // duplicated (not shared/imported) from family-week-calendar-card.js's
     // own _fetchGlobalThemes/_nativeHaThemeEntries, same "independently
     // loaded Lovelace resources duplicate small helpers" convention as
@@ -2122,7 +2185,7 @@ class FamilyHubChoresCard extends HTMLElement {
     }
     this._render();
   }
-  // v127+: fetched for EVERY user, not just admins - family_hub/
+  // fetched for EVERY user, not just admins - family_hub/
   // permissions/get_mine is open to any authenticated household member and
   // returns only the caller's own resolved grants, unlike the admin-only
   // family_hub/permissions/get (the whole store, used only by the
@@ -2132,7 +2195,7 @@ class FamilyHubChoresCard extends HTMLElement {
   // THEIR OWN card instance, since the old fetch only ever ran when
   // hass.user.is_admin was already true.
 
-  // --- Timers (v1.110.0+) -----------------------------------------------------
+  // --- Timers -----------------------------------------------------
   // "2 hours of gaming, when you click use reward a timer would start and
   // then a timer would go off at the end of the 2 hours. Or if you have a
   // chore thats like clean for 30 minutes..."
@@ -2178,7 +2241,7 @@ class FamilyHubChoresCard extends HTMLElement {
   // Mirrors timer_engine.remaining_seconds exactly - derived, never a
   // stored counter, which is why a page reload (or a Home Assistant
   // restart) resumes at the right number instead of starting over.
-  // v1.119.0+: this browser tab's own stable id - sessionStorage-backed
+  // this browser tab's own stable id - sessionStorage-backed
   // (survives a reload of this same tab, gone once the tab actually
   // closes), shared under the same fixed key across every Family Hub
   // card on the page so a timer started from the Chores card and watched
@@ -2202,7 +2265,7 @@ class FamilyHubChoresCard extends HTMLElement {
   }
   _timerRemainingSeconds(timer) {
     if (!timer) return 0;
-    // v1.110.2+: when this timer is running on an adopted native HA
+    // when this timer is running on an adopted native HA
     // timer.* helper, Home Assistant already publishes the authoritative
     // finish time as a `finishes_at` state attribute - so read HA's own
     // number rather than recomputing it. Falls back to the original
@@ -2242,7 +2305,7 @@ class FamilyHubChoresCard extends HTMLElement {
   }
   _renderTimerCountdowns() {
     if (!this._root) return;
-    // v1.119.0+: kiosk-side sound+modal alarm for whichever ONE running
+    // kiosk-side sound+modal alarm for whichever ONE running
     // timer this exact browser tab started, if it opted into alarm-style
     // delivery - see window.__familyHubTimerAlarm's own top comment.
     // Deliberately every tick (not just on the local zero-crossing) so a
@@ -2332,7 +2395,7 @@ class FamilyHubChoresCard extends HTMLElement {
   _routinesEnabled() {
     return !!(this._settingsCache && this._settingsCache.routinesEnabled);
   }
-  // v134+: goalsShowInChores, same household-wide Settings-toggle shape as
+  // goalsShowInChores, same household-wide Settings-toggle shape as
   // routinesEnabled just above (see const.py's SETTINGS_KEY_GOALS_IN_CHORES) -
   // set from the calendar card's Settings -> General tab, off by default.
   _goalsInChoresEnabled() {
@@ -2372,9 +2435,7 @@ class FamilyHubChoresCard extends HTMLElement {
   _showRewardsColumn() {
     return !!(this._settingsCache && this._settingsCache.choresShowRewardsColumn);
   }
-  // v189+: household ask, verbatim - "Confetti pop when chore complete.
-  // Add to chore settings to display a confetti pop animation on chore
-  // completion." choresConfettiOnComplete lives on the same schema-free
+  // choresConfettiOnComplete lives on the same schema-free
   // Settings blob as choresShowRewardsColumn/routinesEnabled/goalsShow
   // InChores just above/below - household-wide, off by default, set from
   // the calendar card's own Settings -> General tab ("Confetti when a
@@ -2385,8 +2446,7 @@ class FamilyHubChoresCard extends HTMLElement {
   _confettiOnCompleteEnabled() {
     return !!(this._settingsCache && this._settingsCache.choresConfettiOnComplete);
   }
-  // v190.1+: household report, verbatim - "the confetti animation doesn't
-  // seem to work in home assistant app on my android phone." Root cause:
+  // Root cause:
   // this used to append the overlay to `this._root` (the card's OWN
   // shadow root) and rely on `position: fixed` to cover the whole
   // screen. That only works if nothing between the shadow host and the
@@ -2519,7 +2579,7 @@ class FamilyHubChoresCard extends HTMLElement {
     const memberIds = (this._settingsCache && this._settingsCache.memberUserIds) || [];
     return memberIds.includes(userId);
   }
-  // v121+: a second, narrower opt-out UNDER Family Hub membership - see
+  // a second, narrower opt-out UNDER Family Hub membership - see
   // const.py's own "v121+" docstring right after SETTINGS_KEY_MEMBER_USER_IDS
   // for the full picture. A member with userProfiles[id].includeInChores
   // explicitly set to false is still a real Family Hub member everywhere
@@ -2563,7 +2623,7 @@ class FamilyHubChoresCard extends HTMLElement {
 
   _build() {
     this._built = true;
-    // v1.126.0+: applied BEFORE attachShadow/the first innerHTML paint -
+    // applied BEFORE attachShadow/the first innerHTML paint -
     // see _applyCachedThemeVarsIfAny's own comment and window.__familyHub
     // ThemeCache's above the class for why this is what actually fixes
     // the household's reported "loads the default theme first" flash.
@@ -2606,8 +2666,8 @@ class FamilyHubChoresCard extends HTMLElement {
     // A fixed round + button in the bottom-right corner, matching
     // family-week-calendar-card.js's own add-event-fab pixel-for-pixel
     // (same size/position/colors) rather than the old plain "+ Add Chore"
-    // text button that used to live in the header - the household asked
-    // for this card to look "in line with how the calendar works". Lives
+    // text button that used to live in the header, to keep this card
+    // in line with how the calendar works. Lives
     // as a *sibling* of <ha-card>, not nested inside it, for the same
     // reason add-event-fab does: this card's own <ha-card> sets
     // overflow:hidden (needed to contain the board's scrolling), which
@@ -2623,7 +2683,7 @@ class FamilyHubChoresCard extends HTMLElement {
       });
     });
     root.querySelector(".board").addEventListener("click", (e) => this._onBoardClick(e));
-    // v144+ task #29: kiosk PIN login - see _onKioskLoginBtnClick's own
+    // kiosk PIN login - see _onKioskLoginBtnClick's own
     // docstring for the full picture.
     root.querySelector(".kiosk-login-btn").addEventListener("click", () => this._onKioskLoginBtnClick());
     root.querySelector(".kiosk-login-close").addEventListener("click", () => this._closeKioskLoginModal());
@@ -2632,7 +2692,7 @@ class FamilyHubChoresCard extends HTMLElement {
     root.querySelector(".kiosk-login-pin-input").addEventListener("keydown", (e) => {
       if (e.key === "Enter") this._submitKioskLogin();
     });
-    // v1.110.8+: the 45-second idle-reset activity listeners moved to
+    // the 45-second idle-reset activity listeners moved to
     // window.__familyHubKioskSession itself (bound once, at the document
     // level, the first time anyone logs in - see its own bindActivity) so
     // activity on ANY kiosk-login-bearing card resets the ONE shared idle
@@ -2641,7 +2701,7 @@ class FamilyHubChoresCard extends HTMLElement {
   }
 
   _onBoardClick(e) {
-    // v1.110.0+: timer controls first - both live inside .chore-actions
+    // timer controls first - both live inside .chore-actions
     // alongside Done/Nudge, so they have to be claimed before the more
     // general handlers below get a look.
     const timerStartBtn = e.target.closest(".chore-timer-start-btn");
@@ -2719,7 +2779,7 @@ class FamilyHubChoresCard extends HTMLElement {
   async _complete(id) {
     try {
       await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/chores/complete", chore_id: id }));
-      // v189+: fire right after the server confirms the tap actually went
+      // fire right after the server confirms the tap actually went
       // through (never on a failed/rejected call, and never speculatively
       // before awaiting) - see _fireConfetti/_confettiOnCompleteEnabled.
       // Fires for every successful complete tap, including a quantity
@@ -2739,7 +2799,7 @@ class FamilyHubChoresCard extends HTMLElement {
       /* no-op */
     }
   }
-  // v144.13+: was an optional, skippable window.prompt() for a short note
+  // was an optional, skippable window.prompt() for a short note
   // (see const.py's CHORE_KEY_REJECT_REASON docstring on why it's worth
   // having: a silent bounce-back leaves the assignee guessing what was
   // wrong) - replaced with a proper modal (household's own "send back
@@ -2883,9 +2943,7 @@ class FamilyHubChoresCard extends HTMLElement {
     else this._openCompletedSections.add(colId);
     this._render();
   }
-  // v185+: household ask, verbatim - "Better chore scheduling so you can
-  // choose things like every third Wednesday or the first weekend of every
-  // month." recur_month_nth (1-4 or -1 for "last") + recur_weekdays (one or
+  // recur_month_nth (1-4 or -1 for "last") + recur_weekdays (one or
   // more weekdays - see chore_engine._nth_weekday_of_month's own comment)
   // together describe a monthly_nth chore's schedule; {Sat, Sun} at nth=1
   // gets its own friendlier "The 1st weekend" phrasing since that's the
@@ -2903,9 +2961,7 @@ class FamilyHubChoresCard extends HTMLElement {
   _recurDescriptionHtml(chore) {
     const parts = [];
     if (chore.recur_type === "interval") {
-      // v187+: household ask, verbatim - "chore scheduling needs some more
-      // work potentially want to do every 2 months or every 3 months,
-      // every 4th week or 7th week, every other day etc." recur_interval_
+      // recur_interval_
       // unit (missing on any chore saved before this existed) defaults to
       // "days" - the exact meaning "interval" always had before this
       // feature, so old chores read identically to how they always did.
@@ -3065,7 +3121,7 @@ class FamilyHubChoresCard extends HTMLElement {
   // routine_engine.maybe_reset_daily). Only ever rendered at all when
   // _routinesEnabled() (the household-wide Settings toggle).
   //
-  // v136+: items are managed (added/edited/deleted) exclusively from the
+  // items are managed (added/edited/deleted) exclusively from the
   // Routine tab of the "+" FAB modal now (see _routineManageState/
   // _renderRoutineManagePane below) - the board itself went from an
   // always-editable inline "Add item" input+button to a read-only-except-
@@ -3125,9 +3181,7 @@ class FamilyHubChoresCard extends HTMLElement {
     const h12 = h % 12 || 12;
     return `${h12}:${String(m).padStart(2, "0")} ${period}`;
   }
-  // v211+: household ask, verbatim - "allow routine blocks to be drug
-  // around and ordered in the routine modal, default is routine items with
-  // time are sorted by when their time is." Minutes since midnight, for
+  // Minutes since midnight, for
   // comparing two due_time strings numerically.
   _routineDueTimeMinutes(hhmm) {
     const [h, m] = hhmm.split(":").map((n) => parseInt(n, 10));
@@ -3173,7 +3227,7 @@ class FamilyHubChoresCard extends HTMLElement {
     const overdue = this._isRoutineItemOverdue(item);
     const dueBadge = item.due_time ? `<span class="routine-item-due ${overdue ? "overdue" : ""}">${overdue ? "&#9888; " : ""}${this._esc(this._formatDueTime(item.due_time))}</span>` : "";
     const daysBadge = item.days_of_week && item.days_of_week.length ? `<span class="routine-item-days">${item.days_of_week.map((d) => this._weekdayLabel(d)).join(" ")}</span>` : "";
-    // v141+: stars for completing a routine item (routine_engine.py's
+    // stars for completing a routine item (routine_engine.py's
     // star_value/no_approval_required) - most items still show nothing
     // here, same as before this existed. "Awaiting approval" only shows
     // once it's actually pending (checked, star_value set, and
@@ -3187,9 +3241,7 @@ class FamilyHubChoresCard extends HTMLElement {
     // family_hub/routines/update and /delete - see chores_websocket_api.py);
     // checking it off is not (see _toggleRoutineItem/ws_toggle_routine_item)
     // - same split as the rest of this card's canAssign() gating.
-    // v1.132.47+: household ask, verbatim - "Need a permission to add/
-    // delete routines both add/delete self and all so someone can't modify
-    // others" - was plain _canAssign(), now _canManageRoutinesFor(item.
+    // - was plain _canAssign(), now _canManageRoutinesFor(item.
     // user_id) so a can_manage_own_routines/can_manage_any_routines holder
     // (without can_assign) also sees these buttons for the sections they're
     // allowed to touch. Edit jumps straight into the FAB modal's Routine
@@ -3254,7 +3306,7 @@ class FamilyHubChoresCard extends HTMLElement {
     if (!this._routinesEnabled()) return "";
     return `<div class="routines-block">${ROUTINE_CATEGORIES.map((cat) => this._routineRowHtml(userId, cat)).join("")}</div>`;
   }
-  // v134+: a compact per-person Goals block, only ever rendered when
+  // a compact per-person Goals block, only ever rendered when
   // goalsShowInChores is on (see _goalsInChoresEnabled). Deliberately a
   // condensed view compared to the standalone family-hub-goals-card.js -
   // progress + the same Log Progress/Approve/Send Back actions, but no
@@ -3264,7 +3316,7 @@ class FamilyHubChoresCard extends HTMLElement {
   // card's own + button - see _openCreateModal's Goal tab).
   _goalsBlockHtml(userId) {
     if (!this._goalsInChoresEnabled()) return "";
-    // v144.15+: archived goals (the household hit "Complete" on them, see
+    // archived goals (the household hit "Complete" on them, see
     // _archiveGoal/goal-complete-btn below) are deliberately left out of
     // this embedded block entirely, same as _myGoals() already does on the
     // standalone family-hub-goals-card.js - there's no room for a
@@ -3293,9 +3345,9 @@ class FamilyHubChoresCard extends HTMLElement {
       } else actions += `<span class="goal-pending-label">${this._t("chores.awaiting_approval", "Awaiting approval")}</span>`;
     } else if (goal.status === GOAL_STATUS_APPROVED) {
       actions += `<span class="goal-approved-label">&#10003; ${this._t("chores.achieved", "Achieved")}</span>`;
-      // v144.15+: household report - achieved goals had no way to
+      // Achieved goals had no way to
       // complete/hide them from this embedded block either (only the
-      // standalone Goals card got this in v144.13) - same permission as
+      // standalone Goals card had this) - same permission as
       // there: the assignee themselves, or whoever can otherwise manage
       // goals (can_assign/admin, via _canAssign()).
       if (goal.assigned_to === this._myUserId() || this._canAssign()) {
@@ -3329,23 +3381,21 @@ class FamilyHubChoresCard extends HTMLElement {
       /* no-op */
     }
   }
-  // v144.13+: same window.prompt() -> modal conversion as chore _reject
+  // same window.prompt() -> modal conversion as chore _reject
   // above - see that method's own comment. Shares the exact same
   // .reject-modal/_openRejectModal/_submitReject machinery, just routed to
   // the goals ws commands via kind === "goal".
   _rejectGoal(id) {
     this._openRejectModal(id, "goal");
   }
-  // v144.15+: same family_hub/goals/archive ws command + no-reward-side-
+  // same family_hub/goals/archive ws command + no-reward-side-
   // effects contract as family-hub-goals-card.js's own _archive - see that
   // method's comment. Just re-fetches goals afterward, which drops the
   // now-archived goal out of _goalsBlockHtml's filter above.
   async _archiveGoal(id) {
     try {
       await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/goals/archive", goal_id: id }));
-      // v1.132.37+: household ask, verbatim - "Confetti for completing
-      // chores, can we also apply it to goals and when you complete all
-      // tasks in a routine." Reuses the exact same choresConfettiOnComplete
+      // Reuses the exact same choresConfettiOnComplete
       // setting/_fireConfetti machinery chore completion already uses (see
       // _complete above) rather than a new toggle - one household-wide "on/
       // off" for every kind of completion celebration this card can show.
@@ -3365,9 +3415,7 @@ class FamilyHubChoresCard extends HTMLElement {
     else this._openRoutineSections.add(key);
     this._render();
   }
-  // v1.132.37+: household ask, verbatim - "Confetti for completing chores,
-  // can we also apply it to goals and when you complete all tasks in a
-  // routine." Unlike a chore (one tap = one celebration, even for a
+  // Unlike a chore (one tap = one celebration, even for a
   // quantity chore's non-final units - see _complete's own comment),
   // firing per-item here would mean a burst on every single routine item
   // (brush teeth, get dressed, ...), which is far too frequent to feel
@@ -3423,7 +3471,7 @@ class FamilyHubChoresCard extends HTMLElement {
     const qtyRemaining = hasQuantity
       ? (chore.quantity_remaining == null ? chore.quantity_total : chore.quantity_remaining)
       : null;
-    // v1.110.0+: timed chores ("clean for 30 minutes"). A timed chore that
+    // timed chores ("clean for 30 minutes"). A timed chore that
     // isn't running yet offers "Start (30m)" ALONGSIDE Done rather than
     // replacing it - Done still has to work, both because someone may
     // simply finish without using the timer and because the household's
@@ -3445,7 +3493,7 @@ class FamilyHubChoresCard extends HTMLElement {
       actions += `<button class="chore-done-btn" data-id="${chore.id}">${doneLabel}</button>`;
       actions += `<button class="chore-nudge-btn" data-id="${chore.id}" title="${this._t("chores.nudge", "Nudge")}">&#128276;</button>`;
     } else if (status === "open" && isBin) {
-      // v211+: used to be gated to assignment_mode === "first_come_first_
+      // used to be gated to assignment_mode === "first_come_first_
       // served" only, leaving a plain Chore Bin chore admin-drag-only with
       // no self-serve Claim at all - see the ASSIGNMENT_MODES const's own
       // comment. Chore Bin now means "anyone can claim" itself, so any
@@ -3483,16 +3531,14 @@ class FamilyHubChoresCard extends HTMLElement {
     const streak = chore.streak_count > 0 ? `<span class="chore-streak">&#128293; ${chore.streak_count}</span>` : "";
     const quantityBadge =
       hasQuantity && status === "open" ? `<span class="chore-quantity">${qtyRemaining}/${chore.quantity_total}</span>` : "";
-    // v128+: a small "sent back" flag while this chore sits open again
+    // a small "sent back" flag while this chore sits open again
     // after chore_engine.reject_chore - rejected_by/rejected_at/reject_reason
     // are only ever set by a reject (see const.py's CHORE_KEY_REJECT_REASON
     // docstring) and only cleared once the redo is finally approved, so
     // this only shows during the redo window, never on a chore that's
     // simply open for the first time.
     const sentBack = status === "open" && chore.rejected_by ? `<span class="chore-rejected-badge" title="${this._esc(chore.reject_reason || this._t("chores.send_back_title", "Sent back - not approved"))}">&#8617; ${this._t("chores.sent_back", "Sent back")}</span>` : "";
-    // v184+: household ask, verbatim - "Ability to Mark Chores Important.
-    // Chore will have a red ! denoting importance, they always go to the
-    // top of the list." The "always go to the top" half lives in
+    // The "always go to the top" half lives in
     // _sortChoresForColumn; this is just the visual marker.
     const importantBadge = chore.important ? `<span class="chore-important-badge" title="${this._t("chores.important", "Important")}">&#10071;</span>` : "";
     return `
@@ -3569,7 +3615,7 @@ class FamilyHubChoresCard extends HTMLElement {
       ${recurHtml ? `<div class="detail-recur">&#128260; Recurs: ${recurHtml}</div>` : ""}
       ${deps.length ? `<div class="detail-section-label">Waiting on</div><div class="detail-deps">${deps.join("")}</div>` : ""}
       ${
-        // v128+: full feedback for a chore currently sitting in its
+        // full feedback for a chore currently sitting in its
         // reject_chore redo window - see const.py's CHORE_KEY_REJECT_REASON
         // docstring. The board card itself only has room for a short
         // "Sent back" badge (see _choreCardHtml); this is where the actual
@@ -3665,8 +3711,7 @@ class FamilyHubChoresCard extends HTMLElement {
   // separately) is affected by this column's own display order.
   _sortChoresForColumn(items) {
     return items.slice().sort((a, b) => {
-      // v184+: household ask, verbatim - "Ability to Mark Chores
-      // Important... they always go to the top of the list." Checked
+      // Checked
       // FIRST, ahead of due-date/created-at, so an important chore always
       // sorts above every non-important one regardless of how those two
       // would otherwise compare - the due-date/created-at logic below only
@@ -3732,9 +3777,7 @@ class FamilyHubChoresCard extends HTMLElement {
       .join("") + (this._waitingToRecurCollapsed() ? "" : this._waitingToRecurColumnHtml()) + (this._showRewardsColumn() ? this._rewardsColumnHtml() : "");
 
     if (this._canAssign()) this._attachDragHandlers();
-    // v1.132.47+: household ask, verbatim - "Need a permission to add/
-    // delete routines both add/delete self and all so someone can't modify
-    // others." Was plain _canAssign() - broadened to _canManageAnyRoutines()
+    // Was plain _canAssign() - broadened to _canManageAnyRoutines()
     // (can_assign OR either new routine permission) so a
     // can_manage_own_routines/can_manage_any_routines holder without
     // can_assign can still reach the FAB at all. Safe to broaden: the
@@ -3793,9 +3836,7 @@ class FamilyHubChoresCard extends HTMLElement {
   // chore can have neither, one, or both; this block only ever touches
   // recur_type/recur_interval_days/recur_weekdays/recur_month_nth, never
   // auto_create_trigger.
-  // v185+: household ask, verbatim - "Better chore scheduling so you can
-  // choose things like every third Wednesday or the first weekend of every
-  // month. Very similar to how Google calendar does it now." Added a third
+  // Added a third
   // "monthly_nth" schedule alongside the existing every-N-days/specific-
   // weekdays ones - its own nth select (1st/2nd/3rd/4th/last, matching
   // Google Calendar's own "Monthly on the ..." wording) plus a SECOND
@@ -3805,10 +3846,7 @@ class FamilyHubChoresCard extends HTMLElement {
   // "First weekend" shortcut button covers the household's own named
   // example in one tap (nth=1st, Sat+Sun) instead of requiring 3 clicks to
   // build the same selection by hand.
-  // v1.132.38+: household ask, verbatim (with two screenshots of Google
-  // Calendar's own "Does not repeat" dropdown and its "Custom recurrence"
-  // dialog) - "we need to make the recur UI like this the additional
-  // settings is what you click if you click custom." Before this, every
+  // Before this, every
   // household saw the full "Custom recurrence"-style form (Recurs
   // type/interval/weekday/monthly-nth/due-offset fields, all always
   // visible) up front for every chore, even the vast majority that are
@@ -3856,9 +3894,7 @@ class FamilyHubChoresCard extends HTMLElement {
     const dueOffsetOptions = RECUR_DUE_OFFSET_OPTIONS.map(
       (o) => `<option value="${o.value}" ${dueOffset === o.value ? "selected" : ""}>${o.label}</option>`
     ).join("");
-    // v187+: household ask, verbatim - "chore scheduling needs some more
-    // work potentially want to do every 2 months or every 3 months, every
-    // 4th week or 7th week, every other day etc." A unit select alongside
+    // A unit select alongside
     // the existing count input - "days" (the pre-existing/default
     // meaning, so a chore saved before this feature reads back exactly as
     // it always did), "weeks", "months".
@@ -4049,7 +4085,7 @@ class FamilyHubChoresCard extends HTMLElement {
     payload.recur_due_offset_minutes = recurType && dueOffsetSel ? (parseInt(dueOffsetSel.value, 10) || 0) : 0;
   }
 
-  // v131+: "remind me N minutes before this is due" - deliberately the
+  // "remind me N minutes before this is due" - deliberately the
   // exact same lead-time values/labels as the calendar card's own event-
   // reminder checkboxes (family-week-calendar-card.js's own minutesOptions
   // in _renderEventInfoRemindSection), so a household never has to learn a
@@ -4092,7 +4128,7 @@ class FamilyHubChoresCard extends HTMLElement {
   }
 
   // --- Create Chore modal ---
-  // v134+: a Chore/Goal tab row at the top - selecting Goal swaps to a
+  // a Chore/Goal tab row at the top - selecting Goal swaps to a
   // second pane with its own create-goal form (mirroring family-hub-goals-
   // card.js's own create modal) and Save posts to family_hub/goals/create
   // instead of family_hub/chores/create. Lets a household create a goal
@@ -4109,13 +4145,11 @@ class FamilyHubChoresCard extends HTMLElement {
       .filter((c) => c.status !== "approved")
       .map((c) => `<option value="${c.id}">${this._esc(c.title)}</option>`)
       .join("");
-    // v136+: a third Routine tab, shown only when _routinesEnabled() (the
+    // a third Routine tab, shown only when _routinesEnabled() (the
     // FAB itself is already canAssign()-gated - see _render() - so unlike
     // the Rewards card's own Goal tab, no extra _canAssignGoals()-style
     // permission gate is needed here on top of that).
-    // v1.132.47+: household ask, verbatim - "Need a permission to add/
-    // delete routines both add/delete self and all so someone can't modify
-    // others." The FAB is now also reachable by a can_manage_own_routines/
+    // The FAB is now also reachable by a can_manage_own_routines/
     // can_manage_any_routines holder who lacks can_assign (see _render()'s
     // FAB-visibility change) - for that "routine-only" viewer the Chore and
     // Goal tabs are hidden here client-side (their own Save actions hit
@@ -4143,7 +4177,7 @@ class FamilyHubChoresCard extends HTMLElement {
         <div class="field"><label>Title</label><input type="text" class="f-title" placeholder="Take out the trash"></div>
         <div class="field">
           <label>Assignment mode</label>
-          <!-- v211+: buttons instead of a dropdown (household ask, see the
+          <!-- buttons instead of a dropdown (see the
                ASSIGNMENT_MODES const's own comment) - the hidden native
                <select> right below stays the actual source of truth
                (.f-mode is still what _submitCreate/syncModeFields/every
@@ -4153,8 +4187,7 @@ class FamilyHubChoresCard extends HTMLElement {
           <div class="f-mode-btn-group">${ASSIGNMENT_MODES.map((m, i) => `<button type="button" class="f-mode-btn${i === 0 ? " active" : ""}" data-mode="${m.value}" title="${this._escAttr(m.title)}">${this._esc(m.label)}</button>`).join("")}</div>
           <select class="f-mode" style="display:none">${ASSIGNMENT_MODES.map((m) => `<option value="${m.value}">${m.label}</option>`).join("")}</select>
         </div>
-        <!-- v211+: household ask, verbatim - "remove chore bin from the
-             assign to when using direct mode" - Chore Bin is now its own
+        <!-- - Chore Bin is now its own
              assignment mode (see just above), so offering it again as an
              assignee choice inside Direct mode was a confusing duplicate
              way to reach the same "sits unassigned, anyone can claim" end
@@ -4163,9 +4196,7 @@ class FamilyHubChoresCard extends HTMLElement {
         <div class="field f-direct-field"><label>Assigned to</label>
           <select class="f-assigned">${userOptions}</select>
         </div>
-        <!-- v184+: household ask, verbatim - "Ability to Assign chores to
-             multiple people. Each person is rewarded individually. Chore
-             can be marked completed for each person individually." Only
+        <!-- Only
              offered in Direct mode (see syncModeFields below) - Chore Bin/
              Auto Rotation already have their own "more than one person
              could end up with it" concepts and don't mix cleanly with this
@@ -4182,15 +4213,11 @@ class FamilyHubChoresCard extends HTMLElement {
         <div class="field"><label>Due date</label><input type="datetime-local" class="f-due"></div>
         ${this._remindFieldsHtml(null)}
         <div class="field"><label>Overdue penalty (stars)</label><input type="number" class="f-penalty" min="0" value="0"></div>
-        <!-- v196+: household ask, verbatim - "for chores everything from
-             mark important down put under the advanced accordion" - so
+        <!-- - so
              Important/No-approval, Quantity, Timer, Notes, Depends on, and
              Rotation group live inside "Advanced Settings". v198 then also
              moved Automate under Advanced as a sub-tab there - v211+
-             (household ask, verbatim: "let's move the automate tab out of
-             the advanced and put it under a new accordion same thing with
-             repeat so you should see 3 accordions repeate advanced
-             automate") pulled both the recurrence fields AND Automate back
+             ) pulled both the recurrence fields AND Automate back
              OUT into their own top-level accordions instead, so there are
              now three independent, separately-collapsible accordions -
              Repeat, Advanced Settings, Automate - rather than Automate
@@ -4213,9 +4240,7 @@ class FamilyHubChoresCard extends HTMLElement {
           <span class="accordion-chevron">&#9660;</span>
         </button>
         <div class="accordion-body" id="chore-create-advanced-body">
-          <!-- v184+: household ask, verbatim - "Ability to Mark Chores
-               Important. Chore will have a red ! denoting importance, they
-               always go to the top of the list." -->
+          <!-- -->
           <div class="remind-check-row">
             <label class="remind-check-opt"><input type="checkbox" class="f-important" /> <span class="chore-important-badge">&#10071;</span> Mark as important (always sorts to the top)</label>
           </div>
@@ -4289,7 +4314,7 @@ class FamilyHubChoresCard extends HTMLElement {
       }
     };
     modeSel.addEventListener("change", syncModeFields);
-    // v211+: the visible .f-mode-btn row drives the hidden .f-mode select -
+    // the visible .f-mode-btn row drives the hidden .f-mode select -
     // clicking a button sets its value and fires "change" on it, which is
     // all syncModeFields (and everything else downstream) is listening
     // for, so it never needed to know buttons exist at all.
@@ -4347,7 +4372,7 @@ class FamilyHubChoresCard extends HTMLElement {
   // is visible and clears any stale validation error from the pane being
   // left. box.dataset.activeTab is the single source of truth _submitCreate/
   // _submitCreateGoal read to decide which payload to send.
-  // v194+: generic accordion wiring - same idiom as the calendar card's own
+  // generic accordion wiring - same idiom as the calendar card's own
   // delegated .accordion-toggle click loop (no shared module between the
   // two cards, so this is its own independent copy of the same pattern),
   // reused for every .accordion-toggle/.accordion-body pair a given modal
@@ -4369,7 +4394,7 @@ class FamilyHubChoresCard extends HTMLElement {
     });
   }
   _wireModalTabs(box) {
-    // v1.132.47+: the Chore tab button doesn't exist at all for a
+    // the Chore tab button doesn't exist at all for a
     // routine-only viewer (see _openCreateModal's routineOnly branch just
     // above), so default straight to Routine for them instead of a tab
     // they have no button for.
@@ -4416,7 +4441,7 @@ class FamilyHubChoresCard extends HTMLElement {
             }
           });
         }
-        // v184+: Routine Library picker (see _routineManagePaneHtml's own
+        // Routine Library picker (see _routineManagePaneHtml's own
         // comment) - same lazy-fetch-on-first-open pattern as the Goal
         // tab's reward-item picker just above, since the library is its
         // own extra round trip nobody needs unless they actually open the
@@ -4453,7 +4478,7 @@ class FamilyHubChoresCard extends HTMLElement {
     select.innerHTML = `<option value="">${this._t("chores.rm_pick_from_library", "Pick from library… (optional)")}</option>${optgroups}`;
   }
 
-  // --- Routine tab (FAB modal) - "manage items" pane, v136+ ---
+  // --- Routine tab (FAB modal) - "manage items" pane, --
   // Replaces the old always-visible inline "Add item" row on the board
   // itself (see _routineRowHtml's own comment) with a proper manager: pick
   // a person + category, see every item for that combination regardless of
@@ -4478,9 +4503,7 @@ class FamilyHubChoresCard extends HTMLElement {
     return members.length ? members[0].id : null;
   }
   _routineManagePaneHtml() {
-    // v1.132.47+: household ask, verbatim - "Need a permission to add/
-    // delete routines both add/delete self and all so someone can't modify
-    // others." Only offer people the viewer is actually allowed to manage
+    // Only offer people the viewer is actually allowed to manage
     // routines for (see _canManageRoutinesFor) - a can_manage_own_routines
     // holder with no can_assign/can_manage_any_routines sees only
     // themselves here, so picking a person and adding an item never runs
@@ -4501,9 +4524,7 @@ class FamilyHubChoresCard extends HTMLElement {
           <label class="rm-filter-label">${this._t("chores.time_of_day", "Time of day")}<select class="rm-category">${categoryOptions}</select></label>
         </div>
         <div class="rm-add-form">
-          <!-- v184+: household ask, verbatim - "Build a Routine Library - a
-               common library of routines that people can pick from to
-               build out their day. Brush teeth, make bed, etc etc etc."
+          <!--
                Purely a faster way to fill in the title below (see
                _wireRoutineLibraryPicker) - the library itself is read-only
                static data (routine_library.py), nothing about a routine
@@ -4519,15 +4540,12 @@ class FamilyHubChoresCard extends HTMLElement {
           <div class="rm-hint">${this._t("chores.rm_days_hint", "Tap the days this applies to - leave them all off for every day.")}</div>
           <input type="number" class="rm-add-stars" min="0" placeholder="${this._t("chores.rm_stars_placeholder", "Stars for completing this (optional)")}">
           ${this._approvalToggleHtml("rm-add-no-approval", false, false, "")}
-          <!-- v1.132.41+: household ask, verbatim - "add the account to
-               automate routine completion based on sensors like we do with
-               chores." Same single "sensor turns X -> item marked done"
+          <!-- Same single "sensor turns X -> item marked done"
                matcher shape as a chore's own auto_complete_trigger fieldset
                (see the create-chore modal's Automate accordion) - a routine
                item has no create/reopen lifecycle to mirror auto_create_
                trigger, so this is the one fieldset, not two.
-               v1.132.52+: household ask, verbatim - "Routines put the
-               automation stuff under an accordion that says automate" -
+               -
                was a plain always-visible fieldset; now wrapped in the same
                generic .accordion-toggle/.accordion-body pattern the create-
                chore modal's own Automate section already uses (see
@@ -4571,7 +4589,7 @@ class FamilyHubChoresCard extends HTMLElement {
             <div class="rm-days" data-role="edit">${dayToggles}</div>
             <input type="number" class="rm-edit-stars" min="0" placeholder="${this._t("chores.rm_stars_placeholder", "Stars for completing this (optional)")}" value="${item.star_value || ""}">
             ${this._approvalToggleHtml("rm-edit-no-approval", !!item.no_approval_required, false, "")}
-            <!-- v1.132.52+: same accordion treatment as the add-form's own
+            <!-- same accordion treatment as the add-form's own
                  copy just above (see its own comment) - this one's re-
                  rendered fresh every time _renderRoutineManagePane rebuilds
                  .rm-list though, so it needs its own _wireAccordions call
@@ -4604,16 +4622,13 @@ class FamilyHubChoresCard extends HTMLElement {
     const daysBadge = `<span>${item.days_of_week && item.days_of_week.length ? item.days_of_week.map((d) => this._weekdayLabel(d)).join(" ") : this._t("chores.every_day", "Every day")}</span>`;
     const starsBadge = item.star_value ? `<span>&#11088; ${item.star_value}${item.no_approval_required ? "" : ` (${this._t("chores.needs_approval", "needs approval")})`}</span>` : "";
     const automateBadge = item.auto_complete_trigger ? `<span title="${this._t("chores.auto_completes_from_x", `Auto-completes from ${this._esc(item.auto_complete_trigger.entity_id || "")}`, { x: this._esc(item.auto_complete_trigger.entity_id || "") })}">&#9881;&#65039; ${this._t("chores.auto", "Auto")}</span>` : "";
-    // v211+: household ask, verbatim - "allow routine blocks to be drug
-    // around and ordered in the routine modal" - draggable, same gate as
+    // - draggable, same gate as
     // the Edit/Remove buttons right below (reordering is exactly as
     // privileged an edit as those - see ws_reorder_routine_items' own
     // comment). The drag handle is just a visual affordance; the WHOLE row
     // is draggable (see _wireRoutineDragAndDrop), same as the board's own
     // chore cards.
-    // v1.132.47+: household ask, verbatim - "Need a permission to add/
-    // delete routines both add/delete self and all so someone can't modify
-    // others" - was plain _canAssign(), now _canManageRoutinesFor(item.
+    // - was plain _canAssign(), now _canManageRoutinesFor(item.
     // user_id) throughout this row (drag handle, draggable attribute, and
     // the Edit/Remove buttons, which previously had no client-side gate of
     // their own at all and relied solely on the FAB/modal being reachable -
@@ -4650,7 +4665,7 @@ class FamilyHubChoresCard extends HTMLElement {
     // listeners on the old row elements are gone along with them - rewire
     // fresh every time rather than needing every call site to remember to.
     this._wireRoutineDragAndDrop(box);
-    // v1.132.52+: same reasoning - an item's own edit-form Automate
+    // same reasoning - an item's own edit-form Automate
     // accordion (see _routineManageItemHtml) only exists in the DOM while
     // that one item is being edited, freshly rebuilt into .rm-list right
     // here, so it needs its own _wireAccordions pass every time too.
@@ -4662,8 +4677,7 @@ class FamilyHubChoresCard extends HTMLElement {
     const list = box.querySelector(".rm-list");
     if (list) this._wireAccordions(list);
   }
-  // v211+: household ask, verbatim - "allow routine blocks to be drug
-  // around and ordered in the routine modal" - native HTML5 drag-and-drop
+  // - native HTML5 drag-and-drop
   // within .rm-list, same idiom as the board's own card-to-column dragging
   // (_attachDragHandlers) but reordering WITHIN one list instead of moving
   // between columns. Only .rm-item-row[draggable="true"] rows exist at all
@@ -4759,7 +4773,7 @@ class FamilyHubChoresCard extends HTMLElement {
     };
     personSel.addEventListener("change", refresh);
     categorySel.addEventListener("change", refresh);
-    // v184+: Routine Library picker - selecting an entry just fills the
+    // Routine Library picker - selecting an entry just fills the
     // title box below (nothing about a routine item's schema changes; see
     // routine_library.py's own header comment), then resets itself back to
     // the placeholder so picking the same or another entry again always
@@ -4785,7 +4799,7 @@ class FamilyHubChoresCard extends HTMLElement {
         dayToggle.classList.toggle("active");
         return;
       }
-      // v1.132.53+: the Routine Library's own copy of the approval toggle
+      // the Routine Library's own copy of the approval toggle
       // (rm-add-no-approval/rm-edit-no-approval) - handled here via the
       // same delegated listener rather than _wireApprovalToggle, since
       // .rm-list is rebuilt wholesale via innerHTML on every add/edit/
@@ -5049,17 +5063,17 @@ class FamilyHubChoresCard extends HTMLElement {
       notes: box.querySelector(".f-notes").value.trim(),
       dependencies: Array.from(box.querySelector(".f-deps").selectedOptions).map((o) => o.value),
       no_approval_required: box.querySelector(".f-no-approval").checked,
-      // v1.132.55+: "who hears this alarm" 3-way tier - see const.py's
+      // "who hears this alarm" 3-way tier - see const.py's
       // CHORE_KEY_ALARM_AUDIENCE and _alarmAudienceToggleHtml's own comment.
       alarm_audience: box.querySelector(".f-alarm-audience").value,
       // Blank -> null (an ordinary chore) - see chore_engine._normalize_
       // quantity_total, which treats null/blank/anything under 1 the same.
       quantity_total: parseInt(box.querySelector(".f-quantity").value, 10) || null,
-      // v1.110.0+: same null-on-blank shape as quantity_total just above -
+      // same null-on-blank shape as quantity_total just above -
       // the backend normalizes/clamps, so a blank box genuinely clears any
       // existing timer rather than leaving a stale length behind.
       timer_minutes: parseInt(box.querySelector(".f-timer-minutes").value, 10) || null,
-      // v184+: "Ability to Mark Chores Important" - sorts to the top of the
+      // "Ability to Mark Chores Important" - sorts to the top of the
       // board and shows a red ! badge (see _sortChoresForColumn/_choreCardHtml).
       important: box.querySelector(".f-important").checked,
     };
@@ -5067,9 +5081,7 @@ class FamilyHubChoresCard extends HTMLElement {
     if (mode === "direct") {
       const multiAssignOn = box.querySelector(".f-multi-assign").checked;
       if (multiAssignOn) {
-        // v184+: household ask, verbatim - "Ability to Assign chores to
-        // multiple people. Each person is rewarded individually. Chore can
-        // be marked completed for each person individually." Sent as a
+        // Sent as a
         // list; ws_create_chore fans this out into one independent chore
         // per checked person (see chores_websocket_api.ws_create_chore),
         // all sharing one group_id, and replies with {chores: [...]}
@@ -5165,8 +5177,7 @@ class FamilyHubChoresCard extends HTMLElement {
       <div class="field"><label>Due date</label><input type="datetime-local" class="f-due" value="${this._isoToLocalDatetimeInputValue(chore.due_date)}"></div>
       ${this._remindFieldsHtml(chore)}
       <div class="field"><label>Overdue penalty (stars)</label><input type="number" class="f-penalty" min="0" value="${chore.overdue_penalty || 0}"></div>
-      <!-- v196+: household ask, verbatim - "for chores everything from mark
-           important down put under the advanced accordion" - see the
+      <!-- - see the
            create modal's own copy of this comment for the full history
            (v198's Automate sub-tab, then v211's split into three sibling
            accordions - Repeat, Advanced Settings, Automate). -->
@@ -5182,9 +5193,7 @@ class FamilyHubChoresCard extends HTMLElement {
         <span class="accordion-chevron">&#9660;</span>
       </button>
       <div class="accordion-body" id="chore-edit-advanced-body">
-        <!-- v184+: household ask, verbatim - "Ability to Mark Chores
-             Important. Chore will have a red ! denoting importance, they
-             always go to the top of the list." Editable after creation
+        <!-- Editable after creation
              too, unlike assignment_mode/assigned_to just above (see this
              modal's own header comment). -->
         <div class="remind-check-row">
@@ -5248,9 +5257,9 @@ class FamilyHubChoresCard extends HTMLElement {
       star_value: parseInt(box.querySelector(".f-stars").value, 10) || 0,
       overdue_penalty: parseInt(box.querySelector(".f-penalty").value, 10) || 0,
       no_approval_required: box.querySelector(".f-no-approval").checked,
-      // v1.132.55+: same field as the create form - see its own comment.
+      // same field as the create form - see its own comment.
       alarm_audience: box.querySelector(".f-alarm-audience").value,
-      // v184+: "Ability to Mark Chores Important" - editable after creation,
+      // "Ability to Mark Chores Important" - editable after creation,
       // unlike assignment_mode/assigned_to (see this modal's header comment).
       important: box.querySelector(".f-important").checked,
       // Always sent explicitly (even as ""), same reasoning as due_date
@@ -5268,7 +5277,7 @@ class FamilyHubChoresCard extends HTMLElement {
       // quantity_remaining to match whenever this key is present at all
       // (see its own docstring), including clearing it back to null here.
       quantity_total: parseInt(box.querySelector(".f-quantity").value, 10) || null,
-      // v1.110.0+: same null-on-blank shape as quantity_total just above -
+      // same null-on-blank shape as quantity_total just above -
       // the backend normalizes/clamps, so a blank box genuinely clears any
       // existing timer rather than leaving a stale length behind.
       timer_minutes: parseInt(box.querySelector(".f-timer-minutes").value, 10) || null,
@@ -5317,7 +5326,7 @@ class FamilyHubChoresCard extends HTMLElement {
 
   _css() {
     return `
-      /* v1.110.7+: position:relative is the containing block .add-chore-fab
+      /* position:relative is the containing block .add-chore-fab
          needs when [fab-position="card"] switches it to position:absolute -
          harmless the rest of the time (default position:fixed doesn't care). */
       :host { display: block; height: 100%; position: relative; font-family: "Arial Rounded MT Std", "Arial Rounded MT", "Varela Round", -apple-system, "Segoe UI Rounded", "Segoe UI", Roboto, sans-serif;
@@ -5339,20 +5348,20 @@ class FamilyHubChoresCard extends HTMLElement {
          add-event-fab (size, corner offset, circle, colors, shadow, tap
          feedback) - a deliberately identical look across both cards rather
          than each having its own take on "the + button". */
-      /* v1.110.4+: bottom is offset by --fh-fab-offset, set by the shared
+      /* bottom is offset by --fh-fab-offset, set by the shared
          window.__familyHubFabCoordinator (see the singleton block near the
          top of this file) so this FAB stacks above any other Family Hub
          card's FAB sharing the same dashboard view instead of overlapping
          it - 0px (the default) when this is the only one on screen. */
       .add-chore-fab { position: fixed; right: 18px; bottom: calc(18px + var(--fh-fab-offset, 0px)); z-index: 900; width: 56px; height: 56px; border-radius: 50%; border: none; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 28px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(58,53,44,0.35); transition: transform 0.15s ease, bottom 0.15s ease; }
       .add-chore-fab:active { transform: scale(0.94); }
-      /* v1.110.7+: fab_position: "card" - anchors to THIS card's own box
+      /* fab_position: "card" - anchors to THIS card's own box
          instead of the viewport, and opts out of the shared coordinator
          offset entirely (see _registerFabCoordinator). */
       :host([fab-position="card"]) .add-chore-fab { position: absolute; bottom: 18px; }
       .rewards-toggle-btn { border: 1px solid var(--fc-border); border-radius: 12px; padding: 6px 12px; font-size: 12px; font-weight: 700; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; }
       .rewards-toggle-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
-      /* v144+ task #29: kiosk PIN login button + modal. .active here means
+      /* kiosk PIN login button + modal. .active here means
          "someone is currently logged in", same as the toggle buttons above. */
       .kiosk-login-btn { border: 1px solid var(--fc-border); border-radius: 12px; padding: 6px 12px; font-size: 12px; font-weight: 700; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; }
       .kiosk-login-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
@@ -5391,7 +5400,7 @@ class FamilyHubChoresCard extends HTMLElement {
       .routine-row-badge { font-size: 11px; font-weight: 700; opacity: .75; background: var(--fc-card); border-radius: 8px; padding: 1px 7px; }
       .routine-row-body { padding: 2px 8px 8px; display: flex; flex-direction: column; gap: 4px; }
       .routine-section-label { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; color: var(--fc-text-secondary); margin-top: 2px; }
-      /* v136+: card-style item (mirrors .goal-item's visual language -
+      /* card-style item (mirrors .goal-item's visual language -
          surface2 chip, icon/checkbox + body + actions - just below) in
          place of the old plain flex row, now that items also carry an
          optional due-time/days-of-week meta line and edit/delete actions
@@ -5414,7 +5423,7 @@ class FamilyHubChoresCard extends HTMLElement {
       .completed-chores-title { flex: 1; }
       .completed-chores-body { padding: 0 8px 8px; display: flex; flex-direction: column; gap: 8px; max-height: 240px; overflow-y: auto; }
       .completed-chores-body .chore-card { opacity: .7; }
-      /* --- Routine tab (FAB modal) - "manage items" pane, v136+ --- */
+      /* --- Routine tab (FAB modal) - "manage items" pane, -- */
       .routine-manage { display: flex; flex-direction: column; gap: 8px; }
       .rm-filters { display: flex; gap: 6px; }
       .rm-filter-label { flex: 1; display: flex; flex-direction: column; gap: 2px; font-size: 10px; font-weight: 700; color: var(--fc-text-secondary); text-transform: uppercase; letter-spacing: 0.02em; }
@@ -5428,8 +5437,7 @@ class FamilyHubChoresCard extends HTMLElement {
       .rm-day-toggle.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
       .rm-hint { font-size: 10px; color: var(--fc-text-secondary); }
       .rm-add-btn, .rm-item-save-btn { border: none; border-radius: 8px; padding: 7px 10px; font-weight: 700; font-size: 12px; cursor: pointer; background: var(--fc-accent); color: var(--fc-accent-text); align-self: flex-start; }
-      /* v195+: household ask, verbatim - "for routines instead of add item.
-         make it say create and move it to the right hand side not left" -
+      /* -
          the Routine tab's own Add-item button only (its sibling .rm-item-
          save-btn, the per-item Edit-form Save button, is untouched and
          stays left-aligned like before). */
@@ -5437,7 +5445,7 @@ class FamilyHubChoresCard extends HTMLElement {
       .rm-error { color: var(--fc-accent3); font-size: 11px; min-height: 13px; }
       .rm-list { display: flex; flex-direction: column; gap: 6px; }
       .rm-item-row { display: flex; align-items: flex-start; gap: 6px; background: var(--fc-card); border: 1px solid var(--fc-border); border-radius: 8px; padding: 6px 8px; }
-      /* v211+: drag-and-drop reordering - see _wireRoutineDragAndDrop. The
+      /* drag-and-drop reordering - see _wireRoutineDragAndDrop. The
          dragged row fades slightly while it's moving; the row currently
          under the cursor gets a top border as a drop-position hint (same
          "upper half vs lower half" convention _wireRoutineDragAndDrop's
@@ -5502,7 +5510,7 @@ class FamilyHubChoresCard extends HTMLElement {
          pointer everywhere; a draggable card (open + can-assign) still
          drags via native HTML5 drag-and-drop regardless of cursor style. */
       .chore-card { background: var(--fc-card); border-radius: 10px; padding: 8px 10px; box-shadow: var(--fc-shadow, 0 2px 5px rgba(0,0,0,0.1)); cursor: pointer; }
-      /* v144.5+: "Liquid glass" support, same convention as
+      /* "Liquid glass" support, same convention as
          family-week-calendar-card.js - any theme may set --fc-glass-blur
          (px, default 0, see the Liquid Glass presets) and every surface
          painted with --fc-card/--fc-surface-alt/--fc-surface2 (now
@@ -5525,9 +5533,7 @@ class FamilyHubChoresCard extends HTMLElement {
       }
       .chore-card.status-pending_verification { opacity: .85; }
       .chore-card.status-approved { opacity: .55; }
-      /* v184+ - "Mark Chores Important" (household ask, verbatim: "Chore
-         will have a red ! denoting importance, they always go to the top
-         of the list" - the sort itself is in _sortChoresForColumn, this is
+      /* "Mark Chores Important" - the sort itself is in _sortChoresForColumn, this is
          just the visual marker: a red "!" ahead of the title, plus a thin
          red left border on the whole card so it's easy to spot scanning a
          column even when the title is truncated). */
@@ -5536,7 +5542,7 @@ class FamilyHubChoresCard extends HTMLElement {
       .chore-title { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
       .chore-meta { display: flex; gap: 8px; font-size: 12px; color: var(--fc-text-secondary); flex-wrap: wrap; }
       .chore-actions { margin-top: 6px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-      /* v1.110.0+: chore timers. Start reads as a secondary action next to
+      /* chore timers. Start reads as a secondary action next to
          Done (which stays primary - finishing early is always allowed);
          once running it's replaced by a live countdown chip, monospace-ish
          tabular figures so the seconds ticking down don't shift the layout
@@ -5554,7 +5560,7 @@ class FamilyHubChoresCard extends HTMLElement {
       .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 1000; align-items: center; justify-content: center; }
       .modal-overlay.open { display: flex; }
       .modal-box { position: relative; background: var(--fc-bg); color: var(--fc-text); border-radius: 14px; padding: 18px; width: min(92vw, 480px); max-height: 85vh; overflow-y: auto; }
-      /* v194+: "make the chores and rewards modals more similar to the add
+      /* "make the chores and rewards modals more similar to the add
          calendar and add reminder modal" (household's own words, full visual
          match) - this block ports the calendar card's Add Event modal design
          system (family-week-calendar-card.js's own .modal-close/.field/h2/
@@ -5610,14 +5616,14 @@ class FamilyHubChoresCard extends HTMLElement {
       .weekday-btn-row { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
       .weekday-btn { border: 1px solid var(--fc-border); border-radius: 8px; padding: 6px 8px; font-size: 12px; font-weight: 700; background: var(--fc-card); color: var(--fc-text); cursor: pointer; }
       .weekday-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
-      /* v1.132.38+: the "Custom recurrence" panel revealed by picking
+      /* the "Custom recurrence" panel revealed by picking
          "Custom..." in the Recurs preset dropdown - see _recurFieldsHtml's
          own comment. A left border + slight indent/tint, same visual
          language as an expanded accordion elsewhere in this card, so it
          reads as "extra detail tucked under the dropdown" rather than a
          separate, disconnected section of the form. */
       .f-recur-custom-panel { border-left: 3px solid var(--fc-border); padding-left: 10px; margin-top: 4px; margin-left: 2px; background: var(--fc-surface-alt); border-radius: 0 8px 8px 0; padding-top: 8px; padding-bottom: 8px; }
-      /* v185+: "A specific week each month" schedule's own nth select +
+      /* "A specific week each month" schedule's own nth select +
          weekday row + "First weekend" shortcut - see _recurFieldsHtml's
          own comment. */
       .f-recur-monthly-field select { margin-bottom: 4px; }
@@ -5626,7 +5632,7 @@ class FamilyHubChoresCard extends HTMLElement {
       .f-remind-row { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
       .f-remind-opt { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--fc-border); border-radius: 8px; padding: 6px 8px; font-size: 12px; font-weight: 700; background: var(--fc-card); color: var(--fc-text); cursor: pointer; margin: 0; }
       .f-remind-opt input { width: auto; margin: 0; }
-      /* v184+: "Assign to multiple people" checkbox list - same visual
+      /* "Assign to multiple people" checkbox list - same visual
          pattern as .f-remind-row/.f-remind-opt just above (a wrapping row
          of pill checkboxes) rather than the tall native multi-select the
          Rotation group field below uses, since picking 2-3 people out of a
@@ -5634,7 +5640,7 @@ class FamilyHubChoresCard extends HTMLElement {
       .f-assigned-multi-list { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
       .f-assigned-multi-list label { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--fc-border); border-radius: 8px; padding: 6px 8px; font-size: 12px; font-weight: 700; background: var(--fc-card); color: var(--fc-text); cursor: pointer; margin: 0; }
       .f-assigned-multi-list input { width: auto; margin: 0; }
-      /* v211+: Assignment mode buttons in place of the old dropdown - see
+      /* Assignment mode buttons in place of the old dropdown - see
          the ASSIGNMENT_MODES const's own comment. Same flex-row-of-buttons
          idiom as .modal-tabs/.modal-tab just above, under its own class
          names since this row drives a hidden <select> (see _openCreateModal)
@@ -5643,7 +5649,7 @@ class FamilyHubChoresCard extends HTMLElement {
       .f-mode-btn { flex: 1 1 0; min-width: 88px; min-height: 40px; padding: 8px 10px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 12.5px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
       .f-mode-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
       .f-mode-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-      /* v1.132.53+: household ask - "needs approval" checkbox replaced with
+      /* checkbox replaced with
          a 2-button toggle (Requires approval / Doesn't require approval).
          Deliberately its OWN class names (not .f-mode-btn-group/.f-mode-btn)
          even though the look is copied from that pattern - .f-mode-btn is
@@ -5694,12 +5700,10 @@ class FamilyHubChoresCard extends HTMLElement {
         .chore-column, .rewards-column { flex: 0 0 auto; min-width: 0; width: 100%; }
         .chore-col-body, .waiting-recur-col-body { overflow-y: visible; }
       }
-      /* v189+: household ask, verbatim - "Confetti pop when chore complete.
-         Add to chore settings to display a confetti pop animation on
-         chore completion." Gated on the choresConfettiOnComplete Settings
+      /* Gated on the choresConfettiOnComplete Settings
          field (off by default, same opt-in-cosmetic-feature convention as
          choresShowRewardsColumn/routinesEnabled) - see _fireConfetti.
-         v190.1+: the actual .chore-confetti-overlay/-piece/@keyframes
+         the actual .chore-confetti-overlay/-piece/@keyframes
          rules moved out of this shadow-root stylesheet into
          _confettiCss(), carried instead by _fireConfetti's own
          document.body-level portal - see that method's comment for why
@@ -5713,7 +5717,7 @@ if (!customElements.get("family-hub-chores-card")) {
   customElements.define("family-hub-chores-card", FamilyHubChoresCard);
 }
 
-// v1.111.0+: dedicated editor element for getConfigElement above - same
+// dedicated editor element for getConfigElement above - same
 // pattern as family-hub-goals-card.js's own editor (see that file's
 // comments for the full reasoning on each duplicated helper).
 class FamilyHubChoresCardEditor extends HTMLElement {

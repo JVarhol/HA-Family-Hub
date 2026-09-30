@@ -1,7 +1,6 @@
 """Device automation triggers for Family Hub Routines.
 
-v190+: household ask, verbatim - "routines should be able to be used as
-automation triggers" (v186), then, once that shipped as a plain bus event
+(v186), then, once that shipped as a plain bus event
 with no device behind it, the follow-up report: "family hub is not
 showing as an integration with automation triggers and it's not showing
 if I type family into the trigger search."

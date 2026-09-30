@@ -3,7 +3,7 @@
 bin, a per-item "bank" for stackable rewards, and a full star transaction
 ledger.
 
-v127+: not everyone can add straight to the catalog (see const.py's
+not everyone can add straight to the catalog (see const.py's
 PERMISSION_REWARD_ADD) - someone without that (or PERMISSION_REWARD_OVERRIDE,
 or real admin) can still suggest a new reward via add_suggestion, just
 without a price (they have no authority to set one). It sits in
@@ -22,15 +22,15 @@ AFTER that deduction depends on the catalog item's own redeem_mode (see
 const.py's REWARD_REDEEM_MODES docstring for the full picture):
   - "instant" (the original, and still the default): a plain logged
     redemption - "movie night," "extra dessert."
-  - "banked" (v128+): the redemption ADDS to a running per-user balance for
+  - "banked": the redemption ADDS to a running per-user balance for
     that item (its "bank") instead of being a one-off event - "$1 of
     allowance," "1 hour of TV time" - redeemed as many times as affordable,
     stacking up. use_bank later spends part (or all) of the bank down,
     independent of stars - "use 1.5 of my 3 banked hours."
-  - "one_time" (v128+): a plain logged redemption exactly like "instant",
+  - "one_time": a plain logged redemption exactly like "instant",
     except the catalog item deletes itself immediately afterward - gone for
     everyone the instant anybody claims it.
-Separately, a catalog item's requires_fulfillment flag (v128+) controls
+Separately, a catalog item's requires_fulfillment flag controls
 whether the "spend" step - the redemption itself for instant/one_time, or a
 use_bank call for banked - needs someone with pricing authority to mark it
 done before it's considered delivered (an actual $20 handed over, an actual
@@ -39,7 +39,7 @@ mark_bank_usage_fulfilled.
 
 Every star balance change (chore approval, overdue penalty, redemption,
 reversed redemption, a manual adjust_balance) is recorded in rewards["ledger"]
-(v128+ - see add_stars) so a household can pull a complete per-user history
+(see add_stars) so a household can pull a complete per-user history
 of where their stars came from and went, not just the current balance.
 
 Every function here operates on the caller's already-loaded `rewards` dict
@@ -107,13 +107,13 @@ def get_balance(rewards: dict[str, Any], user_id: str) -> int:
 # the kinds of entry I might see."
 LEDGER_SOURCE_CHORE_APPROVED = "chore_approved"
 LEDGER_SOURCE_CHORE_OVERDUE = "chore_overdue"
-# v133+: a Goal (see goal_engine.py) whose reward_type is "stars", paid out
+# a Goal (see goal_engine.py) whose reward_type is "stars", paid out
 # by goal_engine.approve_goal - the Goals-feature counterpart of
 # LEDGER_SOURCE_CHORE_APPROVED just above. A goal whose reward_type is
 # "catalog_item" instead never touches add_stars at all (see grant_item),
 # so it never produces a ledger entry - only redemptions.
 LEDGER_SOURCE_GOAL_ACHIEVED = "goal_achieved"
-# v141+: a Routine item (see routine_engine.py) with its own optional
+# a Routine item (see routine_engine.py) with its own optional
 # star_value, paid out by routine_engine.approve_item (manual, when the
 # item's no_approval_required is false - the default) or straight from
 # toggle_item itself (when it's true) - the Routines-feature counterpart of
@@ -124,7 +124,7 @@ LEDGER_SOURCE_ROUTINE_APPROVED = "routine_approved"
 LEDGER_SOURCE_REDEEMED = "redeemed"
 LEDGER_SOURCE_REDEMPTION_REVERSED = "redemption_reversed"
 LEDGER_SOURCE_MANUAL_ADJUSTMENT = "manual_adjustment"
-# v144.2+ (task #31): the two halves of a peer-to-peer star gift (see
+# v144.2+ (): the two halves of a peer-to-peer star gift (see
 # gift_stars below) - always appear in pairs, one LEDGER_SOURCE_GIFT_SENT
 # entry on the giver's own ledger and one LEDGER_SOURCE_GIFT_RECEIVED entry
 # on the recipient's, same instant/no-approval-needed shape as redemption
@@ -145,8 +145,8 @@ def add_stars(
     ledger would; the UI is free to display that as "owes N stars" rather
     than blocking it here.
 
-    v128+: every call appends an entry to rewards["ledger"] (id, user_id,
-    delta, balance_after, reason, source, at) - the household asked for a
+    every call appends an entry to rewards["ledger"] (id, user_id,
+    delta, balance_after, reason, source, at) - this gives a
     complete per-user history of where their stars came from and went, not
     just the current balance/the separate redemptions log. `source` is one
     of the LEDGER_SOURCE_* constants above; callers that don't pass one
@@ -180,7 +180,7 @@ def gift_stars(
     from_reason: str = "",
     to_reason: str = "",
 ) -> tuple[int, int]:
-    """Task #31: one household member gives some of their OWN stars to
+    """one household member gives some of their OWN stars to
     another, on top of the existing earn-via-chores/redeem-via-catalog
     economy - "I don't want this reward, but my sister does, so here's 10
     of my stars." Self-serve and instant, same "never admin-gated" shape
@@ -313,14 +313,14 @@ def add_catalog_item(
         "value_note": str(value_note or "").strip(),
         "stack_unit_amount": stack_unit_amount,
         "stack_unit_label": str(stack_unit_label or "").strip(),
-        # v1.110.0+: optional countdown started when this reward is used -
+        # optional countdown started when this reward is used -
         # "2 hours of gaming." None (every pre-v1.110.0 reward) means no
         # timer, and Use behaves exactly as it always has. Deliberately
         # INDEPENDENT of redeem_mode rather than a fourth mode: the modes
         # describe how the star cost is consumed, a timer describes what
         # happens after, and they compose ("1 hour of TV, banked").
         REWARD_KEY_TIMER_MINUTES: timer_engine.normalize_timer_minutes(timer_minutes),
-        # v1.132.55+: who/what rings when this reward's timer alarms - same
+        # who/what rings when this reward's timer alarms - same
         # field/tiers/default as a chore's own CHORE_KEY_ALARM_AUDIENCE, see
         # its docstring in const.py for the full picture.
         REWARD_KEY_ALARM_AUDIENCE: timer_engine.normalize_alarm_audience(alarm_audience),
@@ -671,7 +671,7 @@ def reverse_redemption(rewards: dict[str, Any], redemption_id: str) -> dict[str,
     balance included as `new_balance`, so the caller (chores_websocket_api.py)
     doesn't have to make a second get_balance call just to report it.
 
-    v128+: a reversed BANKED redemption (bank_delta present) also pulls
+    a reversed BANKED redemption (bank_delta present) also pulls
     that amount back OUT of the bank it credited - "this transaction
     should never have happened" has to undo BOTH halves of a banked
     redemption (the star spend AND the bank credit), not just the stars,
@@ -761,7 +761,7 @@ def approve_suggestion(
     only ever resolves it as approved - see reject_suggestion for the
     other outcome) and returns the new catalog item.
 
-    v128+: redeem_mode/requires_fulfillment/value_note/stack_unit_* are all
+    redeem_mode/requires_fulfillment/value_note/stack_unit_* are all
     optional and default to the original "instant, no fulfillment gate"
     shape approve_suggestion always had before these existed - an approver
     who wants a suggestion turned into a banked or one-time reward, or one

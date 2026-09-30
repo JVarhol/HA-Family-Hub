@@ -1,8 +1,6 @@
 """A curated library of common routine items ("Brush teeth," "Make bed,"
 etc.) that a household can pick from instead of typing a routine item out
-by hand every time - household ask, verbatim: "Build a Routine Library - a
-common library of routines that people can pick from to build out their
-day. Brush teeth, make bed, etc etc etc."
+by hand every time -
 
 Same spirit as grocery_reference.py's curated reference list: plain,
 static data with no Store/schema of its own, exposed read-only via
