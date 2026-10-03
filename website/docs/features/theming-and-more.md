@@ -1,6 +1,6 @@
 ---
 title: Theming & Everything Else
-sidebar_position: 7
+sidebar_position: 8
 ---
 
 - **Full theme editor** in Settings: every background/text/accent color and
@@ -36,10 +36,6 @@ sidebar_position: 7
 - **Optional vertical scroll lock**, handy for kiosk-mode wall tablets.
 - Built-in **Debug Info** panel (Settings → Debug Info) showing fetched
   events, errors per calendar, and current settings.
-- **Self-update from the integration itself**: Settings → Devices & Services
-  → Family Hub → Configure → **Update Family Hub** lets you upload a new
-  `family_hub_vN.zip` and installs it in place (auto-backed-up first) —
-  no manual file copying, just a Home Assistant restart afterward.
 - **Test a notification** and **Upcoming notifications preview** steps in
   Configure, for confirming a notify target works and previewing what's
   queued to fire before waiting around for it.

@@ -1,6 +1,6 @@
 ---
 title: Changelog
-sidebar_position: 9
+sidebar_position: 8
 ---
 
 The live changelog, newest first. Entries older than v138 (1.103.0) live

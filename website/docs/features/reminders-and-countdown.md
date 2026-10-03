@@ -1,6 +1,6 @@
 ---
 title: Reminders & Countdown
-sidebar_position: 6
+sidebar_position: 7
 ---
 
 - **Standalone reminders**, stored as Home Assistant to-do items (not
@@ -17,6 +17,18 @@ sidebar_position: 6
   added at creation or edited afterward from the event-info popup —
   editing one on a recurring-by-name event (e.g. weekly "Yoga") offers to
   apply the same change to every matching occurrence currently loaded.
+- **Attach a checklist to any event or reminder**: the "Attach a
+  checklist" toggle in the Add Event modal works the same way for a
+  calendar event and a standalone reminder. Two modes: **"Just for
+  this"** creates a brand-new to-do list scoped to just that one event
+  or reminder, with items you type right there — it's deleted
+  automatically once the event/reminder passes (with a short grace
+  window, so it doesn't vanish while you're still mid-use). **"Use an
+  existing list"** attaches one of your existing `todo.*` lists instead
+  (packing for a trip, say) — that list is only ever unlinked when the
+  event/reminder passes, never touched or deleted itself. Either way,
+  the checklist is editable afterward from the event-info popup, right
+  alongside the event/reminder's own details.
 - **Server-side delivery**: reminders and event notifications fire from the
   backend integration itself (polling every few minutes, configurable), so
   they arrive even if no dashboard is open, and are deduplicated so the

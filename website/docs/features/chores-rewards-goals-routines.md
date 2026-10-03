@@ -43,6 +43,29 @@ a granular per-person permissions system.
   Routines is on) **Routine** — covers creating a chore, a goal, or
   managing someone's routine items, all from one button.
 
+**My Chores**
+- A lightweight, personal companion card (`family-hub-my-chores-card`) —
+  built for a phone or a personal dashboard view, the same spirit as the
+  Today card. It reads whoever is actually signed in and shows just their
+  own world: their open and awaiting-approval chores, a live countdown on
+  any chore timer currently running, a banner for a running reward timer,
+  and nothing belonging to anyone else.
+- **One tap to finish**: each chore row shows its star value, due date (if
+  set), and a single **Done** button — no need to open the full Chores
+  board to wrap up a quick task.
+- **An embedded Chore Bin**: unclaimed First-come-first-served chores show
+  up here too, each with its own **Claim** button, so picking one up
+  doesn't require switching to the full board either. A Chore Bin chore
+  still waiting on an admin to assign it (not self-claimable) shows
+  "Waiting to be assigned" instead.
+- **Read-only timers, on purpose**: a running chore or reward timer's
+  countdown is visible here, but starting or cancelling one only lives on
+  the full Chores/Rewards boards — keeping that in one place avoids three
+  different surfaces needing to stay in sync for very little benefit.
+- Goals don't show on this card — it's chores-and-timers only; see **Show
+  Goals on** in [the Settings Modal reference](/docs/settings-modal) for
+  where goals can be added to the full Chores or Rewards boards instead.
+
 **Rewards**
 - **Star economy**: stars are earned via chore/goal approval and spent by
   redeeming a catalog item; a balance can go negative (shown as "owes")

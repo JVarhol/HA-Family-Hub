@@ -106,6 +106,8 @@ correctly suppresses the standalone Goals card's FAB either way).
 
 ## To-Do Lists card
 
+See [To-Do Lists & Wish Lists](/docs/features/todo-lists-and-wishlists) for what the board can do (drag-and-drop between lists, Wish Lists with anonymous claiming, Grocy shopping-list support).
+
 ```yaml
 type: custom:family-hub-todo-card
 title: To-Do Lists
@@ -128,7 +130,7 @@ fab_position: dashboard # or "card" - see below
 Only needed on a dashboard that doesn't otherwise have any Family Hub card
 on it (the Screen Saver itself is already shared automatically across any
 Family Hub cards already on a dashboard — see
-[Screen Saver](/docs/features/timers-and-screen-saver#screen-saver) above):
+[Screen Saver](/docs/features/screen-saver) above):
 
 ```yaml
 type: custom:family-hub-screensaver-card
