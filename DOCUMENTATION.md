@@ -8,11 +8,11 @@ come here for the details on any specific feature, the full `todo`/
 
 > **Note:** this file was split out of a changelog that runs through
 > v1.135.4 (the current release is newer — see
-> [manifest.json](custom_components/family_hub/manifest.json)). Several
-> shipped features aren't written up below yet, including Privacy Mode,
-> Holiday Backgrounds (with Week/Month "Expand to full screen" and an
-> automatic tiebreaker), the in-card Settings override for the Weather
-> entity, Default View, and Kiosk accounts. See
+> [manifest.json](custom_components/family_hub/manifest.json)). A few
+> shipped features still aren't written up below, including the in-card
+> Settings override for the Weather entity, Default View, and Kiosk
+> accounts (see the [Settings Modal](website/docs/settings-modal.md) page
+> on the docs site for those in the meantime). See
 > [CHANGELOG.md](CHANGELOG.md) for what's shipped since.
 
 ## Features
@@ -480,6 +480,50 @@ a granular per-person permissions system.
   custom named themes exists in the codebase but isn't part of this beta
   release yet — presets and the Theme Selector cover theming for now.
 
+### Privacy Mode
+- **Hide the calendar and reminders household-wide** with one tap, from the
+  card's "more" menu (**Enable Privacy Mode**) — every day/week/month cell
+  and the reminders list render exactly like a genuinely empty day across
+  every Family Hub dashboard in the house, instead of being covered by a
+  black panel. A small locked pill ("Privacy Mode is on - tap to unlock")
+  shows instead. Only the calendar card is affected; Chores, Rewards, My
+  Pantry, My Chores, To-Do Lists, and Screen Saver all keep working
+  normally.
+- **Turning it on is ungated** (anyone, no PIN) — turning it back **off**
+  requires tapping the lock, picking your name, and entering your Kiosk PIN.
+  A real admin can always unlock it; anyone else needs the **Turn off
+  Privacy mode** permission (Settings → Users → their profile →
+  Permissions), off by default.
+- **Per-device opt-out**: Settings → Devices → uncheck **Participates in
+  Privacy Mode** for any device that should keep showing the calendar
+  regardless (e.g. a phone, while a kitchen kiosk goes private). Every
+  device participates by default; this takes effect immediately.
+- **Automation entities**: `switch.family_hub_privacy_mode` (household-wide
+  on/off, no PIN needed from an automation — a different trust boundary
+  than the on-screen kiosk flow) and a per-device "Participates in privacy
+  mode" switch for automating the opt-out above.
+
+### Holiday Backgrounds
+- **Show a photo on a holiday or special day** from Settings → General →
+  Holiday Backgrounds — by default as a soft background behind just that
+  day's own cell (Week day column, Month cell, or Planner day), or check
+  **"Expand to full screen"** to take over the whole card's background for
+  just that day, the whole week, or the whole month.
+- **Built-in holidays** (New Year's Day, Valentine's Day, St. Patrick's Day,
+  Easter, 4th of July, Halloween, Thanksgiving, Christmas) are dates only —
+  turn one on and upload your own photo for it. Easter/Thanksgiving are
+  computed fresh every year rather than a fixed date, and any built-in can
+  be renamed.
+- **Custom dates** (+ Add custom date) get their own photo and name, and
+  are either recurring every year or pinned to one specific year.
+- **Automatic tiebreaker** when more than one full-screen entry could apply
+  on the same day: narrower scope wins (day beats week beats month); a tie
+  goes to whichever date is closest to today; a further tie falls back to
+  list order (built-in before custom, then insertion order).
+- **Automatic text-contrast**: Family Hub samples each uploaded photo's
+  brightness and switches day names/numbers to white text when the photo's
+  dark enough to need it.
+
 ### Everything else
 - **Collapsible accordion sections** in Settings (Calendars, Menu Blocks,
   Countdown, Daily Digest, Theme colors, Theme fonts) to keep the panel
@@ -494,10 +538,6 @@ a granular per-person permissions system.
 - **Optional vertical scroll lock**, handy for kiosk-mode wall tablets.
 - Built-in **Debug Info** panel (Settings → Debug Info) showing fetched
   events, errors per calendar, and current settings.
-- **Self-update from the integration itself**: Settings → Devices & Services
-  → Family Hub → Configure → **Update Family Hub** lets you upload a new
-  `family_hub_vN.zip` and installs it in place (auto-backed-up first) —
-  no manual file copying, just a Home Assistant restart afterward.
 - **Test a notification** and **Upcoming notifications preview** steps in
   Configure, for confirming a notify target works and previewing what's
   queued to fire before waiting around for it.
@@ -556,20 +596,18 @@ meal_templates_entity: todo.meal_plan_templates
 suggestions_entity: todo.meal_suggestions
 reminders_entity: todo.family_reminders
 weather_entity: weather.forecast_home
-birthdays_entity: calendar.birthdays
 ```
 
 | Option | Required | Default | Description |
 |---|---|---|---|
-| `people` | yes | — | List of `{ entity, name, color }` calendars to show. Can also be fully managed later from in-card Settings → Calendars, including badges and notify devices. |
+| `people` | no | — (empty) | List of `{ entity, name, color }` calendars to show. Not required to get the card running - leave it out and add calendars live from in-card Settings → Calendars (including badges and notify devices) once the card is on a dashboard. |
 | `recipe_entity` | no | `todo.recipe_box` | `todo` entity backing the Loved Dishes recipe box. |
 | `meal_plan_entity` | no | `todo.meal_plan` | `todo` entity backing the meal planner (including recurring weekly meals). Can also be set (or auto-created) household-wide from in-card Settings → Menu Blocks → Menu to-do list, which overrides this YAML value once set - no dashboard edit needed. |
 | `meal_templates_entity` | no | `todo.meal_plan_templates` | `todo` entity backing whole-week meal templates. |
-| `suggestions_entity` | no | `todo.meal_suggestions` | `todo` entity backing the Meal Suggestions box. |
-| `reminders_entity` | no | `todo.family_reminders` | `todo` entity backing standalone reminders (Add Event modal's Reminder tab). |
-| `settings_entity` | no | `todo.family_calendar_settings` | An **older** `todo` entity, only ever read once as a legacy migration fallback if the card's own backend-stored Settings come back empty — not needed on a fresh install, and no longer where Settings actually live day to day (see the note in [Requirements](#requirements)). |
+| `suggestions_entity` | no | `todo.meal_suggestions` | `todo` entity backing the Meal Suggestions box. Auto-created the first time Family Hub finds it missing - no setup needed. |
+| `reminders_entity` | no | `todo.family_reminders` | `todo` entity backing standalone reminders (Add Event modal's Reminder tab). Auto-created the first time Family Hub finds it missing; also settable (or re-pointed) household-wide from in-card Settings → General → Reminders, which overrides this YAML value once set. |
 | `weather_entity` | no | `weather.forecast_home` | Entity used for the daily high/low + icon in each day column. |
-| `birthdays_entity` | no | `calendar.birthdays` | Used to auto-tag birthday events with a 🎂 icon in Month view. |
+| `birthdays_entity` | no | — | Optional. Point this at a calendar already listed under `people` to auto-tag its events with a 🎂 icon in Month view. Off by default - nothing is assumed. |
 | `title` | no | `Family Calendar` | Card title (not currently rendered, reserved for future use). |
 
 Everything else — which calendars show, their names/colors/badges/notify
