@@ -786,6 +786,7 @@ class FamilyHubMyChoresCard extends HTMLElement {
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
+    this._ensureTranslationsLoaded();
     // Keeps the shared screensaver controller's own hass reference fresh
     // on every update (not just the first) - see the singleton block above
     // this class.
@@ -892,6 +893,62 @@ class FamilyHubMyChoresCard extends HTMLElement {
   }
   _myUserId() {
     return this._hass && this._hass.user ? this._hass.user.id : null;
+  }
+
+  _t(key, fallback, vars) {
+    let str = "";
+    try {
+      if (this._hass && typeof this._hass.localize === "function") {
+        str = this._hass.localize(`component.family_hub.fh_ui.${key}`) || "";
+      }
+    } catch (e) {
+      str = "";
+    }
+    if (!str) str = fallback;
+    if (vars) {
+      Object.keys(vars).forEach((k) => {
+        str = str.split(`%${k}%`).join(vars[k]);
+      });
+    }
+    return str;
+  }
+  _baseLanguage(lang) {
+    return (lang || "en").split("-")[0].toLowerCase();
+  }
+  _ensureTranslationsLoaded() {
+    if (!this._hass || typeof this._hass.loadBackendTranslation !== "function") return;
+    const lang = this._baseLanguage(this._hass.language);
+    if (this._i18nLoadedLang === lang || this._i18nLoading === lang) return;
+    this._i18nLoading = lang;
+    this._hass
+      .loadBackendTranslation("fh_ui", "family_hub")
+      .then(() => {
+        this._i18nLoadedLang = lang;
+        this._i18nLoading = null;
+        this._applyTranslations();
+        this._render();
+      })
+      .catch((e) => {
+        this._i18nLoading = null;
+        console.warn("[family_hub] failed to load \"" + lang + "\" translations - staying on English fallback text", e);
+      });
+  }
+  _applyTranslations() {
+    if (!this._root) return;
+    this._root.querySelectorAll("[data-i18n]").forEach((el) => {
+      const key = el.dataset.i18n;
+      if (el.dataset.i18nFallback === undefined) el.dataset.i18nFallback = el.textContent;
+      el.textContent = this._t(key, el.dataset.i18nFallback);
+    });
+    this._root.querySelectorAll("[data-i18n-title]").forEach((el) => {
+      const key = el.dataset.i18nTitle;
+      if (el.dataset.i18nTitleFallback === undefined) {
+        el.dataset.i18nTitleFallback = el.getAttribute("title") || el.getAttribute("aria-label") || "";
+      }
+      const translated = this._t(key, el.dataset.i18nTitleFallback);
+      if (el.hasAttribute("title")) el.setAttribute("title", translated);
+      if (el.hasAttribute("aria-label")) el.setAttribute("aria-label", translated);
+    });
   }
 
   _defaultTheme() {
@@ -1192,12 +1249,12 @@ class FamilyHubMyChoresCard extends HTMLElement {
       <ha-card>
         <div class="header"><div class="title"></div></div>
         <div class="section">
-          <div class="section-title">My chores</div>
+          <div class="section-title" data-i18n="my_chores.section.my_chores">My chores</div>
           <div class="reward-timer-slot"></div>
           <div class="my-list"></div>
         </div>
         <div class="section">
-          <div class="section-title">Chore Bin - up for grabs</div>
+          <div class="section-title" data-i18n="my_chores.section.chore_bin">Chore Bin - up for grabs</div>
           <div class="bin-list"></div>
         </div>
       </ha-card>
@@ -1305,18 +1362,22 @@ class FamilyHubMyChoresCard extends HTMLElement {
   _rewardTimerBannerHtml() {
     const timer = this._myRewardTimer();
     if (!timer) return "";
-    return `<div class="reward-timer-banner">&#9201; <strong>${this._esc(timer.title || "Reward")}</strong> - <span data-timer-uid="${timer.uid}">${this._formatTimerRemaining(this._timerRemainingSeconds(timer))}</span> left</div>`;
+    const title = timer.title || this._t("my_chores.reward_timer.default_title", "Reward");
+    const left = this._t("my_chores.reward_timer.left", "left");
+    return `<div class="reward-timer-banner">&#9201; <strong>${this._esc(title)}</strong> - <span data-timer-uid="${timer.uid}">${this._formatTimerRemaining(this._timerRemainingSeconds(timer))}</span> ${this._esc(left)}</div>`;
   }
   _myChoreRowHtml(chore) {
-    const due = chore.due_date ? `<span class="chore-due">Due ${new Date(chore.due_date).toLocaleDateString()}</span>` : "";
+    const due = chore.due_date
+      ? `<span class="chore-due">${this._esc(this._t("my_chores.chore_row.due_x", "Due %x%", { x: new Date(chore.due_date).toLocaleDateString() }))}</span>`
+      : "";
     const runningTimer = this._choreTimer(chore.id);
     const timerChip = runningTimer
       ? `<span class="chore-timer-live">&#9201; <span data-timer-uid="${runningTimer.uid}">${this._formatTimerRemaining(this._timerRemainingSeconds(runningTimer))}</span></span>`
       : "";
     const action =
       chore.status === "open"
-        ? `<button class="chore-done-btn" data-id="${chore.id}">Done</button>`
-        : `<span class="chore-pending-label">Awaiting approval</span>`;
+        ? `<button class="chore-done-btn" data-id="${chore.id}">${this._esc(this._t("common.done", "Done"))}</button>`
+        : `<span class="chore-pending-label">${this._esc(this._t("my_chores.chore_row.awaiting_approval", "Awaiting approval"))}</span>`;
     return `
       <div class="chore-row">
         <div class="chore-row-main">
@@ -1337,7 +1398,7 @@ class FamilyHubMyChoresCard extends HTMLElement {
           <span class="chore-title">${this._esc(chore.title)}</span>
           <span class="chore-stars">&#11088; ${chore.star_value || 0}</span>
         </div>
-        ${claimable ? `<button class="chore-claim-btn" data-id="${chore.id}">Claim</button>` : `<span class="chore-pending-label">Waiting to be assigned</span>`}
+        ${claimable ? `<button class="chore-claim-btn" data-id="${chore.id}">${this._esc(this._t("my_chores.bin_row.claim", "Claim"))}</button>` : `<span class="chore-pending-label">${this._esc(this._t("my_chores.bin_row.waiting_to_be_assigned", "Waiting to be assigned"))}</span>`}
       </div>
     `;
   }
@@ -1354,10 +1415,10 @@ class FamilyHubMyChoresCard extends HTMLElement {
     if (rewardSlot) rewardSlot.innerHTML = this._rewardTimerBannerHtml();
     this._root.querySelector(".my-list").innerHTML = mine.length
       ? mine.map((c) => this._myChoreRowHtml(c)).join("")
-      : `<div class="empty">Nothing on your list right now.</div>`;
+      : `<div class="empty">${this._esc(this._t("my_chores.empty.my_list", "Nothing on your list right now."))}</div>`;
     this._root.querySelector(".bin-list").innerHTML = bin.length
       ? bin.map((c) => this._binRowHtml(c)).join("")
-      : `<div class="empty">The Chore Bin is empty.</div>`;
+      : `<div class="empty">${this._esc(this._t("my_chores.empty.chore_bin", "The Chore Bin is empty."))}</div>`;
   }
 
   _css() {

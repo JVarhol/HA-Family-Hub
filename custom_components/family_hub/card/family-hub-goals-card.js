@@ -117,6 +117,25 @@ if (!window.__familyHubFabCoordinator) {
     const SLOT_HEIGHT_PX = 66;
     const entries = new Map(); // client -> { kind, seq, meta, onUpdate }
     let seq = 0;
+    // Every FAB here is position:fixed, pinned to the viewport corner (or,
+    // for a fab-position:"card" client, to its own card's box) - each card
+    // is its own independently-loaded custom element with no idea what
+    // other Family Hub cards are doing on the same dashboard, so a full-
+    // screen modal opened by ANY of them (most visibly the calendar card's
+    // own Settings screen) could end up with a totally unrelated card's
+    // FAB painted on top of it: depending on how the dashboard lays out
+    // its cards (Home Assistant's newer Sections view in particular can
+    // give each card's container its own CSS containment/stacking
+    // context), a sibling card's FAB z-index isn't guaranteed to actually
+    // lose to this card's modal overlay the way a plain same-shadow-DOM
+    // z-index comparison would. Rather than depend on that, every FAB-
+    // bearing card asks every OTHER one to physically hide
+    // (fab.hidden = true, not just "behind" via z-index - see each card's
+    // own onUpdate) while any of them has a full-screen modal open, via
+    // openModalCount/pushModalOpen/popModalOpen below - same "don't trust
+    // cross-shadow-DOM z-index, coordinate explicitly instead" approach as
+    // this project's shared screensaver controller.
+    let openModalCount = 0;
 
     function orderIndex(kind) {
       const i = FAB_KIND_ORDER.indexOf(kind);
@@ -135,13 +154,14 @@ if (!window.__familyHubFabCoordinator) {
       // still see otherProvidesGoalTab and still get an onUpdate call.
       const slotCount = list.filter(([, entry]) => entry.takesSlot).length;
       let slotIndex = 0;
+      const hideForModal = openModalCount > 0;
       list.forEach(([client, entry]) => {
         const otherProvidesGoalTab = list.some(
           ([otherClient, otherEntry]) => otherClient !== client && otherEntry.meta && otherEntry.meta.providesGoalTab
         );
         const index = entry.takesSlot ? slotIndex++ : null;
         if (typeof entry.onUpdate === "function") {
-          entry.onUpdate({ offsetPx: (index || 0) * SLOT_HEIGHT_PX, slotIndex: index, count: slotCount, otherProvidesGoalTab });
+          entry.onUpdate({ offsetPx: (index || 0) * SLOT_HEIGHT_PX, slotIndex: index, count: slotCount, otherProvidesGoalTab, hideForModal });
         }
       });
     }
@@ -152,8 +172,10 @@ if (!window.__familyHubFabCoordinator) {
       // `providesGoalTab` (see this block's own docstring above). `onUpdate`
       // is called once immediately (so a lone card on an otherwise-empty
       // dashboard still gets offsetPx: 0) and again on every subsequent
-      // register/unregister/updateClientMeta from ANY card, since adding a
-      // second FAB changes where the first one's slot is too.
+      // register/unregister/updateClientMeta/pushModalOpen/popModalOpen
+      // from ANY card, since adding a second FAB changes where the first
+      // one's slot is too, and any card's modal opening/closing changes
+      // whether every FAB should currently be hidden.
       //
       // `opts.takesSlot` (default true) - pass `{ takesSlot:
       // false }` for a card whose FAB has opted out of the shared
@@ -177,6 +199,24 @@ if (!window.__familyHubFabCoordinator) {
         const entry = entries.get(client);
         if (!entry) return;
         entry.meta = Object.assign({}, entry.meta, meta || {});
+        recompute();
+      },
+      // Call when THIS card opens a full-screen modal that every OTHER
+      // Family Hub card's FAB should get out of the way of (today: only
+      // the calendar card's own Settings screen calls this - see its
+      // _setupSettingsFabCoordination). A plain counter, not a per-client
+      // flag, so this stays correct even if more than one such modal is
+      // ever open across more than one card at once - every pushModalOpen
+      // needs a matching popModalOpen before FABs reappear, and a card
+      // that unmounts while its own modal was still open (see
+      // disconnectedCallback) pops on its way out rather than leaking the
+      // count forever.
+      pushModalOpen() {
+        openModalCount += 1;
+        recompute();
+      },
+      popModalOpen() {
+        openModalCount = Math.max(0, openModalCount - 1);
         recompute();
       },
       // Call from disconnectedCallback. Frees this card's slot so every
@@ -519,6 +559,7 @@ class FamilyHubGoalsCard extends HTMLElement {
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
+    this._ensureTranslationsLoaded();
     if (first) this._firstLoadPromise = this._initFirstLoad();
   }
   async _initFirstLoad() {
@@ -607,12 +648,17 @@ class FamilyHubGoalsCard extends HTMLElement {
     window.__familyHubFabCoordinator.registerClient(this, "goals", {}, (state) => {
       this.style.setProperty("--fh-fab-offset", `${state.offsetPx}px`);
       this._fabSuppressedByOther = state.otherProvidesGoalTab;
+      // hideForModal is true while ANY Family Hub card on this dashboard
+      // has a full-screen modal open (most visibly the calendar card's
+      // own Settings screen) - see the coordinator's own doc for why this
+      // can't just rely on z-index across cards.
+      this._fabHiddenForModal = state.hideForModal;
       this._applyFabVisibility();
     }, { takesSlot: !cardRelative });
   }
   _applyFabVisibility() {
     const fab = this._root && this._root.querySelector(".add-goal-fab");
-    if (fab) fab.hidden = !this._canManageGoals() || !!this._fabSuppressedByOther;
+    if (fab) fab.hidden = !this._canManageGoals() || !!this._fabSuppressedByOther || !!this._fabHiddenForModal;
   }
   _startPolling() {
     if (this._interval) return;
@@ -1081,6 +1127,62 @@ class FamilyHubGoalsCard extends HTMLElement {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
+  _t(key, fallback, vars) {
+    let str = "";
+    try {
+      if (this._hass && typeof this._hass.localize === "function") {
+        str = this._hass.localize(`component.family_hub.fh_ui.${key}`) || "";
+      }
+    } catch (e) {
+      str = "";
+    }
+    if (!str) str = fallback;
+    if (vars) {
+      Object.keys(vars).forEach((k) => {
+        str = str.split(`%${k}%`).join(vars[k]);
+      });
+    }
+    return str;
+  }
+  _baseLanguage(lang) {
+    return (lang || "en").split("-")[0].toLowerCase();
+  }
+  _ensureTranslationsLoaded() {
+    if (!this._hass || typeof this._hass.loadBackendTranslation !== "function") return;
+    const lang = this._baseLanguage(this._hass.language);
+    if (this._i18nLoadedLang === lang || this._i18nLoading === lang) return;
+    this._i18nLoading = lang;
+    this._hass
+      .loadBackendTranslation("fh_ui", "family_hub")
+      .then(() => {
+        this._i18nLoadedLang = lang;
+        this._i18nLoading = null;
+        this._applyTranslations();
+        this._render();
+      })
+      .catch((e) => {
+        this._i18nLoading = null;
+        console.warn("[family_hub] failed to load \"" + lang + "\" translations - staying on English fallback text", e);
+      });
+  }
+  _applyTranslations() {
+    if (!this._root) return;
+    this._root.querySelectorAll("[data-i18n]").forEach((el) => {
+      const key = el.dataset.i18n;
+      if (el.dataset.i18nFallback === undefined) el.dataset.i18nFallback = el.textContent;
+      el.textContent = this._t(key, el.dataset.i18nFallback);
+    });
+    this._root.querySelectorAll("[data-i18n-title]").forEach((el) => {
+      const key = el.dataset.i18nTitle;
+      if (el.dataset.i18nTitleFallback === undefined) {
+        el.dataset.i18nTitleFallback = el.getAttribute("title") || el.getAttribute("aria-label") || "";
+      }
+      const translated = this._t(key, el.dataset.i18nTitleFallback);
+      if (el.hasAttribute("title")) el.setAttribute("title", translated);
+      if (el.hasAttribute("aria-label")) el.setAttribute("aria-label", translated);
+    });
+  }
+
   _build() {
     this._built = true;
     // applied BEFORE attachShadow/the first innerHTML paint -
@@ -1101,7 +1203,7 @@ class FamilyHubGoalsCard extends HTMLElement {
       <div class="modal-overlay create-modal"><div class="modal-box"></div></div>
       <div class="modal-overlay edit-modal"><div class="modal-box"></div></div>
       <div class="modal-overlay reject-modal"><div class="modal-box"></div></div>
-      <button class="add-goal-fab" title="Add a goal" aria-haspopup="true" hidden>&#65291;</button>
+      <button class="add-goal-fab" title="Add a goal" data-i18n-title="goals.add_a_goal" aria-haspopup="true" hidden>&#65291;</button>
     `;
     this._root = root;
     root.querySelector(".title").textContent = this._config.title;
@@ -1171,11 +1273,11 @@ class FamilyHubGoalsCard extends HTMLElement {
     const overlay = this._root.querySelector(".reject-modal");
     const box = overlay.querySelector(".modal-box");
     box.innerHTML = `
-      <h3>Send back "${this._esc(goal.title)}"</h3>
-      <label>Anything you want to tell them about why? (optional)<textarea class="f-reject-reason" rows="3" placeholder="Not quite - try again"></textarea></label>
+      <h3>${this._t("goals.send_back_modal_title", 'Send back "%title%"', { title: this._esc(goal.title) })}</h3>
+      <label>${this._t("goals.reject_reason_label", "Anything you want to tell them about why? (optional)")}<textarea class="f-reject-reason" rows="3" placeholder="Not quite - try again"></textarea></label>
       <div class="modal-actions">
-        <button class="cancel-btn">Cancel</button>
-        <button class="save-btn">Send back</button>
+        <button class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn">${this._t("goals.send_back", "Send back")}</button>
       </div>
     `;
     box.querySelector(".cancel-btn").addEventListener("click", () => overlay.classList.remove("open"));
@@ -1212,7 +1314,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     await this._fetchGoals();
   }
   async _delete(goalId) {
-    if (!window.confirm("Delete this goal? This can't be undone.")) return;
+    if (!window.confirm(this._t("goals.delete_confirm", "Delete this goal? This can\'t be undone."))) return;
     try {
       await this._hass.connection.sendMessagePromise({ type: "family_hub/goals/delete", goal_id: goalId });
     } catch (e) {
@@ -1230,14 +1332,14 @@ class FamilyHubGoalsCard extends HTMLElement {
       .map((it) => `<option value="${it.id}" ${g.reward_item_id === it.id ? "selected" : ""}>${this._esc(it.title)} (${it.cost_stars}&#11088;)</option>`)
       .join("");
     return `
-      <label>Reward
+      <label>${this._t("goals.reward_label", "Reward")}
         <select class="f-reward-type">
-          <option value="${GOAL_REWARD_TYPE_STARS}" ${rewardType === GOAL_REWARD_TYPE_STARS ? "selected" : ""}>Stars</option>
-          <option value="${GOAL_REWARD_TYPE_CATALOG_ITEM}" ${rewardType === GOAL_REWARD_TYPE_CATALOG_ITEM ? "selected" : ""}>A specific reward from the catalog</option>
+          <option value="${GOAL_REWARD_TYPE_STARS}" ${rewardType === GOAL_REWARD_TYPE_STARS ? "selected" : ""}>${this._t("goals.reward_type_stars", "Stars")}</option>
+          <option value="${GOAL_REWARD_TYPE_CATALOG_ITEM}" ${rewardType === GOAL_REWARD_TYPE_CATALOG_ITEM ? "selected" : ""}>${this._t("goals.reward_type_catalog_item", "A specific reward from the catalog")}</option>
         </select>
       </label>
-      <label class="f-star-value-field">How many stars<input type="number" class="f-star-value" min="1" value="${g.star_value || 1}"></label>
-      <label class="f-reward-item-field">Which reward<select class="f-reward-item">${catalogOptions}</select></label>
+      <label class="f-star-value-field">${this._t("goals.how_many_stars_label", "How many stars")}<input type="number" class="f-star-value" min="1" value="${g.star_value || 1}"></label>
+      <label class="f-reward-item-field">${this._t("goals.which_reward_label", "Which reward")}<select class="f-reward-item">${catalogOptions}</select></label>
     `;
   }
   _wireRewardFields(box) {
@@ -1269,16 +1371,16 @@ class FamilyHubGoalsCard extends HTMLElement {
     const box = overlay.querySelector(".modal-box");
     const userOptions = this._memberUsers().map((u) => `<option value="${u.id}">${this._esc(u.name)}</option>`).join("");
     box.innerHTML = `
-      <h3>Add a goal</h3>
-      <label>Title<input type="text" class="f-title" placeholder="Get 3 Bs in math"></label>
-      <label>For<select class="f-assigned">${userOptions}</select></label>
-      <label>Target count (how many times to log before it's done)<input type="number" class="f-target" min="1" value="1"></label>
+      <h3>${this._t("goals.add_a_goal", "Add a goal")}</h3>
+      <label>${this._t("goals.title_label", "Title")}<input type="text" class="f-title" placeholder="Get 3 Bs in math"></label>
+      <label>${this._t("goals.for_label", "For")}<select class="f-assigned">${userOptions}</select></label>
+      <label>${this._t("goals.target_count_label", "Target count (how many times to log before it\'s done)")}<input type="number" class="f-target" min="1" value="1"></label>
       ${this._rewardFieldsHtml(null)}
-      <label>Due date (optional)<input type="datetime-local" class="f-due"></label>
-      <label>Notes<textarea class="f-notes" rows="3" placeholder="Any details worth knowing"></textarea></label>
+      <label>${this._t("goals.due_date_label", "Due date (optional)")}<input type="datetime-local" class="f-due"></label>
+      <label>${this._t("goals.notes_label", "Notes")}<textarea class="f-notes" rows="3" placeholder="Any details worth knowing"></textarea></label>
       <div class="modal-actions">
-        <button class="cancel-btn">Cancel</button>
-        <button class="save-btn">Save</button>
+        <button class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn">${this._t("common.save", "Save")}</button>
       </div>
       <div class="form-error"></div>
     `;
@@ -1293,12 +1395,12 @@ class FamilyHubGoalsCard extends HTMLElement {
     errEl.textContent = "";
     const title = box.querySelector(".f-title").value.trim();
     if (!title) {
-      errEl.textContent = "A goal needs a title.";
+      errEl.textContent = this._t("goals.needs_title", "A goal needs a title.");
       return;
     }
     const assignedTo = box.querySelector(".f-assigned").value;
     if (!assignedTo) {
-      errEl.textContent = "A goal needs someone it belongs to.";
+      errEl.textContent = this._t("goals.needs_assignee", "A goal needs someone it belongs to.");
       return;
     }
     const payload = {
@@ -1314,7 +1416,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     try {
       await this._hass.connection.sendMessagePromise(payload);
     } catch (e) {
-      errEl.textContent = (e && e.message) || "Couldn't save this goal.";
+      errEl.textContent = (e && e.message) || this._t("goals.save_failed", "Couldn\'t save this goal.");
       return;
     }
     overlay.classList.remove("open");
@@ -1330,16 +1432,16 @@ class FamilyHubGoalsCard extends HTMLElement {
       .map((u) => `<option value="${u.id}" ${goal.assigned_to === u.id ? "selected" : ""}>${this._esc(u.name)}</option>`)
       .join("");
     box.innerHTML = `
-      <h3>Edit goal</h3>
-      <label>Title<input type="text" class="f-title" value="${this._escAttr(goal.title)}"></label>
-      <label>For<select class="f-assigned">${userOptions}</select></label>
-      <label>Target count (how many times to log before it's done)<input type="number" class="f-target" min="1" value="${goal.target_count || 1}"></label>
+      <h3>${this._t("goals.edit_goal_title", "Edit goal")}</h3>
+      <label>${this._t("goals.title_label", "Title")}<input type="text" class="f-title" value="${this._escAttr(goal.title)}"></label>
+      <label>${this._t("goals.for_label", "For")}<select class="f-assigned">${userOptions}</select></label>
+      <label>${this._t("goals.target_count_label", "Target count (how many times to log before it\'s done)")}<input type="number" class="f-target" min="1" value="${goal.target_count || 1}"></label>
       ${this._rewardFieldsHtml(goal)}
-      <label>Due date (optional)<input type="datetime-local" class="f-due" value="${this._isoToLocalDatetimeInputValue(goal.due_date)}"></label>
-      <label>Notes<textarea class="f-notes" rows="3">${this._esc(goal.notes || "")}</textarea></label>
+      <label>${this._t("goals.due_date_label", "Due date (optional)")}<input type="datetime-local" class="f-due" value="${this._isoToLocalDatetimeInputValue(goal.due_date)}"></label>
+      <label>${this._t("goals.notes_label", "Notes")}<textarea class="f-notes" rows="3">${this._esc(goal.notes || "")}</textarea></label>
       <div class="modal-actions">
-        <button class="cancel-btn">Cancel</button>
-        <button class="save-btn">Save</button>
+        <button class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn">${this._t("common.save", "Save")}</button>
       </div>
       <div class="form-error"></div>
     `;
@@ -1354,7 +1456,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     errEl.textContent = "";
     const title = box.querySelector(".f-title").value.trim();
     if (!title) {
-      errEl.textContent = "A goal needs a title.";
+      errEl.textContent = this._t("goals.needs_title", "A goal needs a title.");
       return;
     }
     const payload = {
@@ -1371,7 +1473,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     try {
       await this._hass.connection.sendMessagePromise(payload);
     } catch (e) {
-      errEl.textContent = (e && e.message) || "Couldn't save this goal.";
+      errEl.textContent = (e && e.message) || this._t("goals.save_failed", "Couldn\'t save this goal.");
       return;
     }
     overlay.classList.remove("open");
@@ -1383,10 +1485,13 @@ class FamilyHubGoalsCard extends HTMLElement {
   _rewardSummary(goal) {
     if (goal.reward_type === GOAL_REWARD_TYPE_CATALOG_ITEM) {
       const item = this._catalogItem(goal.reward_item_id);
-      return item ? `${item.icon || "&#127873;"} ${this._esc(item.title)}` : "(reward no longer available)";
+      return item ? `${item.icon || "&#127873;"} ${this._esc(item.title)}` : this._t("goals.reward_unavailable", "(reward no longer available)");
     }
     const stars = goal.star_value || 0;
-    return `&#11088; ${stars} star${stars === 1 ? "" : "s"}`;
+    const starsText = stars === 1
+      ? this._t("goals.stars_one", "%n% star", { n: stars })
+      : this._t("goals.stars_other", "%n% stars", { n: stars });
+    return `&#11088; ${starsText}`;
   }
 
   _goalCardHtml(goal) {
@@ -1399,9 +1504,11 @@ class FamilyHubGoalsCard extends HTMLElement {
     // "owner or manager" pool _canLogProgress already checks, since this is
     // just as much "acting on your own goal" as logging progress on it was.
     const canArchive = goal.status === GOAL_STATUS_APPROVED && (goal.assigned_to === this._myUserId() || canManage);
-    const progressLabel = target > 1 ? `${current} / ${target} logged` : (current >= target ? "Done" : "Not yet done");
+    const progressLabel = target > 1
+      ? this._t("goals.progress_logged", "%current% / %target% logged", { current, target })
+      : (current >= target ? this._t("common.done", "Done") : this._t("goals.not_yet_done", "Not yet done"));
     let statusBadge = "";
-    if (goal.status === GOAL_STATUS_PENDING_VERIFICATION) statusBadge = `<span class="goal-badge pending">Awaiting approval</span>`;
+    if (goal.status === GOAL_STATUS_PENDING_VERIFICATION) statusBadge = `<span class="goal-badge pending">${this._t("goals.awaiting_approval", "Awaiting approval")}</span>`;
     // the achieved badge now shows the reward inline ("Achieved!
     // +5 stars" / "Achieved! Movie night 🎬") instead of leaving the reward
     // to the separate, much less noticeable `.goal-reward` line below -
@@ -1410,24 +1517,26 @@ class FamilyHubGoalsCard extends HTMLElement {
     // (goals not yet approved still want to say what they're working
     // toward), just no longer the only place a just-approved reward shows.
     else if (goal.status === GOAL_STATUS_APPROVED || goal.status === GOAL_STATUS_ARCHIVED) {
-      statusBadge = `<span class="goal-badge approved">Achieved! ${this._rewardSummary(goal)}</span>`;
+      statusBadge = `<span class="goal-badge approved">${this._t("goals.achieved_with_reward", "Achieved! %reward%", { reward: this._rewardSummary(goal) })}</span>`;
     }
     if (goal.rejected_at && goal.status === GOAL_STATUS_OPEN) {
-      const reason = goal.reject_reason ? `: ${this._esc(goal.reject_reason)}` : "";
-      statusBadge += `<span class="goal-badge rejected">Sent back${reason}</span>`;
+      const badgeText = goal.reject_reason
+        ? this._t("goals.sent_back_with_reason", "Sent back: %reason%", { reason: this._esc(goal.reject_reason) })
+        : this._t("goals.sent_back", "Sent back");
+      statusBadge += `<span class="goal-badge rejected">${badgeText}</span>`;
     }
     let actions = "";
-    if (canLog) actions += `<button class="goal-log-btn" data-id="${goal.id}">${target > 1 ? "Log progress" : "Mark done"}</button>`;
+    if (canLog) actions += `<button class="goal-log-btn" data-id="${goal.id}">${target > 1 ? this._t("goals.log_progress", "Log progress") : this._t("goals.mark_done", "Mark done")}</button>`;
     if (goal.status === GOAL_STATUS_PENDING_VERIFICATION && canVerify) {
-      actions += `<button class="goal-approve-btn" data-id="${goal.id}">Approve</button>`;
-      actions += `<button class="goal-reject-btn" data-id="${goal.id}">Send back</button>`;
+      actions += `<button class="goal-approve-btn" data-id="${goal.id}">${this._t("goals.approve", "Approve")}</button>`;
+      actions += `<button class="goal-reject-btn" data-id="${goal.id}">${this._t("goals.send_back", "Send back")}</button>`;
     }
-    if (canArchive) actions += `<button class="goal-complete-btn" data-id="${goal.id}">Complete</button>`;
+    if (canArchive) actions += `<button class="goal-complete-btn" data-id="${goal.id}">${this._t("goals.complete", "Complete")}</button>`;
     if (goal.status === GOAL_STATUS_OPEN && canManage) {
-      actions += `<button class="goal-edit-btn" data-id="${goal.id}">Edit</button>`;
+      actions += `<button class="goal-edit-btn" data-id="${goal.id}">${this._t("common.edit", "Edit")}</button>`;
     }
     if (canManage) actions += `<button class="goal-delete-btn" data-id="${goal.id}">&times;</button>`;
-    const dueHtml = goal.due_date ? `<div class="goal-due">Due ${new Date(goal.due_date).toLocaleString()}</div>` : "";
+    const dueHtml = goal.due_date ? `<div class="goal-due">${this._t("goals.due_x", "Due %date%", { date: new Date(goal.due_date).toLocaleString() })}</div>` : "";
     const notesHtml = goal.notes ? `<div class="goal-notes">${this._esc(goal.notes)}</div>` : "";
     return `
       <div class="goal-card status-${goal.status}" data-id="${goal.id}">
@@ -1481,7 +1590,7 @@ class FamilyHubGoalsCard extends HTMLElement {
       <div class="completed-goals-row">
         <div class="completed-goals-header">
           <span class="completed-goals-toggle-icon">${open ? "&#9662;" : "&#9656;"}</span>
-          <span class="completed-goals-title">Completed</span>
+          <span class="completed-goals-title">${this._t("goals.completed_title", "Completed")}</span>
           <span class="completed-goals-badge">${archived.length}</span>
         </div>
         ${body}
@@ -1490,12 +1599,12 @@ class FamilyHubGoalsCard extends HTMLElement {
   }
   _boardHtml() {
     if (!this._myUserId()) {
-      return `<div class="empty-state">Log in to see your goals.</div>`;
+      return `<div class="empty-state">${this._t("goals.login_prompt", "Log in to see your goals.")}</div>`;
     }
     const goals = this._myGoals();
     const listHtml = goals.length
       ? `<div class="goal-list">${goals.map((g) => this._goalCardHtml(g)).join("")}</div>`
-      : `<div class="empty-state">No goals yet.</div>`;
+      : `<div class="empty-state">${this._t("goals.no_goals_yet", "No goals yet.")}</div>`;
     return `${listHtml}${this._completedGoalsAccordionHtml()}`;
   }
 

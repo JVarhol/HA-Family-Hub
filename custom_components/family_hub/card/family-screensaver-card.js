@@ -406,6 +406,7 @@ class FamilyScreensaverCard extends HTMLElement {
         if (cardEl) cardEl.hass = hass;
       });
     }
+    this._ensureTranslationsLoaded();
     if (first) {
       this._firstLoadPromise = this._initFirstLoad();
     }
@@ -1240,6 +1241,61 @@ class FamilyScreensaverCard extends HTMLElement {
     if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith("/")) return trimmed;
     return "/" + trimmed;
   }
+  _t(key, fallback, vars) {
+    let str = "";
+    try {
+      if (this._hass && typeof this._hass.localize === "function") {
+        str = this._hass.localize(`component.family_hub.fh_ui.${key}`) || "";
+      }
+    } catch (e) {
+      str = "";
+    }
+    if (!str) str = fallback;
+    if (vars) {
+      Object.keys(vars).forEach((k) => {
+        str = str.split(`%${k}%`).join(vars[k]);
+      });
+    }
+    return str;
+  }
+  _baseLanguage(lang) {
+    return (lang || "en").split("-")[0].toLowerCase();
+  }
+  _ensureTranslationsLoaded() {
+    if (!this._hass || typeof this._hass.loadBackendTranslation !== "function") return;
+    const lang = this._baseLanguage(this._hass.language);
+    if (this._i18nLoadedLang === lang || this._i18nLoading === lang) return;
+    this._i18nLoading = lang;
+    this._hass
+      .loadBackendTranslation("fh_ui", "family_hub")
+      .then(() => {
+        this._i18nLoadedLang = lang;
+        this._i18nLoading = null;
+        this._applyTranslations();
+        this._render();
+      })
+      .catch((e) => {
+        this._i18nLoading = null;
+        console.warn("[family_hub] failed to load \"" + lang + "\" translations - staying on English fallback text", e);
+      });
+  }
+  _applyTranslations() {
+    if (!this._root) return;
+    this._root.querySelectorAll("[data-i18n]").forEach((el) => {
+      const key = el.dataset.i18n;
+      if (el.dataset.i18nFallback === undefined) el.dataset.i18nFallback = el.textContent;
+      el.textContent = this._t(key, el.dataset.i18nFallback);
+    });
+    this._root.querySelectorAll("[data-i18n-title]").forEach((el) => {
+      const key = el.dataset.i18nTitle;
+      if (el.dataset.i18nTitleFallback === undefined) {
+        el.dataset.i18nTitleFallback = el.getAttribute("title") || el.getAttribute("aria-label") || "";
+      }
+      const translated = this._t(key, el.dataset.i18nTitleFallback);
+      if (el.hasAttribute("title")) el.setAttribute("title", translated);
+      if (el.hasAttribute("aria-label")) el.setAttribute("aria-label", translated);
+    });
+  }
   _build() {
     this._built = true;
     // applied BEFORE attachShadow/the first innerHTML paint -
@@ -1293,12 +1349,12 @@ color: var(--fc-text);
 </style>
 <div class="wrapped-card-host"></div>
 <div class="card-root">
-<div class="title-row"><span class="title-text"></span><span class="badge">Edit-mode only</span></div>
-<div class="hint">Invisible once you're done editing this dashboard - it keeps the screensaver running in the background from wherever it's placed. Screen source, idle time, and which logins it's on for are all set from the full calendar card's own Settings &rarr; Screen Saver section.</div>
+<div class="title-row"><span class="title-text"></span><span class="badge" data-i18n="screensaver.edit_mode_badge">Edit-mode only</span></div>
+<div class="hint" data-i18n="screensaver.hint">Invisible once you're done editing this dashboard - it keeps the screensaver running in the background from wherever it's placed. Screen source, idle time, and which logins it's on for are all set from the full calendar card's own Settings &rarr; Screen Saver section.</div>
 <div class="field">
-<label>Return to this dashboard on wake</label>
+<label data-i18n="screensaver.return_dashboard_label">Return to this dashboard on wake</label>
 <select class="return-dashboard-select">
-<option value="">Stay on this dashboard</option>
+<option value="" data-i18n="screensaver.stay_on_dashboard">Stay on this dashboard</option>
 </select>
 </div>
 <div class="status"></div>
@@ -1348,6 +1404,7 @@ color: var(--fc-text);
       return;
     }
     this._root.querySelector(".title-text").textContent = this._config.title || "Screen Saver";
+    this._applyTranslations();
     if (this._editModeInternal) this._renderEditFace();
   }
   _renderWrappedCard() {
@@ -1358,7 +1415,7 @@ color: var(--fc-text);
       return;
     }
     if (this._wrappedCardHelpersMissing) {
-      host.textContent = "This frontend version can't embed another card here - update Home Assistant, or use this card standalone instead.";
+      host.textContent = this._t("screensaver.wrapped_card_unsupported", "This frontend version can't embed another card here - update Home Assistant, or use this card standalone instead.");
     }
   }
   _renderEditFace() {
@@ -1367,7 +1424,7 @@ color: var(--fc-text);
     const select = root.querySelector(".return-dashboard-select");
     const current = this._config.return_dashboard_path || "";
     const dashboards = Array.isArray(this._dashboards) ? this._dashboards : [];
-    const options = [{ value: "", label: "Stay on this dashboard" }].concat(
+    const options = [{ value: "", label: this._t("screensaver.stay_on_dashboard", "Stay on this dashboard") }].concat(
       dashboards
         .filter((d) => d && d.url_path)
         .map((d) => ({ value: `/${d.url_path}/0`, label: d.title || d.url_path }))
@@ -1391,10 +1448,12 @@ color: var(--fc-text);
     if (!statusEl) return;
     const applicable = this._screenSaverApplicable();
     if (!applicable) {
-      statusEl.textContent = "Screensaver isn't active for your current login yet - enable it under the calendar card's Settings → Screen Saver → Enable for these logins.";
+      statusEl.textContent = this._t("screensaver.status_not_active", "Screensaver isn't active for your current login yet - enable it under the calendar card's Settings → Screen Saver → Enable for these logins.");
     } else {
       const path = (this._config.return_dashboard_path || "").trim();
-      statusEl.textContent = path ? `Active for your login - wakes back to ${path}.` : "Active for your login - stays on this dashboard when woken.";
+      statusEl.textContent = path
+        ? this._t("screensaver.status_active_wakes_to", "Active for your login - wakes back to %path%.", { path })
+        : this._t("screensaver.status_active_stays", "Active for your login - stays on this dashboard when woken.");
     }
   }
 }

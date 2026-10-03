@@ -2699,7 +2699,6 @@ set hass(hass) {
 const first = !this._hass;
 this._hass = hass;
 this._ensureTranslationsLoaded();
-this._updateHaStartingBanner();
 if (first) {
 this._firstLoadPromise = this._initFirstLoad();
 // skip the _applySizeVars() call below on this very first
@@ -3004,12 +3003,13 @@ this._setupSettingsFabCoordination();
 if (!this._boundSyncHeight) this._boundSyncHeight = this._syncHeight.bind(this);
 window.addEventListener("resize", this._boundSyncHeight);
 window.addEventListener("orientationchange", this._boundSyncHeight);
-// This card no longer measures or sets its own height at all (see
-// _syncHeight's own comment - it now just fills whatever box Home
-// Assistant's layout gives it via plain CSS), so there's nothing left
-// here that an on-screen keyboard opening/closing could fight with.
-// What's left just keeps --fh-header-offset (a read-only position, not
-// a resize) current for the full-screen Recipe Viewer overlay.
+if (window.visualViewport) {
+window.visualViewport.addEventListener("resize", this._boundSyncHeight);
+window.visualViewport.addEventListener("scroll", this._boundSyncHeight);
+}
+if (!this._heightInterval) {
+this._heightInterval = setInterval(this._boundSyncHeight, 1500);
+}
 requestAnimationFrame(this._boundSyncHeight);
 setTimeout(this._boundSyncHeight, 300);
 setTimeout(this._boundSyncHeight, 1200);
@@ -3066,11 +3066,17 @@ this._grocyRecipeViewerPortalEl.remove();
 this._grocyRecipeViewerPortalEl = null;
 this._grocyRecipeViewerOverlayEl = null;
 }
+if (this._heightInterval) clearInterval(this._heightInterval);
+this._heightInterval = null;
 if (this._countdownTickerInterval) clearInterval(this._countdownTickerInterval);
 this._countdownTickerInterval = null;
 if (this._boundSyncHeight) {
 window.removeEventListener("resize", this._boundSyncHeight);
 window.removeEventListener("orientationchange", this._boundSyncHeight);
+if (window.visualViewport) {
+window.visualViewport.removeEventListener("resize", this._boundSyncHeight);
+window.visualViewport.removeEventListener("scroll", this._boundSyncHeight);
+}
 }
 if (this._plannerMobileMQ && this._boundPlannerMQChange) {
 if (this._plannerMobileMQ.removeEventListener) {
@@ -3140,24 +3146,58 @@ this._privacyModeUnsub = null;
 }
 }
 _syncHeight() {
-// No longer measures the viewport or sets this card's own height at
-// all - household ask, verbatim: "make the calendar fill the card that
-// it has" instead of this card computing and assigning its own pixel
-// height via JS (the source of the on-screen-keyboard resize-and-
-// never-restore bug fixed earlier, and every other "renders taller/
-// shorter than the space it actually has" report before that). The
-// card now just fills whatever box Home Assistant's own layout gives
-// it via plain CSS (:host { height: 100%; }, ha-card { height: 100%; })
-// - exactly as normal a browser element as this card can be. The one
-// thing still computed here is purely informational/positional, not a
-// resize: --fh-header-offset, which the full-screen Recipe Viewer (a
-// position:fixed, viewport-anchored overlay) uses so its own heading
-// doesn't render underneath Home Assistant's top app bar on a non-kiosk
-// dashboard. Reading rect.top doesn't change this card's own size, so
-// none of the keyboard-resize issues apply to keeping this live.
 if (!this.isConnected) return;
 const rect = this.getBoundingClientRect();
-const headerOffset = Math.max(0, Math.round(rect.top));
+const vv = window.visualViewport;
+const viewportHeight = vv ? vv.height : window.innerHeight;
+const viewportTop = vv ? vv.offsetTop : 0;
+const viewportBottom = viewportTop + viewportHeight;
+// This used to assume every pixel from the card's own top edge down to
+// the bottom of the viewport was available - correct when the card sits
+// directly in the viewport, but wrong whenever whatever actually
+// contains the card (most commonly Home Assistant's own Panel view
+// wrapper) reserves some of its own padding/margin BELOW the card too,
+// not just above it. That excess got treated as real height anyway, so
+// the card (and everything inside it - the calendar's own week-rows
+// most visibly, since splitting a fixed overage across N rows makes it
+// concentrated and obvious on whichever row ends up last) rendered
+// taller than the space actually available to show it, with the extra
+// silently clipped by this card's own overflow:hidden - "the bottom
+// row runs past the bottom of the card" being exactly that. Reading the
+// immediate parent's own rendered bottom edge (already net of ITS
+// padding/margin, whatever it is) and taking whichever of that or the
+// viewport's own bottom edge is smaller catches this without hardcoding
+// assumptions about any specific dashboard's DOM shape. Guarded to only
+// kick in when the parent's rect is actually sane (extends below the
+// card's own top edge, true in any real browser layout) so it's a no-op
+// wherever the parent doesn't meaningfully constrain the card (a normal
+// grid/masonry/sections view, where the parent ends up at least
+// viewport-tall anyway once the card's own :host height forces it) and
+// in every test environment that doesn't lay out real boxes at all.
+const parentRect = this.parentElement ? this.parentElement.getBoundingClientRect() : null;
+const bottomBoundary = parentRect && parentRect.bottom > rect.top ? Math.min(parentRect.bottom, viewportBottom) : viewportBottom;
+// Manual "Bottom padding" setting (Settings > General, px, 0 by default) -
+// reserves this many extra pixels below the card on top of whatever the
+// viewport/parent boundary above already gives it. A plain, predictable
+// knob the household dials in by hand for "leave room at the bottom" (an
+// on-screen keyboard, a taskbar, a dock) rather than this card trying to
+// track a keyboard's own open/close height automatically.
+const bottomPadding = Math.max(0, this._getSettings().bottomPadding || 0);
+const available = Math.max(300, Math.floor(bottomBoundary - rect.top) - bottomPadding);
+if (this.style.height !== `${available}px`) {
+this.style.height = `${available}px`;
+}
+// Whatever sits above the card in the actual dashboard - most commonly
+// Home Assistant's own top app bar, when the view isn't in a fully
+// chromeless/kiosk layout - has already pushed the card's own top edge
+// down by this many pixels, which is exactly the same amount any
+// position:fixed, viewport-anchored overlay (the full-screen Recipe
+// Viewer) needs to be offset by so its heading doesn't render underneath
+// that bar instead of below it. Exposed as a custom property (rather than
+// only used here) so the fix applies wherever a fixed overlay needs it,
+// and stays live via the same resize/orientation/interval polling this
+// method already runs on.
+const headerOffset = Math.max(0, Math.round(rect.top - viewportTop));
 this.style.setProperty("--fh-header-offset", `${headerOffset}px`);
 }
 getCardSize() {
@@ -5328,6 +5368,7 @@ goalsShowInRewards: false,
 // chore detail popup (_openChoreDetailModal in family-hub-chores-card.js)
 // always shows both regardless of this, so nothing is ever hidden, just
 // the compact card label.
+choreDueShowTime: false,
 // Household-wide, on by
 // default - unlike most opt-in cosmetic toggles here,
 // this one ships already turned on; still fully toggleable per household
@@ -5398,13 +5439,6 @@ mealPlanEntity: "",
 // hits Menu/Templates with nothing linked yet - see
 // _ensureHouseholdMealLists() - same as mealPlanEntity.
 mealTemplatesEntity: "",
-// Empty = not set, meaning _weatherEntity() falls back to this card's
-// own YAML config weather_entity (or its own "weather.forecast_home"
-// default if the YAML doesn't set one either) - same household-wide-
-// override-of-YAML pattern as mealPlanEntity above, moved into Settings
-// (General > Weather entity) so changing it never requires touching the
-// dashboard config.
-weatherEntity: "",
 // purely a visual "where am I in the day" aid: greys out an
 // event/reminder that's already passed on TODAY's column, still fully
 // interactable (see _buildDayColumnHtml's own comment) - never applied
@@ -5422,13 +5456,12 @@ scrollLocked: false,
 // Manual bottom-padding override (px) - household ask, verbatim (after
 // trying a dynamic on-screen-keyboard height fix and asking to revert
 // it): "Let's just add an option to the card settings for the bottom
-// padding in px." Added as a plain CSS padding-bottom (--fh-bottom-
-// padding, see _applySizeVars/ha-card's own rule) on top of ha-card's
-// base padding - a plain, predictable manual knob for "leave room at
-// the bottom" (a keyboard, a dock, a taskbar) instead of trying to track
-// a keyboard's own open/close height automatically, or (later) this
-// card computing its own height via JS at all. 0 by default, so nothing
-// changes until a household dials it in.
+// padding in px." Reserves this many extra pixels at the bottom of the
+// card's own height calc (_syncHeight) on top of whatever the viewport/
+// parent would otherwise give it - a plain, predictable manual knob for
+// "leave room at the bottom" (a keyboard, a dock, a taskbar) instead of
+// trying to track a keyboard's own open/close height automatically. 0
+// by default, so nothing changes until a household dials it in.
 bottomPadding: 0,
 theme: this._defaultTheme(),
 useGlobalTheme: true,
@@ -5676,19 +5709,8 @@ if (!userId || this._userTodoListsEnsuredFor.has(userId)) continue;
 this._userTodoListsEnsuredFor.add(userId);
 const profiles = this._getSettings().userProfiles || {};
 const profile = Object.assign({}, this._defaultUserProfile(), profiles[userId] || {});
-// Only ever auto-create a list the profile has NEVER been pointed at -
-// a non-empty profile.remindersEntity/wishlistEntity is a deliberate
-// choice (made by this very auto-create the first time, or by hand in
-// Settings/Users) and is trusted outright, even when this._hass.states
-// doesn't happen to show it yet in this particular render pass. See
-// _ensureHouseholdMealLists's own comment for the exact same race this
-// mirrors (a restart or a second card instance loading before entity
-// states finish syncing making an already-configured list look
-// momentarily missing) and the household-visible bug it caused there
-// ("it keeps wanting to change the menu todo") before this same
-// "configured wins outright" check was added to guard it too.
-const needsReminders = !(profile.remindersEntity || "").trim() && !this._listEntityExists(profile.remindersEntity);
-const needsWishlist = !(profile.wishlistEntity || "").trim() && !this._listEntityExists(profile.wishlistEntity);
+const needsReminders = !this._listEntityExists(profile.remindersEntity);
+const needsWishlist = !this._listEntityExists(profile.wishlistEntity);
 if (!needsReminders && !needsWishlist) continue;
 const personName = user.name || "Family Hub";
 let changed = false;
@@ -5792,11 +5814,6 @@ const name = typeof entry.name === "string" ? entry.name.trim().slice(0, 60) : "
 const enabled = !!entry.enabled;
 const imageUrl = typeof entry.imageUrl === "string" ? entry.imageUrl.trim().slice(0, 500) : "";
 const expandFullDay = !!entry.expandFullDay;
-// "day" (todays existing exact-match behavior) is the default/fallback for
-// anything saved before this field existed, or any unrecognized value - an
-// old households already-saved expandFullDay:true rows keep behaving
-// exactly as before (full-screen just on the day itself).
-const expandScope = ["day", "week", "month"].includes(entry.expandScope) ? entry.expandScope : "day";
 if (source === "predefined") {
 const predefinedKey = typeof entry.predefinedKey === "string" ? entry.predefinedKey : "";
 const def = HOLIDAY_PREDEFINED_DEFS.find((d) => d.key === predefinedKey);
@@ -5804,7 +5821,7 @@ const def = HOLIDAY_PREDEFINED_DEFS.find((d) => d.key === predefinedKey);
 // build doesn't know about) is dropped rather than kept around as a
 // row Settings could never render correctly.
 if (!def) return;
-byPredefinedKey[predefinedKey] = { id: `predefined-${predefinedKey}`, source: "predefined", predefinedKey, name: name || def.name, enabled, imageUrl, expandFullDay, expandScope };
+byPredefinedKey[predefinedKey] = { id: `predefined-${predefinedKey}`, source: "predefined", predefinedKey, name: name || def.name, enabled, imageUrl, expandFullDay };
 } else {
 if (!name) return; // a custom date with no name is meaningless - drop it rather than showing a blank row forever
 let month = parseInt(entry.month, 10);
@@ -5818,11 +5835,11 @@ const y = parseInt(entry.year, 10);
 year = Number.isFinite(y) && y >= 2000 && y <= 2100 ? y : new Date().getFullYear();
 }
 const id = typeof entry.id === "string" && entry.id ? entry.id : `custom-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-custom.push({ id, source: "custom", predefinedKey: null, name, enabled, month, day, year, recurring, imageUrl, expandFullDay, expandScope });
+custom.push({ id, source: "custom", predefinedKey: null, name, enabled, month, day, year, recurring, imageUrl, expandFullDay });
 }
 });
 const predefined = HOLIDAY_PREDEFINED_DEFS.map(
-(def) => byPredefinedKey[def.key] || { id: `predefined-${def.key}`, source: "predefined", predefinedKey: def.key, name: def.name, enabled: false, imageUrl: "", expandFullDay: false, expandScope: "day" }
+(def) => byPredefinedKey[def.key] || { id: `predefined-${def.key}`, source: "predefined", predefinedKey: def.key, name: def.name, enabled: false, imageUrl: "", expandFullDay: false }
 );
 // Custom entries capped at a generous but bounded 50 - a household's own
 // picked special days, not meant to become an unbounded list; keeps one
@@ -5897,6 +5914,7 @@ const grocyLowStockEnabled = typeof parsed.grocyLowStockEnabled === "boolean" ? 
 const routinesEnabled = typeof parsed.routinesEnabled === "boolean" ? parsed.routinesEnabled : defaults.routinesEnabled;
 const goalsShowInChores = typeof parsed.goalsShowInChores === "boolean" ? parsed.goalsShowInChores : defaults.goalsShowInChores;
 const goalsShowInRewards = typeof parsed.goalsShowInRewards === "boolean" ? parsed.goalsShowInRewards : defaults.goalsShowInRewards;
+const choreDueShowTime = typeof parsed.choreDueShowTime === "boolean" ? parsed.choreDueShowTime : defaults.choreDueShowTime;
 const choresConfettiOnComplete = typeof parsed.choresConfettiOnComplete === "boolean" ? parsed.choresConfettiOnComplete : defaults.choresConfettiOnComplete;
 const notificationClickPath = typeof parsed.notificationClickPath === "string" ? parsed.notificationClickPath.trim() : defaults.notificationClickPath;
 let people =
@@ -5924,7 +5942,6 @@ const weekendBreakfast = typeof parsed.weekendBreakfast === "boolean" ? parsed.w
 const showMealsInMonth = typeof parsed.showMealsInMonth === "boolean" ? parsed.showMealsInMonth : defaults.showMealsInMonth;
 const mealPlanEntity = typeof parsed.mealPlanEntity === "string" ? parsed.mealPlanEntity.trim() : defaults.mealPlanEntity;
 const mealTemplatesEntity = typeof parsed.mealTemplatesEntity === "string" ? parsed.mealTemplatesEntity.trim() : defaults.mealTemplatesEntity;
-const weatherEntity = typeof parsed.weatherEntity === "string" ? parsed.weatherEntity.trim() : defaults.weatherEntity;
 const greyOutPastEvents = typeof parsed.greyOutPastEvents === "boolean" ? parsed.greyOutPastEvents : defaults.greyOutPastEvents;
 const smallScreenMode = typeof parsed.smallScreenMode === "boolean" ? parsed.smallScreenMode : defaults.smallScreenMode;
 const scrollLocked = typeof parsed.scrollLocked === "boolean" ? parsed.scrollLocked : defaults.scrollLocked;
@@ -6077,6 +6094,7 @@ grocyLowStockEnabled,
 routinesEnabled,
 goalsShowInChores,
 goalsShowInRewards,
+choreDueShowTime,
 choresConfettiOnComplete,
 notificationClickPath,
 people,
@@ -6084,7 +6102,6 @@ weekendBreakfast,
 showMealsInMonth,
 mealPlanEntity,
 mealTemplatesEntity,
-weatherEntity,
 greyOutPastEvents,
 smallScreenMode,
 scrollLocked,
@@ -6354,18 +6371,6 @@ _mealTemplatesEntity() {
 const fromSettings = (this._getSettings().mealTemplatesEntity || "").trim();
 return fromSettings || this._config.meal_templates_entity;
 }
-// Same pattern as _mealPlanEntity() above, for the weather entity shown
-// in each day-column's forecast - settings.weatherEntity (household-
-// wide, set from Settings > General > Weather entity, empty string
-// until someone sets it) wins when present; otherwise this falls back
-// to the YAML config's weather_entity (or that config's own
-// "weather.forecast_home" default), exactly as before this field
-// existed in Settings - an existing install that never touches the new
-// field keeps working unchanged.
-_weatherEntity() {
-const fromSettings = (this._getSettings().weatherEntity || "").trim();
-return fromSettings || this._config.weather_entity;
-}
 _mealTemplatesEntityExists() {
 const entityId = this._mealTemplatesEntity();
 return !!(entityId && this._hass && this._hass.states && this._hass.states[entityId]);
@@ -6388,104 +6393,18 @@ return !!(entityId && this._hass && this._hass.states && this._hass.states[entit
 // dashboard - once a list exists there's nothing left to create, so this
 // is also what backfills any household that already has people/menus set
 // up from before this existed.
-// Keeps the "Home Assistant is starting up" banner (see its own HTML/CSS
-// comments) in sync with _isHomeAssistantFullyLoaded() on every hass
-// assignment - cheap (one querySelector + one attribute toggle) and
-// idempotent, so calling it unconditionally from the hass setter below
-// (every single state-bus update, same as every other hass-driven bit of
-// this card) is never wasteful. Guarded on this._root existing since
-// _build() always runs (in connectedCallback) before `hass` is ever
-// assigned, but this stays defensive against any future call-order change.
-_updateHaStartingBanner() {
-if (!this._root) return;
-const banner = this._root.querySelector(".ha-starting-banner");
-if (!banner) return;
-banner.hidden = this._isHomeAssistantFullyLoaded();
-}
-_isHomeAssistantFullyLoaded() {
-// Home Assistant's own hass.config.state (standard across every
-// integration/card, not something this one invented) goes
-// NOT_RUNNING -> STARTING -> RUNNING as core boots, then STOPPING/
-// FINAL_WRITE on shutdown. Right after a Home Assistant restart, THIS
-// card's own hass setter can start firing again (the dashboard
-// reconnects quickly) well before every integration has finished
-// registering its entities - a todo.* list the household genuinely
-// already configured can still be completely absent from
-// this._hass.states for a few seconds. Treat "unknown" (hass.config
-// missing entirely, e.g. an older HA core or a test harness that
-// never bothered mocking it) as loaded, same as always - this guard
-// only ever actively WITHHOLDS trust during an explicit, confirmed
-// "still starting" state, never because of a missing/unfamiliar
-// field it can't interpret.
-const state = this._hass && this._hass.config && this._hass.config.state;
-return state === undefined || state === null || state === "RUNNING";
-}
 async _ensureHouseholdMealLists() {
 if (this._householdMealListsEnsureAttempted || !this._hass) return;
-// Household report, verbatim (after _mealPlanEntityExists()'s own
-// settings.mealPlanEntity/this._hass.states race was fixed and this
-// STILL kept happening on an update): "when I updated it changed my
-// menu to-do list to the default one that it is looking for rather
-// than the one that was already set" - and, verbatim, the actual fix:
-// "we should wait until home assistant is fully loaded to check to do
-// lists." Confirmed root cause: a household whose Menu entity was only
-// ever set via this card's own YAML config (meal_plan_entity:), never
-// through Settings itself, has settings.mealPlanEntity genuinely empty
-// - the FIRST guard below (settings.mealPlanEntity itself) can't catch
-// that case, so it was resting entirely on _mealPlanEntityExists()
-// correctly seeing the YAML-configured entity in this._hass.states.
-// Right after a Home Assistant restart that's exactly the window where
-// it can't yet - so this ran, found "nothing", created a brand new
-// default-named "Family Meal Plan" list, and permanently overwrote
-// settings.mealPlanEntity with it, shadowing the household's real list
-// forever (settings.mealPlanEntity wins over the YAML fallback once
-// it's ever set - see _mealPlanEntity()). Deliberately does NOT set
-// _householdMealListsEnsureAttempted here - skipping this cleanly
-// (not consuming the one-shot attempt) means the existing 60s poll
-// (_startPolling -> _fetchSettings -> this) just tries again a few
-// ticks later once Home Assistant genuinely finishes starting, rather
-// than this household having to reload the dashboard by hand to get
-// another chance.
-if (!this._isHomeAssistantFullyLoaded()) return;
 this._householdMealListsEnsureAttempted = true;
 const patch = {};
-const settings = this._getSettings();
-// Only ever auto-create when the household has NEVER set an explicit
-// override (Settings > Menu Blocks > Menu entity / Meal Templates
-// entity) - checking settings.mealPlanEntity/mealTemplatesEntity
-// directly here, rather than only _mealPlanEntityExists()/
-// _mealTemplatesEntityExists() (which only ever answer "does
-// _mealPlanEntity()'s RESOLVED result currently exist in
-// this._hass.states"), is what makes that distinction. Household ask,
-// verbatim, after the auto-create kept firing again and silently
-// swapping their own chosen list back out: "it keeps wanting to change
-// the menu todo." The bug: this._hass.states is whatever this one
-// render pass's hass object happens to have synced so far - right after
-// a Home Assistant restart, or when a second card instance on another
-// dashboard loads before entity states finish syncing, a todo.* entity
-// the household genuinely already pointed this at (manually, or from an
-// earlier run of this very auto-create) can briefly look like it
-// doesn't exist yet even though it's really there. The old code only
-// ever asked "does _mealPlanEntity()'s result exist right now" - so
-// every one of those timing races created a brand new "Family Meal
-// Plan" list and overwrote the household's own setting with it,
-// forever, on seemingly no schedule. Once settings.mealPlanEntity (or
-// mealTemplatesEntity) holds ANY value - even one this particular
-// render pass can't yet see in this._hass.states - that's a deliberate
-// choice and is trusted outright; auto-create only ever runs for the
-// genuinely-never-configured case (a fresh install, or a household that
-// deliberately cleared the field back to empty), matching the original
-// household ask ("auto generate when a user is added... we're not
-// going to give the option to have them or not") without ever fighting
-// a choice that's already been made.
-if (!(settings.mealPlanEntity || "").trim() && !this._mealPlanEntityExists()) {
+if (!this._mealPlanEntityExists()) {
 try {
 const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/create_todo_list", name: "Family Meal Plan" });
 if (result && result.entity_id) patch.mealPlanEntity = result.entity_id;
 } catch (e) {
 }
 }
-if (!(settings.mealTemplatesEntity || "").trim() && !this._mealTemplatesEntityExists()) {
+if (!this._mealTemplatesEntityExists()) {
 try {
 const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/create_todo_list", name: "Family Meal Templates" });
 if (result && result.entity_id) patch.mealTemplatesEntity = result.entity_id;
@@ -7639,208 +7558,19 @@ return { month: entry.month, day: entry.day };
 // holidays are checked in HOLIDAY_PREDEFINED_DEFS order, then custom
 // entries in the order they were added, matching _normalizeHolidayBack-
 // grounds' own predefined-then-custom ordering of the list it returns.
-//
-// `isRenderingToday` is accepted but unused (kept as a 3rd parameter only
-// so every existing call site's `isToday` argument stays harmless to
-// pass) - see _matchExpandedHolidayForCurrentView's own comment for why
-// "is this column today" stopped being the right question: the whole
-// card's own background can now take over for an entire displayed WEEK
-// or MONTH, not just the literal "today" cell. Instead, this looks up
-// whichever entry (if any) is currently taking over the WHOLE card
-// (_matchExpandedHolidayForCurrentView, same call _applySizeVars itself
-// makes - deliberately re-derived here rather than cached from that
-// call, so this function keeps working correctly even if it's ever
-// invoked outside _renderGrid's own render path, e.g. directly from a
-// test) and skips painting a column's own small background only when
-// that column's matched entry is that SAME entry - the one column whose
-// own exact date matches it would otherwise show the exact same photo
-// twice: once here as its own small per-column background, and again as
-// the whole card's own background via
-// _matchExpandedHolidayForCurrentView/_applySizeVars. Every OTHER day
-// this same entry's date lands on in a Week/Month/Planner grid (a past
-// or future year's instance of a recurring holiday) is unaffected and
-// keeps showing its own small background exactly as before.
-_matchHolidayBackgroundForDate(settings, dateObj, isRenderingToday) {
+_matchHolidayBackgroundForDate(settings, dateObj) {
 const list = settings && settings.holidayBackgrounds;
 if (!Array.isArray(list) || !list.length) return null;
-const expandedEntry = this._matchExpandedHolidayForCurrentView(settings);
 const year = dateObj.getFullYear();
 const month = dateObj.getMonth() + 1;
 const day = dateObj.getDate();
 for (const entry of list) {
 if (!entry || !entry.enabled || !entry.imageUrl) continue;
-if (entry.expandFullDay && expandedEntry && expandedEntry.id === entry.id) continue;
 if (entry.source === "custom" && entry.recurring === false && entry.year !== year) continue;
 const resolved = this._holidayEntryDateForYear(entry, year);
 if (resolved && resolved.month === month && resolved.day === day) return entry;
 }
 return null;
-}
-// Sunday-through-Saturday calendar week containing `date`, as plain local
-// midnight Date objects - deliberately NOT the same thing as _weekStart()
-// above, which follows each device\u2019s own Week-view navigation state
-// (3/5/7/14-day windows, current-day-first, forward/back offset...). A
-// holiday\u2019s "expand for the whole week" scope needs one fixed,
-// predictable week definition shared by every device looking at the same
-// calendar date, not something that shifts with each tablet\u2019s own
-// display settings.
-_calendarWeekRangeForDate(date) {
-const start = new Date(date);
-start.setHours(0, 0, 0, 0);
-start.setDate(start.getDate() - start.getDay());
-const end = new Date(start);
-end.setDate(start.getDate() + 6);
-return { start, end };
-}
-// Whether `entry`'s "expand to full screen" scope, anchored on
-// `anchorDate` (that entry's resolved holiday date for a given year - see
-// _holidayEntryDateForYear), OVERLAPS the date range currently on screen
-// (`rangeStart`\u2013`rangeEnd` inclusive, both local midnight - see
-// _currentViewDateRange). "day" is an exact calendar-day match; "week"
-// is the whole Sun-Sat calendar week containing anchorDate
-// (_calendarWeekRangeForDate); "month" is every day in anchorDate's
-// calendar month/year. Using overlap rather than "is anchorDate's scope
-// touching one single day" is what lets navigating the calendar itself -
-// not just the real wall-clock date - bring up a holiday's full-card
-// background: household ask was "if I navigate to Thanksgiving week [in
-// Week view] and it's set for week view, I get the full Thanksgiving
-// background", which only a range/range overlap (rather than a single
-// "today" point) can express.
-_holidayExpandScopeMatchesRange(scope, anchorDate, rangeStart, rangeEnd) {
-let scopeStart;
-let scopeEnd;
-if (scope === "month") {
-scopeStart = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), 1);
-scopeEnd = new Date(anchorDate.getFullYear(), anchorDate.getMonth() + 1, 0);
-} else if (scope === "week") {
-const range = this._calendarWeekRangeForDate(anchorDate);
-scopeStart = range.start;
-scopeEnd = range.end;
-} else {
-scopeStart = new Date(anchorDate);
-scopeEnd = new Date(anchorDate);
-}
-scopeStart.setHours(0, 0, 0, 0);
-scopeEnd.setHours(0, 0, 0, 0);
-const rs = new Date(rangeStart);
-rs.setHours(0, 0, 0, 0);
-const re = new Date(rangeEnd);
-re.setHours(0, 0, 0, 0);
-return rs <= scopeEnd && re >= scopeStart;
-}
-// The date range currently on screen, local-midnight Date objects
-// inclusive on both ends - "whatever the household is looking at right
-// now", regardless of whether that's the real wall-clock "today" at all
-// (Week/Month navigation, _weekOffset/_monthOffset, can put any other
-// week or month on screen). Mirrors each view's own render logic
-// (_weekStart/_weekViewDayCount for Week and Planner, _monthAnchor for
-// Month/split, _dayAnchor for Day) rather than introducing a second,
-// possibly-drifting notion of "what's showing" - see
-// _matchExpandedHolidayForCurrentView's own comment for where this feeds
-// in.
-_currentViewDateRange() {
-const family = this._viewFamily(this._viewMode);
-if (family === "day") {
-const d = this._dayAnchor();
-return { start: d, end: d };
-}
-if (family === "month") {
-const anchor = this._monthAnchor();
-const start = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
-const end = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0);
-end.setHours(0, 0, 0, 0);
-return { start, end };
-}
-const dayCount = this._weekViewDayCount();
-const start = this._weekStart();
-const end = new Date(start);
-end.setDate(start.getDate() + dayCount - 1);
-return { start, end };
-}
-// Finds which (if any) enabled, "Expand to full screen"-checked holiday
-// background should take over the WHOLE card\u2019s background for whatever
-// is currently on screen - see _applySizeVars\u2019s own comment on where this
-// feeds in. "week"/"month" scope entries are navigation-aware: a
-// different displayed week/month (_currentViewDateRange - navigating,
-// not only the real wall-clock "today", can bring one up) is checked for
-// overlap against that scope's own range via
-// _holidayExpandScopeMatchesRange, since more than one can plausibly
-// want the screen at once once "whole week"/"whole month" scopes exist
-// (e.g. a one-day holiday landing inside a month-long background\u2019s own
-// month, or a displayed week straddling two entries). "day" scope is
-// deliberately handled separately below and is NOT navigation-aware - see
-// its own inline comment for why a Month view's much wider displayed
-// range makes range-overlap the wrong check for it specifically.
-// Unlike _matchHolidayBackgroundForDate (one exact-day match, used for
-// each day column/cell\u2019s own small background), this checks every
-// candidate at once since more than one can plausibly want the screen on
-// the same day/week/month.
-//
-// Tiebreaker, most to least specific: (1) a narrower scope wins over a
-// broader one (day beats week, week beats month) - the household\u2019s
-// intent in checking "day" for one holiday and "month" for another is
-// almost always "show the month backdrop generally, but let the specific
-// day take over on its own day"; (2) among same-scope ties, whichever
-// entry\u2019s own resolved date is fewest calendar days from the real
-// wall-clock "today" (or, when today itself isn\u2019t inside the displayed
-// range, from the start of whatever range IS on screen) wins - the more
-// "currently relevant" one; (3) still tied (identical scope and
-// distance) falls back to list order (predefined-before-custom, then
-// insertion order), the same deterministic "first match wins" rule
-// _matchHolidayBackgroundForDate itself already documents above.
-_matchExpandedHolidayForCurrentView(settings) {
-const list = settings && settings.holidayBackgrounds;
-if (!Array.isArray(list) || !list.length) return null;
-const { start: rangeStart, end: rangeEnd } = this._currentViewDateRange();
-const today = new Date();
-today.setHours(0, 0, 0, 0);
-const referenceDate = today >= rangeStart && today <= rangeEnd ? today : rangeStart;
-// "day" scope is deliberately NOT navigation-aware, unlike "week"/
-// "month" - it only ever takes over the whole card on the real, literal
-// wall-clock today, exactly as it always did before Week/Month
-// navigation started feeding into this function at all (see this
-// function's own header comment). This matters because a Month view's
-// own _currentViewDateRange spans the WHOLE displayed month - comparing
-// a single-day scope against a range that wide via
-// _holidayExpandScopeMatchesRange would make a "day"-scope entry match
-// on every single day you're simply viewing that month on (the
-// household-reported regression: the day-column's own small background
-// went missing because every cell thought IT was the one driving the
-// full-card background), not just the one day it's actually for. Only
-// today's own year is relevant here, so this is resolved separately from
-// the week/month candidates below rather than folded into their shared
-// `years` loop.
-const todayYear = today.getFullYear();
-const scopeRank = { day: 0, week: 1, month: 2 };
-const candidates = [];
-const years = new Set([rangeStart.getFullYear(), rangeEnd.getFullYear()]);
-list.forEach((entry, order) => {
-if (!entry || !entry.enabled || !entry.imageUrl || !entry.expandFullDay) return;
-const scope = ["day", "week", "month"].includes(entry.expandScope) ? entry.expandScope : "day";
-if (scope === "day") {
-if (entry.source === "custom" && entry.recurring === false && entry.year !== todayYear) return;
-const resolved = this._holidayEntryDateForYear(entry, todayYear);
-if (!resolved) return;
-const anchorDate = new Date(todayYear, resolved.month - 1, resolved.day);
-anchorDate.setHours(0, 0, 0, 0);
-if (anchorDate.getTime() !== today.getTime()) return;
-candidates.push({ entry, order, scopeRank: scopeRank.day, distanceDays: 0 });
-return;
-}
-years.forEach((year) => {
-if (entry.source === "custom" && entry.recurring === false && entry.year !== year) return;
-const resolved = this._holidayEntryDateForYear(entry, year);
-if (!resolved) return;
-const anchorDate = new Date(year, resolved.month - 1, resolved.day);
-anchorDate.setHours(0, 0, 0, 0);
-if (!this._holidayExpandScopeMatchesRange(scope, anchorDate, rangeStart, rangeEnd)) return;
-const distanceDays = Math.round(Math.abs((anchorDate.getTime() - referenceDate.getTime()) / 86400000));
-candidates.push({ entry, order, scopeRank: scopeRank[scope], distanceDays });
-});
-});
-if (!candidates.length) return null;
-candidates.sort((a, b) => a.scopeRank - b.scopeRank || a.distanceDays - b.distanceDays || a.order - b.order);
-return candidates[0].entry;
 }
 // Household ask: "if the background is dark we make the header text
 // light" - so the day name/number (or person name, for Day view) painted
@@ -7937,14 +7667,6 @@ const settings = this._getSettings();
 const v = this._sizeVars(settings);
 this.style.setProperty("--menu-block-min-height", v.minHeight);
 this.style.setProperty("--menu-block-padding", v.padding);
-// Manual "Bottom padding" setting (Settings > General, px, 0 by default) -
-// a plain CSS bottom-padding knob (added on top of ha-card's own base
-// padding, see the ha-card rule above) for "leave room at the bottom" (an
-// on-screen keyboard, a taskbar, a dock) - a static value applied here
-// whenever settings/theme are (re)applied, not something recalculated on
-// every resize/keyboard-open the way this card's own height used to be.
-const bottomPadding = Math.max(0, Math.min(2000, Math.round(settings.bottomPadding || 0)));
-this.style.setProperty("--fh-bottom-padding", `${bottomPadding}px`);
 const theme = this._resolveTheme(settings);
 // "Card / chip transparency" (Theme Builder's cardOpacity slider) and the
 // new "glass blur" field only ever existed as Theme Builder preview-only
@@ -7987,40 +7709,19 @@ this.style.removeProperty("--fc-shadow");
 // Holiday Background override (Settings > General > Holiday Backgrounds):
 // a household-uploaded photo for a predefined or custom date with
 // "Expand to full screen" checked takes over the whole card's background
-// for whatever's currently on screen - the exact day (scope "day"), the
-// whole displayed week ("week"), or the whole displayed month ("month") -
-// same mechanism/precedence spot as the hardcoded Halloween easter egg
-// right below it (which only fires when nothing more specific is already
-// covering the view). Recomputed on every _applySizeVars() call, which
-// _renderGrid() always makes right before actually rendering the grid
-// (see _renderGrid's own call order), so navigating to a different
-// week/month (_setWeekOffset/_setMonthOffset/_goToWeekFromDate) picks
-// this back up on its own, not just the real wall-clock date rolling
-// over. _currentExpandedHolidayEntryId is stashed here (null when
-// nothing matched) so _matchHolidayBackgroundForDate - called per day
-// column/cell right after this, during the same render - knows which
-// entry (if any) is already covering the WHOLE card and should skip
-// painting its own small per-column copy of that same photo.
-const matchedFullDayHoliday = this._matchExpandedHolidayForCurrentView(settings);
-this._currentExpandedHolidayEntryId = matchedFullDayHoliday ? matchedFullDayHoliday.id : null;
+// for just that day, same mechanism/precedence spot as the hardcoded
+// Halloween easter egg right below it (which only fires when nothing more
+// specific is already covering today) - both get out of the way again on
+// their own the next time this runs, since neither is saved to settings.
+// A small dark scrim (overlayOpacity) keeps the grid/events legible over
+// a busier real photo than the Halloween SVG's own soft pastel art.
+const matchedFullDayHoliday = this._matchHolidayBackgroundForDate(settings, new Date());
 const bg =
-matchedFullDayHoliday
+matchedFullDayHoliday && matchedFullDayHoliday.expandFullDay
 ? { image: matchedFullDayHoliday.imageUrl, size: "cover", position: "center", blur: 0, opacity: 1, overlayColor: "#000000", overlayOpacity: 0.18 }
 : this._isHalloweenToday()
 ? { image: HALLOWEEN_BG_IMAGE, size: "cover", position: "center", blur: 0, opacity: 1, overlayColor: "#000000", overlayOpacity: 0 }
 : theme.background;
-// Household ask: the plain date-range text up in the header ("This
-// Week" / "Jan 1 - Jan 7" / the month name) sits directly on top of
-// this same full-card background with no opaque box behind it (unlike
-// the nav buttons around it, which already paint their own solid
-// --fc-card surface) - so it needs the exact same "flip to white text
-// over a dark photo" treatment _buildDayColumnHtml already gives each
-// day column's own header via .holiday-bg-dark. Only ever relevant
-// when the full-card background is an actual photo (a holiday's
-// expand-to-full-screen image, or the Halloween easter egg) - a plain
-// theme color never sets this, since every theme's own --fc-text was
-// already chosen to read against its own --fc-bg color.
-this.classList.toggle("fh-bg-dark", !!(bg && bg.image && this._isHolidayBackgroundDark(bg.image)));
 if (bg && bg.image) {
 this.style.setProperty("--fc-bg-image", `url("${bg.image.replace(/"/g, '\\"')}")`);
 this.style.setProperty("--fc-bg-size", bg.size === "repeat" ? "auto" : bg.size || "cover");
@@ -8169,18 +7870,17 @@ this._calendarDeleteSupport[entityId] = result;
 return result;
 }
 async _fetchWeather() {
-const weatherEntityId = this._weatherEntity();
-if (!this._hass || !weatherEntityId) return;
+if (!this._hass || !this._config.weather_entity) return;
 try {
 const result = await this._hass.connection.sendMessagePromise({
 type: "call_service",
 domain: "weather",
 service: "get_forecasts",
 service_data: { type: "daily" },
-target: { entity_id: weatherEntityId },
+target: { entity_id: this._config.weather_entity },
 return_response: true,
 });
-const bucket = result && result.response && result.response[weatherEntityId];
+const bucket = result && result.response && result.response[this._config.weather_entity];
 const forecasts = (bucket && bucket.forecast) || [];
 const map = {};
 for (const f of forecasts) {
@@ -9235,14 +8935,8 @@ display: block;
    _registerFabCoordinator's own comment. Harmless when unused (the
    default position:fixed doesn't care about its containing block). */
 position: relative;
-/* Fills whatever box Home Assistant's own layout gives this card -
-   household ask, verbatim: "make the calendar fill the card that it
-   has" instead of this card computing its own height via JS (see
-   _syncHeight's own comment). Relies on ha-card below also being
-   height:100% and on whatever actually contains this card (Home
-   Assistant's view/grid-cell/panel wrapper) having a real height of its
-   own to fill, same as any other ordinary custom card. */
-height: 100%;
+height: 100vh;
+height: 100dvh;
 box-sizing: border-box;
 overflow: hidden;
 font-family: "Arial Rounded MT Std", "Arial Rounded MT", "Varela Round", -apple-system, "Segoe UI Rounded", "Segoe UI", Roboto, sans-serif;
@@ -9269,7 +8963,7 @@ font-family: "Arial Rounded MT Std", "Arial Rounded MT", "Varela Round", -apple-
 ha-card {
 height: 100%;
 box-sizing: border-box;
-padding: 12px 12px calc(16px + var(--fh-bottom-padding, 0px));
+padding: 12px 12px 16px;
 display: flex;
 flex-direction: column;
 border-radius: 0;
@@ -9540,7 +9234,6 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .nav-arrow { border: none; background: var(--fc-surface-alt); color: var(--fc-text); width: 40px; height: 40px; border-radius: 50%; font-size: 16px; cursor: pointer; flex: 0 0 auto; box-shadow: var(--fc-shadow); }
 .week-label-wrap { display: flex; flex-direction: column; align-items: center; min-width: 180px; }
 .week-label { font-size: var(--fs-header-title, 15px); font-weight: 700; cursor: pointer; text-align: center; color: var(--fc-text); }
-:host(.fh-bg-dark) .week-label, :host(.fh-bg-dark) .countdown-line { color: #fff; }
 .countdown-line { font-size: var(--fs-countdown, 11px); font-weight: 700; color: var(--fc-text-secondary); margin-top: 1px; min-height: 13px; }
 /* Desktop/tablet keeps the always-visible This Week/Next Week/In 2 Weeks
    row (see .week-shortcuts) - this toggle button only does anything on
@@ -9838,7 +9531,7 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .week-nav-center { justify-content: center; }
 }
 @media (max-width: 700px) {
-:host { height: 100%; overflow: hidden; }
+:host { height: auto !important; min-height: 100vh; min-height: 100dvh; overflow: hidden; }
 ha-card { height: auto; min-height: 100%; overflow: hidden; }
 /* The :host(.modal-open)/ha-card overflow:visible override that undoes
    the overflow:hidden above while a modal is open now lives unscoped by
@@ -10614,14 +10307,11 @@ instead of the usual stacked field layout. */
 .holiday-bg-row-top input[type="checkbox"] { width: 20px; height: 20px; flex: 0 0 auto; cursor: pointer; }
 .holiday-bg-name { flex: 1 1 auto; min-width: 0; font-size: 13px !important; padding: 8px 10px !important; }
 .holiday-bg-date-label { flex: 0 0 auto; font-size: 12px; color: var(--fc-text-secondary); font-style: italic; white-space: nowrap; }
-.holiday-bg-remove-btn { flex: 0 0 auto; min-height: 32px; min-width: 32px; border-radius: 8px; border: none; background: var(--fc-card); color: #b5583c; font-size: 14px; cursor: pointer; box-shadow: var(--fc-shadow); }
+.holiday-bg-remove-btn { flex: 0 0 auto; min-height: 32px; min-width: 32px; border-radius: 8px; border: none; background: var(--fc-surface2); color: var(--fc-text-secondary); font-size: 14px; cursor: pointer; }
 .holiday-bg-date-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .holiday-bg-date-row input[type="number"] { width: 56px; text-align: center; font-size: 13px; padding: 6px 4px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); flex: 0 0 auto; }
 .holiday-bg-recurring-label, .holiday-bg-expand-label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fc-text); cursor: pointer; }
 .holiday-bg-recurring-label input, .holiday-bg-expand-label input { width: 18px; height: 18px; flex: 0 0 auto; cursor: pointer; }
-.holiday-bg-scope-row { gap: 6px; margin-top: 2px; margin-left: 24px; flex-wrap: wrap; }
-.holiday-bg-scope-btn { flex: 1 1 0; min-height: 30px; padding: 4px 8px; border-radius: 8px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text-secondary); font-size: 11px; font-weight: 700; cursor: pointer; white-space: nowrap; }
-.holiday-bg-scope-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
 .holiday-bg-image-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .holiday-bg-preview { width: 48px; height: 48px; object-fit: cover; border-radius: 8px; border: 1px solid var(--fc-border); flex: 0 0 auto; }
 .holiday-bg-upload-status { font-size: 11px; color: var(--fc-text-secondary); font-style: italic; }
@@ -10697,16 +10387,8 @@ instead of the usual stacked field layout. */
 .daily-digest-item-row { padding: 8px 10px; border-radius: 10px; background: var(--fc-surface-alt); font-size: 13px; color: var(--fc-text); }
 .daily-digest-flat-section .daily-digest-item-row { background: none; padding: 2px 2px 4px; font-weight: 700; }
 .daily-digest-empty { font-size: 13px; color: var(--fc-text-secondary); font-style: italic; padding: 2px 2px 4px; }
-/* Shown above the top nav bar whenever Home Assistant's own
-   hass.config.state isn't "RUNNING" yet (see _isHomeAssistantFullyLoaded/
-   _updateHaStartingBanner) - a fixed warning color on purpose, same
-   reasoning as .event-info-delete-btn's own fixed red, so it reads as "a
-   real heads-up" regardless of which household theme is active. */
-.ha-starting-banner { padding: 8px 14px; background: #fff3cd; color: #7a5c00; font-size: 13px; font-weight: 600; text-align: center; }
-.ha-starting-banner[hidden] { display: none; }
 </style>
 <ha-card>
-<div class="ha-starting-banner" role="status" hidden data-i18n="common.ha_starting_banner">Home Assistant is starting up - not everything may be available yet.</div>
 <div class="week-nav">
 <div class="week-nav-side left">
 <button class="settings-btn" title="Settings" data-i18n-title="nav.settings">&#9881;&#65039;</button>
@@ -11159,12 +10841,6 @@ instead of the usual stacked field layout. */
 </div>
 <div class="remind-hint this-device-current-label"></div>
 </div>
-<div class="field admin-only-setting">
-<label data-i18n="settings.weather_entity_label">Weather entity</label>
-<input type="text" class="weather-entity-input" list="weather-entity-datalist" placeholder="weather.forecast_home" />
-<datalist id="weather-entity-datalist"></datalist>
-<div class="remind-hint" data-i18n="settings.weather_entity_hint">The weather entity each day-column's forecast is pulled from. Leave blank to use the dashboard's own config (or Home Assistant's weather.forecast_home default).</div>
-</div>
 <div class="field">
 <button type="button" class="accordion-toggle" data-target="calendars-body">
 <span class="theme-section-label" data-i18n="settings.section_calendars">Calendars</span>
@@ -11269,12 +10945,8 @@ instead of the usual stacked field layout. */
 <div class="remind-hint" data-i18n="settings.grey_out_hint">Today's events grey out one by one as they end; any earlier day is greyed out entirely, since the whole day is already over.</div>
 </div>
 <div class="field">
-<label data-i18n="settings.top_bar_style_label">Calendar top bar style — this device only</label>
-<div class="size-btn-row">
-<button type="button" class="size-btn top-bar-style-btn" data-value="normal" data-i18n="settings.top_bar_style_normal">Normal</button>
-<button type="button" class="size-btn top-bar-style-btn" data-value="minimal" data-i18n="settings.top_bar_style_minimal">Minimal</button>
-</div>
-<div class="remind-hint" data-i18n="settings.top_bar_style_hint">Minimal hides the top bar (Settings/Week/Month/Edit Meals/Suggestions/Recipe Box/More) to save space on a small device - Settings moves into the + button's menu instead, right alongside Calendar Entry/Reminder/Meal Suggestion/Recipe. Saved to THIS device/browser only, like the Days shown/Month button settings above - choosing Minimal here won't affect any other Family Hub tablet or screen in the household. (Becomes shared household-wide instead if this card's own "Static layout" config option, set from its Edit Card screen, is on.)</div>
+<label class="remind-check-opt"><input type="checkbox" class="small-screen-mode-check" /> <span data-i18n="settings.small_screen_mode_label">Small screen mode — this device only</span></label>
+<div class="remind-hint" data-i18n="settings.small_screen_mode_hint">Hides the top bar (Settings/Week/Month/Edit Meals/Suggestions/Recipe Box/More) to save space on a small device - Settings moves into the + button's menu instead, right alongside Calendar Entry/Reminder/Meal Suggestion/Recipe. Saved to THIS device/browser only, like the Days shown/Month button settings above - turning it on here won't affect any other Family Hub tablet or screen in the household. (Becomes shared household-wide instead if this card's own "Static layout" config option, set from its Edit Card screen, is on.)</div>
 </div>
 </div>
 </div>
@@ -11377,14 +11049,28 @@ instead of the usual stacked field layout. */
 <div class="remind-hint" data-i18n="settings.routines_hint">One household-wide switch - once on, everyone gets Morning/Afternoon/Night checklist accordions on their own column of the Chores board.</div>
 </div>
 <div class="field">
-<label data-i18n="settings.goals_show_on_label">Show Goals on</label>
+<label data-i18n="settings.goals_in_chores_label">Show Goals on the Chores board</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn goals-show-on-btn" data-value="none" data-i18n="settings.goals_show_on_none">None</button>
-<button type="button" class="size-btn goals-show-on-btn" data-value="chores" data-i18n="settings.goals_show_on_chores">Chores page</button>
-<button type="button" class="size-btn goals-show-on-btn" data-value="rewards" data-i18n="settings.goals_show_on_rewards">Rewards page</button>
-<button type="button" class="size-btn goals-show-on-btn" data-value="both" data-i18n="settings.goals_show_on_both">Both</button>
+<button type="button" class="size-btn goals-in-chores-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn goals-in-chores-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
-<div class="remind-hint" data-i18n="settings.goals_show_on_hint">Chores page adds each person's goals to their own column of the Chores board, with Log Progress/Approve/Send Back actions right there. Rewards page adds a Goals section to the Rewards page alongside the star catalog.</div>
+<div class="remind-hint" data-i18n="settings.goals_in_chores_hint">Adds each person's goals to their own column of the Chores board, with Log Progress/Approve/Send Back actions right there.</div>
+</div>
+<div class="field">
+<label data-i18n="settings.goals_in_rewards_label">Show Goals on the Rewards page</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn goals-in-rewards-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn goals-in-rewards-btn" data-value="on" data-i18n="common.on">On</button>
+</div>
+<div class="remind-hint" data-i18n="settings.goals_in_rewards_hint">Adds a Goals section to the Rewards page alongside the star catalog.</div>
+</div>
+<div class="field">
+<label data-i18n="settings.chore_due_label">Chore due dates on the board show</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn chore-due-time-btn" data-value="off" data-i18n="settings.date_only">Date only</button>
+<button type="button" class="size-btn chore-due-time-btn" data-value="on" data-i18n="settings.date_and_time">Date &amp; time</button>
+</div>
+<div class="remind-hint" data-i18n="settings.chore_due_hint">The chore detail popup always shows both - this only controls the short "Due ..." label on each card in the Chores board columns.</div>
 </div>
 <div class="field">
 <label data-i18n="settings.confetti_label">Confetti when a chore is completed</label>
@@ -11588,19 +11274,19 @@ instead of the usual stacked field layout. */
 <button type="button" class="theme-reset-btn" data-i18n="settings.reset_theme">Reset theme to default</button>
 </div>
 </div>
+</div>
 <div class="field admin-only-setting">
 <button type="button" class="accordion-toggle" data-target="holiday-backgrounds-body">
 <span class="theme-section-label" data-i18n="settings.section_holiday_backgrounds">Holiday Backgrounds</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="holiday-backgrounds-body">
-<div class="remind-hint" data-i18n="settings.holiday_backgrounds_hint">Show a photo on a holiday or special day - normally just behind that day's own column, or check "Expand to full screen" to take over the whole card for just that day, the whole week, or the whole month. If two enabled holidays would both want the screen on the same day, the more specific one wins (a day beats a week, a week beats a month), and if it's still a tie, whichever's own date is closest to today wins. Turn on any of the holidays below, or add a date of your own.</div>
+<div class="remind-hint" data-i18n="settings.holiday_backgrounds_hint">Show a photo on a holiday or special day - normally just behind that day's own column, or check "Expand to full screen" to take over the whole card for the day. Turn on any of the holidays below, or add a date of your own.</div>
 <div class="holiday-bg-subheading" data-i18n="settings.holiday_backgrounds_predefined_heading">Holidays</div>
 <div class="holiday-bg-predefined-list"></div>
 <div class="holiday-bg-subheading" data-i18n="settings.holiday_backgrounds_custom_heading">Custom dates</div>
 <div class="holiday-bg-custom-list"></div>
 <button type="button" class="add-person-btn holiday-bg-add-btn" data-i18n="settings.add_holiday_background">+ Add custom date</button>
-</div>
 </div>
 </div>
 <div class="settings-tab-panel" data-settings-tab-panel="notifications" style="display:none">
@@ -13072,6 +12758,12 @@ window.alert((e && e.message) || "Couldn't clear goals.");
 }
 });
 }
+root.querySelectorAll(".chore-due-time-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".chore-due-time-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+});
+});
 root.querySelectorAll(".chores-confetti-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
 root.querySelectorAll(".chores-confetti-btn").forEach((b) => b.classList.remove("active"));
@@ -13124,12 +12816,6 @@ mealPlanEntityAddBtn.addEventListener("click", () => this._createMealPlanEntityL
 root.querySelectorAll(".grey-out-past-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
 root.querySelectorAll(".grey-out-past-btn").forEach((b) => b.classList.remove("active"));
-btn.classList.add("active");
-});
-});
-root.querySelectorAll(".top-bar-style-btn").forEach((btn) => {
-btn.addEventListener("click", () => {
-root.querySelectorAll(".top-bar-style-btn").forEach((b) => b.classList.remove("active"));
 btn.classList.add("active");
 });
 });
@@ -13266,9 +12952,15 @@ root.querySelectorAll(".routines-enabled-btn").forEach((b) => b.classList.remove
 btn.classList.add("active");
 });
 });
-root.querySelectorAll(".goals-show-on-btn").forEach((btn) => {
+root.querySelectorAll(".goals-in-chores-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
-root.querySelectorAll(".goals-show-on-btn").forEach((b) => b.classList.remove("active"));
+root.querySelectorAll(".goals-in-chores-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+});
+});
+root.querySelectorAll(".goals-in-rewards-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".goals-in-rewards-btn").forEach((b) => b.classList.remove("active"));
 btn.classList.add("active");
 });
 });
@@ -13487,12 +13179,7 @@ ${entry.imageUrl ? `<img class="holiday-bg-preview" src="${esc(entry.imageUrl)}"
 ${entry.imageUrl ? `<button type="button" class="btn-cancel holiday-bg-remove-image-btn" data-idx="${idx}">${this._t("settings.holiday_remove_photo", "Remove photo")}</button>` : ""}
 <span class="holiday-bg-upload-status" data-idx="${idx}"></span>
 </div>
-<label class="holiday-bg-expand-label"><input type="checkbox" class="holiday-bg-expand" data-idx="${idx}" ${entry.expandFullDay ? "checked" : ""} /> <span data-i18n="settings.holiday_expand_full_day">Expand to full screen</span></label>
-<div class="holiday-bg-scope-row" data-idx="${idx}" style="display:${entry.expandFullDay ? "flex" : "none"}">
-<button type="button" class="holiday-bg-scope-btn${entry.expandScope === "day" ? " active" : ""}" data-idx="${idx}" data-value="day" data-i18n="settings.holiday_expand_scope_day">Just this day</button>
-<button type="button" class="holiday-bg-scope-btn${entry.expandScope === "week" ? " active" : ""}" data-idx="${idx}" data-value="week" data-i18n="settings.holiday_expand_scope_week">This whole week</button>
-<button type="button" class="holiday-bg-scope-btn${entry.expandScope === "month" ? " active" : ""}" data-idx="${idx}" data-value="month" data-i18n="settings.holiday_expand_scope_month">This whole month</button>
-</div>
+<label class="holiday-bg-expand-label"><input type="checkbox" class="holiday-bg-expand" data-idx="${idx}" ${entry.expandFullDay ? "checked" : ""} /> <span data-i18n="settings.holiday_expand_full_day">Expand to full screen on this day</span></label>
 </div>`;
 };
 const predefinedRows = entries.map((e, idx) => (e.source === "predefined" ? { e, idx } : null)).filter(Boolean);
@@ -13528,28 +13215,6 @@ this._syncHolidayBackgroundsDraftFromDom();
 const idx = parseInt(btn.dataset.idx, 10);
 this._settingsHolidayBackgroundsDraft[idx].imageUrl = "";
 this._renderHolidayBackgroundsSettings(this._settingsHolidayBackgroundsDraft);
-});
-});
-container.querySelectorAll(".holiday-bg-expand").forEach((cb) => {
-cb.addEventListener("change", () => {
-this._syncHolidayBackgroundsDraftFromDom();
-const idx = parseInt(cb.dataset.idx, 10);
-this._settingsHolidayBackgroundsDraft[idx].expandFullDay = cb.checked;
-// Only the checkbox state changed here (the scope row simply shows/hides -
-// its own already-chosen value is untouched), so a plain show/hide of the
-// existing row is enough; no need to re-render the whole list and lose
-// focus/scroll position the way toggling "Every year" above does.
-const scopeRow = container.querySelector(`.holiday-bg-scope-row[data-idx="${idx}"]`);
-if (scopeRow) scopeRow.style.display = cb.checked ? "flex" : "none";
-});
-});
-container.querySelectorAll(".holiday-bg-scope-btn").forEach((scopeBtn) => {
-scopeBtn.addEventListener("click", () => {
-this._syncHolidayBackgroundsDraftFromDom();
-const idx = parseInt(scopeBtn.dataset.idx, 10);
-this._settingsHolidayBackgroundsDraft[idx].expandScope = scopeBtn.dataset.value;
-const scopeRow = scopeBtn.closest(".holiday-bg-scope-row");
-if (scopeRow) scopeRow.querySelectorAll(".holiday-bg-scope-btn").forEach((b) => b.classList.toggle("active", b === scopeBtn));
 });
 });
 container.querySelectorAll(".holiday-bg-upload-btn").forEach((btn) => {
@@ -13593,7 +13258,6 @@ year: null,
 recurring: true,
 imageUrl: "",
 expandFullDay: false,
-expandScope: "day",
 });
 this._renderHolidayBackgroundsSettings(this._settingsHolidayBackgroundsDraft);
 });
@@ -13636,8 +13300,6 @@ prior.year = Number.isFinite(n) ? n : prior.year;
 }
 const expandEl = row.querySelector(".holiday-bg-expand");
 if (expandEl) prior.expandFullDay = !!expandEl.checked;
-const activeScopeBtn = row.querySelector(".holiday-bg-scope-btn.active");
-if (activeScopeBtn) prior.expandScope = activeScopeBtn.dataset.value;
 });
 }
 // Uploads a picked file to Home Assistant's own image_upload component
@@ -14691,21 +14353,11 @@ if (mealPlanEntityStatusEl) {
 mealPlanEntityStatusEl.textContent = "";
 mealPlanEntityStatusEl.classList.remove("is-error");
 }
-const weatherEntityInputEl = root.querySelector(".weather-entity-input");
-if (weatherEntityInputEl) {
-weatherEntityInputEl.value = settings.weatherEntity || "";
-}
-const weatherEntityDatalistEl = root.querySelector("#weather-entity-datalist");
-if (weatherEntityDatalistEl) {
-weatherEntityDatalistEl.innerHTML = this._entitiesForDomain("weather").map((e) => `<option value="${e.id}">${e.name}</option>`).join("");
-}
 root.querySelectorAll(".grey-out-past-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.greyOutPastEvents ? "on" : "off"));
 });
-const topBarStyleValue = this._getSmallScreenMode() ? "minimal" : "normal";
-root.querySelectorAll(".top-bar-style-btn").forEach((btn) => {
-btn.classList.toggle("active", btn.dataset.value === topBarStyleValue);
-});
+const smallScreenModeCheckEl = root.querySelector(".small-screen-mode-check");
+if (smallScreenModeCheckEl) smallScreenModeCheckEl.checked = this._getSmallScreenMode();
 root.querySelectorAll(".scroll-lock-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.scrollLocked ? "on" : "off"));
 });
@@ -14758,15 +14410,14 @@ btn.classList.toggle("active", btn.dataset.value === (settings.grocyLowStockEnab
 root.querySelectorAll(".routines-enabled-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.routinesEnabled ? "on" : "off"));
 });
-const goalsShowOnValue = settings.goalsShowInChores && settings.goalsShowInRewards
-? "both"
-: settings.goalsShowInChores
-? "chores"
-: settings.goalsShowInRewards
-? "rewards"
-: "none";
-root.querySelectorAll(".goals-show-on-btn").forEach((btn) => {
-btn.classList.toggle("active", btn.dataset.value === goalsShowOnValue);
+root.querySelectorAll(".goals-in-chores-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (settings.goalsShowInChores ? "on" : "off"));
+});
+root.querySelectorAll(".goals-in-rewards-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (settings.goalsShowInRewards ? "on" : "off"));
+});
+root.querySelectorAll(".chore-due-time-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (settings.choreDueShowTime ? "on" : "off"));
 });
 root.querySelectorAll(".chores-confetti-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.choresConfettiOnComplete ? "on" : "off"));
@@ -16715,16 +16366,14 @@ const mealPlanEntity = mealPlanEntityInputForSave ? mealPlanEntityInputForSave.v
 // the current value straight through so an unrelated Settings save never
 // wipes it (same full-replace-not-merge reasoning as mealPlanEntity above).
 const mealTemplatesEntity = (this._getSettings().mealTemplatesEntity || "").trim();
-const weatherEntityInputForSave = root.querySelector(".weather-entity-input");
-const weatherEntity = weatherEntityInputForSave ? weatherEntityInputForSave.value.trim() : "";
 const activeGreyOutPastBtn = root.querySelector(".grey-out-past-btn.active");
 const greyOutPastEvents = activeGreyOutPastBtn ? activeGreyOutPastBtn.dataset.value === "on" : false;
 // this device only - see _getSmallScreenMode's own comment for
 // why this is no longer part of settingsObj/family_hub/set_settings below
 // (that would apply it to every Family Hub device in the household again,
 // the exact bug being fixed).
-const activeTopBarStyleBtn = root.querySelector(".top-bar-style-btn.active");
-const smallScreenMode = activeTopBarStyleBtn ? activeTopBarStyleBtn.dataset.value === "minimal" : false;
+const smallScreenModeCheck = root.querySelector(".small-screen-mode-check");
+const smallScreenMode = !!(smallScreenModeCheck && smallScreenModeCheck.checked);
 try {
 this._setScopedSettingItem("familyCalendarSmallScreenModeLocal", smallScreenMode ? "on" : "off");
 } catch (e) {
@@ -16808,10 +16457,12 @@ const activeGrocyLowStockBtn = root.querySelector(".grocy-low-stock-enabled-btn.
 const grocyLowStockEnabled = activeGrocyLowStockBtn ? activeGrocyLowStockBtn.dataset.value === "on" : false;
 const activeRoutinesEnabledBtn = root.querySelector(".routines-enabled-btn.active");
 const routinesEnabled = activeRoutinesEnabledBtn ? activeRoutinesEnabledBtn.dataset.value === "on" : false;
-const activeGoalsShowOnBtn = root.querySelector(".goals-show-on-btn.active");
-const goalsShowOnValue = activeGoalsShowOnBtn ? activeGoalsShowOnBtn.dataset.value : "none";
-const goalsShowInChores = goalsShowOnValue === "chores" || goalsShowOnValue === "both";
-const goalsShowInRewards = goalsShowOnValue === "rewards" || goalsShowOnValue === "both";
+const activeGoalsInChoresBtn = root.querySelector(".goals-in-chores-btn.active");
+const goalsShowInChores = activeGoalsInChoresBtn ? activeGoalsInChoresBtn.dataset.value === "on" : false;
+const activeGoalsInRewardsBtn = root.querySelector(".goals-in-rewards-btn.active");
+const goalsShowInRewards = activeGoalsInRewardsBtn ? activeGoalsInRewardsBtn.dataset.value === "on" : false;
+const activeChoreDueTimeBtn = root.querySelector(".chore-due-time-btn.active");
+const choreDueShowTime = activeChoreDueTimeBtn ? activeChoreDueTimeBtn.dataset.value === "on" : false;
 const activeChoresConfettiBtn = root.querySelector(".chores-confetti-btn.active");
 const choresConfettiOnComplete = activeChoresConfettiBtn ? activeChoresConfettiBtn.dataset.value === "on" : false;
 const notifyClickPathInput = root.querySelector(".notify-click-path-input");
@@ -16925,6 +16576,7 @@ grocyLowStockEnabled,
 routinesEnabled,
 goalsShowInChores,
 goalsShowInRewards,
+choreDueShowTime,
 choresConfettiOnComplete,
 notificationClickPath,
 people,
@@ -16932,7 +16584,6 @@ weekendBreakfast,
 showMealsInMonth,
 mealPlanEntity,
 mealTemplatesEntity,
-weatherEntity,
 greyOutPastEvents,
 // smallScreenMode deliberately NOT included here any more -
 // see _getSmallScreenMode's own comment. It's this-device-only
@@ -17019,12 +16670,6 @@ return;
 // removed member's helper).
 this._ensureTimerHelpers(memberUserIds).catch(() => {});
 await this._fetchSettings();
-// Weather entity (Settings > General) may have just changed - re-fetch
-// right away rather than waiting for the next 60s poll (_startPolling/
-// _refreshAllData), same "reflect it immediately" reasoning as
-// _reportDeviceSettings below. _fetchWeather already has its own
-// try/catch, so a failure here can't break the rest of the save.
-this._fetchWeather();
 await this._syncDailyDigestConfig();
 await this._syncGrocyExpiringConfig();
 await this._syncGrocyLowStockConfig();
@@ -17059,18 +16704,7 @@ lines.push(`Logged in user: ${this._hass && this._hass.user ? this._hass.user.na
 lines.push(`View mode: ${this._viewMode} ${this._viewFamily(this._viewMode) === "month" ? `(month offset ${this._monthOffset || 0})` : `(week offset ${this._weekOffset || 0})`}`);
 lines.push(`Query window: ${start.toISOString()} -> ${end.toISOString()}`);
 lines.push(`Browser local time now: ${new Date().toString()}`);
-lines.push(`Weather entity: ${this._weatherEntity()} (${Object.keys(this._forecast || {}).length} forecast days loaded)`);
-// Added to help diagnose "the menu boxes aren't showing meals" reports -
-// _fetchMealPlan's own try/catch silently empties this._mealPlan on ANY
-// failure reading the Menu to-do list (a temporarily-unavailable entity
-// right after a Home Assistant restart, a mismatched entity id, a
-// websocket hiccup), with no console error at all - so from the outside
-// it looks identical to "the plan is just empty" with nothing to go on.
-// This line makes that distinguishable: which entity the card is
-// actually reading from right now (_mealPlanEntity() - Settings >
-// General > Menu Blocks overrides YAML when set), and how many distinct
-// days currently have at least one planned meal loaded from it.
-lines.push(`Menu entity: ${this._mealPlanEntity()} (${Object.keys(this._mealPlan || {}).length} day(s) with planned meals loaded, ${(this._recurringMeals || []).length} recurring, ${(this._leftoverMeals || []).length} leftover)`);
+lines.push(`Weather entity: ${this._config.weather_entity} (${Object.keys(this._forecast || {}).length} forecast days loaded)`);
 lines.push(`Settings entity: ${this._config.settings_entity} (item uid: ${this._settingsItemUid || "none yet"})`);
 const settings = this._getSettings();
 lines.push(`Scroll locked: ${settings.scrollLocked}`);
@@ -22170,7 +21804,7 @@ pillsHtml = mealsHtml + pillsHtml;
 const badgesHtml = badges
 .map((b) => `<span class="custody-badge" style="background:${b.color};color:${this._textColorFor(b.color)}">${b.text}</span>`)
 .join("");
-const matchedHolidayBg = this._matchHolidayBackgroundForDate(settings, cellDate, isToday);
+const matchedHolidayBg = this._matchHolidayBackgroundForDate(settings, cellDate);
 const dayColHolidayStyle =
 matchedHolidayBg
 ? ` style="background-image: linear-gradient(rgba(0,0,0,0.32), rgba(0,0,0,0.32)), url('${matchedHolidayBg.imageUrl.replace(/'/g, "%27")}'); background-size: cover; background-position: center;"`
@@ -22446,7 +22080,7 @@ const dateKey = this._dateKey(dayStart);
 // background via _applySizeVars's --fc-bg-image (see
 // _matchHolidayBackgroundForDate's own comment), so painting it a second
 // time, cropped to just this column, would be redundant.
-const matchedHolidayBg = this._matchHolidayBackgroundForDate(settings, dayStart, isToday);
+const matchedHolidayBg = this._matchHolidayBackgroundForDate(settings, dayStart);
 const dayColHolidayStyle =
 matchedHolidayBg
 ? ` style="background-image: linear-gradient(rgba(0,0,0,0.32), rgba(0,0,0,0.32)), url('${matchedHolidayBg.imageUrl.replace(/'/g, "%27")}'); background-size: cover; background-position: center;"`
@@ -22824,7 +22458,7 @@ dayBadges.push({ text: b.text, color: personColor });
 const dayBadgesHtml = dayBadges
 .map((b) => `<span class="custody-badge" style="background:${b.color};color:${this._textColorFor(b.color)}">${b.text}</span>`)
 .join("");
-const matchedHolidayBg = this._matchHolidayBackgroundForDate(settings, dayStart, isToday);
+const matchedHolidayBg = this._matchHolidayBackgroundForDate(settings, dayStart);
 const dayColHolidayStyle =
 matchedHolidayBg
 ? ` style="background-image: linear-gradient(rgba(0,0,0,0.32), rgba(0,0,0,0.32)), url('${matchedHolidayBg.imageUrl.replace(/'/g, "%27")}'); background-size: cover; background-position: center;"`
@@ -23020,7 +22654,7 @@ return { dayStart, dayEnd, today, isToday, settings, people, colorMap, filterKey
 // entity id for a real person).
 _buildPersonLaneHtml(person, ctx) {
 const { dayStart, dayEnd, colorMap, PX_PER_HOUR, rangeStart, rangeEnd, rangeStartMin, rangeEndMin, settings, isToday, today } = ctx;
-const matchedHolidayBg = this._matchHolidayBackgroundForDate(settings, dayStart, isToday);
+const matchedHolidayBg = this._matchHolidayBackgroundForDate(settings, dayStart);
 const dayColHolidayStyle =
 matchedHolidayBg
 ? ` style="background-image: linear-gradient(rgba(0,0,0,0.32), rgba(0,0,0,0.32)), url('${matchedHolidayBg.imageUrl.replace(/'/g, "%27")}'); background-size: cover; background-position: center;"`

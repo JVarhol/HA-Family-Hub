@@ -52,6 +52,8 @@ from .const import (
     PERMISSIONS_BACKUP_FILENAME,
     PERMISSIONS_STORAGE_KEY_PREFIX,
     PERMISSIONS_STORAGE_VERSION,
+    PRIVACY_MODE_STORAGE_KEY_PREFIX,
+    PRIVACY_MODE_STORAGE_VERSION,
     REWARDS_BACKUP_FILENAME,
     REWARDS_STORAGE_KEY_PREFIX,
     REWARDS_STORAGE_VERSION,
@@ -90,6 +92,10 @@ def create_pantry_extras_store(hass: HomeAssistant, entry: ConfigEntry) -> Store
 
 def create_device_settings_store(hass: HomeAssistant, entry: ConfigEntry) -> Store:
     return Store(hass, DEVICE_SETTINGS_STORAGE_VERSION, f"{DEVICE_SETTINGS_STORAGE_KEY_PREFIX}_{entry.entry_id}")
+
+
+def create_privacy_mode_store(hass: HomeAssistant, entry: ConfigEntry) -> Store:
+    return Store(hass, PRIVACY_MODE_STORAGE_VERSION, f"{PRIVACY_MODE_STORAGE_KEY_PREFIX}_{entry.entry_id}")
 
 
 async def async_load_chores(store: Store) -> dict[str, dict[str, Any]]:
@@ -194,6 +200,27 @@ async def async_load_permissions(store: Store) -> dict[str, dict[str, bool]]:
     this for an authorization decision."""
     data = await store.async_load()
     return data if isinstance(data, dict) else {}
+
+
+def default_privacy_mode() -> dict[str, Any]:
+    """See const.py's PRIVACY_MODE_EVENT_CHANGED docstring for why this is
+    its own tiny store rather than a key in the general Settings blob."""
+    return {"enabled": False}
+
+
+async def async_load_privacy_mode(store: Store) -> dict[str, Any]:
+    """Loads the privacy-mode blob, filling in the one key if it's ever
+    missing (an older/partial save, or the very first load) - same
+    defensive merge as async_load_device_settings/async_load_rewards above."""
+    data = await store.async_load()
+    if not isinstance(data, dict):
+        data = {}
+    defaults = default_privacy_mode()
+    merged = dict(data)
+    for key, default_value in defaults.items():
+        if key not in merged or not isinstance(merged[key], type(default_value)):
+            merged[key] = default_value
+    return merged
 
 
 def default_routines() -> dict[str, Any]:

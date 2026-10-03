@@ -304,7 +304,7 @@ const dupe = this._findFuzzyDuplicate(name, this._suggestions, (s) => s.name);
 if (dupe) {
 const isExact = this._normalizeForDuplicateCheck(dupe.name) === this._normalizeForDuplicateCheck(name);
 if (isExact) return;
-if (!window.confirm(`"${dupe.name}" is already suggested and looks very similar. Add "${name}" as a separate suggestion anyway?`)) {
+if (!window.confirm(this._t("recipe_box.confirm_dupe_suggestion", `"${dupe.name}" is already suggested and looks very similar. Add "${name}" as a separate suggestion anyway?`, { dupe: dupe.name, name }))) {
 return;
 }
 }
@@ -358,7 +358,7 @@ const existing = uidOverride
 // one might already exist.
 if (!existing && checkDuplicates) {
 const dupe = this._findFuzzyDuplicate(name, this._recipes, (r) => r.name);
-if (dupe && !window.confirm(`"${dupe.name}" is already in your Recipe Box and looks very similar. Add "${name}" as a separate recipe anyway?`)) {
+if (dupe && !window.confirm(this._t("recipe_box.confirm_dupe_recipe", `"${dupe.name}" is already in your Recipe Box and looks very similar. Add "${name}" as a separate recipe anyway?`, { dupe: dupe.name, name }))) {
 return;
 }
 }
@@ -448,10 +448,10 @@ this._fetchRecipes();
 // entry point since that's not a task that belongs mid-picking.
 this._root.querySelector(".loved-title").textContent =
 this._pickerMode === "additional"
-? "\u{1F37D}\u{FE0F} Add Additional Recipe"
+? this._t("recipe_box.title_add_additional", "\u{1F37D}\u{FE0F} Add Additional Recipe")
 : this._pickerMode
-? "\u{1F37D}\u{FE0F} Pick a Recipe"
-: "\u{1F37D}\u{FE0F} Recipe Box";
+? this._t("recipe_box.title_pick_recipe", "\u{1F37D}\u{FE0F} Pick a Recipe")
+: this._t("recipe_box.title_recipe_box", "\u{1F37D}\u{FE0F} Recipe Box");
 this._root.querySelector(".loved-hint").style.display = this._pickerMode ? "block" : "none";
 this._root.querySelector(".recipe-box-select-btn").style.display = this._pickerMode ? "none" : "";
 this._openModal(this._root.querySelector(".loved-overlay"));
@@ -507,8 +507,8 @@ recipes = this._sortRecipeBoxList(recipes);
 if (!recipes.length) {
 list.innerHTML = `<div class="loved-empty">${
 term || activeCategory !== "All"
-? "No recipes match this search/filter."
-: "Your Recipe Box is empty - tap “+ Add Recipe” or “\u{1F517} Import from a link” above to get started."
+? this._t("recipe_box.empty_no_match", "No recipes match this search/filter.")
+: this._t("recipe_box.empty_recipe_box", "Your Recipe Box is empty - tap “+ Add Recipe” or “\u{1F517} Import from a link” above to get started.")
 }</div>`;
 return;
 }
@@ -528,8 +528,8 @@ const category = r.category ? `<span class="recipe-row-category">${r.category}</
 const trailing = selectMode
 ? `<div class="recipe-row-select-badge">${isSelected ? "&#10003;" : ""}</div>`
 : `<div class="recipe-row-actions">
-<button type="button" class="recipe-row-heart ${isLoved ? "is-loved" : ""}" data-idx="${idx}" title="${isLoved ? "Remove from loved" : "Love this dish"}">${isLoved ? "&#10084;&#65039;" : "&#129293;"}</button>
-<button type="button" class="recipe-row-suggest ${isSuggested ? "is-suggested" : ""}" data-idx="${idx}" title="${isSuggested ? "Remove from Suggestions" : "Suggest this for a meal"}">&#128161;</button>
+<button type="button" class="recipe-row-heart ${isLoved ? "is-loved" : ""}" data-idx="${idx}" title="${isLoved ? this._t("recipe_box.remove_from_loved", "Remove from loved") : this._t("recipe_box.love_this_dish", "Love this dish")}">${isLoved ? "&#10084;&#65039;" : "&#129293;"}</button>
+<button type="button" class="recipe-row-suggest ${isSuggested ? "is-suggested" : ""}" data-idx="${idx}" title="${isSuggested ? this._t("recipe_box.remove_from_suggestions", "Remove from Suggestions") : this._t("recipe_box.suggest_for_meal", "Suggest this for a meal")}">&#128161;</button>
 </div>`;
 return `<div class="recipe-row ${isSelected ? "is-selected" : ""}" data-idx="${idx}">
 ${media}
@@ -546,8 +546,8 @@ const media = r.image
 const category = r.category ? `<span class="recipe-card-category">${r.category}</span>` : "";
 const overlay = selectMode
 ? `<div class="recipe-card-select-badge">${isSelected ? "&#10003;" : ""}</div>`
-: `<button type="button" class="recipe-card-heart ${isLoved ? "is-loved" : ""}" data-idx="${idx}" title="${isLoved ? "Remove from loved" : "Love this dish"}">${isLoved ? "&#10084;&#65039;" : "&#129293;"}</button>
-<button type="button" class="recipe-card-suggest ${isSuggested ? "is-suggested" : ""}" data-idx="${idx}" title="${isSuggested ? "Remove from Suggestions" : "Suggest this for a meal"}">&#128161;</button>`;
+: `<button type="button" class="recipe-card-heart ${isLoved ? "is-loved" : ""}" data-idx="${idx}" title="${isLoved ? this._t("recipe_box.remove_from_loved", "Remove from loved") : this._t("recipe_box.love_this_dish", "Love this dish")}">${isLoved ? "&#10084;&#65039;" : "&#129293;"}</button>
+<button type="button" class="recipe-card-suggest ${isSuggested ? "is-suggested" : ""}" data-idx="${idx}" title="${isSuggested ? this._t("recipe_box.remove_from_suggestions", "Remove from Suggestions") : this._t("recipe_box.suggest_for_meal", "Suggest this for a meal")}">&#128161;</button>`;
 return `<div class="recipe-card ${isSelected ? "is-selected" : ""}" data-idx="${idx}">
 ${media}
 ${overlay}
@@ -671,7 +671,7 @@ if (actions) actions.style.display = active ? "none" : "";
 const countEl = root.querySelector(".recipe-box-select-count");
 if (countEl) {
 const n = this._recipeBoxSelectedUids.size;
-countEl.textContent = `${n} selected`;
+countEl.textContent = this._t("recipe_box.n_selected", `${n} selected`, { n: String(n) });
 }
 },
 async _deleteSelectedRecipeBoxItems() {
@@ -680,9 +680,9 @@ if (!uids.length) return;
 const recipesToDelete = uids.map((uid) => this._recipes.find((r) => r.uid === uid)).filter(Boolean);
 if (!recipesToDelete.length) return;
 const hasGrocy = recipesToDelete.some((r) => r.grocyRecipeId);
-const label = recipesToDelete.length === 1 ? `"${recipesToDelete[0].name}"` : `these ${recipesToDelete.length} recipes`;
-const grocyNote = hasGrocy ? " This will also delete the linked recipe(s) from Grocy." : "";
-if (!window.confirm(`Delete ${label} from the Recipe Box?${grocyNote}`)) return;
+const label = recipesToDelete.length === 1 ? `"${recipesToDelete[0].name}"` : this._t("recipe_box.these_n_recipes", `these ${recipesToDelete.length} recipes`, { n: String(recipesToDelete.length) });
+const grocyNote = hasGrocy ? this._t("recipe_box.note_delete_grocy_linked", " This will also delete the linked recipe(s) from Grocy.") : "";
+if (!window.confirm(this._t("recipe_box.confirm_delete_items", "Delete %label% from the Recipe Box?%note%", { label, note: grocyNote }))) return;
 for (const recipe of recipesToDelete) {
 await this._deleteDish(recipe.uid, recipe.grocyRecipeId);
 }
@@ -786,10 +786,14 @@ if (!this._recipeBoxCategory || !chips.includes(this._recipeBoxCategory)) {
 this._recipeBoxCategory = "All";
 }
 container.innerHTML = chips
-.map(
-(c) =>
-`<button type="button" class="recipe-chip ${c === this._recipeBoxCategory ? "active" : ""}" data-category="${c.replace(/"/g, "&quot;")}">${c}</button>`
-)
+.map((c) => {
+const label =
+c === "All" ? this._t("recipe_box.chip_all", "All")
+: c === "❤️ Loved" ? this._t("recipe_box.chip_loved", "❤️ Loved")
+: c === "💡 Suggested" ? this._t("recipe_box.chip_suggested", "💡 Suggested")
+: c;
+return `<button type="button" class="recipe-chip ${c === this._recipeBoxCategory ? "active" : ""}" data-category="${c.replace(/"/g, "&quot;")}">${label}</button>`;
+})
 .join("");
 container.querySelectorAll(".recipe-chip").forEach((el) => {
 el.addEventListener("click", () => {
@@ -801,7 +805,7 @@ this._renderLoved();
 _openDishDetail(recipe) {
 const root = this._root;
 this._dishDetailRecipe = recipe;
-root.querySelector(".dish-detail-title").textContent = recipe.name || "(untitled)";
+root.querySelector(".dish-detail-title").textContent = recipe.name || this._t("recipe_box.untitled", "(untitled)");
 const photo = root.querySelector(".dish-detail-photo");
 if (photo) {
 if (recipe.image) {
@@ -814,26 +818,26 @@ photo.style.display = "none";
 }
 const ratingHtml =
 (recipe.rating === "up"
-? `<span class="event-info-chip" style="background:#f2ddd4">&#10084;&#65039; Loved</span>`
+? `<span class="event-info-chip" style="background:#f2ddd4">&#10084;&#65039; ${this._t("recipe_box.loved_label_text", "Loved")}</span>`
 : recipe.rating === "down"
-? `<span class="event-info-chip" style="background:#d8e3e0">&#128078; Not a fan</span>`
+? `<span class="event-info-chip" style="background:#d8e3e0">&#128078; ${this._t("recipe_box.not_a_fan_label_text", "Not a fan")}</span>`
 : "") + (recipe.category ? `<span class="event-info-chip">${recipe.category}</span>` : "");
 root.querySelector(".dish-detail-rating").innerHTML = ratingHtml;
-root.querySelector(".dish-detail-desc").textContent = recipe.description || "No notes added.";
+root.querySelector(".dish-detail-desc").textContent = recipe.description || this._t("recipe_box.no_notes_added", "No notes added.");
 const suggestBtn = root.querySelector(".dish-detail-suggest-btn");
 if (suggestBtn) {
-suggestBtn.textContent = "\u{1F4A1} Suggest this";
+suggestBtn.textContent = this._t("recipe_box.suggest_this", "\u{1F4A1} Suggest this");
 suggestBtn.onclick = () => {
 this._suggestDish(recipe);
-suggestBtn.textContent = "\u{2705} Added to Suggestions";
+suggestBtn.textContent = this._t("recipe_box.added_to_suggestions", "\u{2705} Added to Suggestions");
 setTimeout(() => {
-suggestBtn.textContent = "\u{1F4A1} Suggest this";
+suggestBtn.textContent = this._t("recipe_box.suggest_this", "\u{1F4A1} Suggest this");
 }, 1600);
 };
 }
 const linkRow = root.querySelector(".dish-detail-link-row");
 if (recipe.link) {
-const label = recipe.grocyRecipeId ? "&#128279; View recipe" : "&#128279; Open recipe link";
+const label = recipe.grocyRecipeId ? this._t("recipe_box.view_recipe_link", "&#128279; View recipe") : this._t("recipe_box.open_recipe_link", "&#128279; Open recipe link");
 linkRow.innerHTML = `<button type="button" class="pick-loved-btn dish-detail-open-link">${label}</button>`;
 linkRow.querySelector(".dish-detail-open-link").addEventListener("click", () => {
 if (recipe.grocyRecipeId) {
@@ -983,7 +987,7 @@ this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-back-btn").style.
 // same "block", not "" gotcha as the back button above -
 // .grocy-recipe-viewer-recipe-actions defaults to display:none in CSS.
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-recipe-actions").style.display = this._grocyRecipeViewerSourceRecipe ? "flex" : "none";
-this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = fallbackName || "Recipe";
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = fallbackName || this._t("recipe_box.recipe_fallback", "Recipe");
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-stats").innerHTML = "";
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-servings").textContent = "";
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-ingredients").innerHTML = "";
@@ -1029,7 +1033,7 @@ if (this._grocyRecipeViewerTabs) {
 tabsEl.innerHTML = this._grocyRecipeViewerTabs
 .map(
 (t) =>
-`<button type="button" class="grocy-recipe-viewer-tab-btn ${String(t.id) === String(recipeId) ? "active" : ""}" data-recipe-tab-id="${t.id}">${t.name || "Recipe"}</button>`
+`<button type="button" class="grocy-recipe-viewer-tab-btn ${String(t.id) === String(recipeId) ? "active" : ""}" data-recipe-tab-id="${t.id}">${t.name || this._t("recipe_box.recipe_fallback", "Recipe")}</button>`
 )
 .join("");
 tabsEl.style.display = "flex";
@@ -1067,11 +1071,11 @@ this._resetScreenSaverIdleTimer();
 async _consumeGrocyRecipeIngredients() {
 const recipeId = this._grocyRecipeViewerRecipeId;
 if (!recipeId || !this._hass) return;
-if (!window.confirm("Deduct this recipe's ingredients from your Grocy stock now? This can't be undone from here.")) {
+if (!window.confirm(this._t("recipe_box.confirm_consume_ingredients", "Deduct this recipe's ingredients from your Grocy stock now? This can't be undone from here."))) {
 return;
 }
 const statusEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-status");
-statusEl.textContent = "Consuming ingredients in Grocy…";
+statusEl.textContent = this._t("recipe_box.status_consuming", "Consuming ingredients in Grocy…");
 statusEl.classList.remove("is-error");
 try {
 // Only sent when the viewer's own scaler has been moved off the
@@ -1089,26 +1093,26 @@ recipe_id: recipeId,
 ...(servings ? { servings } : {}),
 });
 if (result.configured === false) {
-statusEl.textContent = "Grocy isn't connected — set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.";
+statusEl.textContent = this._t("recipe_box.status_grocy_not_connected", "Grocy isn't connected — set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.");
 statusEl.classList.add("is-error");
 return;
 }
 if (!result.success) {
-statusEl.textContent = `Couldn't consume this recipe's ingredients: ${result.error || "unknown error"}`;
+statusEl.textContent = this._t("recipe_box.status_consume_failed", `Couldn't consume this recipe's ingredients: ${result.error || "unknown error"}`, { error: result.error || this._t("recipe_box.unknown_error", "unknown error") });
 statusEl.classList.add("is-error");
 return;
 }
-statusEl.textContent = "Ingredients deducted from Grocy stock.";
+statusEl.textContent = this._t("recipe_box.status_consumed", "Ingredients deducted from Grocy stock.");
 statusEl.classList.remove("is-error");
 } catch (e) {
-statusEl.textContent = "Couldn't reach Grocy.";
+statusEl.textContent = this._t("recipe_box.status_cant_reach_grocy", "Couldn't reach Grocy.");
 statusEl.classList.add("is-error");
 }
 },
 async _fetchGrocyRecipeDetail(recipeId) {
 if (!this._hass) return;
 const statusEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-status");
-statusEl.textContent = "Loading recipe from Grocy…";
+statusEl.textContent = this._t("recipe_box.status_loading_recipe", "Loading recipe from Grocy…");
 statusEl.classList.remove("is-error");
 try {
 const result = await this._hass.connection.sendMessagePromise({
@@ -1116,18 +1120,18 @@ type: "family_hub/get_grocy_recipe_detail",
 recipe_id: recipeId,
 });
 if (result.configured === false) {
-statusEl.textContent = "Grocy isn't connected — set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.";
+statusEl.textContent = this._t("recipe_box.status_grocy_not_connected", "Grocy isn't connected — set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.");
 return;
 }
 if (result.error || !result.recipe) {
-statusEl.textContent = `Couldn't load this recipe from Grocy: ${result.error || "not found"}`;
+statusEl.textContent = this._t("recipe_box.status_load_failed", `Couldn't load this recipe from Grocy: ${result.error || "not found"}`, { error: result.error || this._t("recipe_box.not_found", "not found") });
 statusEl.classList.add("is-error");
 return;
 }
 statusEl.textContent = "";
 this._renderGrocyRecipeDetail(result.recipe);
 } catch (e) {
-statusEl.textContent = "Couldn't reach Grocy.";
+statusEl.textContent = this._t("recipe_box.status_cant_reach_grocy", "Couldn't reach Grocy.");
 statusEl.classList.add("is-error");
 }
 },
@@ -1146,7 +1150,7 @@ statusEl.classList.add("is-error");
 async _fetchGrocyRecipeDetailsBatch(recipeIds, activeId) {
 if (!this._hass) return;
 const statusEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-status");
-statusEl.textContent = "Loading recipes from Grocy…";
+statusEl.textContent = this._t("recipe_box.status_loading_recipes", "Loading recipes from Grocy…");
 statusEl.classList.remove("is-error");
 try {
 const result = await this._hass.connection.sendMessagePromise({
@@ -1154,14 +1158,14 @@ type: "family_hub/get_grocy_recipe_details",
 recipe_ids: recipeIds,
 });
 if (result.configured === false) {
-statusEl.textContent = "Grocy isn't connected — set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.";
+statusEl.textContent = this._t("recipe_box.status_grocy_not_connected", "Grocy isn't connected — set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.");
 return;
 }
 this._grocyRecipeViewerDetailsById = result.recipes || {};
 this._grocyRecipeViewerTabErrors = result.errors || {};
 this._renderActiveGrocyRecipeViewerTab(activeId);
 } catch (e) {
-statusEl.textContent = "Couldn't reach Grocy.";
+statusEl.textContent = this._t("recipe_box.status_cant_reach_grocy", "Couldn't reach Grocy.");
 statusEl.classList.add("is-error");
 }
 },
@@ -1183,7 +1187,7 @@ return;
 }
 const err = (this._grocyRecipeViewerTabErrors || {})[String(recipeId)];
 const tabInfo = ((this._grocyRecipeViewerTabs || []).find((t) => String(t.id) === String(recipeId)) || {});
-this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = tabInfo.name || "Recipe";
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = tabInfo.name || this._t("recipe_box.recipe_fallback", "Recipe");
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-stats").innerHTML = "";
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-servings").textContent = "";
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-ingredients").innerHTML = "";
@@ -1191,7 +1195,7 @@ this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-instructions").in
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-description").innerHTML = "";
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-scale-row").style.display = "none";
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-photo").style.display = "none";
-statusEl.textContent = `Couldn't load this recipe from Grocy: ${err || "not found"}`;
+statusEl.textContent = this._t("recipe_box.status_load_failed", `Couldn't load this recipe from Grocy: ${err || "not found"}`, { error: err || this._t("recipe_box.not_found", "not found") });
 statusEl.classList.add("is-error");
 },
 // Tab-row click handler (delegated, see the connectedCallback wiring on
@@ -1222,22 +1226,22 @@ photoEl.style.display = "block";
 photoEl.style.display = "none";
 photoEl.src = "";
 }
-this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = recipe.name || "Recipe";
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = recipe.name || this._t("recipe_box.recipe_fallback", "Recipe");
 // Prep/Cook/Total stat pills (/mockup) - only the ones this
 // recipe actually has real data for; a manually-typed Grocy recipe with
 // none of the three published just gets an empty (and, per the
 // :empty CSS rule, invisible) stats row instead of a placeholder.
 const statsEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-stats");
 const statDefs = [
-["Prep", recipe.prep_time],
-["Cook", recipe.cook_time],
-["Total", recipe.total_time],
+[this._t("recipe_box.stat_prep", "Prep"), recipe.prep_time],
+[this._t("recipe_box.stat_cook", "Cook"), recipe.cook_time],
+[this._t("recipe_box.stat_total", "Total"), recipe.total_time],
 ].filter(([, value]) => (value || "").trim());
 statsEl.innerHTML = statDefs
 .map(([label, value]) => `<div class="grocy-recipe-stat"><span class="grocy-recipe-stat-label">${label}</span><span class="grocy-recipe-stat-value">${value}</span></div>`)
 .join("");
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-servings").textContent = recipe.servings
-? `Makes ${recipe.servings} serving${recipe.servings === 1 ? "" : "s"}`
+? this._t("recipe_box.makes_servings", `Makes ${recipe.servings} serving${recipe.servings === 1 ? "" : "s"}`, { n: String(recipe.servings) })
 : "";
 // The picker only ever had the list-page link; once the detail call
 // resolves we have the authoritative one from the recipe object itself
@@ -1285,7 +1289,7 @@ if (!descEl) return;
 const raw = this._grocyRecipeViewerRawDescription || "";
 if (!raw) {
 if (instructionsEl) instructionsEl.innerHTML = "";
-descEl.innerHTML = `<div class="loved-empty">No instructions added in Grocy.</div>`;
+descEl.innerHTML = `<div class="loved-empty">${this._t("recipe_box.no_instructions", "No instructions added in Grocy.")}</div>`;
 return;
 }
 const baseServings = this._grocyRecipeViewerBaseServings || 1;
@@ -1315,7 +1319,7 @@ if (text) steps.push(text);
 
 if (instructionsEl) {
 instructionsEl.innerHTML = steps.length
-? `<div class="grocy-recipe-instructions-title">Instructions</div>` +
+? `<div class="grocy-recipe-instructions-title">${this._t("recipe_box.instructions_title", "Instructions")}</div>` +
 steps
 .map(
 (step, i) =>
@@ -1344,7 +1348,7 @@ if (ingredientsBlockMatch) {
 const accordionHtml =
 `<div class="grocy-recipe-ingredients-accordion">` +
 `<button type="button" class="accordion-toggle recipe-viewer-ingredients-toggle" data-target="recipe-viewer-ingredients-body">` +
-`<span class="theme-section-label">Written-out ingredients list</span>` +
+`<span class="theme-section-label">${this._t("recipe_box.written_out_ingredients", "Written-out ingredients list")}</span>` +
 `<span class="accordion-chevron">&#9660;</span>` +
 `</button>` +
 `<div class="accordion-body" id="recipe-viewer-ingredients-body"><ul>${ingredientsBlockMatch[1]}</ul></div>` +
@@ -1359,7 +1363,7 @@ html = html.replace(stepsMatch[0], "");
 // redundant here - safe to strip unconditionally.
 html = html.replace(/<p>[\s\S]*?<strong>(?:Prep|Cook):<\/strong>[\s\S]*?<\/p>/i, "");
 html = html.trim();
-descEl.innerHTML = html || `<div class="loved-empty">No additional notes.</div>`;
+descEl.innerHTML = html || `<div class="loved-empty">${this._t("recipe_box.no_additional_notes", "No additional notes.")}</div>`;
 const ingredientsToggle = descEl.querySelector(".recipe-viewer-ingredients-toggle");
 if (ingredientsToggle) {
 ingredientsToggle.addEventListener("click", () => {
@@ -1860,7 +1864,63 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
+    this._ensureTranslationsLoaded();
     if (first) this._firstLoadPromise = this._initFirstLoad();
+  }
+  _t(key, fallback, vars) {
+    let str = "";
+    try {
+      if (this._hass && typeof this._hass.localize === "function") {
+        str = this._hass.localize(`component.family_hub.fh_ui.${key}`) || "";
+      }
+    } catch (e) {
+      str = "";
+    }
+    if (!str) str = fallback;
+    if (vars) {
+      Object.keys(vars).forEach((k) => {
+        str = str.split(`%${k}%`).join(vars[k]);
+      });
+    }
+    return str;
+  }
+  _baseLanguage(lang) {
+    return (lang || "en").split("-")[0].toLowerCase();
+  }
+  _ensureTranslationsLoaded() {
+    if (!this._hass || typeof this._hass.loadBackendTranslation !== "function") return;
+    const lang = this._baseLanguage(this._hass.language);
+    if (this._i18nLoadedLang === lang || this._i18nLoading === lang) return;
+    this._i18nLoading = lang;
+    this._hass
+      .loadBackendTranslation("fh_ui", "family_hub")
+      .then(() => {
+        this._i18nLoadedLang = lang;
+        this._i18nLoading = null;
+        this._applyTranslations();
+        if (this._root) this._renderLoved();
+      })
+      .catch((e) => {
+        this._i18nLoading = null;
+        console.warn("[family_hub] failed to load \"" + lang + "\" translations - staying on English fallback text", e);
+      });
+  }
+  _applyTranslations() {
+    if (!this._root) return;
+    this._root.querySelectorAll("[data-i18n]").forEach((el) => {
+      const key = el.dataset.i18n;
+      if (el.dataset.i18nFallback === undefined) el.dataset.i18nFallback = el.textContent;
+      el.textContent = this._t(key, el.dataset.i18nFallback);
+    });
+    this._root.querySelectorAll("[data-i18n-title]").forEach((el) => {
+      const key = el.dataset.i18nTitle;
+      if (el.dataset.i18nTitleFallback === undefined) {
+        el.dataset.i18nTitleFallback = el.getAttribute("title") || el.getAttribute("aria-label") || "";
+      }
+      const translated = this._t(key, el.dataset.i18nTitleFallback);
+      if (el.hasAttribute("title")) el.setAttribute("title", translated);
+      if (el.hasAttribute("aria-label")) el.setAttribute("aria-label", translated);
+    });
   }
   async _initFirstLoad() {
     // baseline theming, new for this card - see setConfig's own
@@ -2010,7 +2070,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
     if (!root) return;
     this._editingDishUid = recipe ? recipe.uid : null;
     this._editingDishGrocyRecipeId = (recipe && recipe.grocyRecipeId) || null;
-    root.querySelector(".rb-editor-title").textContent = recipe ? "Edit Recipe" : "Add Recipe";
+    root.querySelector(".rb-editor-title").textContent = recipe ? this._t("recipe_box.edit_recipe_title", "Edit Recipe") : this._t("recipe_box.add_recipe_title", "Add Recipe");
     root.querySelector(".rb-input-name").value = recipe ? recipe.name || "" : "";
     root.querySelector(".rb-input-description").value = recipe ? recipe.description || "" : "";
     root.querySelector(".rb-input-link").value = recipe ? recipe.link || "" : "";
@@ -2065,8 +2125,8 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
     if (!this._editingDishUid) return;
     const root = this._root;
     const name = root.querySelector(".rb-input-name").value.trim();
-    const grocyNote = this._editingDishGrocyRecipeId ? " This will also delete it from Grocy." : "";
-    if (!window.confirm(`Delete "${name}" from the Recipe Box?${grocyNote}`)) return;
+    const grocyNote = this._editingDishGrocyRecipeId ? this._t("recipe_box.note_delete_linked", " This will also delete it from Grocy.") : "";
+    if (!window.confirm(this._t("recipe_box.confirm_delete_named", `Delete "${name}" from the Recipe Box?${grocyNote}`, { name, note: grocyNote }))) return;
     this._deleteDish(this._editingDishUid, this._editingDishGrocyRecipeId);
     this._closeRecipeBoxEditor();
   }
@@ -2085,36 +2145,36 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
       <ha-card>
         <div class="fh-recipe-box-header">
           <div class="fh-recipe-box-title"></div>
-          <button type="button" class="suggestion-add-btn add-dish-btn">+ Add Recipe</button>
+          <button type="button" class="suggestion-add-btn add-dish-btn" data-i18n="recipe_box.add_recipe_btn">+ Add Recipe</button>
         </div>
         <div class="recipe-box-actions">
-          <button type="button" class="suggestion-add-btn recipe-box-select-btn">&#9989; Select</button>
+          <button type="button" class="suggestion-add-btn recipe-box-select-btn">&#9989;<span data-i18n="recipe_box.select_btn_suffix"> Select</span></button>
         </div>
         <div class="recipe-box-select-bar" style="display:none;">
           <span class="recipe-box-select-count">0 selected</span>
           <div class="recipe-box-select-actions">
-            <button type="button" class="recipe-box-select-cancel">Cancel</button>
-            <button type="button" class="recipe-box-select-delete">Delete</button>
+            <button type="button" class="recipe-box-select-cancel" data-i18n="common.cancel">Cancel</button>
+            <button type="button" class="recipe-box-select-delete" data-i18n="recipe_box.delete">Delete</button>
           </div>
         </div>
         <div class="recipe-box-search-row">
           <input type="text" class="loved-search" placeholder="&#128269; Search recipes..." />
           <div class="recipe-view-toggle">
-            <button type="button" class="recipe-view-btn" data-view="grid" title="Grid view" aria-label="Grid view">&#9638;</button>
-            <button type="button" class="recipe-view-btn" data-view="list" title="List view" aria-label="List view">&#9776;</button>
+            <button type="button" class="recipe-view-btn" data-view="grid" title="Grid view" aria-label="Grid view" data-i18n-title="recipe_box.grid_view_title">&#9638;</button>
+            <button type="button" class="recipe-view-btn" data-view="list" title="List view" aria-label="List view" data-i18n-title="recipe_box.list_view_title">&#9776;</button>
           </div>
         </div>
         <select class="recipe-sort-select">
-          <option value="default">Sort: Default order</option>
-          <option value="name">Sort: Name (A-Z)</option>
-          <option value="suggested">Sort: Suggested first</option>
+          <option value="default" data-i18n="recipe_box.sort_default">Sort: Default order</option>
+          <option value="name" data-i18n="recipe_box.sort_name">Sort: Name (A-Z)</option>
+          <option value="suggested" data-i18n="recipe_box.sort_suggested">Sort: Suggested first</option>
         </select>
         <div class="recipe-box-categories"></div>
         <div class="loved-list"></div>
       </ha-card>
       <div class="modal-overlay dish-detail-overlay">
         <div class="modal-box dish-detail-box">
-          <button class="modal-close dish-detail-close" aria-label="Close">&#10005;</button>
+          <button class="modal-close dish-detail-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
           <h2 class="dish-detail-title"></h2>
           <img class="dish-detail-photo" style="display:none;" alt="" />
           <div class="dish-detail-rating"></div>
@@ -2122,15 +2182,15 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
           <div class="dish-detail-link-row"></div>
           <div class="modal-actions">
             <button class="btn-cancel dish-detail-suggest-btn">&#128161; Suggest this</button>
-            <button class="btn-cancel dish-detail-edit-btn">&#9999;&#65039; Edit</button>
-            <button class="btn-clear dish-detail-delete-btn">&#128465;&#65039; Delete</button>
+            <button class="btn-cancel dish-detail-edit-btn">&#9999;&#65039;<span data-i18n="recipe_box.edit_suffix"> Edit</span></button>
+            <button class="btn-clear dish-detail-delete-btn">&#128465;&#65039;<span data-i18n="recipe_box.delete_suffix"> Delete</span></button>
           </div>
         </div>
       </div>
       <div class="modal-overlay grocy-recipe-viewer-overlay">
         <div class="modal-box loved-box">
-          <button class="modal-close grocy-recipe-viewer-close" aria-label="Close">&#10005;</button>
-          <button type="button" class="grocy-recipe-viewer-back-btn" style="display:none;">&#8592; Back</button>
+          <button class="modal-close grocy-recipe-viewer-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
+          <button type="button" class="grocy-recipe-viewer-back-btn" style="display:none;">&#8592;<span data-i18n="recipe_box.back_suffix"> Back</span></button>
           <h2 class="grocy-recipe-viewer-title"></h2>
           <div class="grocy-recipe-viewer-tabs" style="display:none;"></div>
           <div class="grocy-recipe-viewer-status"></div>
@@ -2139,11 +2199,11 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
             <div class="grocy-recipe-viewer-main-col">
               <div class="grocy-recipe-viewer-servings"></div>
               <div class="grocy-recipe-viewer-scale-row" style="display:none;">
-                <span class="grocy-recipe-viewer-scale-label">Scale ingredients for</span>
-                <button type="button" class="grocy-recipe-viewer-scale-down" aria-label="Fewer servings">&#8722;</button>
+                <span class="grocy-recipe-viewer-scale-label" data-i18n="recipe_box.scale_ingredients_for">Scale ingredients for</span>
+                <button type="button" class="grocy-recipe-viewer-scale-down" aria-label="Fewer servings" data-i18n-title="recipe_box.fewer_servings_title">&#8722;</button>
                 <span class="grocy-recipe-viewer-scale-value"></span>
-                <span class="grocy-recipe-viewer-scale-unit">servings</span>
-                <button type="button" class="grocy-recipe-viewer-scale-up" aria-label="More servings">&#43;</button>
+                <span class="grocy-recipe-viewer-scale-unit" data-i18n="recipe_box.servings_unit">servings</span>
+                <button type="button" class="grocy-recipe-viewer-scale-up" aria-label="More servings" data-i18n-title="recipe_box.more_servings_title">&#43;</button>
               </div>
               <div class="grocy-recipe-viewer-ingredients"></div>
             </div>
@@ -2152,35 +2212,35 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
           <div class="grocy-recipe-viewer-instructions"></div>
           <div class="grocy-recipe-viewer-description"></div>
           <div class="grocy-recipe-viewer-footer">
-            <button type="button" class="suggestion-add-btn grocy-recipe-viewer-consume-btn">&#127860; Mark Consumed (deduct from Grocy stock)</button>
-            <button type="button" class="suggestion-add-btn grocy-recipe-viewer-open-btn">&#128279; Open in Grocy</button>
+            <button type="button" class="suggestion-add-btn grocy-recipe-viewer-consume-btn">&#127860;<span data-i18n="recipe_box.mark_consumed_suffix"> Mark Consumed (deduct from Grocy stock)</span></button>
+            <button type="button" class="suggestion-add-btn grocy-recipe-viewer-open-btn">&#128279;<span data-i18n="recipe_box.open_in_grocy_suffix"> Open in Grocy</span></button>
             <div class="modal-actions grocy-recipe-viewer-recipe-actions" style="display:none;">
-              <button type="button" class="btn-cancel grocy-recipe-viewer-suggest-btn">&#128161; Suggest this</button>
-              <button type="button" class="btn-cancel grocy-recipe-viewer-edit-btn">&#9999;&#65039; Edit</button>
-              <button type="button" class="btn-clear grocy-recipe-viewer-delete-btn">&#128465;&#65039; Delete</button>
+              <button type="button" class="btn-cancel grocy-recipe-viewer-suggest-btn">&#128161;<span data-i18n="recipe_box.suggest_this_suffix"> Suggest this</span></button>
+              <button type="button" class="btn-cancel grocy-recipe-viewer-edit-btn">&#9999;&#65039;<span data-i18n="recipe_box.edit_suffix"> Edit</span></button>
+              <button type="button" class="btn-clear grocy-recipe-viewer-delete-btn">&#128465;&#65039;<span data-i18n="recipe_box.delete_suffix"> Delete</span></button>
             </div>
           </div>
         </div>
       </div>
       <div class="modal-overlay rb-editor-overlay">
         <div class="modal-box">
-          <button class="modal-close rb-editor-close" aria-label="Close">&#10005;</button>
+          <button class="modal-close rb-editor-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
           <h2 class="rb-editor-title">Add Recipe</h2>
-          <label>Name<input type="text" class="rb-input-name" maxlength="120" /></label>
-          <label>Notes<textarea class="rb-input-description" rows="2" maxlength="500"></textarea></label>
-          <label>Link<input type="url" class="rb-input-link" placeholder="https://..." maxlength="500" /></label>
-          <label>Category<input type="text" class="input-category" list="dish-category-options" placeholder="e.g. Dinner" maxlength="40" /><datalist id="dish-category-options"></datalist></label>
-          <label>Photo URL<input type="url" class="rb-input-image" placeholder="https://..." maxlength="500" /></label>
+          <label><span data-i18n="recipe_box.name_label">Name</span><input type="text" class="rb-input-name" maxlength="120" /></label>
+          <label><span data-i18n="recipe_box.notes_label">Notes</span><textarea class="rb-input-description" rows="2" maxlength="500"></textarea></label>
+          <label><span data-i18n="recipe_box.link_label">Link</span><input type="url" class="rb-input-link" placeholder="https://..." maxlength="500" /></label>
+          <label><span data-i18n="recipe_box.category_label">Category</span><input type="text" class="input-category" list="dish-category-options" placeholder="e.g. Dinner" maxlength="40" /><datalist id="dish-category-options"></datalist></label>
+          <label><span data-i18n="recipe_box.photo_url_label">Photo URL</span><input type="url" class="rb-input-image" placeholder="https://..." maxlength="500" /></label>
           <img class="rb-image-preview" style="display:none;" alt="" />
           <div class="rating-row">
-            <button type="button" class="rating-btn rb-btn-heart" title="Love it">&#10084;&#65039;</button>
-            <button type="button" class="rating-btn rb-btn-thumbsdown" title="Not a fan">&#128078;</button>
+            <button type="button" class="rating-btn rb-btn-heart" title="Love it" data-i18n-title="recipe_box.love_it_title">&#10084;&#65039;</button>
+            <button type="button" class="rating-btn rb-btn-thumbsdown" title="Not a fan" data-i18n-title="recipe_box.not_a_fan_title">&#128078;</button>
           </div>
-          <label class="remind-check-opt"><input type="checkbox" class="rb-input-add-suggestion" />&#128161; Also add to Meal Suggestions</label>
+          <label class="remind-check-opt"><input type="checkbox" class="rb-input-add-suggestion" />&#128161;<span data-i18n="recipe_box.also_add_suggestion_suffix"> Also add to Meal Suggestions</span></label>
           <div class="modal-actions">
-            <button class="btn-clear rb-editor-delete-btn" style="display:none;">Delete</button>
-            <button class="btn-cancel rb-editor-cancel-btn">Cancel</button>
-            <button class="btn-save rb-editor-save-btn">Save</button>
+            <button class="btn-clear rb-editor-delete-btn" style="display:none;" data-i18n="recipe_box.delete">Delete</button>
+            <button class="btn-cancel rb-editor-cancel-btn" data-i18n="common.cancel">Cancel</button>
+            <button class="btn-save rb-editor-save-btn" data-i18n="common.save">Save</button>
           </div>
         </div>
       </div>
@@ -2210,8 +2270,8 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
     root.querySelector(".dish-detail-delete-btn").addEventListener("click", () => {
       const recipe = this._dishDetailRecipe;
       if (!recipe) return;
-      const grocyNote = recipe.grocyRecipeId ? " This will also delete it from Grocy." : "";
-      if (!window.confirm(`Delete "${recipe.name}" from the Recipe Box?${grocyNote}`)) return;
+      const grocyNote = recipe.grocyRecipeId ? this._t("recipe_box.note_delete_linked", " This will also delete it from Grocy.") : "";
+      if (!window.confirm(this._t("recipe_box.confirm_delete_named", `Delete "${recipe.name}" from the Recipe Box?${grocyNote}`, { name: recipe.name, note: grocyNote }))) return;
       this._deleteDish(recipe.uid, recipe.grocyRecipeId);
       this._closeDishDetail();
     });
@@ -2243,9 +2303,9 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
       if (!recipe) return;
       this._suggestDish(recipe);
       const btn = e.currentTarget;
-      btn.textContent = "\u{2705} Added to Suggestions";
+      btn.textContent = this._t("recipe_box.added_to_suggestions", "\u{2705} Added to Suggestions");
       setTimeout(() => {
-        btn.textContent = "\u{1F4A1} Suggest this";
+        btn.textContent = this._t("recipe_box.suggest_this", "\u{1F4A1} Suggest this");
       }, 1600);
     });
     root.querySelector(".grocy-recipe-viewer-edit-btn").addEventListener("click", () => {
@@ -2257,7 +2317,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
     root.querySelector(".grocy-recipe-viewer-delete-btn").addEventListener("click", () => {
       const recipe = this._grocyRecipeViewerSourceRecipe;
       if (!recipe) return;
-      if (!window.confirm(`Delete "${recipe.name}" from the Recipe Box? This will also delete it from Grocy.`)) return;
+      if (!window.confirm(this._t("recipe_box.confirm_delete_with_grocy", `Delete "${recipe.name}" from the Recipe Box? This will also delete it from Grocy.`, { name: recipe.name }))) return;
       this._deleteDish(recipe.uid, recipe.grocyRecipeId);
       this._closeGrocyRecipeViewer();
     });

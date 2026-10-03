@@ -396,6 +396,25 @@ if (!window.__familyHubFabCoordinator) {
     const SLOT_HEIGHT_PX = 66;
     const entries = new Map(); // client -> { kind, seq, meta, onUpdate }
     let seq = 0;
+    // Every FAB here is position:fixed, pinned to the viewport corner (or,
+    // for a fab-position:"card" client, to its own card's box) - each card
+    // is its own independently-loaded custom element with no idea what
+    // other Family Hub cards are doing on the same dashboard, so a full-
+    // screen modal opened by ANY of them (most visibly the calendar card's
+    // own Settings screen) could end up with a totally unrelated card's
+    // FAB painted on top of it: depending on how the dashboard lays out
+    // its cards (Home Assistant's newer Sections view in particular can
+    // give each card's container its own CSS containment/stacking
+    // context), a sibling card's FAB z-index isn't guaranteed to actually
+    // lose to this card's modal overlay the way a plain same-shadow-DOM
+    // z-index comparison would. Rather than depend on that, every FAB-
+    // bearing card asks every OTHER one to physically hide
+    // (fab.hidden = true, not just "behind" via z-index - see each card's
+    // own onUpdate) while any of them has a full-screen modal open, via
+    // openModalCount/pushModalOpen/popModalOpen below - same "don't trust
+    // cross-shadow-DOM z-index, coordinate explicitly instead" approach as
+    // this project's shared screensaver controller.
+    let openModalCount = 0;
 
     function orderIndex(kind) {
       const i = FAB_KIND_ORDER.indexOf(kind);
@@ -414,13 +433,14 @@ if (!window.__familyHubFabCoordinator) {
       // still see otherProvidesGoalTab and still get an onUpdate call.
       const slotCount = list.filter(([, entry]) => entry.takesSlot).length;
       let slotIndex = 0;
+      const hideForModal = openModalCount > 0;
       list.forEach(([client, entry]) => {
         const otherProvidesGoalTab = list.some(
           ([otherClient, otherEntry]) => otherClient !== client && otherEntry.meta && otherEntry.meta.providesGoalTab
         );
         const index = entry.takesSlot ? slotIndex++ : null;
         if (typeof entry.onUpdate === "function") {
-          entry.onUpdate({ offsetPx: (index || 0) * SLOT_HEIGHT_PX, slotIndex: index, count: slotCount, otherProvidesGoalTab });
+          entry.onUpdate({ offsetPx: (index || 0) * SLOT_HEIGHT_PX, slotIndex: index, count: slotCount, otherProvidesGoalTab, hideForModal });
         }
       });
     }
@@ -431,8 +451,10 @@ if (!window.__familyHubFabCoordinator) {
       // `providesGoalTab` (see this block's own docstring above). `onUpdate`
       // is called once immediately (so a lone card on an otherwise-empty
       // dashboard still gets offsetPx: 0) and again on every subsequent
-      // register/unregister/updateClientMeta from ANY card, since adding a
-      // second FAB changes where the first one's slot is too.
+      // register/unregister/updateClientMeta/pushModalOpen/popModalOpen
+      // from ANY card, since adding a second FAB changes where the first
+      // one's slot is too, and any card's modal opening/closing changes
+      // whether every FAB should currently be hidden.
       //
       // `opts.takesSlot` (default true) - pass `{ takesSlot:
       // false }` for a card whose FAB has opted out of the shared
@@ -456,6 +478,24 @@ if (!window.__familyHubFabCoordinator) {
         const entry = entries.get(client);
         if (!entry) return;
         entry.meta = Object.assign({}, entry.meta, meta || {});
+        recompute();
+      },
+      // Call when THIS card opens a full-screen modal that every OTHER
+      // Family Hub card's FAB should get out of the way of (today: only
+      // the calendar card's own Settings screen calls this - see its
+      // _setupSettingsFabCoordination). A plain counter, not a per-client
+      // flag, so this stays correct even if more than one such modal is
+      // ever open across more than one card at once - every pushModalOpen
+      // needs a matching popModalOpen before FABs reappear, and a card
+      // that unmounts while its own modal was still open (see
+      // disconnectedCallback) pops on its way out rather than leaking the
+      // count forever.
+      pushModalOpen() {
+        openModalCount += 1;
+        recompute();
+      },
+      popModalOpen() {
+        openModalCount = Math.max(0, openModalCount - 1);
         recompute();
       },
       // Call from disconnectedCallback. Frees this card's slot so every
@@ -1071,6 +1111,7 @@ class FamilyHubTodoCard extends HTMLElement {
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
+    this._ensureTranslationsLoaded();
     if (first) this._firstLoadPromise = this._initFirstLoad();
   }
   async _initFirstLoad() {
@@ -1169,6 +1210,12 @@ class FamilyHubTodoCard extends HTMLElement {
     else this.removeAttribute("fab-position");
     window.__familyHubFabCoordinator.registerClient(this, "todo", {}, (state) => {
       this.style.setProperty("--fh-fab-offset", `${state.offsetPx}px`);
+      // hideForModal is true while ANY Family Hub card on this dashboard
+      // has a full-screen modal open (most visibly the calendar card's
+      // own Settings screen) - see the coordinator's own doc for why this
+      // can't just rely on z-index across cards.
+      const fab = this._root && this._root.querySelector(".add-todo-fab");
+      if (fab) fab.hidden = !!state.hideForModal;
     }, { takesSlot: !cardRelative });
   }
   // joins the shared kiosk-login session - byte-identical
@@ -1205,6 +1252,75 @@ class FamilyHubTodoCard extends HTMLElement {
     if (this._isAdmin()) return true;
     if (this._kioskElevation) return !!(this._kioskElevation.permissions && this._kioskElevation.permissions[key]);
     return !!this._myPermissions[key];
+  }
+  // --- Native HA frontend i18n (same trio as family-hub-chores-card.js;
+  // see that file's own comment on _t/_ensureTranslationsLoaded/
+  // _applyTranslations for the full mechanism - hass.loadBackendTranslation
+  // + hass.localize, keyed by hass.language, no separate Family Hub
+  // language setting. Copied rather than shared, like every other card in
+  // this repo - none of the 11 card files share code. To-Do card UI
+  // strings live under the SAME "fh_ui" translation category as every
+  // other card, namespaced "todo.*" so it never collides with the others. ---
+  _t(key, fallback, vars) {
+    let str = "";
+    try {
+      if (this._hass && typeof this._hass.localize === "function") {
+        str = this._hass.localize(`component.family_hub.fh_ui.${key}`) || "";
+      }
+    } catch (e) {
+      str = "";
+    }
+    if (!str) str = fallback;
+    if (vars) {
+      Object.keys(vars).forEach((k) => {
+        str = str.split(`%${k}%`).join(vars[k]);
+      });
+    }
+    return str;
+  }
+  _baseLanguage(lang) {
+    return (lang || "en").split("-")[0].toLowerCase();
+  }
+  _ensureTranslationsLoaded() {
+    if (!this._hass || typeof this._hass.loadBackendTranslation !== "function") return;
+    const lang = this._baseLanguage(this._hass.language);
+    if (this._i18nLoadedLang === lang || this._i18nLoading === lang) return;
+    this._i18nLoading = lang;
+    this._hass
+      .loadBackendTranslation("fh_ui", "family_hub")
+      .then(() => {
+        this._i18nLoadedLang = lang;
+        this._i18nLoading = null;
+        this._applyTranslations();
+        // The kiosk-login button's own text/title is set imperatively
+        // (btn.textContent/.title in _updateKioskLoginUi, not data-i18n -
+        // it renders a dynamic name/icon prefix, not plain translatable
+        // text) so it needs its own re-sync here, same reason _render() is
+        // also called right after _applyTranslations().
+        this._updateKioskLoginUi();
+        this._render();
+      })
+      .catch((e) => {
+        this._i18nLoading = null;
+        console.warn("[family_hub] failed to load \"" + lang + "\" translations - staying on English fallback text", e);
+      });
+  }
+  _applyTranslations() {
+    if (!this._root) return;
+    this._root.querySelectorAll("[data-i18n]").forEach((el) => {
+      const key = el.dataset.i18n;
+      if (el.dataset.i18nFallback === undefined) el.dataset.i18nFallback = el.textContent;
+      el.textContent = this._t(key, el.dataset.i18nFallback);
+    });
+    this._root.querySelectorAll("[data-i18n-title]").forEach((el) => {
+      const key = el.dataset.i18nTitle;
+      if (el.dataset.i18nTitleFallback === undefined) {
+        el.dataset.i18nTitleFallback = el.getAttribute("title") || el.getAttribute("aria-label") || "";
+      }
+      const translated = this._t(key, el.dataset.i18nTitleFallback);
+      if (el.hasAttribute("title")) el.setAttribute("title", translated);
+      if (el.hasAttribute("aria-label")) el.setAttribute("aria-label", translated);
+    });
   }
   // mirrors family-hub-chores-card.js's own _kioskMsg exactly
   // (see that file's comment above it) - wraps a websocket message with
@@ -1274,13 +1390,13 @@ class FamilyHubTodoCard extends HTMLElement {
     if (!btn) return;
     btn.hidden = !this._kioskElevation && !(this._kioskLoginUsers && this._kioskLoginUsers.length);
     if (this._kioskElevation) {
-      btn.textContent = `\u{1F464} ${this._kioskElevation.name} · Log out`;
+      btn.textContent = `\u{1F464} ${this._kioskElevation.name} · ${this._t("todo.kiosk_login.log_out", "Log out")}`;
       btn.classList.add("active");
-      btn.title = "Tap to log out of this kiosk session";
+      btn.title = this._t("todo.kiosk_login.log_out_title", "Tap to log out of this kiosk session");
     } else {
-      btn.textContent = "\u{1F512} Login";
+      btn.textContent = `\u{1F512} ${this._t("todo.kiosk_login.login", "Login")}`;
       btn.classList.remove("active");
-      btn.title = "Log in as a specific household member on this kiosk display";
+      btn.title = this._t("todo.kiosk_login.login_title", "Log in as a specific household member on this kiosk display");
     }
   }
   async _onKioskLoginBtnClick() {
@@ -1303,7 +1419,7 @@ class FamilyHubTodoCard extends HTMLElement {
       if (!this._kioskLoginUsers.length) {
         const empty = document.createElement("div");
         empty.className = "kiosk-login-empty";
-        empty.textContent = "No one is set up for kiosk login yet - an admin can enable it under Settings > Users.";
+        empty.textContent = this._t("todo.kiosk_login.no_users", "No one is set up for kiosk login yet - an admin can enable it under Settings > Users.");
         pickerEl.appendChild(empty);
       } else {
         this._kioskLoginUsers.forEach((u) => {
@@ -1337,18 +1453,18 @@ class FamilyHubTodoCard extends HTMLElement {
     const userId = this._kioskLoginSelectedUserId;
     const pin = pinEl ? pinEl.value.trim() : "";
     if (!userId) {
-      if (errEl) errEl.textContent = "Pick who's logging in first.";
+      if (errEl) errEl.textContent = this._t("todo.kiosk_login.pick_user_first", "Pick who's logging in first.");
       return;
     }
     if (!pin) {
-      if (errEl) errEl.textContent = "Enter a PIN.";
+      if (errEl) errEl.textContent = this._t("todo.kiosk_login.enter_pin", "Enter a PIN.");
       return;
     }
     try {
       await window.__familyHubKioskSession.login(this._hass, userId, pin);
       this._closeKioskLoginModal();
     } catch (e) {
-      if (errEl) errEl.textContent = (e && e.message) || "Incorrect PIN.";
+      if (errEl) errEl.textContent = (e && e.message) || this._t("todo.kiosk_login.incorrect_pin", "Incorrect PIN.");
       if (pinEl) {
         pinEl.value = "";
         pinEl.focus();
@@ -2219,14 +2335,14 @@ class FamilyHubTodoCard extends HTMLElement {
     const overlay = this._root.querySelector(".tie-reward-modal");
     const box = overlay.querySelector(".modal-box");
     box.innerHTML = `
-      <h3>&#127873; Add a star value</h3>
-      <div class="remind-hint">Turns this into a one-time reward: it'll show a star cost here and in the Rewards catalog, and claiming it (from either place) removes it from both.</div>
-      <label>Title<input type="text" class="tie-reward-title" maxlength="120"></label>
-      <label>Cost (stars)<input type="number" class="tie-reward-cost" min="0" step="1" inputmode="numeric"></label>
+      <h3>&#127873; ${this._t("todo.tie_reward.heading", "Add a star value")}</h3>
+      <div class="remind-hint">${this._t("todo.tie_reward.hint", "Turns this into a one-time reward: it'll show a star cost here and in the Rewards catalog, and claiming it (from either place) removes it from both.")}</div>
+      <label>${this._t("todo.tie_reward.title_label", "Title")}<input type="text" class="tie-reward-title" maxlength="120"></label>
+      <label>${this._t("todo.tie_reward.cost_label", "Cost (stars)")}<input type="number" class="tie-reward-cost" min="0" step="1" inputmode="numeric"></label>
       <div class="form-error"></div>
       <div class="modal-actions">
-        <button class="cancel-btn">Cancel</button>
-        <button class="save-btn tie-reward-save-btn">Save</button>
+        <button class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn tie-reward-save-btn">${this._t("common.save", "Save")}</button>
       </div>
     `;
     box.querySelector(".tie-reward-title").value = item.summary || "";
@@ -2239,11 +2355,11 @@ class FamilyHubTodoCard extends HTMLElement {
       const title = titleInput.value.trim();
       const cost = parseInt(costInput.value, 10);
       if (!title) {
-        errorEl.textContent = "A title is required.";
+        errorEl.textContent = this._t("todo.tie_reward.title_required", "A title is required.");
         return;
       }
       if (!Number.isFinite(cost) || cost < 0) {
-        errorEl.textContent = "Enter a star cost of 0 or more.";
+        errorEl.textContent = this._t("todo.tie_reward.cost_required", "Enter a star cost of 0 or more.");
         return;
       }
       try {
@@ -2276,7 +2392,7 @@ class FamilyHubTodoCard extends HTMLElement {
         await this._fetchRewardsCatalog();
         this._fetchAllLists();
       } catch (e) {
-        errorEl.textContent = "Couldn't save - " + (e && e.message ? e.message : "try again.");
+        errorEl.textContent = this._t("todo.tie_reward.save_failed", "Couldn't save - %error%", { error: (e && e.message) ? e.message : this._t("todo.tie_reward.try_again", "try again.") });
       }
     });
     overlay.classList.add("open");
@@ -2445,7 +2561,7 @@ class FamilyHubTodoCard extends HTMLElement {
     fileInput.addEventListener("change", async () => {
       const file = fileInput.files && fileInput.files[0];
       if (!file) return;
-      if (statusEl) statusEl.textContent = "Uploading…";
+      if (statusEl) statusEl.textContent = this._t("todo.wishlist_upload.uploading", "Uploading…");
       try {
         const imageUrl = await this._wishlistUploadImage(file);
         if (!imageUrl) throw new Error("empty");
@@ -2454,9 +2570,9 @@ class FamilyHubTodoCard extends HTMLElement {
           previewEl.src = imageUrl;
           previewEl.hidden = false;
         }
-        if (statusEl) statusEl.textContent = "Photo added.";
+        if (statusEl) statusEl.textContent = this._t("todo.wishlist_upload.photo_added", "Photo added.");
       } catch (e) {
-        if (statusEl) statusEl.textContent = "Couldn't upload that photo - try a different file or paste a link instead.";
+        if (statusEl) statusEl.textContent = this._t("todo.wishlist_upload.upload_failed", "Couldn't upload that photo - try a different file or paste a link instead.");
       } finally {
         // Reset so picking the SAME file again (e.g. after an error)
         // still fires another change event.
@@ -2573,7 +2689,7 @@ class FamilyHubTodoCard extends HTMLElement {
     // panel, so a poll-tick re-render of the board never wipes mid-entry.
     const descriptor = this._descriptorByKey(key);
     const putawayBtn = descriptor && descriptor.kind === "grocy" && !completed
-      ? `<button class="todo-putaway-btn" title="Put away" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">&#128230;</button>`
+      ? `<button class="todo-putaway-btn" title="${this._escAttr(this._t("todo.item.put_away", "Put away"))}" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">&#128230;</button>`
       : "";
     // Wish Lists - a wish-list item renders as a small
     // gift-registry card (image thumbnail, name, link, note) instead of a
@@ -2587,11 +2703,11 @@ class FamilyHubTodoCard extends HTMLElement {
       <div class="todo-item${completed ? " completed" : ""}" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}" draggable="${completed ? "false" : "true"}">
         <input type="checkbox" class="todo-check" ${completed ? "checked" : ""} data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">
         <div class="todo-item-text">
-          <div class="todo-item-summary">${this._esc(item.summary || "(untitled)")}</div>
+          <div class="todo-item-summary">${this._esc(item.summary || this._t("todo.item.untitled", "(untitled)"))}</div>
           ${item.due ? `<div class="todo-item-due">${this._esc(item.due)}</div>` : ""}
         </div>
         ${putawayBtn}
-        <button class="todo-delete-btn" title="Delete" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">&#10005;</button>
+        <button class="todo-delete-btn" title="${this._escAttr(this._t("todo.item.delete", "Delete"))}" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">&#10005;</button>
       </div>
     `;
   }
@@ -2607,7 +2723,7 @@ class FamilyHubTodoCard extends HTMLElement {
       ? `<img class="wishlist-item-image" src="${this._escAttr(parsed.image)}" alt="" loading="lazy" onerror="this.style.display='none'">`
       : `<div class="wishlist-item-image wishlist-item-image-placeholder">&#127873;</div>`;
     const linkHtml = parsed.link
-      ? `<a class="wishlist-item-link" href="${this._escAttr(parsed.link)}" target="_blank" rel="noopener noreferrer" title="Open link">&#128279; View</a>`
+      ? `<a class="wishlist-item-link" href="${this._escAttr(parsed.link)}" target="_blank" rel="noopener noreferrer" title="${this._escAttr(this._t("todo.wishlist.open_link", "Open link"))}">&#128279; ${this._t("todo.wishlist.view_link", "View")}</a>`
       : "";
     // Claim UI is left off entirely for the list's own owner - see
     // _isWishlistOwner's own comment for the "hidden from the owner"
@@ -2671,8 +2787,8 @@ class FamilyHubTodoCard extends HTMLElement {
         const canClaimReward = !!myId;
         rewardHtml = `
           <div class="wishlist-reward-row">
-            <span class="wishlist-reward-badge" title="Redeems this reward and removes it from both the wish list and the Rewards catalog">&#11088; ${Number.isFinite(cost) ? cost : "?"}</span>
-            <button type="button" class="wishlist-claim-reward-btn" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}" ${canClaimReward ? "" : "disabled"} title="${canClaimReward ? "" : "Log in to claim"}">Claim</button>
+            <span class="wishlist-reward-badge" title="${this._escAttr(this._t("todo.wishlist.reward_badge_title", "Redeems this reward and removes it from both the wish list and the Rewards catalog"))}">&#11088; ${Number.isFinite(cost) ? cost : "?"}</span>
+            <button type="button" class="wishlist-claim-reward-btn" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}" ${canClaimReward ? "" : "disabled"} title="${canClaimReward ? "" : this._escAttr(this._t("todo.wishlist.login_to_claim", "Log in to claim"))}">${this._t("todo.wishlist.claim", "Claim")}</button>
           </div>
         `;
       }
@@ -2680,9 +2796,12 @@ class FamilyHubTodoCard extends HTMLElement {
       const canSeeClaims = this._hasPermission("can_see_wishlist_claims");
       if (!isOwner && canSeeClaims) {
         if (parsed.claimedBy) {
-          claimHtml = `<button type="button" class="wishlist-claim-btn claimed${claimedByMe ? " claimed-by-me" : ""}" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}" ${claimedByMe ? "" : "disabled"}>${claimedByMe ? "Claimed by you – tap to release" : `Claimed${parsed.claimedByName ? ` by ${this._esc(parsed.claimedByName)}` : ""}`}</button>`;
+          const claimedLabel = claimedByMe
+            ? this._t("todo.wishlist.claimed_by_you", "Claimed by you – tap to release")
+            : (parsed.claimedByName ? this._t("todo.wishlist.claimed_by", "Claimed by %name%", { name: this._esc(parsed.claimedByName) }) : this._t("todo.wishlist.claimed", "Claimed"));
+          claimHtml = `<button type="button" class="wishlist-claim-btn claimed${claimedByMe ? " claimed-by-me" : ""}" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}" ${claimedByMe ? "" : "disabled"}>${claimedLabel}</button>`;
         } else {
-          claimHtml = `<button type="button" class="wishlist-claim-btn" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">Claim</button>`;
+          claimHtml = `<button type="button" class="wishlist-claim-btn" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">${this._t("todo.wishlist.claim", "Claim")}</button>`;
         }
       }
       // Only offered once (no reward tied yet) and only to whoever can add
@@ -2692,7 +2811,7 @@ class FamilyHubTodoCard extends HTMLElement {
       // submits (family_hub/rewards/add_catalog_item), so this is UX only,
       // not the real security boundary.
       if (this._hasPermission("can_add_rewards")) {
-        claimHtml += `<button type="button" class="wishlist-tie-reward-btn" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}" title="Tie this item to a one-time Rewards catalog entry">&#127873; Add star value</button>`;
+        claimHtml += `<button type="button" class="wishlist-tie-reward-btn" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}" title="${this._escAttr(this._t("todo.wishlist.tie_reward_title", "Tie this item to a one-time Rewards catalog entry"))}">&#127873; ${this._t("todo.wishlist.add_star_value", "Add star value")}</button>`;
       }
     }
     return `
@@ -2700,12 +2819,12 @@ class FamilyHubTodoCard extends HTMLElement {
         <input type="checkbox" class="todo-check" ${completed ? "checked" : ""} data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">
         ${imageHtml}
         <div class="todo-item-text wishlist-item-text">
-          <div class="todo-item-summary">${this._esc(item.summary || "(untitled)")}</div>
+          <div class="todo-item-summary">${this._esc(item.summary || this._t("todo.item.untitled", "(untitled)"))}</div>
           ${parsed.note ? `<div class="wishlist-item-note">${this._esc(parsed.note)}</div>` : ""}
           <div class="wishlist-item-row">${linkHtml}${claimHtml}</div>
           ${rewardHtml}
         </div>
-        <button class="todo-delete-btn" title="Delete" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">&#10005;</button>
+        <button class="todo-delete-btn" title="${this._escAttr(this._t("todo.item.delete", "Delete"))}" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">&#10005;</button>
       </div>
     `;
   }
@@ -2718,7 +2837,7 @@ class FamilyHubTodoCard extends HTMLElement {
       <div class="completed-row">
         <div class="completed-header" data-list-key="${this._escAttr(key)}">
           <span class="completed-toggle-icon">${open ? "&#9662;" : "&#9656;"}</span>
-          <span class="completed-title">Completed</span>
+          <span class="completed-title">${this._t("todo.column.completed", "Completed")}</span>
           <span class="completed-badge">${completed.length}</span>
         </div>
         ${body}
@@ -2731,17 +2850,17 @@ class FamilyHubTodoCard extends HTMLElement {
     const active = this._activeItems(key);
     const itemsHtml = active.length
       ? active.map((it) => this._itemHtml(key, it)).join("")
-      : `<div class="empty-state">Nothing here</div>`;
+      : `<div class="empty-state">${this._t("todo.column.nothing_here", "Nothing here")}</div>`;
     // a small "Grocy" tag on Grocy-backed columns, so the board
     // makes it obvious at a glance which lists are shared with Grocy's own
     // separate app/website (someone might also add/check items there) vs.
     // a plain Home Assistant to-do list nobody else touches.
-    const grocyTag = descriptor.kind === "grocy" ? `<span class="todo-column-source-tag">Grocy</span>` : "";
+    const grocyTag = descriptor.kind === "grocy" ? `<span class="todo-column-source-tag">${this._t("todo.column.grocy_tag", "Grocy")}</span>` : "";
     // Wish Lists: same small tag treatment as the Grocy one
     // above, so a wish-list-flagged column is just as obvious at a glance
     // on the board itself, not only once you open an item (see
     // _isWishlistList).
-    const wishlistTag = this._isWishlistList(key) ? `<span class="todo-column-source-tag wishlist-column-tag">Wish List</span>` : "";
+    const wishlistTag = this._isWishlistList(key) ? `<span class="todo-column-source-tag wishlist-column-tag">${this._t("todo.column.wishlist_tag", "Wish List")}</span>` : "";
     return `
       <div class="todo-column" data-list-key="${this._escAttr(key)}">
         <div class="todo-column-header" style="border-top-color:${color}">
@@ -2759,8 +2878,8 @@ class FamilyHubTodoCard extends HTMLElement {
     const descriptors = this._listDescriptors();
     if (!descriptors.length) {
       const hint = this._grocyConfigured
-        ? "No lists configured yet - tap the gear icon to pick one or more to-do or Grocy lists to show."
-        : "No lists configured yet - tap the gear icon to pick one or more to-do lists to show.";
+        ? this._t("todo.board.no_lists_grocy", "No lists configured yet - tap the gear icon to pick one or more to-do or Grocy lists to show.")
+        : this._t("todo.board.no_lists", "No lists configured yet - tap the gear icon to pick one or more to-do lists to show.");
       return `<div class="empty-state">${hint}</div>`;
     }
     // one `.todo-board-row` per chosen stack. Crucially these are
@@ -2788,7 +2907,7 @@ class FamilyHubTodoCard extends HTMLElement {
         const rowHtml = `<div class="todo-board-row${multi ? " multi-row" : ""}"${weightStyle}>${group.map((d) => this._columnHtml(d)).join("")}</div>`;
         const handleHtml =
           weights && i < groups.length - 1
-            ? `<div class="todo-board-row-resize" data-row-index="${i}" title="Drag to resize rows"><span class="todo-board-row-resize-grip"></span></div>`
+            ? `<div class="todo-board-row-resize" data-row-index="${i}" title="${this._escAttr(this._t("todo.board.drag_to_resize", "Drag to resize rows"))}"><span class="todo-board-row-resize-grip"></span></div>`
             : "";
         return rowHtml + handleHtml;
       })
@@ -2841,18 +2960,18 @@ class FamilyHubTodoCard extends HTMLElement {
       <div class="modal-overlay tie-reward-modal"><div class="modal-box"></div></div>
       <div class="modal-overlay kiosk-login-overlay">
         <div class="modal-box kiosk-login-box">
-          <button type="button" class="detail-close-btn kiosk-login-close" title="Close">&#10005;</button>
-          <h2>&#128274; Kiosk login</h2>
+          <button type="button" class="detail-close-btn kiosk-login-close" data-i18n-title="common.close" title="Close">&#10005;</button>
+          <h2>&#128274; <span data-i18n="todo.kiosk_login.heading">Kiosk login</span></h2>
           <div class="kiosk-login-user-picker"></div>
           <input type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" class="kiosk-login-pin-input" placeholder="PIN" />
           <div class="kiosk-login-error"></div>
           <div class="modal-actions">
-            <button class="cancel-btn kiosk-login-cancel">Cancel</button>
-            <button class="save-btn kiosk-login-submit">Log in</button>
+            <button class="cancel-btn kiosk-login-cancel" data-i18n="common.cancel">Cancel</button>
+            <button class="save-btn kiosk-login-submit" data-i18n="todo.kiosk_login.submit">Log in</button>
           </div>
         </div>
       </div>
-      <button class="add-todo-fab" title="Add an item" aria-haspopup="true">&#65291;</button>
+      <button class="add-todo-fab" data-i18n-title="todo.fab.add_item_title" title="Add an item" aria-haspopup="true">&#65291;</button>
     `;
     this._root = root;
     root.querySelector(".title").textContent = this._config.title;
@@ -3174,8 +3293,8 @@ class FamilyHubTodoCard extends HTMLElement {
     const box = overlay.querySelector(".modal-box");
     box.innerHTML = `
       <div class="modal-tabs">
-        <button type="button" class="modal-tab-btn active" data-tab="add">Add Item</button>
-        <button type="button" class="modal-tab-btn" data-tab="lists">List(s)</button>
+        <button type="button" class="modal-tab-btn active" data-tab="add">${this._t("todo.create_modal.add_item_tab", "Add Item")}</button>
+        <button type="button" class="modal-tab-btn" data-tab="lists">${this._t("todo.create_modal.lists_tab", "List(s)")}</button>
       </div>
       <div class="modal-tab-panel" data-tab-panel="add"></div>
       <div class="modal-tab-panel" data-tab-panel="lists" hidden></div>
@@ -3197,27 +3316,27 @@ class FamilyHubTodoCard extends HTMLElement {
   _renderAddItemTab(panel, overlay, switchTab) {
     const descriptors = this._listDescriptors();
     if (!descriptors.length) {
-      panel.innerHTML = `<div class="empty-state">No lists configured yet - switch to the List(s) tab to pick one or more to-do or Grocy lists first.</div><div class="modal-actions"><button type="button" class="goto-lists-btn">List(s)</button></div>`;
+      panel.innerHTML = `<div class="empty-state">${this._t("todo.create_modal.no_lists", "No lists configured yet - switch to the List(s) tab to pick one or more to-do or Grocy lists first.")}</div><div class="modal-actions"><button type="button" class="goto-lists-btn">${this._t("todo.create_modal.lists_tab", "List(s)")}</button></div>`;
       panel.querySelector(".goto-lists-btn").addEventListener("click", () => switchTab("lists"));
       return;
     }
     const listOptions = descriptors
-      .map((d) => `<option value="${this._escAttr(d.key)}" data-kind="${d.kind}">${this._esc(this._listName(d))}${d.kind === "grocy" ? " (Grocy)" : ""}</option>`)
+      .map((d) => `<option value="${this._escAttr(d.key)}" data-kind="${d.kind}">${this._esc(this._listName(d))}${d.kind === "grocy" ? ` (${this._t("todo.column.grocy_tag", "Grocy")})` : ""}</option>`)
       .join("");
     panel.innerHTML = `
-      <label>List<select class="f-list">${listOptions}</select></label>
-      <label>What do you need to do/get?<input type="text" class="f-summary" placeholder="e.g. Milk" autofocus></label>
-      <label class="f-wishlist-link-label">Link (optional)<input type="url" class="f-wishlist-link" placeholder="https://…"></label>
-      <label class="f-wishlist-image-label">Image URL (optional)<input type="url" class="f-wishlist-image" placeholder="https://…"></label>
+      <label>${this._t("todo.add_item.list_label", "List")}<select class="f-list">${listOptions}</select></label>
+      <label>${this._t("todo.add_item.summary_label", "What do you need to do/get?")}<input type="text" class="f-summary" placeholder="e.g. Milk" autofocus></label>
+      <label class="f-wishlist-link-label">${this._t("todo.add_item.link_label", "Link (optional)")}<input type="url" class="f-wishlist-link" placeholder="https://…"></label>
+      <label class="f-wishlist-image-label">${this._t("todo.add_item.image_label", "Image URL (optional)")}<input type="url" class="f-wishlist-image" placeholder="https://…"></label>
       <div class="f-wishlist-image-controls-wrap wishlist-image-controls">
-        <label class="wishlist-upload-btn">Upload photo…<input type="file" accept="image/*" class="f-wishlist-image-file" hidden></label>
+        <label class="wishlist-upload-btn">${this._t("todo.add_item.upload_photo", "Upload photo…")}<input type="file" accept="image/*" class="f-wishlist-image-file" hidden></label>
         <img class="wishlist-image-preview" alt="" hidden>
         <span class="wishlist-image-upload-status"></span>
       </div>
-      <label class="f-due-label">Due date (optional)<input type="date" class="f-due"></label>
+      <label class="f-due-label">${this._t("todo.add_item.due_label", "Due date (optional)")}<input type="date" class="f-due"></label>
       <div class="modal-actions">
-        <button class="cancel-btn">Cancel</button>
-        <button class="save-btn">Add</button>
+        <button class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn">${this._t("common.add", "Add")}</button>
       </div>
       <div class="form-error"></div>
     `;
@@ -3265,7 +3384,7 @@ class FamilyHubTodoCard extends HTMLElement {
       const summary = summaryInput.value;
       const due = panel.querySelector(".f-due").value;
       if (!summary || !summary.trim()) {
-        errEl.textContent = "Give the item a name.";
+        errEl.textContent = this._t("todo.add_item.name_required", "Give the item a name.");
         return;
       }
       const wishlistExtra = wishlistLinkLabel.hidden ? undefined : {
@@ -3302,23 +3421,23 @@ class FamilyHubTodoCard extends HTMLElement {
             <input type="checkbox" class="settings-todo-check" value="${this._escAttr(id)}" ${selectedEntities.has(id) ? "checked" : ""}>
             <span>${this._esc(this._todoEntityLabel(id))}</span>
           </label>
-          <label class="settings-wishlist-check-wrap" title="Show this list as a wish list - image, link and description per item, with claiming.">
+          <label class="settings-wishlist-check-wrap" title="${this._escAttr(this._t("todo.lists_tab.wishlist_check_title", "Show this list as a wish list - image, link and description per item, with claiming."))}">
             <input type="checkbox" class="settings-wishlist-check" value="${this._escAttr(id)}" ${this._isWishlistList(id) ? "checked" : ""}>
-            <span>Wish list</span>
+            <span>${this._t("todo.lists_tab.wishlist_label", "Wish list")}</span>
           </label>
         </div>`
           )
           .join("")
-      : `<div class="empty-state">No to-do lists found on this Home Assistant instance yet.</div>`;
+      : `<div class="empty-state">${this._t("todo.lists_tab.no_todo_lists", "No to-do lists found on this Home Assistant instance yet.")}</div>`;
 
     const grocySelected = this._grocySelectedListIds();
     let grocySectionHtml;
     if (this._grocyConfigured === false) {
-      grocySectionHtml = `<div class="empty-state">Grocy isn't set up in Family Hub yet - add it under Settings &rarr; Devices &amp; Services &rarr; Family Hub &rarr; Configure &rarr; Grocy to show its shopping lists here.</div>`;
+      grocySectionHtml = `<div class="empty-state">${this._t("todo.lists_tab.grocy_not_set_up", "Grocy isn't set up in Family Hub yet - add it under Settings &rarr; Devices &amp; Services &rarr; Family Hub &rarr; Configure &rarr; Grocy to show its shopping lists here.")}</div>`;
     } else if (this._grocyConfigured === undefined) {
-      grocySectionHtml = `<div class="settings-loading">Loading…</div>`;
+      grocySectionHtml = `<div class="settings-loading">${this._t("todo.lists_tab.loading", "Loading…")}</div>`;
     } else if (!(this._grocyLists || []).length) {
-      grocySectionHtml = `<div class="empty-state">No Grocy shopping lists found yet.</div>`;
+      grocySectionHtml = `<div class="empty-state">${this._t("todo.lists_tab.no_grocy_lists", "No Grocy shopping lists found yet.")}</div>`;
     } else {
       grocySectionHtml = this._grocyLists
         .map((l) => {
@@ -3336,31 +3455,31 @@ class FamilyHubTodoCard extends HTMLElement {
     const layoutBtnsHtml = Array.from({ length: TODO_CARD_MAX_BOARD_ROWS }, (_, i) => i + 1)
       .map(
         (n) =>
-          `<button type="button" class="layout-btn${n === currentRows ? " active" : ""}" data-rows="${n}">${n === 1 ? "1 row" : `${n} rows`}</button>`
+          `<button type="button" class="layout-btn${n === currentRows ? " active" : ""}" data-rows="${n}">${n === 1 ? this._t("todo.layout_hint.row_count_one", "1 row") : this._t("todo.layout_hint.row_count_other", "%n% rows", { n })}</button>`
       )
       .join("");
 
     panel.innerHTML = `
       <div class="settings-section">
-        <div class="settings-section-title">To-Do Lists</div>
+        <div class="settings-section-title">${this._t("todo.lists_tab.todo_lists_heading", "To-Do Lists")}</div>
         <div class="settings-check-list">${todoRowsHtml}</div>
       </div>
       <div class="settings-section">
-        <div class="settings-section-title">Grocy Shopping Lists</div>
+        <div class="settings-section-title">${this._t("todo.lists_tab.grocy_lists_heading", "Grocy Shopping Lists")}</div>
         <div class="settings-check-list">${grocySectionHtml}</div>
       </div>
       <div class="settings-section layout-section">
-        <div class="settings-section-title">Layout</div>
+        <div class="settings-section-title">${this._t("todo.lists_tab.layout_heading", "Layout")}</div>
         <div class="layout-row">${layoutBtnsHtml}</div>
         <div class="layout-hint"></div>
         <label class="settings-check-row fit-screen-row">
           <input type="checkbox" class="settings-fit-screen-check" ${this._fitToScreen() ? "checked" : ""}>
-          <span>Fit to screen - the card fills the space below it instead of growing the page; each list scrolls on its own${currentRows > 1 ? ", and rows can be resized by dragging the handle between them" : ""}.</span>
+          <span>${this._fitScreenHintText(currentRows)}</span>
         </label>
       </div>
       <div class="modal-actions">
-        <button class="cancel-btn lists-cancel-btn">Cancel</button>
-        <button class="save-btn lists-save-btn">Save</button>
+        <button class="cancel-btn lists-cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn lists-save-btn">${this._t("common.save", "Save")}</button>
       </div>
       <div class="form-error"></div>
     `;
@@ -3381,7 +3500,7 @@ class FamilyHubTodoCard extends HTMLElement {
     const syncFitScreenHint = () => {
       const hint = panel.querySelector(".fit-screen-row span");
       const rows = this._listsTabRowsDraft || 1;
-      hint.textContent = `Fit to screen - the card fills the space below it instead of growing the page; each list scrolls on its own${rows > 1 ? ", and rows can be resized by dragging the handle between them" : ""}.`;
+      hint.textContent = this._fitScreenHintText(rows);
     };
     const syncLayoutUi = () => {
       panel.querySelectorAll(".layout-btn").forEach((btn) => {
@@ -3407,16 +3526,33 @@ class FamilyHubTodoCard extends HTMLElement {
   // right now ("6 lists across 2 rows - 3 per row"), rather than an
   // abstract description - the useful question when picking is "what will
   // MY board look like," and with a live count that's answerable.
+  _fitScreenHintText(rows) {
+    return rows > 1
+      ? this._t(
+          "todo.lists_tab.fit_screen_hint_resizable",
+          "Fit to screen - the card fills the space below it instead of growing the page; each list scrolls on its own, and rows can be resized by dragging the handle between them."
+        )
+      : this._t(
+          "todo.lists_tab.fit_screen_hint",
+          "Fit to screen - the card fills the space below it instead of growing the page; each list scrolls on its own."
+        );
+  }
   _layoutHintText(rows) {
     const total = this._listDescriptors().length;
-    if (rows <= 1) return total ? `All ${total} list${total === 1 ? "" : "s"} side by side in one row.` : "All lists side by side in one row.";
-    if (!total) return `Lists split across ${rows} stacked rows.`;
+    if (rows <= 1) {
+      if (!total) return this._t("todo.layout_hint.all_lists_one_row", "All lists side by side in one row.");
+      const listWord = total === 1 ? this._t("todo.layout_hint.list_one", "list") : this._t("todo.layout_hint.list_other", "lists");
+      return this._t("todo.layout_hint.one_row", "All %total% %list_word% side by side in one row.", { total, list_word: listWord });
+    }
+    if (!total) return this._t("todo.layout_hint.stacked_rows", "Lists split across %rows% stacked rows.", { rows });
     const perRow = Math.ceil(total / rows);
     const usedRows = Math.ceil(total / perRow);
     if (usedRows < rows) {
-      return `${total} list${total === 1 ? "" : "s"} only fill ${usedRows} row${usedRows === 1 ? "" : "s"} - pick more lists to use all ${rows}.`;
+      const listWord = total === 1 ? this._t("todo.layout_hint.list_one", "list") : this._t("todo.layout_hint.list_other", "lists");
+      const rowWord = usedRows === 1 ? this._t("todo.layout_hint.row_one", "row") : this._t("todo.layout_hint.row_other", "rows");
+      return this._t("todo.layout_hint.underfilled", "%total% %list_word% only fill %used_rows% %row_word% - pick more lists to use all %rows%.", { total, list_word: listWord, used_rows: usedRows, row_word: rowWord, rows });
     }
-    return `${total} lists across ${rows} rows - up to ${perRow} per row.`;
+    return this._t("todo.layout_hint.filled", "%total% lists across %rows% rows - up to %per_row% per row.", { total, rows, per_row: perRow });
   }
   _todoEntityLabel(entityId) {
     const st = this._hass && this._hass.states && this._hass.states[entityId];
@@ -3535,17 +3671,17 @@ class FamilyHubTodoCard extends HTMLElement {
 
     const renderShell = () => {
       box.innerHTML = `
-        <h3>Put away</h3>
+        <h3>${this._t("todo.putaway.heading", "Put away")}</h3>
         <div class="putaway-item-name">${this._esc(item.rawName || item.summary || "")}</div>
         <div class="putaway-product-section"></div>
         <div class="putaway-fields" hidden>
-          <label>Location<select class="pa-location"><option value="">Loading…</option></select></label>
-          <label>Expires<input type="date" class="pa-date"></label>
-          <label>Price<input type="number" class="pa-price" min="0" step="0.01" placeholder="Optional"></label>
+          <label>${this._t("todo.putaway.location_label", "Location")}<select class="pa-location"><option value="">${this._t("todo.putaway.loading", "Loading…")}</option></select></label>
+          <label>${this._t("todo.putaway.expires_label", "Expires")}<input type="date" class="pa-date"></label>
+          <label>${this._t("todo.putaway.price_label", "Price")}<input type="number" class="pa-price" min="0" step="0.01" placeholder="Optional"></label>
         </div>
         <div class="modal-actions">
-          <button class="cancel-btn">Cancel</button>
-          <button class="save-btn putaway-confirm-btn">Put Away</button>
+          <button class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+          <button class="save-btn putaway-confirm-btn">${this._t("todo.putaway.confirm_btn", "Put Away")}</button>
         </div>
         <div class="form-error"></div>
       `;
@@ -3569,15 +3705,15 @@ class FamilyHubTodoCard extends HTMLElement {
       const defaultId = item.defaultLocationId != null && locations.some((loc) => loc.id === item.defaultLocationId) ? item.defaultLocationId : null;
       locationSelect.innerHTML = locations.length
         ? locations.map((loc) => `<option value="${loc.id}"${defaultId === loc.id ? " selected" : ""}>${this._esc(loc.name)}</option>`).join("")
-        : `<option value="">No locations yet</option>`;
+        : `<option value="">${this._t("todo.putaway.no_locations", "No locations yet")}</option>`;
     };
 
     const renderProductSection = () => {
       const sectionEl = productSectionEl();
       if (selectedProductId != null) {
         sectionEl.innerHTML = `
-          <div class="putaway-product-label">Product: <strong>${this._esc(selectedProductName || "")}</strong>
-            ${wasLinked ? "" : `<button type="button" class="putaway-change-btn">Change</button>`}
+          <div class="putaway-product-label">${this._t("todo.putaway.product_label", "Product:")} <strong>${this._esc(selectedProductName || "")}</strong>
+            ${wasLinked ? "" : `<button type="button" class="putaway-change-btn">${this._t("todo.putaway.change_btn", "Change")}</button>`}
           </div>
         `;
         const changeBtn = sectionEl.querySelector(".putaway-change-btn");
@@ -3589,29 +3725,29 @@ class FamilyHubTodoCard extends HTMLElement {
       sectionEl.innerHTML = `
         <div class="putaway-search-row">
           <input type="text" class="pa-search-text" value="${this._escAttr(item.rawName || "")}" placeholder="Search Grocy products">
-          <button type="button" class="pa-search-btn">Search</button>
+          <button type="button" class="pa-search-btn">${this._t("todo.putaway.search_btn", "Search")}</button>
         </div>
-        <div class="putaway-match-list"><div class="putaway-searching">Searching…</div></div>
+        <div class="putaway-match-list"><div class="putaway-searching">${this._t("todo.putaway.searching", "Searching…")}</div></div>
       `;
       const searchInput = sectionEl.querySelector(".pa-search-text");
       const searchBtn = sectionEl.querySelector(".pa-search-btn");
       const runSearch = async () => {
         const matchListEl = sectionEl.querySelector(".putaway-match-list");
-        matchListEl.innerHTML = `<div class="putaway-searching">Searching…</div>`;
+        matchListEl.innerHTML = `<div class="putaway-searching">${this._t("todo.putaway.searching", "Searching…")}</div>`;
         const text = searchInput.value.trim();
         if (!text) {
-          matchListEl.innerHTML = `<div class="empty-state">Type a product name to search.</div>`;
+          matchListEl.innerHTML = `<div class="empty-state">${this._t("todo.putaway.type_to_search", "Type a product name to search.")}</div>`;
           return;
         }
         try {
           const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/match_grocy_product", text });
           if (result && result.configured === false) {
-            matchListEl.innerHTML = `<div class="empty-state">Grocy isn't connected yet.</div>`;
+            matchListEl.innerHTML = `<div class="empty-state">${this._t("todo.putaway.grocy_not_connected", "Grocy isn't connected yet.")}</div>`;
             return;
           }
           const matches = (result && Array.isArray(result.matches)) ? result.matches : [];
           if (!matches.length) {
-            matchListEl.innerHTML = `<div class="empty-state">No close matches found - try a different search.</div>`;
+            matchListEl.innerHTML = `<div class="empty-state">${this._t("todo.putaway.no_matches", "No close matches found - try a different search.")}</div>`;
             return;
           }
           matchListEl.innerHTML = matches
@@ -3627,7 +3763,7 @@ class FamilyHubTodoCard extends HTMLElement {
             });
           });
         } catch (e) {
-          matchListEl.innerHTML = `<div class="empty-state">Couldn't reach Grocy.</div>`;
+          matchListEl.innerHTML = `<div class="empty-state">${this._t("todo.putaway.cant_reach_grocy", "Couldn't reach Grocy.")}</div>`;
         }
       };
       searchBtn.addEventListener("click", runSearch);
@@ -3640,13 +3776,13 @@ class FamilyHubTodoCard extends HTMLElement {
     const confirm = async () => {
       const errEl = box.querySelector(".form-error");
       if (selectedProductId == null) {
-        errEl.textContent = "Pick a product first.";
+        errEl.textContent = this._t("todo.putaway.pick_product_first", "Pick a product first.");
         return;
       }
       const locationSelect = box.querySelector(".pa-location");
       const locationId = parseInt(locationSelect.value, 10);
       if (!locationId) {
-        errEl.textContent = "Pick a location before putting this away.";
+        errEl.textContent = this._t("todo.putaway.pick_location_first", "Pick a location before putting this away.");
         return;
       }
       const dateInput = box.querySelector(".pa-date");
@@ -3673,19 +3809,19 @@ class FamilyHubTodoCard extends HTMLElement {
           unlink_by_row_id: !wasLinked,
         });
         if (result && result.configured === false) {
-          errEl.textContent = "Grocy isn't connected yet.";
+          errEl.textContent = this._t("todo.putaway.grocy_not_connected", "Grocy isn't connected yet.");
           confirmBtn.disabled = false;
           return;
         }
         if (!result || !result.success) {
-          errEl.textContent = `Couldn't put that away: ${(result && result.error) || "unknown error"}`;
+          errEl.textContent = this._t("todo.putaway.put_away_failed", "Couldn't put that away: %error%", { error: (result && result.error) || this._t("todo.putaway.unknown_error", "unknown error") });
           confirmBtn.disabled = false;
           return;
         }
         overlay.classList.remove("open");
         this._fetchAllLists();
       } catch (e) {
-        errEl.textContent = "Couldn't reach Grocy.";
+        errEl.textContent = this._t("todo.putaway.cant_reach_grocy", "Couldn't reach Grocy.");
         confirmBtn.disabled = false;
       }
     };
@@ -3756,35 +3892,35 @@ class FamilyHubTodoCard extends HTMLElement {
       <div class="detail-header">
         <label class="detail-check-wrap">
           <input type="checkbox" class="detail-check" ${completed ? "checked" : ""}>
-          <span class="detail-check-label">Done</span>
+          <span class="detail-check-label">${this._t("todo.item_detail.done", "Done")}</span>
         </label>
         <div class="detail-title-field">
-          <span class="detail-field-label">Title</span>
+          <span class="detail-field-label">${this._t("todo.item_detail.title_label", "Title")}</span>
           ${titleEditable
             ? `<input type="text" class="detail-title" value="${this._escAttr(originalTitle)}">`
             : `<div class="detail-title detail-title-readonly">${this._esc(originalTitle)}</div>`}
         </div>
       </div>
       ${isGrocy
-        ? `<label>Note<textarea class="detail-note" rows="4" placeholder="Add a note…">${this._esc(item.note || "")}</textarea></label>
-           <label>Amount<input type="number" class="detail-amount" min="0" step="0.01" value="${item.amount || 1}"></label>`
-        : `<label ${supportsDescription ? "" : "hidden"}>Description<textarea class="detail-description" rows="4" placeholder="Add a description…">${this._esc(isWishlist ? wishlistParsed.note : (item.description || ""))}</textarea></label>
+        ? `<label>${this._t("todo.item_detail.note_label", "Note")}<textarea class="detail-note" rows="4" placeholder="Add a note…">${this._esc(item.note || "")}</textarea></label>
+           <label>${this._t("todo.item_detail.amount_label", "Amount")}<input type="number" class="detail-amount" min="0" step="0.01" value="${item.amount || 1}"></label>`
+        : `<label ${supportsDescription ? "" : "hidden"}>${this._t("todo.item_detail.description_label", "Description")}<textarea class="detail-description" rows="4" placeholder="Add a description…">${this._esc(isWishlist ? wishlistParsed.note : (item.description || ""))}</textarea></label>
            ${isWishlist ? `
-           <label>Link<input type="url" class="detail-wishlist-link" placeholder="https://…" value="${this._escAttr(wishlistParsed.link)}"></label>
-           <label>Image URL<input type="url" class="detail-wishlist-image" placeholder="https://…" value="${this._escAttr(wishlistParsed.image)}"></label>
+           <label>${this._t("todo.item_detail.link_label", "Link")}<input type="url" class="detail-wishlist-link" placeholder="https://…" value="${this._escAttr(wishlistParsed.link)}"></label>
+           <label>${this._t("todo.item_detail.image_label", "Image URL")}<input type="url" class="detail-wishlist-image" placeholder="https://…" value="${this._escAttr(wishlistParsed.image)}"></label>
            <div class="wishlist-image-controls">
-             <label class="wishlist-upload-btn">Upload photo…<input type="file" accept="image/*" class="detail-wishlist-image-file" hidden></label>
+             <label class="wishlist-upload-btn">${this._t("todo.add_item.upload_photo", "Upload photo…")}<input type="file" accept="image/*" class="detail-wishlist-image-file" hidden></label>
              <img class="wishlist-image-preview" alt="" src="${this._escAttr(wishlistParsed.image)}" ${wishlistParsed.image ? "" : "hidden"}>
              <span class="wishlist-image-upload-status"></span>
            </div>` : ""}
-           <label ${supportsDueDate ? "" : "hidden"}>Due date<input type="date" class="detail-due" value="${item.due ? this._escAttr(item.due) : ""}"></label>
-           ${(!supportsDescription && !supportsDueDate) ? `<div class="detail-unsupported-hint">This list doesn't support descriptions or due dates.</div>` : ""}`}
+           <label ${supportsDueDate ? "" : "hidden"}>${this._t("todo.item_detail.due_date_label", "Due date")}<input type="date" class="detail-due" value="${item.due ? this._escAttr(item.due) : ""}"></label>
+           ${(!supportsDescription && !supportsDueDate) ? `<div class="detail-unsupported-hint">${this._t("todo.item_detail.unsupported_hint", "This list doesn't support descriptions or due dates.")}</div>` : ""}`}
       <div class="modal-actions detail-actions">
-        <button type="button" class="detail-delete-btn">Delete</button>
-        ${isGrocy ? `<button type="button" class="detail-putaway-btn">Put away</button>` : ""}
+        <button type="button" class="detail-delete-btn">${this._t("todo.item.delete", "Delete")}</button>
+        ${isGrocy ? `<button type="button" class="detail-putaway-btn">${this._t("todo.item_detail.put_away_btn", "Put away")}</button>` : ""}
         <span class="detail-actions-spacer"></span>
-        <button type="button" class="cancel-btn">Close</button>
-        <button type="button" class="save-btn detail-save-btn">Save</button>
+        <button type="button" class="cancel-btn">${this._t("common.close", "Close")}</button>
+        <button type="button" class="save-btn detail-save-btn">${this._t("common.save", "Save")}</button>
       </div>
       <div class="form-error"></div>
     `;
@@ -3944,6 +4080,11 @@ class FamilyHubTodoCard extends HTMLElement {
       /* bottom offset by --fh-fab-offset - see family-hub-chores-card.js's identical comment. */
       .add-todo-fab { position: fixed; right: 18px; bottom: calc(18px + var(--fh-fab-offset, 0px)); z-index: 900; width: 56px; height: 56px; border-radius: 50%; border: none; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 28px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(58,53,44,0.35); transition: transform 0.15s ease, bottom 0.15s ease; }
       .add-todo-fab:active { transform: scale(0.94); }
+      /* Hidden (not just z-indexed behind) while ANY Family Hub card on
+         this dashboard has a full-screen modal open - see
+         family-hub-chores-card.js's identical .add-chore-fab[hidden] rule
+         for the same mechanism. */
+      .add-todo-fab[hidden] { display: none; }
       /* fab_position: "card" - see family-hub-chores-card.js's
          identical .add-chore-fab rule for the same mechanism. */
       :host([fab-position="card"]) .add-todo-fab { position: absolute; bottom: 18px; }

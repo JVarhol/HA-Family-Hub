@@ -644,6 +644,25 @@ if (!window.__familyHubFabCoordinator) {
     const SLOT_HEIGHT_PX = 66;
     const entries = new Map(); // client -> { kind, seq, meta, onUpdate }
     let seq = 0;
+    // Every FAB here is position:fixed, pinned to the viewport corner (or,
+    // for a fab-position:"card" client, to its own card's box) - each card
+    // is its own independently-loaded custom element with no idea what
+    // other Family Hub cards are doing on the same dashboard, so a full-
+    // screen modal opened by ANY of them (most visibly the calendar card's
+    // own Settings screen) could end up with a totally unrelated card's
+    // FAB painted on top of it: depending on how the dashboard lays out
+    // its cards (Home Assistant's newer Sections view in particular can
+    // give each card's container its own CSS containment/stacking
+    // context), a sibling card's FAB z-index isn't guaranteed to actually
+    // lose to this card's modal overlay the way a plain same-shadow-DOM
+    // z-index comparison would. Rather than depend on that, every FAB-
+    // bearing card asks every OTHER one to physically hide
+    // (fab.hidden = true, not just "behind" via z-index - see each card's
+    // own onUpdate) while any of them has a full-screen modal open, via
+    // openModalCount/pushModalOpen/popModalOpen below - same "don't trust
+    // cross-shadow-DOM z-index, coordinate explicitly instead" approach as
+    // this project's shared screensaver controller.
+    let openModalCount = 0;
 
     function orderIndex(kind) {
       const i = FAB_KIND_ORDER.indexOf(kind);
@@ -662,13 +681,14 @@ if (!window.__familyHubFabCoordinator) {
       // still see otherProvidesGoalTab and still get an onUpdate call.
       const slotCount = list.filter(([, entry]) => entry.takesSlot).length;
       let slotIndex = 0;
+      const hideForModal = openModalCount > 0;
       list.forEach(([client, entry]) => {
         const otherProvidesGoalTab = list.some(
           ([otherClient, otherEntry]) => otherClient !== client && otherEntry.meta && otherEntry.meta.providesGoalTab
         );
         const index = entry.takesSlot ? slotIndex++ : null;
         if (typeof entry.onUpdate === "function") {
-          entry.onUpdate({ offsetPx: (index || 0) * SLOT_HEIGHT_PX, slotIndex: index, count: slotCount, otherProvidesGoalTab });
+          entry.onUpdate({ offsetPx: (index || 0) * SLOT_HEIGHT_PX, slotIndex: index, count: slotCount, otherProvidesGoalTab, hideForModal });
         }
       });
     }
@@ -679,8 +699,10 @@ if (!window.__familyHubFabCoordinator) {
       // `providesGoalTab` (see this block's own docstring above). `onUpdate`
       // is called once immediately (so a lone card on an otherwise-empty
       // dashboard still gets offsetPx: 0) and again on every subsequent
-      // register/unregister/updateClientMeta from ANY card, since adding a
-      // second FAB changes where the first one's slot is too.
+      // register/unregister/updateClientMeta/pushModalOpen/popModalOpen
+      // from ANY card, since adding a second FAB changes where the first
+      // one's slot is too, and any card's modal opening/closing changes
+      // whether every FAB should currently be hidden.
       //
       // `opts.takesSlot` (default true) - pass `{ takesSlot:
       // false }` for a card whose FAB has opted out of the shared
@@ -704,6 +726,24 @@ if (!window.__familyHubFabCoordinator) {
         const entry = entries.get(client);
         if (!entry) return;
         entry.meta = Object.assign({}, entry.meta, meta || {});
+        recompute();
+      },
+      // Call when THIS card opens a full-screen modal that every OTHER
+      // Family Hub card's FAB should get out of the way of (today: only
+      // the calendar card's own Settings screen calls this - see its
+      // _setupSettingsFabCoordination). A plain counter, not a per-client
+      // flag, so this stays correct even if more than one such modal is
+      // ever open across more than one card at once - every pushModalOpen
+      // needs a matching popModalOpen before FABs reappear, and a card
+      // that unmounts while its own modal was still open (see
+      // disconnectedCallback) pops on its way out rather than leaking the
+      // count forever.
+      pushModalOpen() {
+        openModalCount += 1;
+        recompute();
+      },
+      popModalOpen() {
+        openModalCount = Math.max(0, openModalCount - 1);
         recompute();
       },
       // Call from disconnectedCallback. Frees this card's slot so every
@@ -1363,6 +1403,12 @@ class FamilyHubChoresCard extends HTMLElement {
       { providesGoalTab: this._goalsInChoresEnabled() },
       (state) => {
         this.style.setProperty("--fh-fab-offset", `${state.offsetPx}px`);
+        // hideForModal is true while ANY Family Hub card on this
+        // dashboard has a full-screen modal open (most visibly the
+        // calendar card's own Settings screen) - see the coordinator's
+        // own doc for why this can't just rely on z-index across cards.
+        const fab = this._root && this._root.querySelector(".add-chore-fab");
+        if (fab) fab.hidden = !!state.hideForModal;
       },
       { takesSlot: !cardRelative }
     );
@@ -3458,6 +3504,20 @@ class FamilyHubChoresCard extends HTMLElement {
     }
   }
 
+  // Chore due dates are stored as a single ISO datetime (the Create/Edit
+  // modals both use a <input type="datetime-local">, see
+  // _submitCreate/_saveEdit below), so there's no separate flag for
+  // "no time was set" - midnight (00:00 local) is treated as that signal,
+  // same convention most date-only task UIs use. Replaces the old
+  // choreDueShowTime household setting (removed - this is just always-on
+  // behavior now): show the time whenever one was actually picked, and
+  // fall back to date-only when it wasn't.
+  _formatChoreDueDisplay(dueDateIso) {
+    if (!dueDateIso) return "";
+    const d = new Date(dueDateIso);
+    const hasTime = d.getHours() !== 0 || d.getMinutes() !== 0;
+    return hasTime ? d.toLocaleString() : d.toLocaleDateString();
+  }
   _choreCardHtml(chore) {
     const status = chore.status;
     const isBin = chore.assigned_to === CHORE_BIN_SENTINEL;
@@ -3521,12 +3581,7 @@ class FamilyHubChoresCard extends HTMLElement {
     if (status === "open" && this._canEditChore()) {
       actions += `<button class="chore-edit-btn" data-id="${chore.id}" title="${this._t("common.edit", "Edit")}">&#9998;</button>`;
     }
-    const showDueTime = !!(this._settingsCache && this._settingsCache.choreDueShowTime);
-    const dueStr = chore.due_date
-      ? showDueTime
-        ? new Date(chore.due_date).toLocaleString()
-        : new Date(chore.due_date).toLocaleDateString()
-      : "";
+    const dueStr = this._formatChoreDueDisplay(chore.due_date);
     const due = dueStr ? `<span class="chore-due">${this._t("chores.due_x", `Due ${dueStr}`, { x: dueStr })}</span>` : "";
     const streak = chore.streak_count > 0 ? `<span class="chore-streak">&#128293; ${chore.streak_count}</span>` : "";
     const quantityBadge =
@@ -3587,7 +3642,7 @@ class FamilyHubChoresCard extends HTMLElement {
     const box = overlay.querySelector(".modal-box");
     const assigneeName = this._userName(chore.assigned_to);
     const assigneeColor = this._userColor(chore.assigned_to);
-    const due = chore.due_date ? new Date(chore.due_date).toLocaleString() : "";
+    const due = this._formatChoreDueDisplay(chore.due_date);
     const recurHtml = chore.recur_type || chore.auto_create_trigger ? this._recurDescriptionHtml(chore) : "";
     const deps = (chore.dependencies || []).map((depId) => {
       const dep = this._chores.find((c) => c.id === depId);
@@ -5355,6 +5410,13 @@ class FamilyHubChoresCard extends HTMLElement {
          it - 0px (the default) when this is the only one on screen. */
       .add-chore-fab { position: fixed; right: 18px; bottom: calc(18px + var(--fh-fab-offset, 0px)); z-index: 900; width: 56px; height: 56px; border-radius: 50%; border: none; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 28px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(58,53,44,0.35); transition: transform 0.15s ease, bottom 0.15s ease; }
       .add-chore-fab:active { transform: scale(0.94); }
+      /* Hidden (not just z-indexed behind) while ANY Family Hub card on
+         this dashboard has a full-screen modal open - see
+         _registerFabCoordinator's own comment on state.hideForModal.
+         Author-stylesheet [hidden] override, since the plain browser
+         default [hidden]{display:none} UA rule alone would lose to the
+         display:flex set above it. */
+      .add-chore-fab[hidden] { display: none; }
       /* fab_position: "card" - anchors to THIS card's own box
          instead of the viewport, and opts out of the shared coordinator
          offset entirely (see _registerFabCoordinator). */

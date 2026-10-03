@@ -691,6 +691,11 @@ def _default_user_profile() -> dict[str, Any]:
         # const.py for the full picture of why these three exist alongside
         # the older primaryCalendar/people[]-based setup.
         "remindersEntity": "",
+        # "multi reminder list" - extra individual Reminders lists alongside
+        # remindersEntity above, which always stays the PRIMARY list. See
+        # the card's own _defaultUserProfile (additionalRemindersEntities)
+        # for the full picture - mirror it exactly, keep the two in sync.
+        "additionalRemindersEntities": [],
         "wishlistEntity": "",
         "badges": [],
     }
@@ -717,6 +722,7 @@ def _get_user_profiles(settings: dict[str, Any] | None) -> dict[str, dict[str, A
         primary_calendar = profile.get("primaryCalendar")
         reminder_subs = profile.get("remindersSubscriptions")
         reminders_entity = profile.get("remindersEntity")
+        additional_reminders_raw = profile.get("additionalRemindersEntities")
         wishlist_entity = profile.get("wishlistEntity")
         badges_raw = profile.get("badges")
         profiles[str(user_id)] = {
@@ -751,11 +757,41 @@ def _get_user_profiles(settings: dict[str, Any] | None) -> dict[str, dict[str, A
             # const.py. Same defensive-list-of-dicts normalization as
             # _get_people's own "badges" handling on a settings.people[] row -
             # both funnel through the shared _normalize_badges helper now.
-            "remindersEntity": reminders_entity.strip() if isinstance(reminders_entity, str) else "",
+            "remindersEntity": (reminders_entity.strip() if isinstance(reminders_entity, str) else ""),
+            # see _default_user_profile's own comment - extra lists
+            # alongside the primary just above. Same defensive
+            # strings-only/trimmed/non-empty/de-duplicated normalization as
+            # the card's own _normalizeUserProfiles, and never includes the
+            # primary itself (dropped here rather than shown twice by every
+            # call site that reads this).
+            "additionalRemindersEntities": _normalize_additional_reminders_entities(
+                additional_reminders_raw, reminders_entity.strip() if isinstance(reminders_entity, str) else ""
+            ),
             "wishlistEntity": wishlist_entity.strip() if isinstance(wishlist_entity, str) else "",
             "badges": _normalize_badges(badges_raw),
         }
     return profiles
+
+
+def _normalize_additional_reminders_entities(raw: Any, primary_entity: str) -> list[str]:
+    """Shared defensive normalization for a profile's additionalRemindersEntities
+    - see _default_user_profile's own comment for what this field is. Strings
+    only, trimmed, non-empty, de-duplicated, and never includes
+    primary_entity (that profile's own remindersEntity) - a list can't be
+    both the primary and "additional" at once."""
+    if not isinstance(raw, list):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for entity in raw:
+        if not isinstance(entity, str):
+            continue
+        entity = entity.strip()
+        if not entity or entity == primary_entity or entity in seen:
+            continue
+        seen.add(entity)
+        result.append(entity)
+    return result
 
 
 def _normalize_badges(raw: Any) -> list[dict[str, Any]]:
@@ -857,6 +893,24 @@ def _resolve_profile_reminders_entity(profile: dict[str, Any] | None, people: li
         if person.get("entity") == primary_calendar and person.get("remindersEntity"):
             return person["remindersEntity"]
     return ""
+
+
+def _resolve_profile_additional_reminders_entities(profile: dict[str, Any] | None) -> list[str]:
+    """Sibling of _resolve_profile_reminders_entity just above, for
+    "multi reminder list" - a profile's EXTRA individual Reminders lists
+    alongside its primary. Unlike the primary, these have no legacy
+    settings.people[]-based fallback (they're a brand new field - see
+    _default_user_profile's own comment), so this is just a defensive
+    read of profile['additionalRemindersEntities'], already normalized by
+    _get_user_profiles for any profile that came from there. Returns []
+    (never None) for a profile with none, same "no individual lists"
+    default as the primary resolver above."""
+    if not isinstance(profile, dict):
+        return []
+    additional = profile.get("additionalRemindersEntities")
+    if not isinstance(additional, list):
+        return []
+    return [e.strip() for e in additional if isinstance(e, str) and e.strip()]
 
 
 def _get_people(settings: dict[str, Any] | None) -> list[dict[str, str]]:
@@ -9100,6 +9154,18 @@ async def _poll_reminders_todo(
                 hass, entry, notified, resolved_entity, owner_targets, list_label=user_names.get(user_id, user_id)
             ):
                 changed = True
+            # "multi reminder list" - this same profile's extra lists
+            # alongside the primary just above, same owner_targets (not a
+            # separate permission) and the same dedup against anything
+            # already covered.
+            for extra_entity in _resolve_profile_additional_reminders_entities(profile):
+                if not extra_entity or extra_entity in covered_entities:
+                    continue
+                covered_entities.add(extra_entity)
+                if await _poll_one_reminders_todo_list(
+                    hass, entry, notified, extra_entity, owner_targets, list_label=user_names.get(user_id, user_id)
+                ):
+                    changed = True
 
     if _prune_notified(notified, dt_util.utcnow()):
         changed = True
@@ -9546,9 +9612,8 @@ async def _build_daily_digest_sections(
         # entity both ways, or whose profile.remindersEntity was resolved
         # via the very people[] row the loop above already walked).
         own_resolved_entity = _resolve_profile_reminders_entity(profile_for_digest, people or [])
-        if own_resolved_entity and own_resolved_entity not in digest_covered_entities:
-            digest_covered_entities.add(own_resolved_entity)
-            own_lines = await _todo_summaries_due_today(hass, own_resolved_entity, today_start_utc, today_end_utc)
+        own_additional_entities = _resolve_profile_additional_reminders_entities(profile_for_digest)
+        if (own_resolved_entity and own_resolved_entity not in digest_covered_entities) or own_additional_entities:
             own_label = "Me"
             if user_id:
                 try:
@@ -9557,7 +9622,19 @@ async def _build_daily_digest_sections(
                     ha_user = None
                 if ha_user is not None and getattr(ha_user, "name", None):
                     own_label = ha_user.name
-            reminder_lines.extend(f"{line} ({own_label})" for line in own_lines)
+            if own_resolved_entity and own_resolved_entity not in digest_covered_entities:
+                digest_covered_entities.add(own_resolved_entity)
+                own_lines = await _todo_summaries_due_today(hass, own_resolved_entity, today_start_utc, today_end_utc)
+                reminder_lines.extend(f"{line} ({own_label})" for line in own_lines)
+            # "multi reminder list" - this recipient's own extra lists
+            # alongside their primary just above, same own_label, same
+            # dedup against anything already covered.
+            for extra_entity in own_additional_entities:
+                if not extra_entity or extra_entity in digest_covered_entities:
+                    continue
+                digest_covered_entities.add(extra_entity)
+                extra_lines = await _todo_summaries_due_today(hass, extra_entity, today_start_utc, today_end_utc)
+                reminder_lines.extend(f"{line} ({own_label})" for line in extra_lines)
     if reminder_lines:
         built_sections.append({"key": "reminders", "title": "Due today", "flat": False, "items": sorted(reminder_lines)})
 
@@ -10821,6 +10898,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # stores above do.
     device_settings_store_obj = chores_store.create_device_settings_store(hass, entry)
     device_settings = await chores_store.async_load_device_settings(device_settings_store_obj)
+    # Privacy mode - see const.py's PRIVACY_MODE_EVENT_CHANGED docstring for
+    # why this is its own tiny store, same no-backup treatment as Device
+    # Settings just above (a live on/off flag, not data worth restoring).
+    privacy_mode_store_obj = chores_store.create_privacy_mode_store(hass, entry)
+    privacy_mode = await chores_store.async_load_privacy_mode(privacy_mode_store_obj)
     # Catches the "Home Assistant was off/restarted overnight" case - see
     # routine_engine.maybe_reset_daily's own docstring for why this also
     # needs to run on every later poll tick below, not just here.
@@ -10982,6 +11064,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "pantry_extras": pantry_extras,
         "device_settings_store": device_settings_store_obj,
         "device_settings": device_settings,
+        "privacy_mode_store": privacy_mode_store_obj,
+        "privacy_mode": privacy_mode,
     }
 
     # Root cause: v186 added the
@@ -11016,10 +11100,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # automation-visibility gap a native timer.* helper's fixed schema
     # can't fill on its own).
     # "button": one FamilyHubDailyDigestButton per real Home
-    # Assistant user account, see button.py's own docstring for why (the
-    # household's "allows someone to add a digest button to a dashboard by
-    # calling an entity" ask).
-    await hass.config_entries.async_forward_entry_setups(entry, ["todo", "sensor", "button"])
+    # Assistant user account, see button.py's own docstring, plus one
+    # FamilyHubDeviceSyncButton per known Family Hub device.
+    # "select"/"number"/"text": one entity per known Family Hub device per
+    # matching-type DEVICE_SETTINGS_FIELDS entry, grouped under that
+    # device's own device-registry entry - see device_settings_entity_
+    # shared.py's own module docstring for how these relate to the Sync
+    # button above.
+    # "switch": one FamilyHubDeviceScreenSaverSwitch per known Family Hub
+    # device (household ask: "a toggle per device... so that automations can
+    # control screen saver") plus one single household-wide
+    # FamilyHubPrivacyModeSwitch - see switch.py's own module docstring.
+    await hass.config_entries.async_forward_entry_setups(entry, ["todo", "sensor", "button", "select", "number", "text", "switch"])
 
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 

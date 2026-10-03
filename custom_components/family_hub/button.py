@@ -8,9 +8,8 @@ the modal button to the calendar screen or allows someone to add a digest
 button to a dashboard by calling an entity. Digest should be user specific."
 
 The in-card route (a "Daily Digest" item in the calendar card's own More
-menu, gated by the new familyCalendarShowDigestButtonLocal device setting -
-see const.py's DEVICE_SETTINGS_FIELDS and the card's own _openDailyDigest)
-covers "add the modal button to the calendar screen." This file covers the
+menu, always present - see the card's own _openDailyDigest) covers "add
+the modal button to the calendar screen." This file covers the
 other half: "allows someone to add a digest button to a dashboard by
 calling an entity" - a plain `button` domain entity is exactly Home
 Assistant's own answer to "something I can drop on any dashboard as a
@@ -49,10 +48,13 @@ from __future__ import annotations
 
 import logging
 
+from typing import Any, Optional
+
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
+from . import device_settings_entity_shared as shared
 from .const import DAILY_DIGEST_EVENT_OPEN, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -64,12 +66,62 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         _LOGGER.warning("Family Hub: button platform set up before the integration's own entry data existed - skipping")
         return
     users = [u for u in await hass.auth.async_get_users() if not getattr(u, "system_generated", False)]
-    entities = [
+    entities: list[ButtonEntity] = [
         FamilyHubDailyDigestButton(entry.entry_id, u.id, u.name or u.id)
         for u in users
     ]
+    entry_data["device_settings_sync_add_entities"] = async_add_entities
+    entry_data.setdefault("device_settings_sync_entities", {})
+    entry_data.setdefault("device_settings_sync_instance_entities", {})
+    for device_id in shared.known_device_ids(entry_data):
+        entities.extend(_build_sync_button_for_device(entry_data, device_id))
+        for instance_id in shared.known_instance_ids(entry_data, device_id):
+            entities.extend(_build_sync_button_for_instance(entry_data, device_id, instance_id))
     if entities:
         async_add_entities(entities)
+
+
+def _build_sync_button_for_device(entry_data: dict[str, Any], device_id: str) -> list["FamilyHubDeviceSyncButton"]:
+    registry = entry_data.setdefault("device_settings_sync_entities", {})
+    if device_id in registry:
+        return []
+    entity = FamilyHubDeviceSyncButton(entry_data, device_id)
+    registry[device_id] = entity
+    return [entity]
+
+
+def _build_sync_button_for_instance(entry_data: dict[str, Any], device_id: str, instance_id: str) -> list["FamilyHubDeviceSyncButton"]:
+    registry = entry_data.setdefault("device_settings_sync_instance_entities", {}).setdefault(device_id, {})
+    if instance_id in registry:
+        return []
+    label = shared.instance_label_for(entry_data, device_id, instance_id)
+    entity = FamilyHubDeviceSyncButton(entry_data, device_id, instance_id=instance_id, instance_label=label)
+    registry[instance_id] = entity
+    return [entity]
+
+
+def create_sync_button_for_device(entry_data: dict[str, Any], device_id: str) -> None:
+    """Called from device_settings_websocket_api.py the first time a
+    device_id reports in - same "best-effort/silent if this platform
+    hasn't finished loading yet" shape as sensor.py's create_timer_sensor
+    and select.py/number.py/text.py's own create_entities_for_device."""
+    add_entities = entry_data.get("device_settings_sync_add_entities")
+    if add_entities is None:
+        return
+    entities = _build_sync_button_for_device(entry_data, device_id)
+    if entities:
+        add_entities(entities)
+
+
+def create_sync_button_for_instance(entry_data: dict[str, Any], device_id: str, instance_id: str) -> None:
+    """Same as create_sync_button_for_device, for the first report of one
+    dashboard/view placement (instance_id) of a device."""
+    add_entities = entry_data.get("device_settings_sync_add_entities")
+    if add_entities is None:
+        return
+    entities = _build_sync_button_for_instance(entry_data, device_id, instance_id)
+    if entities:
+        add_entities(entities)
 
 
 class FamilyHubDailyDigestButton(ButtonEntity):
@@ -89,3 +141,38 @@ class FamilyHubDailyDigestButton(ButtonEntity):
 
     async def async_press(self) -> None:
         self.hass.bus.async_fire(DAILY_DIGEST_EVENT_OPEN, {"user_id": self._user_id})
+
+
+class FamilyHubDeviceSyncButton(ButtonEntity):
+    """One per Family Hub device, plus one more per dashboard/view instance
+    of that device (instance_id given) - pressing it stages and live-
+    broadcasts that scope's current settings (see device_settings_entity_
+    shared.py's own push_settings_to_target), the same effect the admin
+    dashboard's own Push action already has, but reachable from an
+    automation/script/other integration via the native button.press
+    service with no custom websocket call. Every button for one device -
+    its own and every instance's - is grouped under that same device's
+    device-registry entry via DeviceInfo, same as the select/number/text
+    settings entities."""
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:sync"
+
+    def __init__(
+        self,
+        entry_data: dict[str, Any],
+        device_id: str,
+        instance_id: Optional[str] = None,
+        instance_label: Optional[str] = None,
+    ) -> None:
+        self._entry_data = entry_data
+        self._device_id = device_id
+        self._instance_id = instance_id
+        suffix = f"_{instance_id}" if instance_id else ""
+        self._attr_unique_id = f"family_hub_device_sync_{device_id}{suffix}"
+        self._attr_name = f"{instance_label or instance_id}: Sync" if instance_id else "Sync"
+        self._attr_device_info = shared.build_device_info(device_id, shared.device_name_for(entry_data, device_id))
+
+    async def async_press(self) -> None:
+        shared.push_settings_to_target(self.hass, self._entry_data, self._device_id, self._instance_id)
+        await self._entry_data["device_settings_store"].async_save(self._entry_data["device_settings"])

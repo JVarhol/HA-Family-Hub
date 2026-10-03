@@ -471,9 +471,65 @@ class FamilyTodayCard extends HTMLElement {
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
+    this._ensureTranslationsLoaded();
     if (first) {
       this._firstLoadPromise = this._initFirstLoad();
     }
+  }
+  _t(key, fallback, vars) {
+    let str = "";
+    try {
+      if (this._hass && typeof this._hass.localize === "function") {
+        str = this._hass.localize(`component.family_hub.fh_ui.${key}`) || "";
+      }
+    } catch (e) {
+      str = "";
+    }
+    if (!str) str = fallback;
+    if (vars) {
+      Object.keys(vars).forEach((k) => {
+        str = str.split(`%${k}%`).join(vars[k]);
+      });
+    }
+    return str;
+  }
+  _baseLanguage(lang) {
+    return (lang || "en").split("-")[0].toLowerCase();
+  }
+  _ensureTranslationsLoaded() {
+    if (!this._hass || typeof this._hass.loadBackendTranslation !== "function") return;
+    const lang = this._baseLanguage(this._hass.language);
+    if (this._i18nLoadedLang === lang || this._i18nLoading === lang) return;
+    this._i18nLoading = lang;
+    this._hass
+      .loadBackendTranslation("fh_ui", "family_hub")
+      .then(() => {
+        this._i18nLoadedLang = lang;
+        this._i18nLoading = null;
+        this._applyTranslations();
+        this._render();
+      })
+      .catch((e) => {
+        this._i18nLoading = null;
+        console.warn("[family_hub] failed to load \"" + lang + "\" translations - staying on English fallback text", e);
+      });
+  }
+  _applyTranslations() {
+    if (!this._root) return;
+    this._root.querySelectorAll("[data-i18n]").forEach((el) => {
+      const key = el.dataset.i18n;
+      if (el.dataset.i18nFallback === undefined) el.dataset.i18nFallback = el.textContent;
+      el.textContent = this._t(key, el.dataset.i18nFallback);
+    });
+    this._root.querySelectorAll("[data-i18n-title]").forEach((el) => {
+      const key = el.dataset.i18nTitle;
+      if (el.dataset.i18nTitleFallback === undefined) {
+        el.dataset.i18nTitleFallback = el.getAttribute("title") || el.getAttribute("aria-label") || "";
+      }
+      const translated = this._t(key, el.dataset.i18nTitleFallback);
+      if (el.hasAttribute("title")) el.setAttribute("title", translated);
+      if (el.hasAttribute("aria-label")) el.setAttribute("aria-label", translated);
+    });
   }
   async _initFirstLoad() {
     await this._fetchSettings();
@@ -1404,7 +1460,7 @@ class FamilyTodayCard extends HTMLElement {
   // already builds this exact same list for display).
   _addableRemindersLists() {
     const familyEntity = this._config.reminders_entity;
-    const lists = [{ entity: familyEntity, label: "Family", color: null }];
+    const lists = [{ entity: familyEntity, label: this._t("today.add_event.family_list_label", "Family"), color: null }];
     if (!this._hass) return lists;
     try {
       const settings = this._getSettings();
@@ -1422,7 +1478,7 @@ class FamilyTodayCard extends HTMLElement {
           const canAdd = isOwn || subLevel === "calendar" || subLevel === "calendar_alert";
           if (!canAdd) continue;
           seenEntities.add(person.remindersEntity);
-          lists.push({ entity: person.remindersEntity, label: isOwn ? `My list (${person.name})` : person.name, color: person.color });
+          lists.push({ entity: person.remindersEntity, label: isOwn ? this._t("today.add_event.my_list_label", `My list (${person.name})`, { name: person.name }) : person.name, color: person.color });
         }
       }
     } catch (e) {
@@ -1438,7 +1494,7 @@ class FamilyTodayCard extends HTMLElement {
   _rolldaysBtnsHtml(selectedDays) {
     const selected = new Set(selectedDays && selectedDays.length ? selectedDays : [0, 1, 2, 3, 4, 5, 6]);
     return REMINDER_WEEKDAY_LABELS.map(
-      (label, idx) => `<button type="button" class="rolldays-btn ${selected.has(idx) ? "active" : ""}" data-day="${idx}">${label}</button>`
+      (label, idx) => `<button type="button" class="rolldays-btn ${selected.has(idx) ? "active" : ""}" data-day="${idx}">${this._t(`today.weekday_short_${idx}`, label)}</button>`
     ).join("");
   }
   _wireRolldaysToggle(container) {
@@ -1620,7 +1676,7 @@ class FamilyTodayCard extends HTMLElement {
     const people = this._getPeople();
     const others = people.filter((p) => p.entity !== ownEntity);
     if (!others.length) {
-      content.innerHTML = `<div class="empty">No one else in Family Hub to tag yet.</div>`;
+      content.innerHTML = `<div class="empty">${this._t("today.add_event.no_one_else_to_tag", "No one else in Family Hub to tag yet.")}</div>`;
       return;
     }
     const colorMap = this._colorByName(people);
@@ -1645,11 +1701,11 @@ class FamilyTodayCard extends HTMLElement {
             (item, i) =>
               `<div class="checklist-item-row">` +
               `<span class="checklist-item-row-text">${item.text}</span>` +
-              `<button type="button" class="checklist-item-remove-btn" data-index="${i}" title="Remove">&#10005;</button>` +
+              `<button type="button" class="checklist-item-remove-btn" data-index="${i}" title="${this._t("today.add_event.remove_item_title", "Remove")}">&#10005;</button>` +
               `</div>`
           )
           .join("")
-      : `<div class="remind-hint">No items yet - add whatever needs to be remembered below.</div>`;
+      : `<div class="remind-hint">${this._t("today.add_event.checklist_no_items_yet", "No items yet - add whatever needs to be remembered below.")}</div>`;
     listEl.querySelectorAll(".checklist-item-remove-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
         const idx = parseInt(btn.dataset.index, 10);
@@ -1671,7 +1727,7 @@ class FamilyTodayCard extends HTMLElement {
     const previous = select.value;
     select.innerHTML = candidates.length
       ? candidates.map((c) => `<option value="${c.entity_id}">${c.name}</option>`).join("")
-      : `<option value="">No to-do lists found</option>`;
+      : `<option value="">${this._t("today.add_event.no_todo_lists_found", "No to-do lists found")}</option>`;
     if (previous && candidates.some((c) => c.entity_id === previous)) select.value = previous;
   }
   // Every todo.* entity in this Home Assistant instance, for the "use an
@@ -1702,7 +1758,7 @@ class FamilyTodayCard extends HTMLElement {
     const calendarField = root.querySelector(".add-event-calendar-field");
     if (calendarField) calendarField.style.display = isReminder ? "none" : "";
     const heading = root.querySelector(".add-event-heading");
-    if (heading) heading.innerHTML = isReminder ? "\u{1F514} New Reminder" : "\u{2795} New Event";
+    if (heading) heading.innerHTML = isReminder ? `\u{1F514} ${this._t("today.add_event.heading_reminder", "New Reminder")}` : `\u{2795} ${this._t("today.add_event.heading_event", "New Event")}`;
     this._setAddEventError("");
     this._refreshAddReminderMissingWarn();
   }
@@ -1715,7 +1771,11 @@ class FamilyTodayCard extends HTMLElement {
     const entityId = (listSelect && listSelect.value) || this._config.reminders_entity;
     const missing = isReminder && this._hass && entityId && !this._hass.states[entityId];
     if (missing) {
-      warn.textContent = `⚠️ "${entityId}" doesn't exist in Home Assistant yet, so reminders can't be saved until it does. Create a to-do list with that entity id (Settings → Devices & Services → Add Integration → Local To-do), or point this card's reminders_entity config at a to-do list you already have.`;
+      warn.textContent = this._t(
+        "today.add_event.reminder_list_missing_warn",
+        `⚠️ "${entityId}" doesn't exist in Home Assistant yet, so reminders can't be saved until it does. Create a to-do list with that entity id (Settings → Devices & Services → Add Integration → Local To-do), or point this card's reminders_entity config at a to-do list you already have.`,
+        { entity: entityId }
+      );
       warn.style.display = "";
     } else {
       warn.style.display = "none";
@@ -1790,7 +1850,11 @@ class FamilyTodayCard extends HTMLElement {
     const title = root.querySelector(".add-event-title").value.trim();
     if (!entity || !title) return;
     if (this._hass && !this._hass.states[entity]) {
-      this._setAddEventError(`⚠️ "${entity}" doesn't exist in Home Assistant. Check the calendars configured under Settings.`);
+      this._setAddEventError(this._t(
+        "today.add_event.calendar_missing_error",
+        `⚠️ "${entity}" doesn't exist in Home Assistant. Check the calendars configured under Settings.`,
+        { entity }
+      ));
       return;
     }
     const allDayBtn = root.querySelector(".add-event-allday-btn.active");
@@ -1834,7 +1898,12 @@ class FamilyTodayCard extends HTMLElement {
     try {
       await this._hass.callService("calendar", "create_event", data, { entity_id: entity });
     } catch (e) {
-      this._setAddEventError(`⚠️ Couldn't save this event: ${e && e.message ? e.message : e}`);
+      const errMsg = e && e.message ? e.message : e;
+      this._setAddEventError(this._t(
+        "today.add_event.save_event_error",
+        `⚠️ Couldn't save this event: ${errMsg}`,
+        { error: errMsg }
+      ));
       return;
     }
     const startDate = allDay ? new Date(dateVal + "T00:00:00") : new Date(data.start_date_time.replace(" ", "T"));
@@ -1867,7 +1936,11 @@ class FamilyTodayCard extends HTMLElement {
     const listSelect = root.querySelector(".add-event-reminder-list-select");
     const entityId = (listSelect && listSelect.value) || this._config.reminders_entity;
     if (this._hass && entityId && !this._hass.states[entityId]) {
-      this._setAddEventError(`⚠️ "${entityId}" doesn't exist in Home Assistant, so this reminder wasn't saved. Create a to-do list with that entity id (Settings → Devices & Services → Add Integration → Local To-do), or point the right list's config at a to-do list you already have.`);
+      this._setAddEventError(this._t(
+        "today.add_event.reminder_list_missing_error",
+        `⚠️ "${entityId}" doesn't exist in Home Assistant, so this reminder wasn't saved. Create a to-do list with that entity id (Settings → Devices & Services → Add Integration → Local To-do), or point the right list's config at a to-do list you already have.`,
+        { entity: entityId }
+      ));
       return;
     }
     const notifyTime = root.querySelector(".add-event-reminder-time").value || "09:00";
@@ -1883,7 +1956,12 @@ class FamilyTodayCard extends HTMLElement {
     try {
       await this._hass.callService("todo", "add_item", data, { entity_id: entityId });
     } catch (e) {
-      this._setAddEventError(`⚠️ Couldn't save this reminder: ${e && e.message ? e.message : e}`);
+      const errMsg = e && e.message ? e.message : e;
+      this._setAddEventError(this._t(
+        "today.add_event.save_reminder_error",
+        `⚠️ Couldn't save this reminder: ${errMsg}`,
+        { error: errMsg }
+      ));
       return;
     }
     const toggle = root.querySelector(".add-event-checklist-toggle");
@@ -2152,15 +2230,15 @@ background-image: var(--fc-bg-overlay-image, none);
 </div>
 <div class="body-scroll">
 <div class="section">
-<div class="section-title">Today's Events</div>
+<div class="section-title" data-i18n="today.section.events">Today's Events</div>
 <div class="events-list"></div>
 </div>
 <div class="section">
-<div class="section-title">Today's Meals</div>
+<div class="section-title" data-i18n="today.section.meals">Today's Meals</div>
 <div class="meals-list"></div>
 </div>
 <div class="section">
-<div class="section-title">Due Today</div>
+<div class="section-title" data-i18n="today.section.due_today">Due Today</div>
 <div class="reminders-list"></div>
 </div>
 <div class="msd-items today-compact-items" style="display:none"></div>
@@ -2169,7 +2247,7 @@ background-image: var(--fc-bg-overlay-image, none);
 </div>
 <div class="modal-overlay detail-overlay">
 <div class="modal-box">
-<button type="button" class="modal-close" aria-label="Close">&#10005;</button>
+<button type="button" class="modal-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
 <div class="detail-chip" style="display:none;"></div>
 <div class="detail-title"></div>
 <div class="detail-body"></div>
@@ -2178,56 +2256,56 @@ background-image: var(--fc-bg-overlay-image, none);
 </div>
 <div class="modal-overlay add-event-overlay">
 <div class="modal-box add-event-box">
-<button type="button" class="modal-close add-event-close" aria-label="Close">&#10005;</button>
-<h2 class="add-event-heading">&#10133; New Event</h2>
+<button type="button" class="modal-close add-event-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
+<h2 class="add-event-heading" data-i18n="today.add_event.heading_event">&#10133; New Event</h2>
 <div class="add-event-tabs">
-<button type="button" class="add-event-tab-btn active" data-tab="calendar">&#128197; Calendar Event</button>
-<button type="button" class="add-event-tab-btn" data-tab="reminder">&#128276; Reminder</button>
+<button type="button" class="add-event-tab-btn active" data-tab="calendar" data-i18n="today.add_event.tab_calendar">&#128197; Calendar Event</button>
+<button type="button" class="add-event-tab-btn" data-tab="reminder" data-i18n="today.add_event.tab_reminder">&#128276; Reminder</button>
 </div>
 <div class="field add-event-calendar-field">
-<label>Calendar</label>
+<label data-i18n="today.add_event.calendar_label">Calendar</label>
 <select class="hour-select add-event-calendar-select"></select>
 </div>
 <div class="field">
-<label>Title</label>
+<label data-i18n="today.add_event.title_label">Title</label>
 <input type="text" class="add-event-title" placeholder="e.g. Dentist appointment" maxlength="120" />
 </div>
 <div class="add-event-tab-panel" data-tab-panel="calendar">
 <div class="field">
-<label>All day</label>
+<label data-i18n="today.add_event.all_day_label">All day</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn add-event-allday-btn" data-value="off">Timed</button>
-<button type="button" class="size-btn add-event-allday-btn" data-value="on">All day</button>
+<button type="button" class="size-btn add-event-allday-btn" data-value="off" data-i18n="today.add_event.timed_option">Timed</button>
+<button type="button" class="size-btn add-event-allday-btn" data-value="on" data-i18n="today.add_event.all_day_option">All day</button>
 </div>
 </div>
 <div class="field">
-<label>Date</label>
+<label data-i18n="today.add_event.date_label">Date</label>
 <div class="date-picker-row">
 <input type="date" class="add-event-date" />
-<button type="button" class="add-event-date-btn" title="Pick a date">&#128197;</button>
+<button type="button" class="add-event-date-btn" title="Pick a date" data-i18n-title="today.add_event.pick_date_title">&#128197;</button>
 </div>
 </div>
 <div class="field add-event-enddate-field">
-<label>End date (optional - for multi-day events)</label>
+<label data-i18n="today.add_event.end_date_label">End date (optional - for multi-day events)</label>
 <div class="date-picker-row">
 <input type="date" class="add-event-end-date" />
-<button type="button" class="add-event-end-date-btn" title="Pick a date">&#128197;</button>
+<button type="button" class="add-event-end-date-btn" title="Pick a date" data-i18n-title="today.add_event.pick_date_title">&#128197;</button>
 </div>
 </div>
 <div class="field add-event-time-field">
-<label>Start / End time</label>
+<label data-i18n="today.add_event.start_end_time_label">Start / End time</label>
 <div class="size-btn-row">
 <input type="time" class="hour-select add-event-start-time" />
-<div class="range-sep">to</div>
+<div class="range-sep" data-i18n="today.add_event.time_range_sep">to</div>
 <input type="time" class="hour-select add-event-end-time" />
 </div>
 </div>
 <div class="field">
-<label>Location (optional)</label>
+<label data-i18n="today.add_event.location_label">Location (optional)</label>
 <input type="text" class="add-event-location" placeholder="Optional" maxlength="120" />
 </div>
 <div class="field add-event-remind-field">
-<label>Remind me</label>
+<label data-i18n="today.add_event.remind_me_label">Remind me</label>
 <div class="remind-check-row">
 <label class="remind-check-opt"><input type="checkbox" class="remind-check" value="5" />5m</label>
 <label class="remind-check-opt"><input type="checkbox" class="remind-check" value="10" />10m</label>
@@ -2237,45 +2315,45 @@ background-image: var(--fc-bg-overlay-image, none);
 <label class="remind-check-opt"><input type="checkbox" class="remind-check" value="120" />2h</label>
 <label class="remind-check-opt"><input type="checkbox" class="remind-check" value="1440" />1d</label>
 </div>
-<div class="remind-hint">Needs the Family Hub integration installed to actually notify.</div>
+<div class="remind-hint" data-i18n="today.add_event.remind_hint">Needs the Family Hub integration installed to actually notify.</div>
 </div>
 <div class="field add-event-people-field">
-<label>Also for</label>
+<label data-i18n="today.add_event.also_for_label">Also for</label>
 <div class="add-event-people-content"></div>
 </div>
 </div>
 <div class="add-event-tab-panel" data-tab-panel="reminder" style="display:none">
 <div class="field add-event-reminder-list-field">
-<label>List</label>
+<label data-i18n="today.add_event.list_label">List</label>
 <select class="hour-select add-event-reminder-list-select"></select>
 </div>
 <div class="field">
-<label>Date</label>
+<label data-i18n="today.add_event.date_label">Date</label>
 <div class="date-picker-row">
 <input type="date" class="add-event-reminder-date" />
-<button type="button" class="add-event-reminder-date-btn" title="Pick a date">&#128197;</button>
+<button type="button" class="add-event-reminder-date-btn" title="Pick a date" data-i18n-title="today.add_event.pick_date_title">&#128197;</button>
 </div>
 </div>
 <div class="field">
-<label>Notify at</label>
+<label data-i18n="today.add_event.notify_at_label">Notify at</label>
 <input type="time" class="hour-select add-event-reminder-time" />
 </div>
 <div class="field">
-<label class="remind-check-opt"><input type="checkbox" class="add-event-reminder-rollover" />&#128257; Roll over to next day if not completed</label>
+<label class="remind-check-opt"><input type="checkbox" class="add-event-reminder-rollover" />&#128257; <span data-i18n="today.add_event.rollover_label">Roll over to next day if not completed</span></label>
 <div class="field rolldays-field add-event-reminder-rolldays-field">
-<div class="rolldays-hint">Applies only on these days (leave every day selected to roll over daily, same as before)</div>
+<div class="rolldays-hint" data-i18n="today.add_event.rolldays_hint">Applies only on these days (leave every day selected to roll over daily, same as before)</div>
 <div class="rolldays-btn-row add-event-reminder-rolldays">${this._rolldaysBtnsHtml([])}</div>
 </div>
 </div>
-<div class="remind-hint">Saved as a to-do in Home Assistant, not an event on your calendar - fires once at this exact time, and you can mark it done or reschedule it anytime from Home Assistant's own To-do UI. Needs the Family Hub integration installed to actually notify; set reminder notify devices under Settings.</div>
+<div class="remind-hint" data-i18n="today.add_event.reminder_hint">Saved as a to-do in Home Assistant, not an event on your calendar - fires once at this exact time, and you can mark it done or reschedule it anytime from Home Assistant's own To-do UI. Needs the Family Hub integration installed to actually notify; set reminder notify devices under Settings.</div>
 <div class="add-event-warn add-event-reminder-missing-warn" style="display:none"></div>
 </div>
 <div class="field add-event-checklist-field">
-<label class="remind-check-opt"><input type="checkbox" class="add-event-checklist-toggle" />&#128203; Attach a checklist</label>
+<label class="remind-check-opt"><input type="checkbox" class="add-event-checklist-toggle" />&#128203; <span data-i18n="today.add_event.attach_checklist_label">Attach a checklist</span></label>
 <div class="add-event-checklist-body" style="display:none">
 <div class="checklist-mode-btn-row">
-<button type="button" class="size-btn add-event-checklist-mode-btn active" data-value="custom">Just for this</button>
-<button type="button" class="size-btn add-event-checklist-mode-btn" data-value="existing">Use an existing list</button>
+<button type="button" class="size-btn add-event-checklist-mode-btn active" data-value="custom" data-i18n="today.add_event.checklist_mode_custom">Just for this</button>
+<button type="button" class="size-btn add-event-checklist-mode-btn" data-value="existing" data-i18n="today.add_event.checklist_mode_existing">Use an existing list</button>
 </div>
 <div class="field add-event-checklist-existing-field" style="display:none">
 <select class="hour-select add-event-checklist-existing-select"></select>
@@ -2284,20 +2362,20 @@ background-image: var(--fc-bg-overlay-image, none);
 <div class="add-event-checklist-items"></div>
 <div class="checklist-add-row">
 <input type="text" class="add-event-checklist-add-input" placeholder="e.g. Cleats" maxlength="200" />
-<button type="button" class="btn-cancel add-event-checklist-add-btn">Add</button>
+<button type="button" class="btn-cancel add-event-checklist-add-btn" data-i18n="common.add">Add</button>
 </div>
 </div>
-<div class="remind-hint">A "just for this" list is deleted automatically once this happens (plus a grace window) - an existing list you attach is only ever unlinked, never touched or deleted itself.</div>
+<div class="remind-hint" data-i18n="today.add_event.checklist_lifecycle_hint">A "just for this" list is deleted automatically once this happens (plus a grace window) - an existing list you attach is only ever unlinked, never touched or deleted itself.</div>
 </div>
 </div>
 <div class="field">
-<label>Notes (optional)</label>
+<label data-i18n="today.add_event.notes_label">Notes (optional)</label>
 <textarea class="add-event-description" placeholder="Optional details" maxlength="255"></textarea>
 </div>
 <div class="add-event-error" style="display:none"></div>
 <div class="modal-actions">
-<button type="button" class="btn-cancel add-event-cancel">Cancel</button>
-<button type="button" class="btn-save add-event-save">Save</button>
+<button type="button" class="btn-cancel add-event-cancel" data-i18n="common.cancel">Cancel</button>
+<button type="button" class="btn-save add-event-save" data-i18n="common.save">Save</button>
 </div>
 </div>
 </div>
@@ -2363,31 +2441,34 @@ background-image: var(--fc-bg-overlay-image, none);
   // rather than maintaining two copies of this logic.
   _openEventDetail(ev) {
     const rows = [];
-    rows.push({ text: ev.allDay ? "All day" : `${this._fmtTime(ev.start)}${ev.end ? " - " + this._fmtTime(ev.end) : ""}` });
+    rows.push({ text: ev.allDay ? this._t("today.detail.all_day", "All day") : `${this._fmtTime(ev.start)}${ev.end ? " - " + this._fmtTime(ev.end) : ""}` });
     if (ev.location) rows.push({ text: `\u{1F4CD} ${ev.location}`, secondary: true });
     if (ev.description) rows.push({ text: ev.description, secondary: true });
     this._openDetail({ chip: ev.personName, chipColor: ev.color, title: ev.summary, rows });
   }
   _openMealDetail(m) {
-    const rows = [{ text: m.description || "No notes added.", secondary: !m.description }];
+    const rows = [{ text: m.description || this._t("today.detail.no_notes_added", "No notes added."), secondary: !m.description }];
     this._openDetail({
       chip: m.label,
       chipColor: m.color || null,
       title: m.name,
       rows,
-      actionLabel: m.link ? "\u{1F517} Open recipe link" : null,
+      actionLabel: m.link ? `\u{1F517} ${this._t("today.detail.open_recipe_link", "Open recipe link")}` : null,
       actionHandler: m.link ? () => window.open(m.link, "_blank", "noopener") : null,
     });
   }
   _openReminderDetail(r) {
-    const rows = [{ text: `Due ${this._fmtTime(r.due)}` }];
+    const dueTime = this._fmtTime(r.due);
+    const rows = [{ text: this._t("today.detail.due_x", `Due ${dueTime}`, { time: dueTime }) }];
     if (r.description) rows.push({ text: r.description, secondary: true });
     this._openDetail({
-      chip: r.personName ? `Reminder • ${r.personName}` : "Reminder",
+      chip: r.personName
+        ? this._t("today.detail.reminder_person_chip", `Reminder • ${r.personName}`, { name: r.personName })
+        : this._t("today.detail.reminder_chip", "Reminder"),
       chipColor: r.color || TODAY_REMINDER_COLOR,
       title: r.summary,
       rows,
-      actionLabel: "✓ Mark done",
+      actionLabel: `✓ ${this._t("today.detail.mark_done", "Mark done")}`,
       actionHandler: () => {
         this._markReminderDone(r.uid, r.listEntity);
         this._closeDetail();
@@ -2425,11 +2506,11 @@ background-image: var(--fc-bg-overlay-image, none);
 
     const eventsEl = root.querySelector(".events-list");
     if (!this._todayEvents.length) {
-      eventsEl.innerHTML = `<div class="empty">Nothing on the calendar today.</div>`;
+      eventsEl.innerHTML = `<div class="empty">${this._t("today.sectioned.events_empty", "Nothing on the calendar today.")}</div>`;
     } else {
       eventsEl.innerHTML = this._todayEvents
         .map((ev, idx) => {
-          const meta = ev.allDay ? "All day" : this._fmtTime(ev.start);
+          const meta = ev.allDay ? this._t("today.detail.all_day", "All day") : this._fmtTime(ev.start);
           return `<div class="row" data-idx="${idx}"><span class="dot" style="background:${ev.color}"></span><span class="label">${ev.summary}</span><span class="meta">${meta}</span></div>`;
         })
         .join("");
@@ -2443,7 +2524,7 @@ background-image: var(--fc-bg-overlay-image, none);
 
     const mealsEl = root.querySelector(".meals-list");
     if (!this._todayMeals.length) {
-      mealsEl.innerHTML = `<div class="empty">Nothing planned yet.</div>`;
+      mealsEl.innerHTML = `<div class="empty">${this._t("today.sectioned.meals_empty", "Nothing planned yet.")}</div>`;
     } else {
       mealsEl.innerHTML = this._todayMeals
         .map((m, idx) => `<div class="row" data-idx="${idx}"><span class="dot" style="background:${m.color || "var(--fc-accent2)"}"></span><span class="label">${m.name}</span><span class="meta">${m.label}</span></div>`)
@@ -2458,12 +2539,13 @@ background-image: var(--fc-bg-overlay-image, none);
 
     const remindersEl = root.querySelector(".reminders-list");
     if (!this._todayReminders.length) {
-      remindersEl.innerHTML = `<div class="empty">No reminders due today.</div>`;
+      remindersEl.innerHTML = `<div class="empty">${this._t("today.sectioned.reminders_empty", "No reminders due today.")}</div>`;
     } else {
+      const doneLabel = this._t("common.done", "Done");
       remindersEl.innerHTML = this._todayReminders
         .map(
           (r, idx) =>
-            `<div class="row" data-idx="${idx}"><span class="dot" style="background:${r.color || TODAY_REMINDER_COLOR}"></span><span class="label">&#128276; ${r.summary}${r.personName ? ` <span class="reminder-owner">(${r.personName})</span>` : ""}</span><span class="meta">${this._fmtTime(r.due)}</span><button type="button" class="done-btn" data-uid="${r.uid}" data-list-entity="${r.listEntity}">Done</button></div>`
+            `<div class="row" data-idx="${idx}"><span class="dot" style="background:${r.color || TODAY_REMINDER_COLOR}"></span><span class="label">&#128276; ${r.summary}${r.personName ? ` <span class="reminder-owner">(${r.personName})</span>` : ""}</span><span class="meta">${this._fmtTime(r.due)}</span><button type="button" class="done-btn" data-uid="${r.uid}" data-list-entity="${r.listEntity}">${doneLabel}</button></div>`
         )
         .join("");
       remindersEl.querySelectorAll(".done-btn").forEach((btn) => {
@@ -2521,12 +2603,12 @@ background-image: var(--fc-bg-overlay-image, none);
           .map(
             (it) =>
               `<div class="msd-item" data-kind="${it.kind}" data-idx="${it.idx}" style="background:${it.color};color:${this._textColorFor(it.color)}">` +
-              `<span class="msd-item-time">${it.allDay ? "All day" : this._fmtTime(it.start)}</span>` +
+              `<span class="msd-item-time">${it.allDay ? this._t("today.detail.all_day", "All day") : this._fmtTime(it.start)}</span>` +
               `<span class="msd-item-summary">${it.isReminder ? "&#128276; " : ""}${it.summary}</span>` +
               `</div>`
           )
           .join("")
-      : `<div class="msd-empty">Nothing scheduled</div>`;
+      : `<div class="msd-empty">${this._t("today.compact.nothing_scheduled", "Nothing scheduled")}</div>`;
 
     compactEl.innerHTML = mealsHtml + itemsHtml;
     compactEl.querySelectorAll(".msd-item[data-kind]").forEach((el) => {
@@ -2561,10 +2643,10 @@ background-image: var(--fc-bg-overlay-image, none);
     // footer".
     const buttonsHtml = [];
     if (this._config.show_add_button) {
-      buttonsHtml.push(`<button type="button" class="footer-add-btn">&#10133; Add</button>`);
+      buttonsHtml.push(`<button type="button" class="footer-add-btn">&#10133; ${this._t("common.add", "Add")}</button>`);
     }
     if (calendarPath) {
-      const label = this._config.calendar_button_label || "\u{1F4C5} Go to Calendar";
+      const label = this._config.calendar_button_label || `\u{1F4C5} ${this._t("today.footer.go_to_calendar", "Go to Calendar")}`;
       buttonsHtml.push(`<button type="button" class="go-to-calendar-btn">${label}</button>`);
     }
     if (buttonsHtml.length) {

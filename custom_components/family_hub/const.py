@@ -134,8 +134,8 @@ DAILY_DIGEST_STORAGE_VERSION = 1
 # that one exists because a missed push would silently corrupt a device's
 # own persisted local settings; a missed digest-open event just means the
 # modal didn't pop up on a screen nobody was looking at, which the in-card
-# button (see DEVICE_SETTINGS_FIELDS' familyCalendarShowDigestButtonLocal-
-# gated More-menu item) or the household's push notification already cover.
+# button (the card's own More-menu item, always present) or the
+# household's push notification already cover.
 DAILY_DIGEST_EVENT_OPEN = "family_hub_daily_digest_open"
 
 # The card's Settings blob (theme, badges, digest config, block layout, etc.)
@@ -1175,6 +1175,22 @@ REMINDER_SUBSCRIPTION_LEVELS = (REMINDER_SUBSCRIPTION_CALENDAR, REMINDER_SUBSCRI
 #     card's "Other people's reminder lists" subscription picker
 #     (_renderNotifyProfileRemindersLists) still reads a legacy,
 #     unmigrated row's value alongside every profile's own field.
+#   - additionalRemindersEntities (list of str, default []): "multi reminder
+#     list" - this person's EXTRA individual Reminders lists alongside
+#     remindersEntity above, which always stays the PRIMARY list. Every
+#     "what's this profile's one reminders list" call site
+#     (_resolve_profile_reminders_entity, _primaryCalendarRemindersByEntity,
+#     the Add Reminder tab's default target) keeps reading remindersEntity
+#     unchanged; these extra lists are only ever pulled in ALONGSIDE it, by
+#     the sibling resolver _resolve_profile_additional_reminders_entities -
+#     polled/notified (_poll_reminders_todo), included in the Daily Digest's
+#     "Due today" section, and shown/addable in the card
+#     (_fetchReminders/_addableRemindersLists), each with the same owner
+#     targets/labeling as the primary. Deliberately NOT a place a brand new
+#     reminder can be targeted - every "add a reminder" flow (the Family
+#     Calendar's "+ Add a reminder" included) always defaults to the
+#     primary list only, per the household's own answer when asked which
+#     list new reminders should go to.
 #   - wishlistEntity (str, default ""): this person's own wish list to-do
 #     entity. Saving a profile with this set auto-flags that entity in the
 #     wish-list store (same flag _ws_set_wishlist_flag itself would set,
@@ -1400,6 +1416,68 @@ DEVICE_SETTINGS_EVENT_PUSH = "family_hub_device_settings_push"
 # an admin clicks Identify simply never sees it - there is deliberately no
 # get_pending-style catch-up for this event, unlike a settings push.
 DEVICE_SETTINGS_EVENT_IDENTIFY = "family_hub_device_settings_identify"
+# v1.147.0+ "screensaver toggle per device" - household ask: "I want the
+# screensaver to have a toggle per device shown in the same device tab...
+# so that automations can control screen saver." Deliberately NOT a
+# DEVICE_SETTINGS_FIELDS entry like the view/layout fields below - those are
+# staged (an admin edits them, then presses Push/Sync before a device
+# actually picks them up), but a screensaver on/off switch needs to take
+# effect immediately for an automation calling switch.turn_on/turn_off to
+# make any sense, with no separate Sync step. See device_settings_entity_
+# shared.py's own async_set_screensaver_enabled/screensaver_enabled_for and
+# switch.py's FamilyHubDeviceScreenSaverSwitch - this is its own top-level
+# field on the device record (record["screensaver_enabled"], default True),
+# alongside device_name, not nested under "settings". Same live-only, no
+# get_pending catch-up shape as DEVICE_SETTINGS_EVENT_IDENTIFY above for the
+# bus event itself - EXCEPT a device also learns its own current value from
+# every ws_report response (see that command's own docstring), so a
+# dashboard that was closed/asleep when an admin or automation flipped this
+# still picks up the right value the next time it loads, without needing a
+# dedicated catch-up command of its own.
+DEVICE_SETTINGS_EVENT_SCREENSAVER_TOGGLE = "family_hub_device_screensaver_toggle"
+
+# v1.149.3+ "Privacy mode should be per-device" - household ask, verbatim:
+# "I wanted to have a setting that you check if you want the device to
+# participate in privacy mode. This way things like phones could have the
+# calendar while the fridge or the kiosk is hidden." Same shape/precedent
+# as DEVICE_SETTINGS_EVENT_SCREENSAVER_TOGGLE just above: its own top-level
+# field on the device record (record["privacy_participates"], default True
+# so every existing device keeps blanking out together the moment this
+# field is introduced - nothing changes until a household explicitly
+# exempts a device), takes effect immediately (no Sync/Push step), and is
+# echoed back in every ws_report response for catch-up. This is layered ON
+# TOP OF the single household-wide privacy_mode flag above, never a
+# replacement for it - a device's own calendar is actually hidden only
+# when BOTH the household flag is on AND this device's own
+# privacy_participates is true (see the card's own _privacyModeEffective
+# Locked()).
+DEVICE_SETTINGS_EVENT_PRIVACY_PARTICIPATION_TOGGLE = "family_hub_device_privacy_participation_toggle"
+
+# v1.147.0+ "Privacy mode" - household ask, verbatim: "When enabled, all
+# reminders and calendar events on the calendar disappear and a lock symbol
+# appears in the middle of the screen... there is also a toggle on the back
+# end so it can be handled by automations." Deliberately a SINGLE household-
+# wide flag (not per-device like the screensaver toggle above) - "the
+# calendar" the household described is every open Family Calendar card, not
+# one specific tablet. Lives in its own tiny Store, never inside the main
+# Settings blob (settings_store) - that blob's own family_hub/set_settings
+# is an ungated full-blob replace driven by whatever's in the Settings
+# modal's draft at Save time (see chores_websocket_api.py's own comment on
+# why PIN hashes get the same separate-store treatment), so a live on/off
+# flag toggled by an automation between two Settings-modal opens could get
+# silently stomped back to a stale value the instant someone hits Save on
+# something unrelated. See store.py's create_privacy_mode_store/
+# default_privacy_mode/async_load_privacy_mode and switch.py's
+# FamilyHubPrivacyModeSwitch.
+PRIVACY_MODE_STORAGE_KEY_PREFIX = "family_hub_privacy_mode"
+PRIVACY_MODE_STORAGE_VERSION = 1
+# Live-only broadcast (same shape as DEVICE_SETTINGS_EVENT_IDENTIFY/
+# _SCREENSAVER_TOGGLE above) so every open Family Calendar card hides/shows
+# its reminders and calendar events and its lock overlay the instant the
+# flag changes, from whichever source changed it (the switch entity, an
+# automation, the card's own "more" menu, or a successful PIN unlock) - see
+# the card's own _subscribePrivacyModeChanged.
+PRIVACY_MODE_EVENT_CHANGED = "family_hub_privacy_mode_changed"
 
 # The whitelist of this-device-only localStorage keys the admin dashboard is
 # allowed to read/display/push - deliberately NOT every "*Local" key in the
@@ -1411,47 +1489,76 @@ DEVICE_SETTINGS_EVENT_IDENTIFY = "family_hub_device_settings_identify"
 # allowlists get elsewhere in this project, and the card's own Settings
 # "Devices" admin tab renders its per-field controls generically from this
 # same registry rather than hand-coding one per field.
+#
+# Each field also carries a "scope" - "device" (one value for
+# the whole physical device, shared across every dashboard/view that
+# happens to embed this card on it) or "instance" (one value per dashboard/
+# view the card is embedded on, since a household can place the same card
+# on more than one Lovelace dashboard on the same tablet and reasonably
+# want a different Week/Month layout on each). Only the view/layout fields
+# are "instance" - device identity (its custom name) stays "device", since
+# that describes the physical screen itself, not any one placement of the
+# card on it. See the card's own _getCardInstanceId/_storageKeyFor and
+# device_settings_websocket_api.py's module docstring for how this scope
+# is actually threaded through storage/report/push.
 DEVICE_SETTINGS_FIELDS = {
     "familyCalendarCurrentDayFirstLocal": {
         "type": "enum", "choices": ["on", "off"], "default": "off",
-        "label": "Current day always first",
+        "label": "Current day always first", "scope": "instance",
     },
     "familyCalendarWeekDayCountLocal": {
-        "type": "int", "min": 2, "max": 14, "default": 7,
-        "label": "Days shown in Week view",
+        "type": "int", "min": 1, "max": 36, "default": 7,
+        "label": "Days shown in Week view", "scope": "instance",
     },
     "familyCalendarWeekRowsLocal": {
         "type": "int", "min": 1, "max": 7, "default": 1,
-        "label": "Rows shown in Week view",
+        "label": "Rows shown in Week view", "scope": "instance",
     },
     "familyCalendarWeekViewVariantLocal": {
         "type": "enum", "choices": ["week", "planner"], "default": "week",
-        "label": "Week button shows",
+        "label": "Week button shows", "scope": "instance",
     },
     "familyCalendarMonthViewVariantLocal": {
         "type": "enum", "choices": ["month", "split"], "default": "month",
-        "label": "Month button shows",
+        "label": "Month button shows", "scope": "instance",
     },
     "familyCalendarShowTimelineLocal": {
         "type": "enum", "choices": ["on", "off"], "default": "off",
-        "label": "Timeline view",
+        "label": "Timeline view", "scope": "instance",
     },
     "familyCalendarSmallScreenModeLocal": {
         "type": "enum", "choices": ["on", "off"], "default": "off",
-        "label": "Small screen mode",
+        "label": "Small screen mode", "scope": "instance",
     },
-    # Off
-    # by default like every other opt-in visual addition here (Show hours,
-    # Small screen mode) - turning it on adds a "Daily Digest" item to the
-    # card's More menu (see the JS's _toggleMoreMenu) that opens that
-    # signed-in user's own Daily Digest as a modal. Independent of - not a
-    # replacement for - DAILY_DIGEST_EVENT_OPEN's live button-entity-press
-    # path just above, which works regardless of this setting.
-    "familyCalendarShowDigestButtonLocal": {
-        "type": "enum", "choices": ["on", "off"], "default": "off",
-        "label": "Daily Digest button on calendar screen",
+    # Unlike the free-text `device_name` ws_report
+    # already carries (see device_settings_websocket_api.py's own module
+    # docstring), that one is purely cosmetic display sugar the DEVICE
+    # itself derives fresh from navigator.userAgent on every report, with
+    # no way to override it - typing a
+    # name into the admin Devices tab had nowhere to go. This field is the
+    # other half: a real, pushable/reportable setting (the first "type":
+    # "text" entry in this registry) that _getDeviceName() checks FIRST,
+    # before falling back to that same UA guess, so once it's set (either
+    # locally on the device itself, or pushed from the admin tab exactly
+    # like any other field here) it sticks across reports/reloads/UA
+    # changes instead of being silently overwritten by the next one.
+    # Empty string (the default) means "no override yet" - not a name of
+    # its own. Device-scoped: the physical tablet has one name, regardless
+    # of how many dashboards/views are embedded on it.
+    "familyHubDeviceCustomNameLocal": {
+        "type": "text", "max_length": 60, "default": "",
+        "label": "Device name", "scope": "device",
     },
 }
+
+# Convenience views over DEVICE_SETTINGS_FIELDS above, split by "scope" -
+# device_settings_websocket_api.py's _validate_instance_settings and the
+# card's own JS copy of this registry both need "just the instance-scoped
+# keys" (an instance's own settings dict may never contain a device-scoped
+# key, and vice versa) often enough that recomputing this filter inline at
+# every call site would just be repetition.
+DEVICE_SCOPED_SETTINGS_FIELDS = {k: v for k, v in DEVICE_SETTINGS_FIELDS.items() if v.get("scope") == "device"}
+INSTANCE_SCOPED_SETTINGS_FIELDS = {k: v for k, v in DEVICE_SETTINGS_FIELDS.items() if v.get("scope") == "instance"}
 
 # Same three-stage shape as CHORE_STATUS_* above, reused deliberately (same
 # meaning: "still being worked toward" -> "hit the target, waiting on a
@@ -1911,6 +2018,24 @@ PERMISSION_DELETE_EVENT = "can_delete_event"
 # target_user_id == the acting user's own id).
 PERMISSION_ROUTINES_MANAGE_OWN = "can_manage_own_routines"
 PERMISSION_ROUTINES_MANAGE_ANY = "can_manage_any_routines"
+# v1.147.0+ Privacy mode (see PRIVACY_MODE_EVENT_CHANGED's own comment
+# above for the feature itself) - "it will display a lock, clicking it will
+# allow any user with the privacy mode privilege to insert their kiosk PIN
+# to turn off privacy mode." Same standalone-permission shape as
+# PERMISSION_EDIT_MENU/_DELETE_EVENT above: a real admin always has it (see
+# _has_permission/_has_permission_ctx in chores_websocket_api.py), anyone
+# else only if explicitly granted here. Enforced server-side in
+# chores_websocket_api.py's ws_privacy_mode_disable_with_pin - the one and
+# only gate on turning privacy mode OFF via the on-screen PIN unlock flow.
+# Deliberately does NOT gate turning it ON (anyone can enable privacy mode
+# from the card's own "more" menu with no PIN at all - there's no reason to
+# restrict making the screen MORE private), and does NOT gate the backend
+# switch.family_hub_privacy_mode entity's own turn_off at all (household
+# ask, verbatim: "Toggle privacy mode off with the toggle entity doesn't
+# require validation" - that's an already-authenticated Home Assistant
+# automation/service call, a fundamentally different trust boundary than an
+# anonymous tap on a kiosk's lock screen).
+PERMISSION_TOGGLE_PRIVACY_MODE = "can_toggle_privacy_mode"
 CHORE_PERMISSIONS = (
     PERMISSION_ASSIGN,
     PERMISSION_VERIFY,
@@ -1925,6 +2050,7 @@ CHORE_PERMISSIONS = (
     PERMISSION_DELETE_EVENT,
     PERMISSION_ROUTINES_MANAGE_OWN,
     PERMISSION_ROUTINES_MANAGE_ANY,
+    PERMISSION_TOGGLE_PRIVACY_MODE,
 )
 
 # HA core's `calendar` component defines a CalendarEntityFeature

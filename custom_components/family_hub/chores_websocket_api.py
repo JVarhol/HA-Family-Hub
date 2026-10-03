@@ -49,10 +49,10 @@ from typing import Any, Optional
 import voluptuous as vol
 
 from homeassistant.components import websocket_api
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
-from . import chore_engine, goal_engine, reward_engine, routine_engine, routine_library, sensor as timer_sensor, store as chores_store, timer_engine
+from . import chore_engine, goal_engine, privacy_mode_shared, reward_engine, routine_engine, routine_library, sensor as timer_sensor, store as chores_store, switch as device_settings_switch, timer_engine
 from .const import (
     ALARM_REANNOUNCE_SECONDS,
     CHORE_KEY_ALARM_AUDIENCE,
@@ -77,7 +77,9 @@ from .const import (
     PERMISSION_ROUTINES_MANAGE_ANY,
     PERMISSION_ROUTINES_MANAGE_OWN,
     PERMISSION_STAR_OVERRIDE,
+    PERMISSION_TOGGLE_PRIVACY_MODE,
     PERMISSION_VERIFY,
+    PRIVACY_MODE_EVENT_CHANGED,
     REWARD_KEY_ALARM_AUDIENCE,
     REWARD_KEY_TIMER_MINUTES,
     ROUTINE_CATEGORIES,
@@ -1653,6 +1655,10 @@ async def ws_get_my_permissions(hass: HomeAssistant, connection: websocket_api.A
         vol.Optional("can_delete_event"): bool,
         vol.Optional("can_manage_own_routines"): bool,
         vol.Optional("can_manage_any_routines"): bool,
+        # PERMISSION_TOGGLE_PRIVACY_MODE - see its own docstring in
+        # const.py. Same trap this schema's own comment above warns about -
+        # must be listed here literally.
+        vol.Optional("can_toggle_privacy_mode"): bool,
     }
 )
 @websocket_api.async_response
@@ -3556,6 +3562,140 @@ async def ws_list_alarm_device_candidates(
     )
 
 
+# ---------------------------------------------------------------------------
+# Privacy mode - household ask, verbatim: "When enabled, all reminders and
+# calendar events on the calendar disappear and a lock symbol appears in the
+# middle of the screen... Enabling this mode can be done from the more menu.
+# However, there is also a toggle on the back end so it can be handled by
+# automations... clicking [the lock] will allow any user with the privacy
+# mode privilege to insert their kiosk PIN to turn off privacy mode. If no
+# user has a pin it will prompt the user and say no kiosk pin is set...
+# Toggle privacy mode off with the toggle entity doesn't require validation."
+# See PRIVACY_MODE_EVENT_CHANGED's own comment in const.py and privacy_mode_
+# shared.py's own module docstring for the full architecture.
+# ---------------------------------------------------------------------------
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/privacy_mode/get_state"})
+@websocket_api.async_response
+async def ws_privacy_mode_get_state(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Open to any authenticated connection - every Family Calendar card
+    needs this on load to know whether to hide reminders/events and show
+    the lock overlay right away, before any live event has fired yet."""
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+    connection.send_result(msg["id"], {"enabled": bool((entry_data.get("privacy_mode") or {}).get("enabled"))})
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/privacy_mode/subscribe"})
+@websocket_api.async_response
+async def ws_privacy_mode_subscribe(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Live counterpart to ws_privacy_mode_get_state above - same "this
+    integration's own command, not the generic subscribe_events one"
+    reasoning as device_settings_websocket_api.py's ws_subscribe_push (a
+    device signed in as a non-admin Home Assistant user could never
+    subscribe to a custom event type through the generic command at all)."""
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+
+    @callback
+    def forward_event(event) -> None:
+        connection.send_message(websocket_api.event_message(msg["id"], event.data))
+
+    connection.subscriptions[msg["id"]] = hass.bus.async_listen(PRIVACY_MODE_EVENT_CHANGED, forward_event)
+    connection.send_result(msg["id"])
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/privacy_mode/set", vol.Required("enabled"): bool})
+@websocket_api.async_response
+async def ws_privacy_mode_set(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Open to any authenticated connection, with NO permission check at
+    all, in either direction - the card's own "more" menu uses this to
+    turn privacy mode ON (nobody needs special privilege to make the
+    screen MORE private), and the switch.family_hub_privacy_mode entity's
+    own turn_on/turn_off call privacy_mode_shared.async_set_privacy_mode
+    directly rather than through this command, but with the exact same "no
+    validation" result either way - see this feature's own module comment
+    above for why. Turning privacy mode OFF from the card's own on-screen
+    lock is deliberately a SEPARATE command (ws_privacy_mode_disable_with_
+    pin below) that the card chooses to call instead of this one for that
+    one flow - this command staying ungated is what the backend switch
+    entity needs, not a hole in the on-screen unlock flow."""
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+    await privacy_mode_shared.async_set_privacy_mode(hass, entry_data, msg["enabled"])
+    device_settings_switch.notify_privacy_mode(entry_data)
+    connection.send_result(msg["id"], {"enabled": msg["enabled"]})
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/privacy_mode/list_eligible_users"})
+@websocket_api.async_response
+async def ws_privacy_mode_list_eligible_users(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Who can type a PIN to turn privacy mode off - every real admin (see
+    _has_permission_ctx's own "admin always has every permission" rule)
+    plus anyone explicitly granted PERMISSION_TOGGLE_PRIVACY_MODE under the
+    Users tab's Permissions accordion. Deliberately NOT the same list as
+    ws_kiosk_list_login_users (kioskLoginEnabledUserIds) - this is its own,
+    unrelated privilege; a household may want someone to be able to clear
+    privacy mode without also setting them up for full kiosk login
+    elsewhere. Returns id/name/has_pin only, never a hash or salt - mirrors
+    ws_kiosk_list_login_users's own response shape so the card can reuse the
+    same "nobody has a PIN set yet" empty-state handling."""
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+    settings = await _load_settings(entry_data)
+    profiles = settings.get("userProfiles") or {}
+    try:
+        ha_users = await hass.auth.async_get_users()
+    except Exception:  # noqa: BLE001
+        ha_users = []
+    users = []
+    for u in ha_users:
+        if getattr(u, "system_generated", False):
+            continue
+        if not _has_permission_ctx(entry_data, u.id, bool(u.is_admin), PERMISSION_TOGGLE_PRIVACY_MODE):
+            continue
+        users.append({"id": u.id, "name": u.name or u.id, "has_pin": bool((profiles.get(u.id) or {}).get("pinHash"))})
+    connection.send_result(msg["id"], {"users": users})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "family_hub/privacy_mode/disable_with_pin", vol.Required("user_id"): str, vol.Required("pin"): str}
+)
+@websocket_api.async_response
+async def ws_privacy_mode_disable_with_pin(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """The card's own on-screen lock-unlock flow. Deliberately the same
+    "incorrect_pin" error for a wrong PIN, an unset PIN, or a user_id
+    without PERMISSION_TOGGLE_PRIVACY_MODE - never confirms/denies which of
+    those it was, same anti-fishing reasoning as ws_kiosk_elevate's own
+    docstring. Re-derives the permission server-side from (user_id,
+    is_admin) exactly like every other kiosk-aware handler in this file -
+    the card's own list_eligible_users is only ever what the UI shows."""
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+    settings = await _load_settings(entry_data)
+    profile = (settings.get("userProfiles") or {}).get(msg["user_id"]) or {}
+    salt = profile.get("pinSalt")
+    stored_hash = profile.get("pinHash")
+    is_admin = await _ha_user_is_admin(hass, msg["user_id"])
+    if (
+        not salt
+        or not stored_hash
+        or _hash_pin(msg["pin"], salt) != stored_hash
+        or not _has_permission_ctx(entry_data, msg["user_id"], is_admin, PERMISSION_TOGGLE_PRIVACY_MODE)
+    ):
+        connection.send_error(msg["id"], "incorrect_pin", "Incorrect PIN.")
+        return
+    await privacy_mode_shared.async_set_privacy_mode(hass, entry_data, False)
+    device_settings_switch.notify_privacy_mode(entry_data)
+    connection.send_result(msg["id"], {"enabled": False})
+
+
 ALL_COMMANDS = (
     ws_list_chores,
     ws_create_chore,
@@ -3619,6 +3759,12 @@ ALL_COMMANDS = (
     ws_dismiss_timer_alarm,
     ws_list_active_alarms,
     ws_list_alarm_device_candidates,
+    # Privacy mode.
+    ws_privacy_mode_get_state,
+    ws_privacy_mode_subscribe,
+    ws_privacy_mode_set,
+    ws_privacy_mode_list_eligible_users,
+    ws_privacy_mode_disable_with_pin,
 )
 
 

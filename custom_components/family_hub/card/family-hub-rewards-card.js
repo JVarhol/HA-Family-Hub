@@ -577,6 +577,25 @@ if (!window.__familyHubFabCoordinator) {
     const SLOT_HEIGHT_PX = 66;
     const entries = new Map(); // client -> { kind, seq, meta, onUpdate }
     let seq = 0;
+    // Every FAB here is position:fixed, pinned to the viewport corner (or,
+    // for a fab-position:"card" client, to its own card's box) - each card
+    // is its own independently-loaded custom element with no idea what
+    // other Family Hub cards are doing on the same dashboard, so a full-
+    // screen modal opened by ANY of them (most visibly the calendar card's
+    // own Settings screen) could end up with a totally unrelated card's
+    // FAB painted on top of it: depending on how the dashboard lays out
+    // its cards (Home Assistant's newer Sections view in particular can
+    // give each card's container its own CSS containment/stacking
+    // context), a sibling card's FAB z-index isn't guaranteed to actually
+    // lose to this card's modal overlay the way a plain same-shadow-DOM
+    // z-index comparison would. Rather than depend on that, every FAB-
+    // bearing card asks every OTHER one to physically hide
+    // (fab.hidden = true, not just "behind" via z-index - see each card's
+    // own onUpdate) while any of them has a full-screen modal open, via
+    // openModalCount/pushModalOpen/popModalOpen below - same "don't trust
+    // cross-shadow-DOM z-index, coordinate explicitly instead" approach as
+    // this project's shared screensaver controller.
+    let openModalCount = 0;
 
     function orderIndex(kind) {
       const i = FAB_KIND_ORDER.indexOf(kind);
@@ -595,13 +614,14 @@ if (!window.__familyHubFabCoordinator) {
       // still see otherProvidesGoalTab and still get an onUpdate call.
       const slotCount = list.filter(([, entry]) => entry.takesSlot).length;
       let slotIndex = 0;
+      const hideForModal = openModalCount > 0;
       list.forEach(([client, entry]) => {
         const otherProvidesGoalTab = list.some(
           ([otherClient, otherEntry]) => otherClient !== client && otherEntry.meta && otherEntry.meta.providesGoalTab
         );
         const index = entry.takesSlot ? slotIndex++ : null;
         if (typeof entry.onUpdate === "function") {
-          entry.onUpdate({ offsetPx: (index || 0) * SLOT_HEIGHT_PX, slotIndex: index, count: slotCount, otherProvidesGoalTab });
+          entry.onUpdate({ offsetPx: (index || 0) * SLOT_HEIGHT_PX, slotIndex: index, count: slotCount, otherProvidesGoalTab, hideForModal });
         }
       });
     }
@@ -612,8 +632,10 @@ if (!window.__familyHubFabCoordinator) {
       // `providesGoalTab` (see this block's own docstring above). `onUpdate`
       // is called once immediately (so a lone card on an otherwise-empty
       // dashboard still gets offsetPx: 0) and again on every subsequent
-      // register/unregister/updateClientMeta from ANY card, since adding a
-      // second FAB changes where the first one's slot is too.
+      // register/unregister/updateClientMeta/pushModalOpen/popModalOpen
+      // from ANY card, since adding a second FAB changes where the first
+      // one's slot is too, and any card's modal opening/closing changes
+      // whether every FAB should currently be hidden.
       //
       // `opts.takesSlot` (default true) - pass `{ takesSlot:
       // false }` for a card whose FAB has opted out of the shared
@@ -637,6 +659,24 @@ if (!window.__familyHubFabCoordinator) {
         const entry = entries.get(client);
         if (!entry) return;
         entry.meta = Object.assign({}, entry.meta, meta || {});
+        recompute();
+      },
+      // Call when THIS card opens a full-screen modal that every OTHER
+      // Family Hub card's FAB should get out of the way of (today: only
+      // the calendar card's own Settings screen calls this - see its
+      // _setupSettingsFabCoordination). A plain counter, not a per-client
+      // flag, so this stays correct even if more than one such modal is
+      // ever open across more than one card at once - every pushModalOpen
+      // needs a matching popModalOpen before FABs reappear, and a card
+      // that unmounts while its own modal was still open (see
+      // disconnectedCallback) pops on its way out rather than leaking the
+      // count forever.
+      pushModalOpen() {
+        openModalCount += 1;
+        recompute();
+      },
+      popModalOpen() {
+        openModalCount = Math.max(0, openModalCount - 1);
         recompute();
       },
       // Call from disconnectedCallback. Frees this card's slot so every
@@ -1159,6 +1199,7 @@ class FamilyHubRewardsCard extends HTMLElement {
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
+    this._ensureTranslationsLoaded();
     // Keeps the shared screensaver controller's own hass reference fresh
     // on every update (not just the first) - see the singleton block above
     // this class.
@@ -1275,6 +1316,12 @@ class FamilyHubRewardsCard extends HTMLElement {
       { providesGoalTab: this._goalsInRewardsEnabled() },
       (state) => {
         this.style.setProperty("--fh-fab-offset", `${state.offsetPx}px`);
+        // hideForModal is true while ANY Family Hub card on this
+        // dashboard has a full-screen modal open (most visibly the
+        // calendar card's own Settings screen) - see the coordinator's
+        // own doc for why this can't just rely on z-index across cards.
+        const fab = this._root && this._root.querySelector(".add-reward-fab");
+        if (fab) fab.hidden = !!state.hideForModal;
       },
       { takesSlot: !cardRelative }
     );
@@ -1532,7 +1579,7 @@ class FamilyHubRewardsCard extends HTMLElement {
       // The realistic failures are "you've already got one running" and
       // "not enough stars" - both worth saying out loud rather than having
       // the button appear to do nothing.
-      window.alert((e && e.message) || "Couldn't start that reward.");
+      window.alert((e && e.message) || this._t("rewards.catalog.start_timer_failed", "Couldn't start that reward."));
     }
     await Promise.all([this._fetchTimers(), this._fetchRewardsState()]);
     this._render();
@@ -1560,6 +1607,69 @@ class FamilyHubRewardsCard extends HTMLElement {
     if (this._isAdmin()) return true;
     if (this._kioskElevation) return !!(this._kioskElevation.permissions && this._kioskElevation.permissions[key]);
     return !!this._myPermissions[key];
+  }
+  // --- Native HA frontend i18n (same trio as family-hub-chores-card.js;
+  // see that file's own comment on _t/_ensureTranslationsLoaded/
+  // _applyTranslations for the full mechanism - hass.loadBackendTranslation
+  // + hass.localize, keyed by hass.language, no separate Family Hub
+  // language setting. Copied rather than shared, like every other card in
+  // this repo - none of the 11 card files share code. Rewards-card UI
+  // strings live under the SAME "fh_ui" translation category as every
+  // other card, namespaced "rewards.*" so it never collides. ---
+  _t(key, fallback, vars) {
+    let str = "";
+    try {
+      if (this._hass && typeof this._hass.localize === "function") {
+        str = this._hass.localize(`component.family_hub.fh_ui.${key}`) || "";
+      }
+    } catch (e) {
+      str = "";
+    }
+    if (!str) str = fallback;
+    if (vars) {
+      Object.keys(vars).forEach((k) => {
+        str = str.split(`%${k}%`).join(vars[k]);
+      });
+    }
+    return str;
+  }
+  _baseLanguage(lang) {
+    return (lang || "en").split("-")[0].toLowerCase();
+  }
+  _ensureTranslationsLoaded() {
+    if (!this._hass || typeof this._hass.loadBackendTranslation !== "function") return;
+    const lang = this._baseLanguage(this._hass.language);
+    if (this._i18nLoadedLang === lang || this._i18nLoading === lang) return;
+    this._i18nLoading = lang;
+    this._hass
+      .loadBackendTranslation("fh_ui", "family_hub")
+      .then(() => {
+        this._i18nLoadedLang = lang;
+        this._i18nLoading = null;
+        this._applyTranslations();
+        this._render();
+      })
+      .catch((e) => {
+        this._i18nLoading = null;
+        console.warn("[family_hub] failed to load \"" + lang + "\" translations - staying on English fallback text", e);
+      });
+  }
+  _applyTranslations() {
+    if (!this._root) return;
+    this._root.querySelectorAll("[data-i18n]").forEach((el) => {
+      const key = el.dataset.i18n;
+      if (el.dataset.i18nFallback === undefined) el.dataset.i18nFallback = el.textContent;
+      el.textContent = this._t(key, el.dataset.i18nFallback);
+    });
+    this._root.querySelectorAll("[data-i18n-title]").forEach((el) => {
+      const key = el.dataset.i18nTitle;
+      if (el.dataset.i18nTitleFallback === undefined) {
+        el.dataset.i18nTitleFallback = el.getAttribute("title") || el.getAttribute("aria-label") || "";
+      }
+      const translated = this._t(key, el.dataset.i18nTitleFallback);
+      if (el.hasAttribute("title")) el.setAttribute("title", translated);
+      if (el.hasAttribute("aria-label")) el.setAttribute("aria-label", translated);
+    });
   }
   // kiosk PIN login. this._kioskElevation is null when
   // nobody's elevated, else {token, user_id, name, is_admin, permissions,
@@ -1589,13 +1699,13 @@ class FamilyHubRewardsCard extends HTMLElement {
     if (!btn) return;
     btn.hidden = !this._kioskElevation && !(this._kioskLoginUsers && this._kioskLoginUsers.length);
     if (this._kioskElevation) {
-      btn.textContent = `\u{1F464} ${this._kioskElevation.name} · Log out`;
+      btn.textContent = this._t("rewards.kiosk_login.logged_in_as", "\u{1F464} %name% · Log out", { name: this._kioskElevation.name });
       btn.classList.add("active");
-      btn.title = "Tap to log out of this kiosk session";
+      btn.title = this._t("rewards.kiosk_login.logout_title", "Tap to log out of this kiosk session");
     } else {
-      btn.textContent = "\u{1F512} Login";
+      btn.textContent = this._t("rewards.kiosk_login.btn_label", "\u{1F512} Login");
       btn.classList.remove("active");
-      btn.title = "Log in as a specific household member on this kiosk display";
+      btn.title = this._t("rewards.kiosk_login.title", "Log in as a specific household member on this kiosk display");
     }
   }
   async _onKioskLoginBtnClick() {
@@ -1618,7 +1728,7 @@ class FamilyHubRewardsCard extends HTMLElement {
       if (!this._kioskLoginUsers.length) {
         const empty = document.createElement("div");
         empty.className = "kiosk-login-empty";
-        empty.textContent = "No one is set up for kiosk login yet - an admin can enable it under Settings > Users.";
+        empty.textContent = this._t("rewards.kiosk_login.no_users", "No one is set up for kiosk login yet - an admin can enable it under Settings > Users.");
         pickerEl.appendChild(empty);
       } else {
         this._kioskLoginUsers.forEach((u) => {
@@ -1652,11 +1762,11 @@ class FamilyHubRewardsCard extends HTMLElement {
     const userId = this._kioskLoginSelectedUserId;
     const pin = pinEl ? pinEl.value.trim() : "";
     if (!userId) {
-      if (errEl) errEl.textContent = "Pick who's logging in first.";
+      if (errEl) errEl.textContent = this._t("rewards.kiosk_login.pick_user_first", "Pick who's logging in first.");
       return;
     }
     if (!pin) {
-      if (errEl) errEl.textContent = "Enter a PIN.";
+      if (errEl) errEl.textContent = this._t("rewards.kiosk_login.enter_pin", "Enter a PIN.");
       return;
     }
     try {
@@ -1671,7 +1781,7 @@ class FamilyHubRewardsCard extends HTMLElement {
       await window.__familyHubKioskSession.login(this._hass, userId, pin);
       this._closeKioskLoginModal();
     } catch (e) {
-      if (errEl) errEl.textContent = (e && e.message) || "Incorrect PIN.";
+      if (errEl) errEl.textContent = (e && e.message) || this._t("rewards.kiosk_login.incorrect_pin", "Incorrect PIN.");
       if (pinEl) {
         pinEl.value = "";
         pinEl.focus();
@@ -1769,12 +1879,12 @@ class FamilyHubRewardsCard extends HTMLElement {
     const overlay = this._root.querySelector(".reject-modal");
     const box = overlay.querySelector(".modal-box");
     box.innerHTML = `
-      <button type="button" class="modal-close reject-modal-close" aria-label="Close">&#10005;</button>
-      <h2>Send back "${this._esc(goal.title)}"</h2>
-      <div class="field"><label>Anything you want to tell them about why? (optional)</label><textarea class="f-reject-reason" rows="3" placeholder="Not quite - try again"></textarea></div>
+      <button type="button" class="modal-close reject-modal-close" aria-label="${this._t("common.close", "Close")}">&#10005;</button>
+      <h2>${this._t("rewards.goal_reject.title", 'Send back "%title%"', { title: this._esc(goal.title) })}</h2>
+      <div class="field"><label>${this._t("rewards.goal_reject.reason_label", "Anything you want to tell them about why? (optional)")}</label><textarea class="f-reject-reason" rows="3" placeholder="${this._t("rewards.goal_reject.reason_placeholder", "Not quite - try again")}"></textarea></div>
       <div class="modal-actions">
-        <button class="cancel-btn">Cancel</button>
-        <button class="save-btn">Send back</button>
+        <button class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn">${this._t("rewards.goal.send_back", "Send back")}</button>
       </div>
       <div class="form-error"></div>
     `;
@@ -1815,18 +1925,20 @@ class FamilyHubRewardsCard extends HTMLElement {
     const target = Math.max(1, goal.target_count || 1);
     const current = Math.min(target, goal.current_count || 0);
     const canLog = goal.status === GOAL_STATUS_OPEN && this._canLogGoalProgress(goal);
-    const progressLabel = target > 1 ? `${current} / ${target} logged` : (current >= target ? "Done" : "Not yet done");
+    const progressLabel = target > 1
+      ? this._t("rewards.goal.progress_count", "%current% / %target% logged", { current, target })
+      : (current >= target ? this._t("common.done", "Done") : this._t("rewards.goal.not_yet_done", "Not yet done"));
     let actions = "";
-    if (canLog) actions += `<button type="button" class="goal-log-btn" data-id="${goal.id}">${target > 1 ? "Log progress" : "Mark done"}</button>`;
+    if (canLog) actions += `<button type="button" class="goal-log-btn" data-id="${goal.id}">${target > 1 ? this._t("rewards.goal.log_progress", "Log progress") : this._t("rewards.goal.mark_done", "Mark done")}</button>`;
     if (goal.status === GOAL_STATUS_PENDING_VERIFICATION) {
       if (this._canVerify()) {
-        actions += `<button type="button" class="goal-approve-btn" data-id="${goal.id}">Approve</button>`;
-        actions += `<button type="button" class="goal-reject-btn" data-id="${goal.id}">Send back</button>`;
-      } else actions += `<span class="suggestion-pending">Awaiting approval</span>`;
+        actions += `<button type="button" class="goal-approve-btn" data-id="${goal.id}">${this._t("rewards.goal.approve", "Approve")}</button>`;
+        actions += `<button type="button" class="goal-reject-btn" data-id="${goal.id}">${this._t("rewards.goal.send_back", "Send back")}</button>`;
+      } else actions += `<span class="suggestion-pending">${this._t("rewards.goal.awaiting_approval", "Awaiting approval")}</span>`;
     } else if (goal.status === GOAL_STATUS_APPROVED) {
-      actions += `<span class="suggestion-pending">&#10003; Achieved</span>`;
+      actions += `<span class="suggestion-pending">&#10003; ${this._t("rewards.goal.achieved", "Achieved")}</span>`;
       if (goal.assigned_to === this._myUserId() || this._hasPermission("can_assign")) {
-        actions += `<button type="button" class="goal-complete-btn" data-id="${goal.id}">Complete</button>`;
+        actions += `<button type="button" class="goal-complete-btn" data-id="${goal.id}">${this._t("rewards.goal.complete", "Complete")}</button>`;
       }
     }
     return `
@@ -2257,21 +2369,21 @@ class FamilyHubRewardsCard extends HTMLElement {
         <div class="header">
           <div class="title"></div>
           <div class="actions">
-            <button class="manage-stars-btn" title="Manually add or subtract stars, with a reason - for bonuses, corrections, etc. outside chores/rewards/goals" hidden>&#11088; Manage stars</button>
+            <button class="manage-stars-btn" data-i18n-title="rewards.header.manage_stars_title" title="Manually add or subtract stars, with a reason - for bonuses, corrections, etc. outside chores/rewards/goals" hidden><span data-i18n="rewards.header.manage_stars_btn">&#11088; Manage stars</span></button>
             <button class="manage-btn" hidden>Manage catalog</button>
             <button class="kiosk-login-btn" title="Log in as a specific household member on this kiosk display" hidden>&#128274; Login</button>
           </div>
         </div>
         <div class="balances"></div>
-        <div class="section-title">Reward catalog</div>
+        <div class="section-title" data-i18n="rewards.sections.catalog">Reward catalog</div>
         <div class="catalog"></div>
-        <div class="section-title goals-title" hidden>Goals</div>
+        <div class="section-title goals-title" data-i18n="rewards.sections.goals" hidden>Goals</div>
         <div class="goals"></div>
-        <div class="section-title suggestions-title" hidden>Suggested rewards</div>
+        <div class="section-title suggestions-title" data-i18n="rewards.sections.suggestions" hidden>Suggested rewards</div>
         <div class="suggestions"></div>
-        <div class="section-title pending-title" hidden>Pending rewards</div>
+        <div class="section-title pending-title" data-i18n="rewards.sections.pending" hidden>Pending rewards</div>
         <div class="pending"></div>
-        <div class="section-title">Recent redemptions</div>
+        <div class="section-title" data-i18n="rewards.sections.history">Recent redemptions</div>
         <div class="history"></div>
       </ha-card>
       <div class="modal-overlay create-reward-modal"><div class="modal-box"></div></div>
@@ -2281,18 +2393,18 @@ class FamilyHubRewardsCard extends HTMLElement {
       <div class="modal-overlay reject-modal"><div class="modal-box"></div></div>
       <div class="modal-overlay kiosk-login-overlay">
         <div class="modal-box kiosk-login-box">
-          <button type="button" class="star-history-close-btn kiosk-login-close" title="Close">&#10005;</button>
-          <h2>&#128274; Kiosk login</h2>
+          <button type="button" class="star-history-close-btn kiosk-login-close" data-i18n-title="common.close" title="Close">&#10005;</button>
+          <h2 data-i18n="rewards.kiosk_login.heading">&#128274; Kiosk login</h2>
           <div class="kiosk-login-user-picker"></div>
           <input type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" class="kiosk-login-pin-input" placeholder="PIN" />
           <div class="kiosk-login-error"></div>
           <div class="modal-actions">
-            <button class="cancel-btn kiosk-login-cancel">Cancel</button>
-            <button class="save-btn kiosk-login-submit">Log in</button>
+            <button class="cancel-btn kiosk-login-cancel" data-i18n="common.cancel">Cancel</button>
+            <button class="save-btn kiosk-login-submit" data-i18n="rewards.kiosk_login.submit">Log in</button>
           </div>
         </div>
       </div>
-      <button class="add-reward-fab" title="Add a reward" aria-haspopup="true">&#65291;</button>
+      <button class="add-reward-fab" data-i18n-title="rewards.add_reward_fab_title" title="Add a reward" aria-haspopup="true">&#65291;</button>
     `;
     this._root = root;
     // A fixed round + button in the bottom-right corner, pixel-for-pixel
@@ -2488,7 +2600,7 @@ class FamilyHubRewardsCard extends HTMLElement {
       await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/rewards/redeem", item_id: itemId }));
       await this._fetchRewardsState();
     } catch (e) {
-      if (statusEl) statusEl.textContent = "Not enough stars yet.";
+      if (statusEl) statusEl.textContent = this._t("rewards.catalog.not_enough_stars", "Not enough stars yet.");
     }
   }
   async _deleteItem(itemId) {
@@ -2560,47 +2672,52 @@ class FamilyHubRewardsCard extends HTMLElement {
     // same as this modal always worked pre-Goals.
     const showGoalTab = !isEdit && this._canAssignGoals();
     const memberUsersHtml = this._memberUsers().map((u) => `<option value="${u.id}">${this._esc(u.name)}</option>`).join("");
+    const saveLabel = isEdit
+      ? this._t("common.save", "Save")
+      : canPrice
+      ? this._t("common.add", "Add")
+      : this._t("rewards.modal.submit_for_approval", "Submit for approval");
     box.innerHTML = `
-      <button type="button" class="modal-close reward-modal-close" aria-label="Close">&#10005;</button>
-      <h2>&#127873; ${isEdit ? "Edit reward" : canPrice ? "Add a reward" : "Suggest a reward"}</h2>
+      <button type="button" class="modal-close reward-modal-close" aria-label="${this._t("common.close", "Close")}">&#10005;</button>
+      <h2>&#127873; ${isEdit ? this._t("rewards.modal.edit_heading", "Edit reward") : canPrice ? this._t("rewards.modal.add_heading", "Add a reward") : this._t("rewards.modal.suggest_heading", "Suggest a reward")}</h2>
       ${showGoalTab ? `
       <div class="modal-tabs">
-        <button type="button" class="modal-tab active" data-tab="reward">Reward</button>
-        <button type="button" class="modal-tab" data-tab="goal">Goal</button>
+        <button type="button" class="modal-tab active" data-tab="reward">${this._t("rewards.modal.tab_reward", "Reward")}</button>
+        <button type="button" class="modal-tab" data-tab="goal">${this._t("rewards.modal.tab_goal", "Goal")}</button>
       </div>` : ""}
       <div class="tab-pane reward-pane">
-      ${!isEdit && !canPrice ? `<div class="m-hint">You can suggest a new reward, but only an admin (or someone granted reward-add/reward-override permission) can set its star cost - this'll wait in Suggested Rewards until they price and approve it.</div>` : ""}
-      <div class="field"><label>Title</label><input type="text" class="m-title" placeholder="Movie night"></div>
-      ${canPrice ? `<div class="field"><label>Cost (stars)</label><input type="number" class="m-cost" min="0" placeholder="5"></div>` : ""}
+      ${!isEdit && !canPrice ? `<div class="m-hint">${this._t("rewards.modal.suggest_hint", "You can suggest a new reward, but only an admin (or someone granted reward-add/reward-override permission) can set its star cost - this'll wait in Suggested Rewards until they price and approve it.")}</div>` : ""}
+      <div class="field"><label>${this._t("rewards.modal.title_label", "Title")}</label><input type="text" class="m-title" placeholder="${this._t("rewards.modal.title_placeholder", "Movie night")}"></div>
+      ${canPrice ? `<div class="field"><label>${this._t("rewards.modal.cost_label", "Cost (stars)")}</label><input type="number" class="m-cost" min="0" placeholder="5"></div>` : ""}
       ${
         canPrice
           ? `
-      <div class="field"><label>What it's really worth (optional)</label><input type="text" class="m-value-note" placeholder="$20, or 2 hrs"></div>
-      <div class="field" title="Optional - e.g. 120 for &quot;2 hours of gaming&quot;. Using this reward starts a countdown and sends a notification when it's up. One reward timer runs at a time per person."><label>Timer (optional - minutes)</label><input type="number" class="m-timer-minutes" min="1" max="1440" placeholder="Leave blank for no timer"></div>
+      <div class="field"><label>${this._t("rewards.modal.value_note_label", "What it's really worth (optional)")}</label><input type="text" class="m-value-note" placeholder="${this._t("rewards.modal.value_note_placeholder", "$20, or 2 hrs")}"></div>
+      <div class="field" title="${this._t("rewards.modal.timer_hint", "Optional - e.g. 120 for “2 hours of gaming”. Using this reward starts a countdown and sends a notification when it's up. One reward timer runs at a time per person.")}"><label>${this._t("rewards.modal.timer_label", "Timer (optional - minutes)")}</label><input type="number" class="m-timer-minutes" min="1" max="1440" placeholder="${this._t("rewards.modal.timer_placeholder", "Leave blank for no timer")}"></div>
       ${this._alarmAudienceToggleHtml("m-alarm-audience", isEdit ? existingItem.alarm_audience : "self")}
-      <div class="field"><label>How it works</label>
+      <div class="field"><label>${this._t("rewards.modal.redeem_mode_label", "How it works")}</label>
         <select class="m-redeem-mode">
-          <option value="instant">Redeem any time</option>
-          <option value="banked">Stacks up (e.g. allowance, TV time)</option>
-          <option value="one_time">One-time - disappears after use</option>
+          <option value="instant">${this._t("rewards.modal.redeem_mode_instant", "Redeem any time")}</option>
+          <option value="banked">${this._t("rewards.modal.redeem_mode_banked", "Stacks up (e.g. allowance, TV time)")}</option>
+          <option value="one_time">${this._t("rewards.modal.redeem_mode_one_time", "One-time - disappears after use")}</option>
         </select>
       </div>
       <div class="m-banked-fields field" hidden>
-        <label>Adds this much per redemption</label>
-          <span class="m-stack-row"><input type="number" class="m-stack-amount" min="0" step="any" value="1"><input type="text" class="m-stack-label" placeholder="hours, $, etc."></span>
+        <label>${this._t("rewards.modal.stack_amount_label", "Adds this much per redemption")}</label>
+          <span class="m-stack-row"><input type="number" class="m-stack-amount" min="0" step="any" value="1"><input type="text" class="m-stack-label" placeholder="${this._t("rewards.modal.stack_label_placeholder", "hours, $, etc.")}"></span>
       </div>
-      <label class="m-checkbox-label"><input type="checkbox" class="m-requires-fulfillment"> Needs a parent to mark it done before it counts (e.g. cash allowance)</label>
+      <label class="m-checkbox-label"><input type="checkbox" class="m-requires-fulfillment"> ${this._t("rewards.modal.requires_fulfillment_label", "Needs a parent to mark it done before it counts (e.g. cash allowance)")}</label>
       `
           : ""
       }
       <div class="m-icon-picker">
-        <button type="button" class="m-icon-toggle" data-icon="" title="Pick an icon">&#127873;</button>
+        <button type="button" class="m-icon-toggle" data-icon="" title="${this._t("rewards.modal.pick_icon_title", "Pick an icon")}">&#127873;</button>
         <div class="m-icon-grid" hidden>
           ${REWARD_ICON_CATEGORIES.map(
             (cat, i) => `
           <div class="m-icon-category">
             <button type="button" class="m-icon-cat-toggle" data-cat-index="${i}">
-              <span>${cat.label}</span>
+              <span>${this._t(`rewards.icon_category.${i}`, cat.label)}</span>
               <span class="m-icon-cat-chevron">&#9660;</span>
             </button>
             <div class="m-icon-cat-body">
@@ -2608,26 +2725,26 @@ class FamilyHubRewardsCard extends HTMLElement {
             </div>
           </div>`
           ).join("")}
-          <button type="button" class="m-icon-clear">Use default icon &times;</button>
+          <button type="button" class="m-icon-clear">${this._t("rewards.modal.use_default_icon", "Use default icon")} &times;</button>
         </div>
       </div>
       <div class="m-color-row">
-        <input type="color" class="m-color" value="#c9c2b3" data-touched="false" title="Card color">
-        <button type="button" class="m-color-reset-btn">Use default</button>
+        <input type="color" class="m-color" value="#c9c2b3" data-touched="false" title="${this._t("rewards.modal.card_color_title", "Card color")}">
+        <button type="button" class="m-color-reset-btn">${this._t("common.use_default", "Use default")}</button>
       </div>
       </div>
       ${showGoalTab ? `
       <div class="tab-pane goal-pane" hidden>
-        <div class="field"><label>Title</label><input type="text" class="g-title" placeholder="Get 3 Bs in math"></div>
-        <div class="field"><label>For</label><select class="g-assigned">${memberUsersHtml}</select></div>
-        <div class="field"><label>Target count (how many times to log before it's done)</label><input type="number" class="g-target" min="1" value="1"></div>
+        <div class="field"><label>${this._t("rewards.modal.title_label", "Title")}</label><input type="text" class="g-title" placeholder="${this._t("rewards.modal.goal_title_placeholder", "Get 3 Bs in math")}"></div>
+        <div class="field"><label>${this._t("rewards.modal.for_label", "For")}</label><select class="g-assigned">${memberUsersHtml}</select></div>
+        <div class="field"><label>${this._t("rewards.modal.target_count_label", "Target count (how many times to log before it's done)")}</label><input type="number" class="g-target" min="1" value="1"></div>
         ${this._goalRewardFieldsHtml(null)}
-        <div class="field"><label>Due date (optional)</label><input type="datetime-local" class="g-due"></div>
-        <div class="field"><label>Notes</label><textarea class="g-notes" rows="3" placeholder="Any details worth knowing"></textarea></div>
+        <div class="field"><label>${this._t("rewards.modal.due_date_label", "Due date (optional)")}</label><input type="datetime-local" class="g-due"></div>
+        <div class="field"><label>${this._t("rewards.modal.notes_label", "Notes")}</label><textarea class="g-notes" rows="3" placeholder="${this._t("rewards.modal.notes_placeholder", "Any details worth knowing")}"></textarea></div>
       </div>` : ""}
       <div class="modal-actions">
-        <button class="cancel-btn">Cancel</button>
-        <button class="save-btn">${isEdit ? "Save" : canPrice ? "Add" : "Submit for approval"}</button>
+        <button class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn">${saveLabel}</button>
       </div>
       <div class="form-error"></div>
     `;
@@ -2635,7 +2752,9 @@ class FamilyHubRewardsCard extends HTMLElement {
     if (showGoalTab) {
       this._wireGoalRewardFields(box);
       this._wireModalTabs(box, () => {
-        box.querySelector(".save-btn").textContent = box.dataset.activeTab === "goal" ? "Create" : (isEdit ? "Save" : canPrice ? "Add" : "Submit for approval");
+        box.querySelector(".save-btn").textContent = box.dataset.activeTab === "goal"
+          ? this._t("rewards.modal.create", "Create")
+          : saveLabel;
       });
     }
     this._wireAlarmAudienceToggle(box, "m-alarm-audience");
@@ -2708,11 +2827,11 @@ class FamilyHubRewardsCard extends HTMLElement {
     const opt = (val, label) => `<button type="button" class="approval-toggle-btn${v === val ? " active" : ""}" data-value="${val}">${label}</button>`;
     return `
       <div class="approval-toggle-field">
-        <div class="approval-toggle-label">Who hears this alarm</div>
+        <div class="approval-toggle-label">${this._t("rewards.alarm_audience.label", "Who hears this alarm")}</div>
         <div class="approval-toggle-btn-group">
-          ${opt("self", "Just them")}
-          ${opt("kiosks", "Them + kiosks")}
-          ${opt("everyone", "Everyone")}
+          ${opt("self", this._t("rewards.alarm_audience.self", "Just them"))}
+          ${opt("kiosks", this._t("rewards.alarm_audience.kiosks", "Them + kiosks"))}
+          ${opt("everyone", this._t("rewards.alarm_audience.everyone", "Everyone"))}
         </div>
         <input type="text" class="${inputClass}" hidden value="${v}" />
       </div>
@@ -2744,14 +2863,14 @@ class FamilyHubRewardsCard extends HTMLElement {
       .map((it) => `<option value="${it.id}" ${g.reward_item_id === it.id ? "selected" : ""}>${this._esc(it.title)} (${it.cost_stars}&#11088;)</option>`)
       .join("");
     return `
-      <label>Reward
+      <label>${this._t("rewards.modal.reward_label", "Reward")}
         <select class="g-reward-type">
-          <option value="stars" ${rewardType === "stars" ? "selected" : ""}>Stars</option>
-          <option value="catalog_item" ${rewardType === "catalog_item" ? "selected" : ""}>A specific reward from the catalog</option>
+          <option value="stars" ${rewardType === "stars" ? "selected" : ""}>${this._t("rewards.modal.reward_type_stars", "Stars")}</option>
+          <option value="catalog_item" ${rewardType === "catalog_item" ? "selected" : ""}>${this._t("rewards.modal.reward_type_catalog_item", "A specific reward from the catalog")}</option>
         </select>
       </label>
-      <label class="g-star-value-field">How many stars<input type="number" class="g-star-value" min="1" value="${g.star_value || 1}"></label>
-      <label class="g-reward-item-field">Which reward<select class="g-reward-item">${catalogOptions}</select></label>
+      <label class="g-star-value-field">${this._t("rewards.modal.how_many_stars_label", "How many stars")}<input type="number" class="g-star-value" min="1" value="${g.star_value || 1}"></label>
+      <label class="g-reward-item-field">${this._t("rewards.modal.which_reward_label", "Which reward")}<select class="g-reward-item">${catalogOptions}</select></label>
     `;
   }
   _wireGoalRewardFields(box) {
@@ -2783,12 +2902,12 @@ class FamilyHubRewardsCard extends HTMLElement {
     errEl.textContent = "";
     const title = box.querySelector(".g-title").value.trim();
     if (!title) {
-      errEl.textContent = "A goal needs a title.";
+      errEl.textContent = this._t("rewards.goal_errors.needs_title", "A goal needs a title.");
       return;
     }
     const assignedTo = box.querySelector(".g-assigned").value;
     if (!assignedTo) {
-      errEl.textContent = "A goal needs someone it belongs to.";
+      errEl.textContent = this._t("rewards.goal_errors.needs_assignee", "A goal needs someone it belongs to.");
       return;
     }
     const payload = {
@@ -2804,7 +2923,7 @@ class FamilyHubRewardsCard extends HTMLElement {
     try {
       await this._hass.connection.sendMessagePromise(payload);
     } catch (e) {
-      errEl.textContent = (e && e.message) || "Couldn't save this goal.";
+      errEl.textContent = (e && e.message) || this._t("rewards.goal_errors.save_failed", "Couldn't save this goal.");
       return;
     }
     overlay.classList.remove("open");
@@ -2815,7 +2934,7 @@ class FamilyHubRewardsCard extends HTMLElement {
     errEl.textContent = "";
     const title = box.querySelector(".m-title").value.trim();
     if (!title) {
-      errEl.textContent = "A reward needs a title.";
+      errEl.textContent = this._t("rewards.modal.needs_title", "A reward needs a title.");
       return;
     }
     const iconToggle = box.querySelector(".m-icon-toggle");
@@ -2888,7 +3007,7 @@ class FamilyHubRewardsCard extends HTMLElement {
       overlay.classList.remove("open");
       await this._fetchRewardsState();
     } catch (e) {
-      errEl.textContent = (e && e.message) || "Couldn't save that - check the fields above.";
+      errEl.textContent = (e && e.message) || this._t("rewards.modal.save_failed", "Couldn't save that - check the fields above.");
     }
   }
   async _approveSuggestion(suggestionId, costStars) {
@@ -2936,15 +3055,16 @@ class FamilyHubRewardsCard extends HTMLElement {
     const overlay = this._root.querySelector(".gift-stars-modal");
     const box = overlay.querySelector(".modal-box");
     const myBalance = this._balances[this._myUserId()] || 0;
+    const toNameLabel = toName ? this._esc(toName) : this._t("rewards.gift.them_fallback", "them");
     box.innerHTML = `
-      <button type="button" class="modal-close gift-stars-close" aria-label="Close">&#10005;</button>
-      <h2>&#127873; Gift stars to ${this._esc(toName || "them")}</h2>
-      <div class="m-hint">You have ${myBalance} star${myBalance === 1 ? "" : "s"}.</div>
-      <div class="field"><label>How many stars</label><input type="number" class="gift-amount-input" min="1" max="${myBalance}" placeholder="1"></div>
+      <button type="button" class="modal-close gift-stars-close" aria-label="${this._t("common.close", "Close")}">&#10005;</button>
+      <h2>&#127873; ${this._t("rewards.gift.heading", "Gift stars to %name%", { name: toNameLabel })}</h2>
+      <div class="m-hint">${myBalance === 1 ? this._t("rewards.gift.balance_hint_one", "You have %count% star.", { count: myBalance }) : this._t("rewards.gift.balance_hint_other", "You have %count% stars.", { count: myBalance })}</div>
+      <div class="field"><label>${this._t("rewards.gift.amount_label", "How many stars")}</label><input type="number" class="gift-amount-input" min="1" max="${myBalance}" placeholder="1"></div>
       <div class="form-error gift-stars-error" hidden></div>
       <div class="modal-actions">
-        <button class="cancel-btn gift-stars-cancel-btn">Cancel</button>
-        <button class="save-btn gift-stars-send-btn">Send gift</button>
+        <button class="cancel-btn gift-stars-cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn gift-stars-send-btn">${this._t("rewards.gift.send_btn", "Send gift")}</button>
       </div>
     `;
     box.querySelector(".gift-stars-close").addEventListener("click", () => this._closeGiftStarsModal());
@@ -2967,7 +3087,7 @@ class FamilyHubRewardsCard extends HTMLElement {
     const errEl = box.querySelector(".gift-stars-error");
     const amount = parseInt(box.querySelector(".gift-amount-input").value, 10);
     if (!(amount > 0)) {
-      errEl.textContent = "Enter how many stars to gift.";
+      errEl.textContent = this._t("rewards.gift.enter_amount", "Enter how many stars to gift.");
       errEl.hidden = false;
       return;
     }
@@ -2976,7 +3096,7 @@ class FamilyHubRewardsCard extends HTMLElement {
       await this._fetchRewardsState();
       this._closeGiftStarsModal();
     } catch (e) {
-      errEl.textContent = (e && e.message) || "Couldn't send the gift - check the balance and try again.";
+      errEl.textContent = (e && e.message) || this._t("rewards.gift.send_failed", "Couldn't send the gift - check the balance and try again.");
       errEl.hidden = false;
     }
   }
@@ -3018,25 +3138,25 @@ class FamilyHubRewardsCard extends HTMLElement {
       (n) => `<button type="button" class="preset-btn manage-stars-preset-btn" data-amount="${n}">${n}</button>`
     ).join("");
     box.innerHTML = `
-      <button type="button" class="modal-close manage-stars-close" aria-label="Close">&#10005;</button>
-      <h2>&#11088; Manage stars</h2>
-      <div class="field"><label>Who</label>
+      <button type="button" class="modal-close manage-stars-close" aria-label="${this._t("common.close", "Close")}">&#10005;</button>
+      <h2>&#11088; ${this._t("rewards.manage_stars.heading", "Manage stars")}</h2>
+      <div class="field"><label>${this._t("rewards.manage_stars.who_label", "Who")}</label>
         <select class="manage-stars-user">
           ${members.map((u) => `<option value="${u.id}" ${u.id === preselect ? "selected" : ""}>${this._esc(u.name)} (${this._balances[u.id] || 0} &#11088;)</option>`).join("")}
         </select>
       </div>
-      <button type="button" class="manage-stars-history-btn">&#128220; View star history</button>
+      <button type="button" class="manage-stars-history-btn">&#128220; ${this._t("rewards.manage_stars.view_history_btn", "View star history")}</button>
       <div class="preset-row manage-stars-preset-row">${presetBtns}</div>
-      <div class="field"><label>Or a custom amount</label><input type="number" class="manage-stars-amount" min="1" step="1" placeholder="e.g. 5"></div>
+      <div class="field"><label>${this._t("rewards.manage_stars.custom_amount_label", "Or a custom amount")}</label><input type="number" class="manage-stars-amount" min="1" step="1" placeholder="${this._t("rewards.manage_stars.custom_amount_placeholder", "e.g. 5")}"></div>
       <div class="manage-stars-sign-row">
-        <button type="button" class="manage-stars-sign-btn manage-stars-add" data-sign="1">&#43; Add</button>
-        <button type="button" class="manage-stars-sign-btn manage-stars-subtract" data-sign="-1">&#8722; Subtract</button>
+        <button type="button" class="manage-stars-sign-btn manage-stars-add" data-sign="1">&#43; ${this._t("common.add", "Add")}</button>
+        <button type="button" class="manage-stars-sign-btn manage-stars-subtract" data-sign="-1">&#8722; ${this._t("rewards.manage_stars.subtract_btn", "Subtract")}</button>
       </div>
-      <div class="field"><label>Reason (optional)</label><textarea class="manage-stars-reason" rows="2" placeholder="e.g. Grandma gave a bonus, or: was rude at dinner"></textarea></div>
+      <div class="field"><label>${this._t("rewards.manage_stars.reason_label", "Reason (optional)")}</label><textarea class="manage-stars-reason" rows="2" placeholder="${this._t("rewards.manage_stars.reason_placeholder", "e.g. Grandma gave a bonus, or: was rude at dinner")}"></textarea></div>
       <div class="form-error manage-stars-error" hidden></div>
       <div class="modal-actions">
-        <button class="cancel-btn manage-stars-cancel-btn">Cancel</button>
-        <button class="save-btn manage-stars-save-btn">Save</button>
+        <button class="cancel-btn manage-stars-cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn manage-stars-save-btn">${this._t("common.save", "Save")}</button>
       </div>
     `;
     box.querySelector(".manage-stars-close").addEventListener("click", () => this._closeManageStarsModal());
@@ -3103,12 +3223,12 @@ class FamilyHubRewardsCard extends HTMLElement {
     const amount = parseInt(box.querySelector(".manage-stars-amount").value, 10);
     const reason = (box.querySelector(".manage-stars-reason").value || "").trim();
     if (!userId) {
-      errEl.textContent = "Pick who this is for.";
+      errEl.textContent = this._t("rewards.manage_stars.pick_who", "Pick who this is for.");
       errEl.hidden = false;
       return;
     }
     if (!(amount > 0)) {
-      errEl.textContent = "Enter a positive amount to add or subtract.";
+      errEl.textContent = this._t("rewards.manage_stars.enter_positive_amount", "Enter a positive amount to add or subtract.");
       errEl.hidden = false;
       return;
     }
@@ -3129,7 +3249,7 @@ class FamilyHubRewardsCard extends HTMLElement {
       await this._fetchRewardsState();
       this._closeManageStarsModal();
     } catch (e) {
-      errEl.textContent = (e && e.message) || "Couldn't save that adjustment - only an admin or someone with reward-override permission can.";
+      errEl.textContent = (e && e.message) || this._t("rewards.manage_stars.save_failed", "Couldn't save that adjustment - only an admin or someone with reward-override permission can.");
       errEl.hidden = false;
     }
   }
@@ -3139,7 +3259,7 @@ class FamilyHubRewardsCard extends HTMLElement {
   // since "use 1.5 of my 3 hours" was the household's own example.
   async _useBank(itemId) {
     const current = this._banks[this._myUserId()] && this._banks[this._myUserId()][itemId];
-    const raw = window.prompt("How much to use now?", current != null ? String(current) : "1");
+    const raw = window.prompt(this._t("rewards.bank.use_prompt", "How much to use now?"), current != null ? String(current) : "1");
     if (raw === null) return;
     const amount = parseFloat(raw);
     if (!(amount > 0)) return;
@@ -3198,13 +3318,15 @@ class FamilyHubRewardsCard extends HTMLElement {
       return {
         at: entry.at,
         icon: icons[entry.source] || (positive ? "&#11088;" : "&#9888;"),
-        label: entry.reason || (positive ? "Stars added" : "Stars deducted"),
+        label: entry.reason || (positive ? this._t("rewards.history.stars_added", "Stars added") : this._t("rewards.history.stars_deducted", "Stars deducted")),
         detail: `${positive ? "+" : ""}${entry.delta} &#11088; (balance ${entry.balance_after})`,
       };
     }
     if (kind === "redemption") {
-      const label = entry.bank_delta ? `Banked ${entry.title}` : `Redeemed ${entry.title}`;
-      const pending = entry.requires_fulfillment && !entry.fulfilled ? " - pending" : "";
+      const label = entry.bank_delta
+        ? this._t("rewards.history.banked", "Banked %title%", { title: entry.title })
+        : this._t("rewards.history.redeemed", "Redeemed %title%", { title: entry.title });
+      const pending = entry.requires_fulfillment && !entry.fulfilled ? ` - ${this._t("rewards.history.pending_suffix", "pending")}` : "";
       return {
         at: entry.redeemed_at,
         icon: "&#127873;",
@@ -3213,11 +3335,11 @@ class FamilyHubRewardsCard extends HTMLElement {
       };
     }
     // "usage"
-    const pending = entry.requires_fulfillment && !entry.fulfilled ? " - pending" : "";
+    const pending = entry.requires_fulfillment && !entry.fulfilled ? ` - ${this._t("rewards.history.pending_suffix", "pending")}` : "";
     return {
       at: entry.used_at,
       icon: "&#128337;",
-      label: `Used ${entry.title}${pending}`,
+      label: `${this._t("rewards.history.used", "Used %title%", { title: entry.title })}${pending}`,
       detail: `&minus;${entry.amount} ${entry.unit_label || ""}`,
     };
   }
@@ -3232,8 +3354,8 @@ class FamilyHubRewardsCard extends HTMLElement {
     ].sort((a, b) => (b.at || "").localeCompare(a.at || ""));
     box.innerHTML = `
       <div class="star-history-header">
-        <h3 class="star-history-title">${this._esc(this._userName(userId))}'s star history</h3>
-        <button type="button" class="star-history-close-btn" title="Close">&#10005;</button>
+        <h3 class="star-history-title">${this._t("rewards.history.title", "%name%'s star history", { name: this._esc(this._userName(userId)) })}</h3>
+        <button type="button" class="star-history-close-btn" title="${this._t("common.close", "Close")}">&#10005;</button>
       </div>
       <div class="star-history-list">
         ${
@@ -3246,7 +3368,7 @@ class FamilyHubRewardsCard extends HTMLElement {
                 <span class="star-history-date">${r.at ? new Date(r.at).toLocaleDateString() : ""}</span>
               </div>
             `).join("")
-            : `<div class="empty">Nothing yet.</div>`
+            : `<div class="empty">${this._t("rewards.history.empty", "Nothing yet.")}</div>`
         }
       </div>
     `;
@@ -3272,15 +3394,15 @@ class FamilyHubRewardsCard extends HTMLElement {
     // since some people scan for the icon rather than the name.
     const canManage = this._hasPermission("can_override_rewards");
     const nameTitle = canManage
-      ? `Manually add or subtract ${this._esc(user.name)}'s stars`
-      : `See ${this._esc(user.name)}'s full star history`;
+      ? this._t("rewards.balance.manage_title", "Manually add or subtract %name%'s stars", { name: this._esc(user.name) })
+      : this._t("rewards.balance.history_title", "See %name%'s full star history", { name: this._esc(user.name) });
     return `
       <div class="balance-card" style="border-color:${this._userColor(user.id)}">
         <span class="balance-dot" style="background:${this._userColor(user.id)}"></span>
         <button type="button" class="balance-name" data-user="${user.id}" title="${nameTitle}">${this._esc(user.name)}</button>
         <span class="balance-stars">&#11088; ${bal}</span>
-        ${canGift ? `<button type="button" class="gift-stars-btn" data-user="${user.id}" data-name="${this._esc(user.name)}" title="Gift some of your own stars to ${this._esc(user.name)}">&#127873;</button>` : ""}
-        ${canManage ? `<button type="button" class="manage-stars-for-btn" data-user="${user.id}" title="Manually add or subtract ${this._esc(user.name)}'s stars">&#9998;</button>` : ""}
+        ${canGift ? `<button type="button" class="gift-stars-btn" data-user="${user.id}" data-name="${this._esc(user.name)}" title="${this._t("rewards.balance.gift_title", "Gift some of your own stars to %name%", { name: this._esc(user.name) })}">&#127873;</button>` : ""}
+        ${canManage ? `<button type="button" class="manage-stars-for-btn" data-user="${user.id}" title="${this._t("rewards.balance.manage_title", "Manually add or subtract %name%'s stars", { name: this._esc(user.name) })}">&#9998;</button>` : ""}
         ${isAdmin ? `<span class="balance-adjust"><button class="adjust-minus-btn" data-user="${user.id}">-</button><button class="adjust-plus-btn" data-user="${user.id}">+</button></span>` : ""}
       </div>
     `;
@@ -3303,8 +3425,8 @@ class FamilyHubRewardsCard extends HTMLElement {
     // value_note never being parsed/calculated with, just displayed.
     const valueNote = item.value_note ? `<div class="catalog-value-note">${this._esc(item.value_note)}</div>` : "";
     const modeBadge =
-      mode === "one_time" ? `<div class="catalog-mode-badge">One-time</div>`
-      : mode === "banked" ? `<div class="catalog-mode-badge">Stacks up</div>`
+      mode === "one_time" ? `<div class="catalog-mode-badge">${this._t("rewards.catalog.mode_one_time", "One-time")}</div>`
+      : mode === "banked" ? `<div class="catalog-mode-badge">${this._t("rewards.catalog.mode_banked", "Stacks up")}</div>`
       : "";
     // A banked item shows the CURRENT VIEWER's own bank for it (not
     // everyone's - that's what the balances row / Star History modal are
@@ -3313,16 +3435,16 @@ class FamilyHubRewardsCard extends HTMLElement {
     const myBank = mode === "banked" ? (this._banks[this._myUserId()] && this._banks[this._myUserId()][item.id]) || 0 : 0;
     const bankDisplay =
       mode === "banked"
-        ? `<div class="catalog-bank">Banked: ${myBank} ${this._esc(item.stack_unit_label || "")}</div>`
+        ? `<div class="catalog-bank">${this._t("rewards.catalog.banked_amount", "Banked: %amount% %unit%", { amount: myBank, unit: this._esc(item.stack_unit_label || "") })}</div>`
         : "";
-    const useBankBtn = mode === "banked" && myBank > 0 ? `<button class="catalog-use-bank-btn" data-id="${item.id}">Use</button>` : "";
+    const useBankBtn = mode === "banked" && myBank > 0 ? `<button class="catalog-use-bank-btn" data-id="${item.id}">${this._t("rewards.catalog.use_btn", "Use")}</button>` : "";
     // timed rewards ("2 hours of gaming"). The timer is an
     // INDEPENDENT property, not a fourth redeem_mode - the modes describe
     // how the star cost is consumed, the timer describes what happens
     // after - so the badge sits alongside the mode badge rather than
     // replacing it, and a banked-and-timed reward shows both.
     const timerMinutes = Number(item.timer_minutes) || 0;
-    const timerBadge = timerMinutes > 0 ? `<div class="catalog-timer-badge" title="Starts a ${this._formatTimerLength(timerMinutes)} countdown when you use it">&#9201; ${this._formatTimerLength(timerMinutes)}</div>` : "";
+    const timerBadge = timerMinutes > 0 ? `<div class="catalog-timer-badge" title="${this._t("rewards.catalog.timer_badge_title", "Starts a %len% countdown when you use it", { len: this._formatTimerLength(timerMinutes) })}">&#9201; ${this._formatTimerLength(timerMinutes)}</div>` : "";
     // One running reward timer per person: while this viewer has one going,
     // every timed reward's Claim is disabled and says why, rather than
     // letting them spend stars on something that would be refused. Their
@@ -3331,11 +3453,11 @@ class FamilyHubRewardsCard extends HTMLElement {
     const isMyRunningItem = !!(myRewardTimer && myRewardTimer.item_id === item.id);
     const blockedByOtherTimer = timerMinutes > 0 && !!myRewardTimer && !isMyRunningItem;
     const runningRow = isMyRunningItem
-      ? `<div class="catalog-timer-running">&#9201; <span data-timer-uid="${myRewardTimer.uid}">${this._formatTimerRemaining(this._timerRemainingSeconds(myRewardTimer))}</span> left
-           <button class="catalog-timer-cancel-btn" data-uid="${myRewardTimer.uid}" title="Stop this timer">&#10005;</button>
+      ? `<div class="catalog-timer-running">&#9201; <span data-timer-uid="${myRewardTimer.uid}">${this._formatTimerRemaining(this._timerRemainingSeconds(myRewardTimer))}</span> ${this._t("rewards.catalog.left_suffix", "left")}
+           <button class="catalog-timer-cancel-btn" data-uid="${myRewardTimer.uid}" title="${this._t("rewards.catalog.stop_timer_title", "Stop this timer")}">&#10005;</button>
          </div>`
       : "";
-    const claimLabel = mode === "banked" ? "Add" : timerMinutes > 0 ? "Use" : "Claim";
+    const claimLabel = mode === "banked" ? this._t("common.add", "Add") : timerMinutes > 0 ? this._t("rewards.catalog.use_btn", "Use") : this._t("rewards.catalog.claim_btn", "Claim");
     return `
       <div class="catalog-item" data-id="${item.id}"${this._catalogAccentStyle(item)}>
         <div class="catalog-icon">${item.icon || "&#127873;"}</div>
@@ -3346,10 +3468,10 @@ class FamilyHubRewardsCard extends HTMLElement {
         ${timerBadge}
         ${bankDisplay}
         ${runningRow}
-        <button class="claim-btn" data-id="${item.id}" data-timer="${timerMinutes}" ${affordable && !blockedByOtherTimer && !isMyRunningItem ? "" : "disabled"} ${blockedByOtherTimer ? `title="You've already got &quot;${this._esc(myRewardTimer.title || "a reward")}&quot; running"` : ""}>${isMyRunningItem ? "Running" : claimLabel}</button>
+        <button class="claim-btn" data-id="${item.id}" data-timer="${timerMinutes}" ${affordable && !blockedByOtherTimer && !isMyRunningItem ? "" : "disabled"} ${blockedByOtherTimer ? `title="${this._t("rewards.catalog.blocked_by_other_timer_title", "You've already got &quot;%title%&quot; running", { title: this._esc(myRewardTimer.title || this._t("rewards.catalog.generic_reward", "a reward")) })}"` : ""}>${isMyRunningItem ? this._t("rewards.catalog.running_btn", "Running") : claimLabel}</button>
         ${useBankBtn}
         <div class="claim-status"></div>
-        ${this._manageOpen ? `<button class="manage-edit-btn" data-id="${item.id}" title="Edit">&#9998;</button><button class="manage-delete-btn" data-id="${item.id}" title="Remove">&times;</button>` : ""}
+        ${this._manageOpen ? `<button class="manage-edit-btn" data-id="${item.id}" title="${this._t("common.edit", "Edit")}">&#9998;</button><button class="manage-delete-btn" data-id="${item.id}" title="${this._t("rewards.catalog.remove_title", "Remove")}">&times;</button>` : ""}
       </div>
     `;
   }
@@ -3361,8 +3483,8 @@ class FamilyHubRewardsCard extends HTMLElement {
     // same _manageOpen-gated convention.
     const actions = this._manageOpen && this._isAdmin()
       ? `<span class="history-actions">
-          <button type="button" class="history-reverse-btn" data-id="${r.id}" title="Reverse - delete and refund the stars">&#8634;</button>
-          <button type="button" class="history-delete-btn" data-id="${r.id}" title="Clear - delete without refunding">&times;</button>
+          <button type="button" class="history-reverse-btn" data-id="${r.id}" title="${this._t("rewards.history.reverse_title", "Reverse - delete and refund the stars")}">&#8634;</button>
+          <button type="button" class="history-delete-btn" data-id="${r.id}" title="${this._t("rewards.history.clear_title", "Clear - delete without refunding")}">&times;</button>
         </span>`
       : `<span class="history-actions"></span>`;
     return `
@@ -3388,16 +3510,16 @@ class FamilyHubRewardsCard extends HTMLElement {
     const canResolve = this._canAddRewardsDirectly();
     const actions = canResolve
       ? `<span class="suggestion-actions">
-          <input type="number" class="suggestion-cost-input" min="0" placeholder="Cost">
-          <button type="button" class="suggestion-approve-btn" data-id="${s.id}" title="Approve and add to the catalog">&#10003;</button>
-          <button type="button" class="suggestion-reject-btn" data-id="${s.id}" title="Reject">&times;</button>
+          <input type="number" class="suggestion-cost-input" min="0" placeholder="${this._t("rewards.suggestion.cost_placeholder", "Cost")}">
+          <button type="button" class="suggestion-approve-btn" data-id="${s.id}" title="${this._t("rewards.suggestion.approve_title", "Approve and add to the catalog")}">&#10003;</button>
+          <button type="button" class="suggestion-reject-btn" data-id="${s.id}" title="${this._t("rewards.suggestion.reject_title", "Reject")}">&times;</button>
         </span>`
-      : `<span class="suggestion-pending">Pending approval</span>`;
+      : `<span class="suggestion-pending">${this._t("rewards.suggestion.pending_approval", "Pending approval")}</span>`;
     return `
       <div class="suggestion-row" data-id="${s.id}">
         <div class="suggestion-icon">${s.icon || "&#127873;"}</div>
         <div class="suggestion-title">${this._esc(s.title)}</div>
-        <div class="suggestion-by">suggested by ${this._esc(this._userName(s.submitted_by))}</div>
+        <div class="suggestion-by">${this._t("rewards.suggestion.suggested_by", "suggested by %name%", { name: this._esc(this._userName(s.submitted_by)) })}</div>
         ${actions}
       </div>
     `;
@@ -3414,8 +3536,8 @@ class FamilyHubRewardsCard extends HTMLElement {
     const amountText = kind === "redemption" ? `&#11088; ${entry.cost_stars}` : `${entry.amount} ${this._esc(entry.unit_label || "")}`;
     const when = kind === "redemption" ? entry.redeemed_at : entry.used_at;
     const action = canResolve
-      ? `<span class="suggestion-actions"><button type="button" class="pending-mark-done-btn" data-kind="${kind}" data-id="${entry.id}">Mark done</button></span>`
-      : `<span class="suggestion-pending">Pending</span>`;
+      ? `<span class="suggestion-actions"><button type="button" class="pending-mark-done-btn" data-kind="${kind}" data-id="${entry.id}">${this._t("rewards.pending.mark_done_btn", "Mark done")}</button></span>`
+      : `<span class="suggestion-pending">${this._t("rewards.pending.pending_label", "Pending")}</span>`;
     return `
       <div class="suggestion-row" data-id="${entry.id}">
         <div class="suggestion-icon">${kind === "redemption" ? "&#127873;" : "&#128337;"}</div>
@@ -3430,7 +3552,9 @@ class FamilyHubRewardsCard extends HTMLElement {
     this._root.querySelector(".title").textContent = this._config.title;
     const manageBtn = this._root.querySelector(".manage-btn");
     manageBtn.hidden = !this._isAdmin();
-    manageBtn.textContent = this._manageOpen ? "Done managing" : "Manage catalog";
+    manageBtn.textContent = this._manageOpen
+      ? this._t("rewards.header.done_managing_btn", "Done managing")
+      : this._t("rewards.header.manage_catalog_btn", "Manage catalog");
     // gated on PERMISSION_REWARD_OVERRIDE specifically (not
     // plain _isAdmin like the catalog button above) - the same permission
     // that already gates overriding reward costs and reversing/clearing
@@ -3441,11 +3565,11 @@ class FamilyHubRewardsCard extends HTMLElement {
     const memberUsers = this._memberUsers();
     this._root.querySelector(".balances").innerHTML = memberUsers.length
       ? memberUsers.map((u) => this._balanceCardHtml(u)).join("")
-      : `<div class="empty">No one's been added to Family Hub yet - add people under Settings on the calendar dashboard.</div>`;
+      : `<div class="empty">${this._t("rewards.empty.no_members", "No one's been added to Family Hub yet - add people under Settings on the calendar dashboard.")}</div>`;
 
     this._root.querySelector(".catalog").innerHTML = this._catalog.length
       ? this._catalog.map((it) => this._catalogItemHtml(it)).join("")
-      : `<div class="empty">No rewards in the catalog yet.</div>`;
+      : `<div class="empty">${this._t("rewards.empty.no_catalog", "No rewards in the catalog yet.")}</div>`;
 
     // an embedded Goals section, only ever shown when the
     // household's own goalsShowInRewards Settings toggle is on - same
@@ -3489,7 +3613,7 @@ class FamilyHubRewardsCard extends HTMLElement {
 
     this._root.querySelector(".history").innerHTML = this._redemptions.length
       ? this._redemptions.slice(0, 10).map((r) => this._historyRowHtml(r)).join("")
-      : `<div class="empty">Nothing redeemed yet.</div>`;
+      : `<div class="empty">${this._t("rewards.empty.no_history", "Nothing redeemed yet.")}</div>`;
   }
 
   _css() {
@@ -3595,6 +3719,11 @@ class FamilyHubRewardsCard extends HTMLElement {
       /* bottom offset by --fh-fab-offset - see family-hub-chores-card.js's identical comment. */
       .add-reward-fab { position: fixed; right: 18px; bottom: calc(18px + var(--fh-fab-offset, 0px)); z-index: 900; width: 56px; height: 56px; border-radius: 50%; border: none; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 28px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(58,53,44,0.35); transition: transform 0.15s ease, bottom 0.15s ease; }
       .add-reward-fab:active { transform: scale(0.94); }
+      /* Hidden (not just z-indexed behind) while ANY Family Hub card on
+         this dashboard has a full-screen modal open - see
+         family-hub-chores-card.js's identical .add-chore-fab[hidden] rule
+         for the same mechanism. */
+      .add-reward-fab[hidden] { display: none; }
       /* fab_position: "card" - see family-hub-chores-card.js's
          identical .add-chore-fab rule for the same mechanism. */
       :host([fab-position="card"]) .add-reward-fab { position: absolute; bottom: 18px; }

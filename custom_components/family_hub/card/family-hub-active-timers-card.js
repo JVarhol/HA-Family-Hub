@@ -403,7 +403,63 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
+    this._ensureTranslationsLoaded();
     if (first) this._firstLoadPromise = this._initFirstLoad();
+  }
+  _t(key, fallback, vars) {
+    let str = "";
+    try {
+      if (this._hass && typeof this._hass.localize === "function") {
+        str = this._hass.localize(`component.family_hub.fh_ui.${key}`) || "";
+      }
+    } catch (e) {
+      str = "";
+    }
+    if (!str) str = fallback;
+    if (vars) {
+      Object.keys(vars).forEach((k) => {
+        str = str.split(`%${k}%`).join(vars[k]);
+      });
+    }
+    return str;
+  }
+  _baseLanguage(lang) {
+    return (lang || "en").split("-")[0].toLowerCase();
+  }
+  _ensureTranslationsLoaded() {
+    if (!this._hass || typeof this._hass.loadBackendTranslation !== "function") return;
+    const lang = this._baseLanguage(this._hass.language);
+    if (this._i18nLoadedLang === lang || this._i18nLoading === lang) return;
+    this._i18nLoading = lang;
+    this._hass
+      .loadBackendTranslation("fh_ui", "family_hub")
+      .then(() => {
+        this._i18nLoadedLang = lang;
+        this._i18nLoading = null;
+        this._applyTranslations();
+        this._render();
+      })
+      .catch((e) => {
+        this._i18nLoading = null;
+        console.warn("[family_hub] failed to load \"" + lang + "\" translations - staying on English fallback text", e);
+      });
+  }
+  _applyTranslations() {
+    if (!this._root) return;
+    this._root.querySelectorAll("[data-i18n]").forEach((el) => {
+      const key = el.dataset.i18n;
+      if (el.dataset.i18nFallback === undefined) el.dataset.i18nFallback = el.textContent;
+      el.textContent = this._t(key, el.dataset.i18nFallback);
+    });
+    this._root.querySelectorAll("[data-i18n-title]").forEach((el) => {
+      const key = el.dataset.i18nTitle;
+      if (el.dataset.i18nTitleFallback === undefined) {
+        el.dataset.i18nTitleFallback = el.getAttribute("title") || el.getAttribute("aria-label") || "";
+      }
+      const translated = this._t(key, el.dataset.i18nTitleFallback);
+      if (el.hasAttribute("title")) el.setAttribute("title", translated);
+      if (el.hasAttribute("aria-label")) el.setAttribute("aria-label", translated);
+    });
   }
   async _initFirstLoad() {
     await Promise.all([this._fetchSettings(), this._fetchUsers(), this._fetchTimers(), this._fetchMyPermissions()]);
@@ -1020,7 +1076,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     }
   }
   _userName(id) {
-    if (!id) return "Unassigned";
+    if (!id) return this._t("active_timers.unassigned", "Unassigned");
     const u = (this._users || []).find((x) => x.id === id);
     return u ? u.name : id;
   }
@@ -1043,12 +1099,15 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   // hurriedly-started unnamed timer still reads as something.
   _timerLabel(timer) {
     if (timer.title) return timer.title;
-    if (timer.kind === "chore") return "Chore";
-    if (timer.kind === "reward") return "Reward";
-    return "Timer";
+    if (timer.kind === "chore") return this._t("active_timers.kind_chore", "Chore");
+    if (timer.kind === "reward") return this._t("active_timers.kind_reward", "Reward");
+    return this._t("active_timers.kind_timer", "Timer");
   }
   _timerKindLabel(kind) {
-    return kind === "chore" ? "Chore" : kind === "reward" ? "Reward" : kind === "native" ? "HA Timer" : "Timer";
+    return kind === "chore" ? this._t("active_timers.kind_chore", "Chore")
+      : kind === "reward" ? this._t("active_timers.kind_reward", "Reward")
+      : kind === "native" ? this._t("active_timers.kind_ha_timer", "HA Timer")
+      : this._t("active_timers.kind_timer", "Timer");
   }
   // Mirrors ws_cancel_timer's own rules exactly, so no button is offered
   // that the backend would refuse (it re-checks independently - this is
@@ -1100,7 +1159,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
       try {
         await this._hass.callService("timer", "cancel", {}, { entity_id: entityId });
       } catch (e) {
-        window.alert((e && e.message) || "Couldn't stop that timer.");
+        window.alert((e && e.message) || this._t("active_timers.couldnt_stop_timer", "Couldn't stop that timer."));
       }
       this._render();
       return;
@@ -1108,7 +1167,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     try {
       await this._hass.connection.sendMessagePromise({ type: "family_hub/timers/cancel", uid });
     } catch (e) {
-      window.alert((e && e.message) || "Couldn't stop that timer.");
+      window.alert((e && e.message) || this._t("active_timers.couldnt_stop_timer", "Couldn't stop that timer."));
     }
     await this._fetchTimers();
   }
@@ -1118,9 +1177,9 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     const color = this._userColor(timer.user_id);
     const unassigned = !timer.user_id;
     const left = this._timerRemainingSeconds(timer);
-    const who = unassigned ? "Unassigned" : this._userName(timer.user_id);
+    const who = unassigned ? this._t("active_timers.unassigned", "Unassigned") : this._userName(timer.user_id);
     const cancel = this._canCancelTimer(timer)
-      ? `<button class="timer-cancel-btn" data-uid="${this._esc(timer.uid)}" title="Stop this timer">&#10005;</button>`
+      ? `<button class="timer-cancel-btn" data-uid="${this._esc(timer.uid)}" title="${this._esc(this._t("active_timers.stop_timer_title", "Stop this timer"))}">&#10005;</button>`
       : "";
     return `
       <div class="timer-card${unassigned ? " unassigned" : ""}${timer.foreign ? " foreign-timer" : ""}${left > 0 && left <= 60 ? " is-finishing" : ""}" data-uid="${this._esc(timer.uid)}" style="--timer-color: ${this._esc(color)}">
@@ -1131,7 +1190,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
         <div class="timer-label">${this._esc(this._timerLabel(timer))}</div>
         <div class="timer-remaining" data-timer-uid="${this._esc(timer.uid)}">${this._formatTimerRemaining(left)}</div>
         <div class="timer-who"><span class="timer-who-dot"></span>${this._esc(who)}</div>
-        <div class="timer-total">of ${this._formatTimerLength(timer.duration_minutes)}</div>
+        <div class="timer-total">${this._esc(this._t("active_timers.of_duration", "of %length%", { length: this._formatTimerLength(timer.duration_minutes) }))}</div>
       </div>
     `;
   }
@@ -1142,7 +1201,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     const board = this._root.querySelector(".timers-board");
     board.innerHTML = timers.length
       ? timers.map((t) => this._timerCardHtml(t)).join("")
-      : `<div class="empty-state">Nothing's running right now. Tap &#65291; Start Timer to set one.</div>`;
+      : `<div class="empty-state">${this._t("active_timers.empty_state", "Nothing's running right now. Tap &#65291; Start Timer to set one.")}</div>`;
     const count = this._root.querySelector(".timer-count");
     if (count) count.textContent = timers.length ? String(timers.length) : "";
   }
@@ -1172,26 +1231,26 @@ class FamilyHubActiveTimersCard extends HTMLElement {
       .map((u) => `<option value="${this._esc(u.id)}">${this._esc(u.name)}</option>`)
       .join("");
     box.innerHTML = `
-      <h3>Start a timer</h3>
+      <h3>${this._t("active_timers.modal_title", "Start a timer")}</h3>
       <div class="preset-row">${presetBtns}</div>
-      <label>Or a custom length
+      <label><span>${this._t("active_timers.custom_length_label", "Or a custom length")}</span>
         <div class="q-custom-row">
           <input type="number" class="q-minutes" min="0" max="1440" placeholder="min">
           <input type="number" class="q-seconds" min="0" max="59" placeholder="sec">
         </div>
       </label>
-      <label>What's it for? (optional)<input type="text" class="q-label" maxlength="60" placeholder="Oven, Sam's turn, laundry..."></label>
-      <label>Assign to (optional)<select class="q-user"><option value="">Nobody - just a house timer</option>${userOptions}</select></label>
-      <label>Who hears this alarm
+      <label><span>${this._t("active_timers.whats_it_for_label", "What's it for? (optional)")}</span><input type="text" class="q-label" maxlength="60" placeholder="Oven, Sam's turn, laundry..."></label>
+      <label><span>${this._t("active_timers.assign_to_label", "Assign to (optional)")}</span><select class="q-user"><option value="">${this._t("active_timers.nobody_option", "Nobody - just a house timer")}</option>${userOptions}</select></label>
+      <label><span>${this._t("active_timers.who_hears_label", "Who hears this alarm")}</span>
         <div class="q-audience-row">
-          <button type="button" class="q-audience-btn active" data-value="self">Just them</button>
-          <button type="button" class="q-audience-btn" data-value="kiosks">Them + kiosks</button>
-          <button type="button" class="q-audience-btn" data-value="everyone">Everyone</button>
+          <button type="button" class="q-audience-btn active" data-value="self">${this._t("active_timers.audience_self", "Just them")}</button>
+          <button type="button" class="q-audience-btn" data-value="kiosks">${this._t("active_timers.audience_kiosks", "Them + kiosks")}</button>
+          <button type="button" class="q-audience-btn" data-value="everyone">${this._t("active_timers.audience_everyone", "Everyone")}</button>
         </div>
       </label>
       <div class="modal-actions">
-        <button type="button" class="cancel-btn">Cancel</button>
-        <button type="button" class="save-btn" disabled>Start</button>
+        <button type="button" class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button type="button" class="save-btn" disabled>${this._t("active_timers.start_btn", "Start")}</button>
       </div>
       <div class="form-error"></div>
     `;
@@ -1272,7 +1331,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
         alarm_audience: this._draftAlarmAudience || "self",
       });
     } catch (e) {
-      errEl.textContent = (e && e.message) || "Couldn't start that timer.";
+      errEl.textContent = (e && e.message) || this._t("active_timers.couldnt_start_timer", "Couldn't start that timer.");
       return;
     }
     overlay.classList.remove("open");
@@ -1294,7 +1353,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
         <div class="header">
           <div class="title"></div>
           <span class="timer-count"></span>
-          <button class="add-timer-btn">&#65291; Start Timer</button>
+          <button class="add-timer-btn">&#65291; <span data-i18n="active_timers.start_timer_btn">Start Timer</span></button>
         </div>
         <div class="timers-board"></div>
       </ha-card>
