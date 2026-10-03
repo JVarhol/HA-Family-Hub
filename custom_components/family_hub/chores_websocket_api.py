@@ -349,8 +349,13 @@ def _prune_kiosk_elevations(entry_data: dict[str, Any]) -> None:
         elevations.pop(token, None)
 
 
+PIN_HASH_ITERATIONS = 260_000
+
+
 def _hash_pin(pin: str, salt: str) -> str:
-    return hashlib.sha256(f"{salt}:{pin}".encode("utf-8")).hexdigest()
+    return hashlib.pbkdf2_hmac(
+        "sha256", pin.encode("utf-8"), salt.encode("utf-8"), PIN_HASH_ITERATIONS
+    ).hex()
 
 
 async def _ha_user_is_admin(hass: HomeAssistant, user_id: Optional[str]) -> bool:
