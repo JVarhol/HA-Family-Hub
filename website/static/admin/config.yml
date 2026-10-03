@@ -5,7 +5,7 @@ backend:
   # see https://decapcms.org/docs/turbo-connecting-a-site/. This is the
   # only value Turbo needs set by hand; it fetches everything else
   # (repo, installation) itself at load time.
-  turbo_site_id: REPLACE_WITH_YOUR_TURBO_SITE_ID
+  turbo_site_id: 9e6b9a7c-afd8-4355-b557-0ce70346a61f
   branch: main
 
 media_folder: "website/static/img/uploads"
