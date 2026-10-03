@@ -13,14 +13,14 @@ sidebar_position: 8
   what other devices are showing.
 - **Global theme mode**: the calendar card can optionally follow a saved
   theme directly instead of its own local theme settings. The "Use global
-  theme" dropdown lists two groups — your own saved presets, and a
+  theme" dropdown lists two groups: your own saved presets, and a
   **"Home Assistant"** group listing every native/installed HA theme
   (`themes.yaml`, HACS themes, etc.) plus a synthesized "Default (Home
-  Assistant)" entry — so the dashboard can follow a theme you already have
+  Assistant)" entry. That way the dashboard can follow a theme you already have
   installed in Home Assistant without recreating it by hand.
 - A full **Theme Builder sidebar panel** for building and saving your own
   custom named themes exists in the codebase but isn't part of this beta
-  release yet — presets and the Theme Selector cover theming for now.
+  release yet; presets and the Theme Selector cover theming for now.
 
 ## Everything else
 - **Collapsible accordion sections** in Settings (Calendars, Menu Blocks,
@@ -28,10 +28,10 @@ sidebar_position: 8
   manageable.
 - **Settings sync across devices**: all shared settings live in the
   integration's own backend storage (with an automatic on-disk backup), so
-  every tablet/browser sees the same configuration — except the timeline
+  every tablet/browser sees the same configuration, except the timeline
   toggle and theme-selector pick, which are deliberately per-device. An
   older `todo`-list-based settings entity is still read once, automatically,
-  as a one-time fallback for households updating from a very old version —
+  as a one-time fallback for households updating from a very old version;
   new installs never need one.
 - **Optional vertical scroll lock**, handy for kiosk-mode wall tablets.
 - Built-in **Debug Info** panel (Settings → Debug Info) showing fetched

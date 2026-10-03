@@ -36,16 +36,9 @@ weather_entity: weather.forecast_home
 | `birthdays_entity` | no | — | Optional. Point this at a calendar already listed under `people` to auto-tag its events with a 🎂 icon in Month view. Off by default - nothing is assumed. |
 | `title` | no | `Family Calendar` | Card title (not currently rendered, reserved for future use). |
 
-Everything else — which calendars show, their names/colors/badges/notify
-devices, meal block names/count, font sizes, every theme color, the
-timeline hour range, default view, countdown items and ticker, Daily
-Digest, whether meals show in Month view, scroll lock, and (v1.110.7+)
-the **+ button position** — is configured from the ⚙️ **Settings** button
-on the card itself, and synced across every device automatically by the
-integration's own backend storage (with the exception of the timeline
-toggle and the per-device Theme Selector pick).
+Everything else is configured from the ⚙️ **Settings** button on the card itself, and synced across every device automatically by the integration's own backend storage: which calendars show, their names/colors/badges/notify devices, meal block names/count, font sizes, every theme color, the timeline hour range, default view, countdown items and ticker, Daily Digest, whether meals show in Month view, scroll lock, and (v1.110.7+) the **+ button position**. The exceptions are the timeline toggle and the per-device Theme Selector pick.
 
-**+ button position** (v1.110.7+, Settings → Calendars, next to "Grey out
+**+ button position** (v1.110.7+, Settings → Calendars, next to "Dim
 events/reminders that have already passed"): **Dashboard corner**
 (default) pins the + button to the bottom-right of the whole screen, same
 as every version before this one, stacked with any other Family Hub
@@ -59,10 +52,7 @@ in a screen corner that may not even be near it.
 
 ## Chores, Rewards, Goals & My Chores cards
 
-None of these need a `people`/entity list or any `todo`/`calendar`
-entities at all — everything runs over Family Hub's own backend, and
-who's eligible is drawn from the members you've added under the calendar
-card's own Settings → Users tab. `title` is optional on all of them;
+None of these need a `people`/entity list or any `todo`/`calendar` entities at all. Everything runs over Family Hub's own backend, and who's eligible is drawn from the members you've added under the calendar card's own Settings → Users tab. `title` is optional on all of them;
 Chores/Rewards/Goals also each take an optional `fab_position` (v1.110.7+,
 see below) for their own "+" button:
 
@@ -121,16 +111,13 @@ fab_position: dashboard # or "card" - see below
 | Option | Required | Default | Description |
 |---|---|---|---|
 | `title` | no | `To-Do Lists` | Card title. |
-| `entities` | no | `[]` | `todo.*` entities to show as columns (also pickable/persisted from the card's own Settings → Lists tab, which is the recommended way to manage this day to day — see the note in the changelog on why this card has a custom visual editor). |
+| `entities` | no | `[]` | `todo.*` entities to show as columns (also pickable/persisted from the card's own Settings → Lists tab, which is the recommended way to manage this day to day; see the note in the changelog on why this card has a custom visual editor). |
 | `include_grocy_shopping_lists` | no | `false` | Also show Grocy's own shopping list(s) as a column (which specific Grocy list(s) is chosen from Settings). |
-| `fab_position` | no | `dashboard` | Same `dashboard`/`card` option as Chores/Rewards/Goals above — see that section's own description. |
+| `fab_position` | no | `dashboard` | Same `dashboard`/`card` option as Chores/Rewards/Goals above (see that section's own description). |
 
 ## Screen Saver companion card
 
-Only needed on a dashboard that doesn't otherwise have any Family Hub card
-on it (the Screen Saver itself is already shared automatically across any
-Family Hub cards already on a dashboard — see
-[Screen Saver](/docs/features/screen-saver) above):
+Only needed on a dashboard that doesn't otherwise have any Family Hub card on it. The Screen Saver itself is already shared automatically across any Family Hub cards already on a dashboard; see [Screen Saver](/docs/features/screen-saver) above.
 
 ```yaml
 type: custom:family-hub-screensaver-card
@@ -144,9 +131,7 @@ the screen saver is dismissed, instead of staying wherever it fell asleep.
 
 The Recipe Box ("Loved Dishes") as its own dashboard tab/card, for anyone
 who'd rather have it pinned open than pop it up from the calendar card.
-Same household-wide Recipe Box data, same behavior — it runs on the exact
-same shared code as the calendar card's own Recipe Box modal (see that
-card file's own module comment). Only an optional `title`:
+Same household-wide Recipe Box data, same behavior. It runs on the exact same shared code as the calendar card's own Recipe Box modal (see that card file's own module comment). Only an optional `title`:
 
 ```yaml
 type: custom:family-hub-recipe-box-card

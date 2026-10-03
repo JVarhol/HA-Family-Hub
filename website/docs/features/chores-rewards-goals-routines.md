@@ -3,7 +3,7 @@ title: Chores, Rewards, Goals & Routines
 sidebar_position: 4
 ---
 
-A second board — separate `Chores`, `Rewards`, `Goals`, and `My Chores`
+A second board: separate `Chores`, `Rewards`, `Goals`, and `My Chores`
 cards, all talking to their own backend, no calendar/todo entities needed
 (see [Card configuration](/docs/card-configuration) below for how to add them).
 Together they cover assignable chores with a star economy, a redeemable
@@ -39,19 +39,15 @@ a granular per-person permissions system.
 - **Waiting to Recur column**: an approved recurring/triggered chore moves
   into its own "↻ Waiting to Recur" column (collapsible to a small counter
   button) instead of sitting faded in someone's finished list.
-- **The "+" FAB**: a tabbed create modal — **Chore**, **Goal**, and (when
-  Routines is on) **Routine** — covers creating a chore, a goal, or
-  managing someone's routine items, all from one button.
+- **The "+" FAB**: a tabbed create modal, **Chore**, **Goal**, and (when Routines is on) **Routine**. It covers creating a chore, a goal, or managing someone's routine items, all from one button.
 
 **My Chores**
-- A lightweight, personal companion card (`family-hub-my-chores-card`) —
-  built for a phone or a personal dashboard view, the same spirit as the
-  Today card. It reads whoever is actually signed in and shows just their
+- A lightweight, personal companion card (`family-hub-my-chores-card`), built for a phone or a personal dashboard view, the same spirit as the Today card. It reads whoever is actually signed in and shows just their
   own world: their open and awaiting-approval chores, a live countdown on
   any chore timer currently running, a banner for a running reward timer,
   and nothing belonging to anyone else.
 - **One tap to finish**: each chore row shows its star value, due date (if
-  set), and a single **Done** button — no need to open the full Chores
+  set), and a single **Done** button. No need to open the full Chores
   board to wrap up a quick task.
 - **An embedded Chore Bin**: unclaimed First-come-first-served chores show
   up here too, each with its own **Claim** button, so picking one up
@@ -60,9 +56,9 @@ a granular per-person permissions system.
   "Waiting to be assigned" instead.
 - **Read-only timers, on purpose**: a running chore or reward timer's
   countdown is visible here, but starting or cancelling one only lives on
-  the full Chores/Rewards boards — keeping that in one place avoids three
+  the full Chores/Rewards boards; keeping that in one place avoids three
   different surfaces needing to stay in sync for very little benefit.
-- Goals don't show on this card — it's chores-and-timers only; see **Show
+- Goals don't show on this card; it's chores-and-timers only. See **Show
   Goals on** in [the Settings Modal reference](/docs/settings-modal) for
   where goals can be added to the full Chores or Rewards boards instead.
 
@@ -71,12 +67,12 @@ a granular per-person permissions system.
   redeeming a catalog item; a balance can go negative (shown as "owes")
   rather than being blocked from spending.
 - **Reward catalog**: title, star cost, an optional "what it's really
-  worth" note (e.g. "$20" — purely cosmetic), an icon (a 58-emoji picker
-  across 6 collapsible categories — Treats & Food, Screens & Games, Toys &
+  worth" note (e.g. "$20", purely cosmetic), an icon (a 58-emoji picker
+  across 6 collapsible categories (Treats & Food, Screens & Games, Toys &
   Fun Stuff, Outings & Activities, Money & Prizes, Achievement & Fun), and
   a card color.
 - **How it works**: **Redeem any time** (a plain logged redemption),
-  **Stacks up** (e.g. allowance or TV time — each redemption adds a fixed
+  **Stacks up** (e.g. allowance or TV time: each redemption adds a fixed
   amount to a running per-person bank instead of being a one-off, spent
   down later via a separate **Use** action), or **One-time** (the catalog
   item deletes itself after its first use).
@@ -93,8 +89,7 @@ a granular per-person permissions system.
   override authority.
 
 **Goals**
-- **What a goal is**: a one-off achievement for one specific person —
-  title, target count (log progress that many times to complete it),
+- **What a goal is**: a one-off achievement for one specific person: title, target count (log progress that many times to complete it),
   optional due date, and a reward that's either a flat star payout or one
   specific item handed over straight from the Rewards catalog.
 - **Progress & verification**: each **Log** (or **Mark done**, for a
@@ -104,26 +99,26 @@ a granular per-person permissions system.
 - **Standalone card, or embedded**: `Goals` is its own Lovelace card, and
   can also be shown right inside the Chores board (Settings → General →
   "Show Goals on the Chores board") and/or the Rewards page ("Show Goals
-  on the Rewards page") — two independent toggles, both off by default.
+  on the Rewards page"), two independent toggles, both off by default.
   Either way, goals can also be created from a Goal tab on the Chores/
   Rewards "+" buttons.
 
 **Routines**
 - **Morning/Afternoon/Night checklists**: a per-person daily checklist
   shown as an accordion on their own Chores board column, reset back to
-  unchecked every local midnight. No stars, no verification — checking an
+  unchecked every local midnight. No stars, no verification: checking an
   item off is open to anyone.
 - **Card-style items with optional due times and days**: each item can
   carry a due time (shown as a badge, turns amber if it's overdue) and/or
-  specific days of the week it applies to — leave the days blank for every
-  day. The board only ever shows what's scheduled for today.
+  specific days of the week it applies to (leave the days blank for every
+  day). The board only ever shows what's scheduled for today.
 - **A real management modal**: adding, editing, and removing routine items
-  happens from a **Routine** tab on the Chores board's "+" button — pick a
+  happens from a **Routine** tab on the Chores board's "+" button. Pick a
   person and a category, and manage every item for them regardless of
   which days it's scheduled (unlike the board itself, which is always
   today-only). The pencil icon on any routine item on the board jumps
   straight into this tab, pre-scoped to that exact item.
-- **One household-wide switch**: Settings → General → "Routines" — off by
+- **One household-wide switch**: Settings → General → "Routines", off by
   default; once on, everyone gets the three checklist accordions on their
   own Chores column.
 

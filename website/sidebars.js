@@ -20,6 +20,8 @@ const sidebars = {
         'features/reminders-and-countdown',
         'features/theming-and-more',
         'features/todo-lists-and-wishlists',
+        'features/privacy-mode',
+        'features/holiday-backgrounds',
       ],
     },
     'card-configuration',
