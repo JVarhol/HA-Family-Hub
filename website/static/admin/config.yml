@@ -1,0 +1,44 @@
+backend:
+  name: turbo-github
+  # Paste the Site ID (a UUID) from this site's Overview tab in the Turbo
+  # dashboard (turbo.decapcms.org) here once the site is created there -
+  # see https://decapcms.org/docs/turbo-connecting-a-site/. This is the
+  # only value Turbo needs set by hand; it fetches everything else
+  # (repo, installation) itself at load time.
+  turbo_site_id: REPLACE_WITH_YOUR_TURBO_SITE_ID
+  branch: main
+
+media_folder: "website/static/img/uploads"
+public_folder: "/HA-Family-Hub/img/uploads"
+
+collections:
+  - name: "docs"
+    label: "Documentation"
+    folder: "website/docs"
+    extension: "md"
+    create: true
+    slug: "{{slug}}"
+    fields:
+      - {label: "Title", name: "title", widget: "string"}
+      - {label: "Sidebar Position", name: "sidebar_position", widget: "number", required: false}
+      - {label: "Body", name: "body", widget: "markdown"}
+
+  - name: "feature_docs"
+    label: "Feature Docs"
+    folder: "website/docs/features"
+    extension: "md"
+    create: true
+    slug: "{{slug}}"
+    fields:
+      - {label: "Title", name: "title", widget: "string"}
+      - {label: "Sidebar Position", name: "sidebar_position", widget: "number", required: false}
+      - {label: "Body", name: "body", widget: "markdown"}
+
+  - name: "pages"
+    label: "Other Pages"
+    files:
+      - label: "Project README"
+        name: "readme"
+        file: "README.md"
+        fields:
+          - {label: "Body", name: "body", widget: "markdown"}
