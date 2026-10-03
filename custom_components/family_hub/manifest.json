@@ -2,7 +2,7 @@
   "domain": "family_hub",
   "name": "Family Hub",
   "codeowners": [
-    "@bordello_labs"
+    "@jaretvarholick"
   ],
   "config_flow": true,
   "dependencies": [
