@@ -22,20 +22,18 @@ meal_templates_entity: todo.meal_plan_templates
 suggestions_entity: todo.meal_suggestions
 reminders_entity: todo.family_reminders
 weather_entity: weather.forecast_home
-birthdays_entity: calendar.birthdays
 ```
 
 | Option | Required | Default | Description |
 |---|---|---|---|
-| `people` | yes | — | List of `{ entity, name, color }` calendars to show. Can also be fully managed later from in-card Settings → Calendars, including badges and notify devices. |
+| `people` | no | — (empty) | List of `{ entity, name, color }` calendars to show. Not required to get the card running - leave it out and add calendars live from in-card Settings → Calendars (including badges and notify devices) once the card is on a dashboard. |
 | `recipe_entity` | no | `todo.recipe_box` | `todo` entity backing the Loved Dishes recipe box. |
 | `meal_plan_entity` | no | `todo.meal_plan` | `todo` entity backing the meal planner (including recurring weekly meals). Can also be set (or auto-created) household-wide from in-card Settings → Menu Blocks → Menu to-do list, which overrides this YAML value once set - no dashboard edit needed. |
 | `meal_templates_entity` | no | `todo.meal_plan_templates` | `todo` entity backing whole-week meal templates. |
-| `suggestions_entity` | no | `todo.meal_suggestions` | `todo` entity backing the Meal Suggestions box. |
-| `reminders_entity` | no | `todo.family_reminders` | `todo` entity backing standalone reminders (Add Event modal's Reminder tab). |
-| `settings_entity` | no | `todo.family_calendar_settings` | An **older** `todo` entity, only ever read once as a legacy migration fallback if the card's own backend-stored Settings come back empty — not needed on a fresh install, and no longer where Settings actually live day to day (see the note in [Requirements](/docs/requirements)). |
+| `suggestions_entity` | no | `todo.meal_suggestions` | `todo` entity backing the Meal Suggestions box. Auto-created the first time Family Hub finds it missing - no setup needed. |
+| `reminders_entity` | no | `todo.family_reminders` | `todo` entity backing standalone reminders (Add Event modal's Reminder tab). Auto-created the first time Family Hub finds it missing; also settable (or re-pointed) household-wide from in-card Settings → General → Reminders, which overrides this YAML value once set. |
 | `weather_entity` | no | `weather.forecast_home` | Entity used for the daily high/low + icon in each day column. |
-| `birthdays_entity` | no | `calendar.birthdays` | Used to auto-tag birthday events with a 🎂 icon in Month view. |
+| `birthdays_entity` | no | — | Optional. Point this at a calendar already listed under `people` to auto-tag its events with a 🎂 icon in Month view. Off by default - nothing is assumed. |
 | `title` | no | `Family Calendar` | Card title (not currently rendered, reserved for future use). |
 
 Everything else — which calendars show, their names/colors/badges/notify

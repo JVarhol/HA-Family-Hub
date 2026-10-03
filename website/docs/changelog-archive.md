@@ -1,6 +1,6 @@
 ---
 title: Changelog Archive
-sidebar_position: 9
+sidebar_position: 10
 ---
 
 This file holds the older half of `README.md`'s `## Changelog` section — everything **older than v138 (1.103.0)** — split out on 2026-09-16 to keep the live `README.md` shorter. Nothing here was rewritten; it's the original entries verbatim.

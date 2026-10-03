@@ -21,6 +21,7 @@ const sidebars = {
       ],
     },
     'card-configuration',
+    'settings-modal',
     'notes',
     'roadmap',
     'changelog',
