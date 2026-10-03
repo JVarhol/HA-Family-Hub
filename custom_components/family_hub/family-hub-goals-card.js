@@ -7,9 +7,9 @@
 // gate) and const.py's GOAL_REWARD_TYPE_* docstring for the per-goal
 // stars-vs-catalog-item reward choice.
 //
-// v143+ task #30: this used to render one column PER household member (a
-// shared board, same shape as Chores' own board) - the household asked for
-// it to become a personal "My Goals" card instead, showing only the logged-
+// this used to render one column PER household member (a
+// shared board, same shape as Chores' own board) - it's now
+// a personal "My Goals" card instead, showing only the logged-
 // in viewer's own goals, so a kiosk/tablet parked in one person's room (or
 // several people sharing one dashboard) doesn't have to scroll past
 // everyone else's goals to find their own. See _boardHtml below for the
@@ -42,8 +42,6 @@ const GOAL_REWARD_TYPE_CATALOG_ITEM = "catalog_item";
 const GOAL_STATUS_OPEN = "open";
 const GOAL_STATUS_PENDING_VERIFICATION = "pending_verification";
 const GOAL_STATUS_APPROVED = "approved";
-// v144.13+: household report - "show goal reward (stars) when a goal is
-// complete, add a button to complete (moves to the completed accordion)."
 // An approved goal used to just sit in the same flat My Goals list forever
 // (see _goalCardHtml's own `.status-approved { opacity: 0.6 }` - the only
 // concession that was ever made for it), same complaint as chores had
@@ -119,6 +117,25 @@ if (!window.__familyHubFabCoordinator) {
     const SLOT_HEIGHT_PX = 66;
     const entries = new Map(); // client -> { kind, seq, meta, onUpdate }
     let seq = 0;
+    // Every FAB here is position:fixed, pinned to the viewport corner (or,
+    // for a fab-position:"card" client, to its own card's box) - each card
+    // is its own independently-loaded custom element with no idea what
+    // other Family Hub cards are doing on the same dashboard, so a full-
+    // screen modal opened by ANY of them (most visibly the calendar card's
+    // own Settings screen) could end up with a totally unrelated card's
+    // FAB painted on top of it: depending on how the dashboard lays out
+    // its cards (Home Assistant's newer Sections view in particular can
+    // give each card's container its own CSS containment/stacking
+    // context), a sibling card's FAB z-index isn't guaranteed to actually
+    // lose to this card's modal overlay the way a plain same-shadow-DOM
+    // z-index comparison would. Rather than depend on that, every FAB-
+    // bearing card asks every OTHER one to physically hide
+    // (fab.hidden = true, not just "behind" via z-index - see each card's
+    // own onUpdate) while any of them has a full-screen modal open, via
+    // openModalCount/pushModalOpen/popModalOpen below - same "don't trust
+    // cross-shadow-DOM z-index, coordinate explicitly instead" approach as
+    // this project's shared screensaver controller.
+    let openModalCount = 0;
 
     function orderIndex(kind) {
       const i = FAB_KIND_ORDER.indexOf(kind);
@@ -131,19 +148,20 @@ if (!window.__familyHubFabCoordinator) {
         if (oa !== ob) return oa - ob;
         return a[1].seq - b[1].seq;
       });
-      // v1.110.7+: entries with takesSlot:false (a fab_position: "card"
+      // entries with takesSlot:false (a fab_position: "card"
       // client - see registerClient's own doc below) are skipped when
       // handing out stacking slots/offsets, but still walked here so they
       // still see otherProvidesGoalTab and still get an onUpdate call.
       const slotCount = list.filter(([, entry]) => entry.takesSlot).length;
       let slotIndex = 0;
+      const hideForModal = openModalCount > 0;
       list.forEach(([client, entry]) => {
         const otherProvidesGoalTab = list.some(
           ([otherClient, otherEntry]) => otherClient !== client && otherEntry.meta && otherEntry.meta.providesGoalTab
         );
         const index = entry.takesSlot ? slotIndex++ : null;
         if (typeof entry.onUpdate === "function") {
-          entry.onUpdate({ offsetPx: (index || 0) * SLOT_HEIGHT_PX, slotIndex: index, count: slotCount, otherProvidesGoalTab });
+          entry.onUpdate({ offsetPx: (index || 0) * SLOT_HEIGHT_PX, slotIndex: index, count: slotCount, otherProvidesGoalTab, hideForModal });
         }
       });
     }
@@ -154,10 +172,12 @@ if (!window.__familyHubFabCoordinator) {
       // `providesGoalTab` (see this block's own docstring above). `onUpdate`
       // is called once immediately (so a lone card on an otherwise-empty
       // dashboard still gets offsetPx: 0) and again on every subsequent
-      // register/unregister/updateClientMeta from ANY card, since adding a
-      // second FAB changes where the first one's slot is too.
+      // register/unregister/updateClientMeta/pushModalOpen/popModalOpen
+      // from ANY card, since adding a second FAB changes where the first
+      // one's slot is too, and any card's modal opening/closing changes
+      // whether every FAB should currently be hidden.
       //
-      // v1.110.7+: `opts.takesSlot` (default true) - pass `{ takesSlot:
+      // `opts.takesSlot` (default true) - pass `{ takesSlot:
       // false }` for a card whose FAB has opted out of the shared
       // viewport-corner stack (fab_position: "card" - anchored to its own
       // card's box instead, see each card's own _registerFabCoordinator).
@@ -181,6 +201,24 @@ if (!window.__familyHubFabCoordinator) {
         entry.meta = Object.assign({}, entry.meta, meta || {});
         recompute();
       },
+      // Call when THIS card opens a full-screen modal that every OTHER
+      // Family Hub card's FAB should get out of the way of (today: only
+      // the calendar card's own Settings screen calls this - see its
+      // _setupSettingsFabCoordination). A plain counter, not a per-client
+      // flag, so this stays correct even if more than one such modal is
+      // ever open across more than one card at once - every pushModalOpen
+      // needs a matching popModalOpen before FABs reappear, and a card
+      // that unmounts while its own modal was still open (see
+      // disconnectedCallback) pops on its way out rather than leaking the
+      // count forever.
+      pushModalOpen() {
+        openModalCount += 1;
+        recompute();
+      },
+      popModalOpen() {
+        openModalCount = Math.max(0, openModalCount - 1);
+        recompute();
+      },
       // Call from disconnectedCallback. Frees this card's slot so every
       // remaining card's FAB shifts back down to close the gap, and (for
       // Goals) re-checks whether it's still safe to suppress its own FAB.
@@ -191,10 +229,215 @@ if (!window.__familyHubFabCoordinator) {
   })();
 }
 
-// Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
-// "When you load a card it tends to load the default theme first then it
-// switches over to the theme you set how can we always make it load the
-// set theme first." Root cause: EVERY themed card's first paint happens
+// Household-wide timer alarm sound+modal (v1.119.0+, widened in
+// v1.132.55+) - see family-hub-active-timers-card.js's own top comment
+// above this same block for the full design note. Added here in
+// v1.132.59+ after a - this card never carried this singleton or subscribed to
+// the widened-alarm broadcast at all, so a kiosk whose dashboard shows
+// it silently never rang for anyone else's widened timer alarm. Kept
+// byte-identical to every other card's copy on purpose.
+if (!window.__familyHubTimerAlarm) {
+  window.__familyHubTimerAlarm = (function () {
+    let modalEl = null;
+    let audioCtx = null;
+    let beepHandle = null;
+    let activeUid = null;
+    // A timer's uid, once dismissed, stays dismissed - otherwise the very
+    // next poll's countdown tick (still <= 0 for a few more seconds until
+    // the backend's own sweep, up to TIMER_SWEEP_SECONDS later, actually
+    // removes it from family_hub/timers/list) would immediately re-open
+    // the modal a person just tapped Stop on. Unbounded but negligible: a
+    // few bytes per timer this ONE tab ever alarmed for in its lifetime.
+    const dismissedUids = new Set();
+    function ensureModal() {
+      if (modalEl) return modalEl;
+      modalEl = document.createElement("div");
+      modalEl.id = "family-hub-timer-alarm-overlay";
+      Object.assign(modalEl.style, {
+        position: "fixed", inset: "0", zIndex: "2147483647", display: "none",
+        alignItems: "center", justifyContent: "center",
+        background: "rgba(20,16,8,0.78)",
+      });
+      modalEl.innerHTML =
+        '<div style="background:#fff8ea;color:#3a352c;border-radius:22px;padding:38px 30px;max-width:360px;width:88vw;text-align:center;box-shadow:0 14px 46px rgba(0,0,0,0.45);font-family:-apple-system,\'Segoe UI\',Roboto,sans-serif;">' +
+        '<div style="font-size:48px;margin-bottom:12px;">&#9200;</div>' +
+        '<div class="fh-timer-alarm-title" style="font-size:1.3em;font-weight:800;margin-bottom:6px;"></div>' +
+        '<div style="font-size:14px;color:#96877a;margin-bottom:24px;">Time\'s up!</div>' +
+        '<button type="button" class="fh-timer-alarm-stop" style="min-height:54px;width:100%;border:none;border-radius:14px;background:#8f5a00;color:#fff8ea;font-size:19px;font-weight:800;cursor:pointer;">Stop</button>' +
+        "</div>";
+      document.body.appendChild(modalEl);
+      modalEl.querySelector(".fh-timer-alarm-stop").addEventListener("click", () => stop());
+      return modalEl;
+    }
+    // A plain oscillator beep via the Web Audio API - deliberately not a
+    // bundled sound file: no extra media asset for HACS/manual installs to
+    // ship or for a self-hosted install's network policy to worry about,
+    // and it sounds identical on every install.
+    //
+    // The original v1.119.0+ sound was one
+    // flat square-wave tone repeated once a second - metronomic, which is
+    // exactly what read as a countdown-bomb tick rather than an alarm. This
+    // plays a quick alternating two-pitch TRIPLET (a classic digital-alarm-
+    // clock trill) each cycle instead of a single tone, which is what
+    // actually reads as "alarm" to the ear - the alternating pitch is what
+    // a lone repeated tone can't give you, no matter how loud.
+    function playBeep(atTime, freq) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "square";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, atTime);
+      gain.gain.exponentialRampToValueAtTime(0.3, atTime + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, atTime + 0.13);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(atTime);
+      osc.stop(atTime + 0.15);
+    }
+    // Scheduled via Web Audio's own clock (osc.start(atTime)) rather than
+    // three back-to-back setTimeout calls, so the triplet's timing stays
+    // tight even if the main JS thread is briefly busy - it's the crisp,
+    // even spacing that makes it read as a trill instead of a stutter.
+    function beepOnce() {
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === "suspended") audioCtx.resume();
+        const now = audioCtx.currentTime;
+        [[0, 1046], [0.15, 1318], [0.3, 1046]].forEach(([offset, freq]) => playBeep(now + offset, freq));
+      } catch (e) {
+        // Autoplay blocked, or no Web Audio at all - the modal is still
+        // the primary alarm; sound is a bonus on top of it, not required.
+      }
+    }
+    // which hass connection to tell "dismiss this everywhere"
+    // when Stop is tapped - set by whichever card most recently called
+    // ring()/check() with one, since this singleton is shared across every
+    // card on the dashboard and any of them may have `hass` by now. Best-
+    // effort only (see stop() below): a same-tab-only local alarm (the
+    // original v1.119.0+ behavior this singleton already had) never had a
+    // server-side record to begin with, so the dismiss call below simply
+    // no-ops for it (ws_dismiss_timer_alarm pops a uid that was never
+    // registered - see its own docstring for why that's silent, not an
+    // error).
+    let lastHass = null;
+    function stop() {
+      if (activeUid) dismissedUids.add(activeUid);
+      const uid = activeUid;
+      activeUid = null;
+      if (beepHandle) {
+        clearInterval(beepHandle);
+        beepHandle = null;
+      }
+      if (modalEl) modalEl.style.display = "none";
+      // household's explicit choice - "first tap wins, from
+      // anyone" - so tapping Stop here also clears the alarm everywhere
+      // else (other kiosks, other people's phones-that-are-dashboards)
+      // rather than just silencing this one tab. No permission gate, by
+      // design.
+      if (uid && lastHass && lastHass.connection && lastHass.connection.sendMessagePromise) {
+        lastHass.connection.sendMessagePromise({ type: "family_hub/timers/dismiss_alarm", uid }).catch(() => {});
+      }
+    }
+    // This modal already outranks the screensaver's own overlay (z-index
+    // 2147483647 vs 2147483000, set in ensureModal() above), so it was
+    // always painting on top of it - but a screensaver left running
+    // underneath still means its video/camera poll keeps going, so it
+    // needs to actually END, not just be covered up.
+    // There are THREE independent screensaver implementations in this
+    // project (the calendar card's own, the shared window.__familyHub
+    // ScreenSaver controller used by Chores/Rewards/My Chores/etc., and the
+    // standalone family-screensaver-card.js) and this singleton has no
+    // reference to whichever one might be running on this particular
+    // dashboard. Rather than importing all three, every one of them marks
+    // its overlay element with the same data-family-hub-screensaver
+    // attribute and already dismisses itself (hides, stops video/camera
+    // polling, navigates to its configured return dashboard) on its own
+    // overlay's "pointerdown" listener - so a synthetic pointerdown on
+    // whichever overlay is actually showing reuses each implementation's
+    // own real dismiss path for free, with zero coupling to which one it
+    // is.
+    function wakeAnyScreenSaver() {
+      try {
+        const overlay = document.querySelector("[data-family-hub-screensaver]");
+        if (overlay && overlay.style.display !== "none") {
+          overlay.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        }
+      } catch (e) {
+        // Best-effort - worst case the alarm modal still shows ON TOP of a
+        // running screensaver rather than ending it outright.
+      }
+    }
+    function start(timer, hass) {
+      if (hass) lastHass = hass;
+      if (activeUid === timer.uid) return;
+      activeUid = timer.uid;
+      wakeAnyScreenSaver();
+      const el = ensureModal();
+      el.querySelector(".fh-timer-alarm-title").textContent = timer.title || "Timer";
+      el.style.display = "flex";
+      beepOnce();
+      if (beepHandle) clearInterval(beepHandle);
+      // Shorter gap than the old single-tone version (1200ms) since each
+      // cycle is now a ~450ms triplet, not a single ~340ms tone - this
+      // keeps the alarm feeling urgent/continuous rather than sparse.
+      beepHandle = setInterval(beepOnce, 950);
+    }
+    return {
+      // Call once a second from a card's own countdown ticker (the same
+      // tick that already repaints the visible "X:XX left" text), passing:
+      //   timers        - that card's own freshly-fetched timers list
+      //   clientId      - this tab's own id (see _familyHubClientId below)
+      //   remainingSecondsFn - a (timer) => seconds function, so this
+      //                   singleton reuses the CALLING card's own
+      //                   native-timer-aware math (_timerRemainingSeconds)
+      //                   instead of a second, potentially-drifting copy
+      //                   of it living here with no access to `hass`.
+      // Only a timer whose origin_client_id matches THIS tab's own id and
+      // whose alarm flag is on can ever trigger anything - a timer someone
+      // else started, or one this same tab started but didn't opt into
+      // alarms for, is silently ignored here exactly as before this
+      // feature existed.
+      check(timers, clientId, remainingSecondsFn, hass) {
+        if (!clientId) return;
+        const mine = (timers || []).find((t) => t.alarm && t.origin_client_id && t.origin_client_id === clientId);
+        if (!mine || dismissedUids.has(mine.uid)) return;
+        if (remainingSecondsFn(mine) <= 0) start(mine, hass);
+      },
+      // the WIDENED half - a household_timer_alarm_ring bus
+      // event (fired by chores_websocket_api.py's _dispatch_timer_alarm/
+      // _reannounce_active_alarms) that THIS login should also ring for,
+      // because it's either the timer's own owner, a login flagged as an
+      // always-on alarm kiosk, or the tier was "everyone." Unlike check()
+      // above (which only ever recognizes the ONE tab that started the
+      // timer, by origin_client_id), this recognizes a login/account -
+      // every open tab logged in as a matching user rings, on every
+      // dashboard, which is the whole point of the widened tiers. Re-fired
+      // on every re-announcement (see _reannounce_active_alarms), so
+      // calling this again for an already-ringing uid is a deliberate
+      // no-op (start() already short-circuits on activeUid === timer.uid).
+      ringBroadcast(payload, hass, myUserId) {
+        if (!payload || !payload.uid || dismissedUids.has(payload.uid)) return;
+        const targets = payload.target_user_ids || [];
+        const shouldRing = !!payload.broadcast_all || (myUserId && targets.includes(myUserId));
+        if (!shouldRing) return;
+        start({ uid: payload.uid, title: payload.title }, hass);
+      },
+      // The STOP half of the same broadcast pair - fired the instant
+      // ANY device dismisses (see ws_dismiss_timer_alarm's own "first tap
+      // wins" docstring), including a dismiss that originated from THIS
+      // singleton's own stop() above (that call's own dismiss already
+      // covers this tab; the event still arrives here a moment later and
+      // is a harmless no-op via stop()'s own activeUid !== uid guard, or
+      // via dismissedUids already containing it).
+      stopFromServer(uid) {
+        if (uid) dismissedUids.add(uid);
+        if (activeUid === uid) stop();
+      },
+    };
+  })();
+}
+
+// Theme flash-of-default fix - Root cause: EVERY themed card's first paint happens
 // with no theme CSS vars set at all (falls back to _defaultTheme()'s own
 // hardcoded palette), because resolving the household's actual theme
 // takes two sequential, awaited websocket round trips after `hass` is
@@ -278,7 +521,7 @@ class FamilyHubGoalsCard extends HTMLElement {
   static getStubConfig() {
     return { title: "My Goals" };
   }
-  // v1.111.0+: switched from getConfigForm (a static schema) to
+  // switched from getConfigForm (a static schema) to
   // getConfigElement (a real custom element with its own hass/config
   // lifecycle) solely so the new theme_override field below can offer a
   // live-fetched list of themes - see FamilyHubGoalsCardEditor at the
@@ -286,14 +529,14 @@ class FamilyHubGoalsCard extends HTMLElement {
   static getConfigElement() {
     return document.createElement("family-hub-goals-card-editor");
   }
-  // v1.110.7+: see family-hub-chores-card.js's identical setConfig/
+  // see family-hub-chores-card.js's identical setConfig/
   // _registerFabCoordinator comment for the full "dashboard" vs "card"
   // design note - same option, same mechanism, on every FAB-bearing card.
   setConfig(config) {
     this._config = {
       title: (config && config.title) || "My Goals",
       fab_position: config && config.fab_position === "card" ? "card" : "dashboard",
-      // v1.111.0+: per-card-placement Theme override, set from this card's
+      // per-card-placement Theme override, set from this card's
       // own "Edit Card" dialog - "" (the default, untouched by every
       // existing dashboard) means "Use device settings," i.e. exactly the
       // pre-1.111.0 behavior (device override, else household Global
@@ -316,19 +559,73 @@ class FamilyHubGoalsCard extends HTMLElement {
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
+    this._ensureTranslationsLoaded();
     if (first) this._firstLoadPromise = this._initFirstLoad();
   }
   async _initFirstLoad() {
     await Promise.all([this._fetchSettings(), this._fetchUsers(), this._fetchGoals(), this._fetchCatalog(), this._fetchMyPermissions()]);
-    // v1.111.0+: always fetched now, not just when the household has
+    // always fetched now, not just when the household has
     // useGlobalTheme on - a per-card theme_override needs this list
     // regardless of the household's own Global Theme setting.
     await this._fetchGlobalThemes();
     this._startPolling();
     this._registerFabCoordinator();
+    // - see this
+    // file's own copy of the window.__familyHubTimerAlarm singleton
+    // (below) for the full design note. Kept byte-identical to every
+    // other card's copy on purpose.
+    this._subscribeAlarmEvents();
     this._render();
   }
-  // v1.110.4+: joins the shared FAB-stacking coordinator (see the
+  // household-wide timer alarms - subscribe to the two bus
+  // events chores_websocket_api.py's _dispatch_timer_alarm/
+  // _reannounce_active_alarms fire (see const.py's
+  // EVENT_FAMILY_HUB_TIMER_ALARM_RING/_STOP), and hand each one to the
+  // shared window.__familyHubTimerAlarm singleton below - same "one modal/
+  // audio loop shared by every card on the dashboard" convention its own
+  // top comment describes. Subscribed once per card instance (guarded by
+  // _alarmUnsub so a re-run of _initFirstLoad, which shouldn't happen but
+  // costs nothing to guard against, never double-subscribes).
+  async _subscribeAlarmEvents() {
+    if (this._alarmUnsub || !this._hass || !this._hass.connection) return;
+    const myUserId = this._myUserId();
+    try {
+      const unsubRing = await this._hass.connection.subscribeEvents((event) => {
+        if (window.__familyHubTimerAlarm) {
+          window.__familyHubTimerAlarm.ringBroadcast(event.data, this._hass, myUserId);
+        }
+      }, "family_hub_timer_alarm_ring");
+      const unsubStop = await this._hass.connection.subscribeEvents((event) => {
+        if (window.__familyHubTimerAlarm && event.data) {
+          window.__familyHubTimerAlarm.stopFromServer(event.data.uid);
+        }
+      }, "family_hub_timer_alarm_stop");
+      this._alarmUnsub = () => {
+        try { unsubRing(); } catch (e) { /* no-op */ }
+        try { unsubStop(); } catch (e) { /* no-op */ }
+      };
+    } catch (e) {
+      // Best-effort - a dashboard that can't subscribe (e.g. a very old
+      // frontend build) simply never gets the WIDENED alarm reach; the
+      // same-tab-only local alarm (window.__familyHubTimerAlarm.check,
+      // unaffected by any of this) still works exactly as before.
+    }
+    // Catch up on anything already ringing before this tab opened, rather
+    // than waiting up to ALARM_REANNOUNCE_SECONDS for the next re-
+    // announcement's RING event.
+    if (this._hass.connection.sendMessagePromise) {
+      try {
+        const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/timers/list_active_alarms" });
+        for (const alarm of (result && result.alarms) || []) {
+          if (window.__familyHubTimerAlarm) window.__familyHubTimerAlarm.ringBroadcast(alarm, this._hass, myUserId);
+        }
+      } catch (e) {
+        // Best-effort catch-up only - the next re-announcement still
+        // covers it.
+      }
+    }
+  }
+  // joins the shared FAB-stacking coordinator (see the
   // singleton block above this class) - unlike Chores/Rewards this card
   // never SETS `providesGoalTab` (it has no tab, just its own single FAB),
   // but it READS `otherProvidesGoalTab` off every layout update to decide
@@ -336,7 +633,7 @@ class FamilyHubGoalsCard extends HTMLElement {
   // own docstring for the full reasoning on why only this direction is
   // handled.
   //
-  // v1.110.7+: fab_position "card" toggles the [fab-position="card"] host
+  // fab_position "card" toggles the [fab-position="card"] host
   // attribute (position:fixed -> :host-relative position:absolute) and
   // registers with takesSlot:false - it stays a full coordinator member
   // (so it still reads otherProvidesGoalTab and still suppresses itself
@@ -351,12 +648,17 @@ class FamilyHubGoalsCard extends HTMLElement {
     window.__familyHubFabCoordinator.registerClient(this, "goals", {}, (state) => {
       this.style.setProperty("--fh-fab-offset", `${state.offsetPx}px`);
       this._fabSuppressedByOther = state.otherProvidesGoalTab;
+      // hideForModal is true while ANY Family Hub card on this dashboard
+      // has a full-screen modal open (most visibly the calendar card's
+      // own Settings screen) - see the coordinator's own doc for why this
+      // can't just rely on z-index across cards.
+      this._fabHiddenForModal = state.hideForModal;
       this._applyFabVisibility();
     }, { takesSlot: !cardRelative });
   }
   _applyFabVisibility() {
     const fab = this._root && this._root.querySelector(".add-goal-fab");
-    if (fab) fab.hidden = !this._canManageGoals() || !!this._fabSuppressedByOther;
+    if (fab) fab.hidden = !this._canManageGoals() || !!this._fabSuppressedByOther || !!this._fabHiddenForModal;
   }
   _startPolling() {
     if (this._interval) return;
@@ -373,6 +675,14 @@ class FamilyHubGoalsCard extends HTMLElement {
     if (this._interval) clearInterval(this._interval);
     this._interval = null;
     if (window.__familyHubFabCoordinator) window.__familyHubFabCoordinator.unregisterClient(this);
+    // same "force-remove a still-animating portal" cleanup as
+    // family-hub-chores-card.js's own disconnectedCallback - see
+    // _fireConfetti's own comment for why this lives in document.body
+    // rather than this card's shadow root.
+    if (this._confettiPortals && this._confettiPortals.length) {
+      this._confettiPortals.forEach((portal) => portal.remove());
+      this._confettiPortals = [];
+    }
   }
   getCardSize() {
     return 6;
@@ -432,12 +742,76 @@ class FamilyHubGoalsCard extends HTMLElement {
     };
   }
   _defaultSettings() {
-    return { theme: this._defaultTheme(), useGlobalTheme: false, globalThemeId: "" };
+    // defaults ON, matching family-hub-chores-card.js's own
+    // _defaultSettings (see that file's comment for why this has to be
+    // listed here too, not just in the calendar card's own Settings-form
+    // default - a household that's never (re-)saved Settings since this
+    // shipped ON by default would otherwise silently get no confetti at
+    // all from this card).
+    return { theme: this._defaultTheme(), useGlobalTheme: true, globalThemeId: "liquidglass", choresConfettiOnComplete: true };
   }
   _getSettings() {
     return this._settingsCache || this._defaultSettings();
   }
-  // v144.6+: "This device's theme" - a device-local override of the shared
+  // Reuses the exact same choresConfettiOnComplete setting and
+  // _fireConfetti/_confettiCss trio as family-hub-chores-card.js's own
+  // (byte-identical, same "independently-loaded Lovelace resource, not an
+  // ES module that could share one file" convention as everything else
+  // copy-pasted across these card files) - one household-wide "on/off" for
+  // every kind of completion celebration, not a separate toggle per card.
+  _confettiOnCompleteEnabled() {
+    return !!(this._settingsCache && this._settingsCache.choresConfettiOnComplete);
+  }
+  _confettiCss() {
+    return `
+      .chore-confetti-overlay { position: fixed; top: 0; right: 0; bottom: 0; left: 0; pointer-events: none; z-index: 9999; overflow: hidden; }
+      .chore-confetti-piece { position: absolute; top: -12px; width: 8px; height: 14px; opacity: 0.95; animation-name: chore-confetti-fall; animation-timing-function: cubic-bezier(0.35, 0, 0.65, 1); animation-fill-mode: forwards; }
+      @keyframes chore-confetti-fall {
+        0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+        85% { opacity: 1; }
+        100% { transform: translateY(110vh) rotate(var(--chore-confetti-rot)); opacity: 0; }
+      }
+    `;
+  }
+  _fireConfetti() {
+    const COLORS = ["#f94144", "#f3722c", "#f9c74f", "#90be6d", "#43aa8b", "#577590", "#f8961e", "#f9844a"];
+    const portal = document.createElement("div");
+    portal.className = "fh-chore-confetti-portal";
+    const style = document.createElement("style");
+    style.textContent = this._confettiCss();
+    portal.appendChild(style);
+    const overlay = document.createElement("div");
+    overlay.className = "chore-confetti-overlay";
+    portal.appendChild(overlay);
+    const PIECE_COUNT = 70;
+    let maxLifetimeMs = 0;
+    for (let i = 0; i < PIECE_COUNT; i++) {
+      const piece = document.createElement("span");
+      piece.className = "chore-confetti-piece";
+      const durationS = 1.5 + Math.random() * 1.2;
+      const delayS = Math.random() * 0.35;
+      const rotationDeg = (360 + Math.random() * 720) * (Math.random() < 0.5 ? -1 : 1);
+      piece.style.left = `${Math.random() * 100}%`;
+      piece.style.background = COLORS[Math.floor(Math.random() * COLORS.length)];
+      piece.style.animationDuration = `${durationS}s`;
+      piece.style.animationDelay = `${delayS}s`;
+      piece.style.setProperty("--chore-confetti-rot", `${rotationDeg}deg`);
+      if (Math.random() < 0.5) piece.style.borderRadius = "50%";
+      overlay.appendChild(piece);
+      maxLifetimeMs = Math.max(maxLifetimeMs, (durationS + delayS) * 1000);
+    }
+    document.body.appendChild(portal);
+    if (!this._confettiPortals) this._confettiPortals = [];
+    this._confettiPortals.push(portal);
+    setTimeout(() => {
+      portal.remove();
+      if (this._confettiPortals) {
+        const idx = this._confettiPortals.indexOf(portal);
+        if (idx !== -1) this._confettiPortals.splice(idx, 1);
+      }
+    }, maxLifetimeMs + 200);
+  }
+  // "This device's theme" - a device-local override of the shared
   // Settings > Appearance theme choice, same key/mechanism
   // family-week-calendar-card.js's own _getDeviceThemeOverride uses (see
   // its own comment) and configured from that card's Settings modal (this
@@ -472,7 +846,7 @@ class FamilyHubGoalsCard extends HTMLElement {
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
-    // v1.111.0+: a per-card-placement Theme override (set from this card's
+    // a per-card-placement Theme override (set from this card's
     // own native "Edit Card" dialog) wins over everything else, including
     // this device's own override and the household's Global Theme - it's
     // the most specific choice available, same "more specific wins"
@@ -505,7 +879,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     const a = Math.max(0, Math.min(1, typeof alpha === "number" ? alpha : 1));
     return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
-  // v1.126.0+ - see window.__familyHubThemeCache's own comment above the
+  // see window.__familyHubThemeCache's own comment above the
   // class for the full "why a key, not one shared blob" reasoning. Called
   // identically from here (after resolving the REAL theme) and from
   // `_build()` (before the real theme is known yet, to look up whatever
@@ -521,14 +895,14 @@ class FamilyHubGoalsCard extends HTMLElement {
   }
   _applyThemeVars() {
     const theme = this._resolveTheme(this._getSettings());
-    // v144.5+: same "liquid glass" support family-week-calendar-card.js has
+    // same "liquid glass" support family-week-calendar-card.js has
     // - a theme's cardOpacity/glassBlur (100/0 defaults, both no-ops) turn
     // the card/surface backgrounds translucent and blur whatever shows
     // through them, so picking a Liquid Glass theme actually looks glassy
     // on this card too, not just the calendar.
     const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
     const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
-    // v1.126.0+: built as a plain object first (rather than each var going
+    // built as a plain object first (rather than each var going
     // straight into its own setProperty call, as before) purely so the
     // exact same values that get applied here also get cached - see
     // window.__familyHubThemeCache's own comment for why this fixes the
@@ -550,7 +924,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     Object.keys(vars).forEach((name) => this.style.setProperty(name, vars[name]));
     if (window.__familyHubThemeCache) window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
   }
-  // v1.126.0+: applies whatever theme this device/placement last actually
+  // applies whatever theme this device/placement last actually
   // resolved to, SYNCHRONOUSLY, before the real fetches that would
   // otherwise be the only way to know it - see window.__familyHubTheme
   // Cache's own comment above the class. Called once from `_build()`,
@@ -585,7 +959,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     } catch (e) {
       custom = [];
     }
-    // v1.111.0+: also merge in every installed native Home Assistant theme
+    // also merge in every installed native Home Assistant theme
     // - duplicated (not shared/imported) from family-week-calendar-card.js's
     // own _fetchGlobalThemes/_nativeHaThemeEntries, same "independently
     // loaded Lovelace resources duplicate small helpers" convention as
@@ -753,9 +1127,65 @@ class FamilyHubGoalsCard extends HTMLElement {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
+  _t(key, fallback, vars) {
+    let str = "";
+    try {
+      if (this._hass && typeof this._hass.localize === "function") {
+        str = this._hass.localize(`component.family_hub.fh_ui.${key}`) || "";
+      }
+    } catch (e) {
+      str = "";
+    }
+    if (!str) str = fallback;
+    if (vars) {
+      Object.keys(vars).forEach((k) => {
+        str = str.split(`%${k}%`).join(vars[k]);
+      });
+    }
+    return str;
+  }
+  _baseLanguage(lang) {
+    return (lang || "en").split("-")[0].toLowerCase();
+  }
+  _ensureTranslationsLoaded() {
+    if (!this._hass || typeof this._hass.loadBackendTranslation !== "function") return;
+    const lang = this._baseLanguage(this._hass.language);
+    if (this._i18nLoadedLang === lang || this._i18nLoading === lang) return;
+    this._i18nLoading = lang;
+    this._hass
+      .loadBackendTranslation("fh_ui", "family_hub")
+      .then(() => {
+        this._i18nLoadedLang = lang;
+        this._i18nLoading = null;
+        this._applyTranslations();
+        this._render();
+      })
+      .catch((e) => {
+        this._i18nLoading = null;
+        console.warn("[family_hub] failed to load \"" + lang + "\" translations - staying on English fallback text", e);
+      });
+  }
+  _applyTranslations() {
+    if (!this._root) return;
+    this._root.querySelectorAll("[data-i18n]").forEach((el) => {
+      const key = el.dataset.i18n;
+      if (el.dataset.i18nFallback === undefined) el.dataset.i18nFallback = el.textContent;
+      el.textContent = this._t(key, el.dataset.i18nFallback);
+    });
+    this._root.querySelectorAll("[data-i18n-title]").forEach((el) => {
+      const key = el.dataset.i18nTitle;
+      if (el.dataset.i18nTitleFallback === undefined) {
+        el.dataset.i18nTitleFallback = el.getAttribute("title") || el.getAttribute("aria-label") || "";
+      }
+      const translated = this._t(key, el.dataset.i18nTitleFallback);
+      if (el.hasAttribute("title")) el.setAttribute("title", translated);
+      if (el.hasAttribute("aria-label")) el.setAttribute("aria-label", translated);
+    });
+  }
+
   _build() {
     this._built = true;
-    // v1.126.0+: applied BEFORE attachShadow/the first innerHTML paint -
+    // applied BEFORE attachShadow/the first innerHTML paint -
     // see _applyCachedThemeVarsIfAny's own comment and window.__familyHub
     // ThemeCache's above the class for why this is what actually fixes
     // the household's reported "loads the default theme first" flash.
@@ -773,7 +1203,7 @@ class FamilyHubGoalsCard extends HTMLElement {
       <div class="modal-overlay create-modal"><div class="modal-box"></div></div>
       <div class="modal-overlay edit-modal"><div class="modal-box"></div></div>
       <div class="modal-overlay reject-modal"><div class="modal-box"></div></div>
-      <button class="add-goal-fab" title="Add a goal" aria-haspopup="true" hidden>&#65291;</button>
+      <button class="add-goal-fab" title="Add a goal" data-i18n-title="goals.add_a_goal" aria-haspopup="true" hidden>&#65291;</button>
     `;
     this._root = root;
     root.querySelector(".title").textContent = this._config.title;
@@ -828,7 +1258,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     }
     await this._fetchGoals();
   }
-  // v144.13+: was a bare window.prompt() for the optional reason - replaced
+  // was a bare window.prompt() for the optional reason - replaced
   // with a proper modal (the household's own "send back reason should be a
   // modal" request, applied here and to both of family-hub-chores-card.js's
   // own reject flows - chores and its embedded Goals view - the same way).
@@ -843,11 +1273,11 @@ class FamilyHubGoalsCard extends HTMLElement {
     const overlay = this._root.querySelector(".reject-modal");
     const box = overlay.querySelector(".modal-box");
     box.innerHTML = `
-      <h3>Send back "${this._esc(goal.title)}"</h3>
-      <label>Anything you want to tell them about why? (optional)<textarea class="f-reject-reason" rows="3" placeholder="Not quite - try again"></textarea></label>
+      <h3>${this._t("goals.send_back_modal_title", 'Send back "%title%"', { title: this._esc(goal.title) })}</h3>
+      <label>${this._t("goals.reject_reason_label", "Anything you want to tell them about why? (optional)")}<textarea class="f-reject-reason" rows="3" placeholder="Not quite - try again"></textarea></label>
       <div class="modal-actions">
-        <button class="cancel-btn">Cancel</button>
-        <button class="save-btn">Send back</button>
+        <button class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn">${this._t("goals.send_back", "Send back")}</button>
       </div>
     `;
     box.querySelector(".cancel-btn").addEventListener("click", () => overlay.classList.remove("open"));
@@ -873,13 +1303,18 @@ class FamilyHubGoalsCard extends HTMLElement {
   async _archive(goalId) {
     try {
       await this._hass.connection.sendMessagePromise({ type: "family_hub/goals/archive", goal_id: goalId });
+      // Fires on "Complete" (archiving an
+      // already-approved goal) - that's the moment with its own literal
+      // "Complete" button, closest to a chore's Complete tap, not on
+      // reaching the goal's target or on approval.
+      if (this._confettiOnCompleteEnabled()) this._fireConfetti();
     } catch (e) {
       /* server already validated/permission-gated this - a stale click just no-ops */
     }
     await this._fetchGoals();
   }
   async _delete(goalId) {
-    if (!window.confirm("Delete this goal? This can't be undone.")) return;
+    if (!window.confirm(this._t("goals.delete_confirm", "Delete this goal? This can\'t be undone."))) return;
     try {
       await this._hass.connection.sendMessagePromise({ type: "family_hub/goals/delete", goal_id: goalId });
     } catch (e) {
@@ -897,14 +1332,14 @@ class FamilyHubGoalsCard extends HTMLElement {
       .map((it) => `<option value="${it.id}" ${g.reward_item_id === it.id ? "selected" : ""}>${this._esc(it.title)} (${it.cost_stars}&#11088;)</option>`)
       .join("");
     return `
-      <label>Reward
+      <label>${this._t("goals.reward_label", "Reward")}
         <select class="f-reward-type">
-          <option value="${GOAL_REWARD_TYPE_STARS}" ${rewardType === GOAL_REWARD_TYPE_STARS ? "selected" : ""}>Stars</option>
-          <option value="${GOAL_REWARD_TYPE_CATALOG_ITEM}" ${rewardType === GOAL_REWARD_TYPE_CATALOG_ITEM ? "selected" : ""}>A specific reward from the catalog</option>
+          <option value="${GOAL_REWARD_TYPE_STARS}" ${rewardType === GOAL_REWARD_TYPE_STARS ? "selected" : ""}>${this._t("goals.reward_type_stars", "Stars")}</option>
+          <option value="${GOAL_REWARD_TYPE_CATALOG_ITEM}" ${rewardType === GOAL_REWARD_TYPE_CATALOG_ITEM ? "selected" : ""}>${this._t("goals.reward_type_catalog_item", "A specific reward from the catalog")}</option>
         </select>
       </label>
-      <label class="f-star-value-field">How many stars<input type="number" class="f-star-value" min="1" value="${g.star_value || 1}"></label>
-      <label class="f-reward-item-field">Which reward<select class="f-reward-item">${catalogOptions}</select></label>
+      <label class="f-star-value-field">${this._t("goals.how_many_stars_label", "How many stars")}<input type="number" class="f-star-value" min="1" value="${g.star_value || 1}"></label>
+      <label class="f-reward-item-field">${this._t("goals.which_reward_label", "Which reward")}<select class="f-reward-item">${catalogOptions}</select></label>
     `;
   }
   _wireRewardFields(box) {
@@ -936,16 +1371,16 @@ class FamilyHubGoalsCard extends HTMLElement {
     const box = overlay.querySelector(".modal-box");
     const userOptions = this._memberUsers().map((u) => `<option value="${u.id}">${this._esc(u.name)}</option>`).join("");
     box.innerHTML = `
-      <h3>Add a goal</h3>
-      <label>Title<input type="text" class="f-title" placeholder="Get 3 Bs in math"></label>
-      <label>For<select class="f-assigned">${userOptions}</select></label>
-      <label>Target count (how many times to log before it's done)<input type="number" class="f-target" min="1" value="1"></label>
+      <h3>${this._t("goals.add_a_goal", "Add a goal")}</h3>
+      <label>${this._t("goals.title_label", "Title")}<input type="text" class="f-title" placeholder="Get 3 Bs in math"></label>
+      <label>${this._t("goals.for_label", "For")}<select class="f-assigned">${userOptions}</select></label>
+      <label>${this._t("goals.target_count_label", "Target count (how many times to log before it\'s done)")}<input type="number" class="f-target" min="1" value="1"></label>
       ${this._rewardFieldsHtml(null)}
-      <label>Due date (optional)<input type="datetime-local" class="f-due"></label>
-      <label>Notes<textarea class="f-notes" rows="3" placeholder="Any details worth knowing"></textarea></label>
+      <label>${this._t("goals.due_date_label", "Due date (optional)")}<input type="datetime-local" class="f-due"></label>
+      <label>${this._t("goals.notes_label", "Notes")}<textarea class="f-notes" rows="3" placeholder="Any details worth knowing"></textarea></label>
       <div class="modal-actions">
-        <button class="cancel-btn">Cancel</button>
-        <button class="save-btn">Save</button>
+        <button class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn">${this._t("common.save", "Save")}</button>
       </div>
       <div class="form-error"></div>
     `;
@@ -960,12 +1395,12 @@ class FamilyHubGoalsCard extends HTMLElement {
     errEl.textContent = "";
     const title = box.querySelector(".f-title").value.trim();
     if (!title) {
-      errEl.textContent = "A goal needs a title.";
+      errEl.textContent = this._t("goals.needs_title", "A goal needs a title.");
       return;
     }
     const assignedTo = box.querySelector(".f-assigned").value;
     if (!assignedTo) {
-      errEl.textContent = "A goal needs someone it belongs to.";
+      errEl.textContent = this._t("goals.needs_assignee", "A goal needs someone it belongs to.");
       return;
     }
     const payload = {
@@ -981,7 +1416,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     try {
       await this._hass.connection.sendMessagePromise(payload);
     } catch (e) {
-      errEl.textContent = (e && e.message) || "Couldn't save this goal.";
+      errEl.textContent = (e && e.message) || this._t("goals.save_failed", "Couldn\'t save this goal.");
       return;
     }
     overlay.classList.remove("open");
@@ -997,16 +1432,16 @@ class FamilyHubGoalsCard extends HTMLElement {
       .map((u) => `<option value="${u.id}" ${goal.assigned_to === u.id ? "selected" : ""}>${this._esc(u.name)}</option>`)
       .join("");
     box.innerHTML = `
-      <h3>Edit goal</h3>
-      <label>Title<input type="text" class="f-title" value="${this._escAttr(goal.title)}"></label>
-      <label>For<select class="f-assigned">${userOptions}</select></label>
-      <label>Target count (how many times to log before it's done)<input type="number" class="f-target" min="1" value="${goal.target_count || 1}"></label>
+      <h3>${this._t("goals.edit_goal_title", "Edit goal")}</h3>
+      <label>${this._t("goals.title_label", "Title")}<input type="text" class="f-title" value="${this._escAttr(goal.title)}"></label>
+      <label>${this._t("goals.for_label", "For")}<select class="f-assigned">${userOptions}</select></label>
+      <label>${this._t("goals.target_count_label", "Target count (how many times to log before it\'s done)")}<input type="number" class="f-target" min="1" value="${goal.target_count || 1}"></label>
       ${this._rewardFieldsHtml(goal)}
-      <label>Due date (optional)<input type="datetime-local" class="f-due" value="${this._isoToLocalDatetimeInputValue(goal.due_date)}"></label>
-      <label>Notes<textarea class="f-notes" rows="3">${this._esc(goal.notes || "")}</textarea></label>
+      <label>${this._t("goals.due_date_label", "Due date (optional)")}<input type="datetime-local" class="f-due" value="${this._isoToLocalDatetimeInputValue(goal.due_date)}"></label>
+      <label>${this._t("goals.notes_label", "Notes")}<textarea class="f-notes" rows="3">${this._esc(goal.notes || "")}</textarea></label>
       <div class="modal-actions">
-        <button class="cancel-btn">Cancel</button>
-        <button class="save-btn">Save</button>
+        <button class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn">${this._t("common.save", "Save")}</button>
       </div>
       <div class="form-error"></div>
     `;
@@ -1021,7 +1456,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     errEl.textContent = "";
     const title = box.querySelector(".f-title").value.trim();
     if (!title) {
-      errEl.textContent = "A goal needs a title.";
+      errEl.textContent = this._t("goals.needs_title", "A goal needs a title.");
       return;
     }
     const payload = {
@@ -1038,7 +1473,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     try {
       await this._hass.connection.sendMessagePromise(payload);
     } catch (e) {
-      errEl.textContent = (e && e.message) || "Couldn't save this goal.";
+      errEl.textContent = (e && e.message) || this._t("goals.save_failed", "Couldn\'t save this goal.");
       return;
     }
     overlay.classList.remove("open");
@@ -1050,10 +1485,13 @@ class FamilyHubGoalsCard extends HTMLElement {
   _rewardSummary(goal) {
     if (goal.reward_type === GOAL_REWARD_TYPE_CATALOG_ITEM) {
       const item = this._catalogItem(goal.reward_item_id);
-      return item ? `${item.icon || "&#127873;"} ${this._esc(item.title)}` : "(reward no longer available)";
+      return item ? `${item.icon || "&#127873;"} ${this._esc(item.title)}` : this._t("goals.reward_unavailable", "(reward no longer available)");
     }
     const stars = goal.star_value || 0;
-    return `&#11088; ${stars} star${stars === 1 ? "" : "s"}`;
+    const starsText = stars === 1
+      ? this._t("goals.stars_one", "%n% star", { n: stars })
+      : this._t("goals.stars_other", "%n% stars", { n: stars });
+    return `&#11088; ${starsText}`;
   }
 
   _goalCardHtml(goal) {
@@ -1066,10 +1504,12 @@ class FamilyHubGoalsCard extends HTMLElement {
     // "owner or manager" pool _canLogProgress already checks, since this is
     // just as much "acting on your own goal" as logging progress on it was.
     const canArchive = goal.status === GOAL_STATUS_APPROVED && (goal.assigned_to === this._myUserId() || canManage);
-    const progressLabel = target > 1 ? `${current} / ${target} logged` : (current >= target ? "Done" : "Not yet done");
+    const progressLabel = target > 1
+      ? this._t("goals.progress_logged", "%current% / %target% logged", { current, target })
+      : (current >= target ? this._t("common.done", "Done") : this._t("goals.not_yet_done", "Not yet done"));
     let statusBadge = "";
-    if (goal.status === GOAL_STATUS_PENDING_VERIFICATION) statusBadge = `<span class="goal-badge pending">Awaiting approval</span>`;
-    // v144.13+: the achieved badge now shows the reward inline ("Achieved!
+    if (goal.status === GOAL_STATUS_PENDING_VERIFICATION) statusBadge = `<span class="goal-badge pending">${this._t("goals.awaiting_approval", "Awaiting approval")}</span>`;
+    // the achieved badge now shows the reward inline ("Achieved!
     // +5 stars" / "Achieved! Movie night 🎬") instead of leaving the reward
     // to the separate, much less noticeable `.goal-reward` line below -
     // the household specifically asked to "show goal reward (stars) when a
@@ -1077,24 +1517,26 @@ class FamilyHubGoalsCard extends HTMLElement {
     // (goals not yet approved still want to say what they're working
     // toward), just no longer the only place a just-approved reward shows.
     else if (goal.status === GOAL_STATUS_APPROVED || goal.status === GOAL_STATUS_ARCHIVED) {
-      statusBadge = `<span class="goal-badge approved">Achieved! ${this._rewardSummary(goal)}</span>`;
+      statusBadge = `<span class="goal-badge approved">${this._t("goals.achieved_with_reward", "Achieved! %reward%", { reward: this._rewardSummary(goal) })}</span>`;
     }
     if (goal.rejected_at && goal.status === GOAL_STATUS_OPEN) {
-      const reason = goal.reject_reason ? `: ${this._esc(goal.reject_reason)}` : "";
-      statusBadge += `<span class="goal-badge rejected">Sent back${reason}</span>`;
+      const badgeText = goal.reject_reason
+        ? this._t("goals.sent_back_with_reason", "Sent back: %reason%", { reason: this._esc(goal.reject_reason) })
+        : this._t("goals.sent_back", "Sent back");
+      statusBadge += `<span class="goal-badge rejected">${badgeText}</span>`;
     }
     let actions = "";
-    if (canLog) actions += `<button class="goal-log-btn" data-id="${goal.id}">${target > 1 ? "Log progress" : "Mark done"}</button>`;
+    if (canLog) actions += `<button class="goal-log-btn" data-id="${goal.id}">${target > 1 ? this._t("goals.log_progress", "Log progress") : this._t("goals.mark_done", "Mark done")}</button>`;
     if (goal.status === GOAL_STATUS_PENDING_VERIFICATION && canVerify) {
-      actions += `<button class="goal-approve-btn" data-id="${goal.id}">Approve</button>`;
-      actions += `<button class="goal-reject-btn" data-id="${goal.id}">Send back</button>`;
+      actions += `<button class="goal-approve-btn" data-id="${goal.id}">${this._t("goals.approve", "Approve")}</button>`;
+      actions += `<button class="goal-reject-btn" data-id="${goal.id}">${this._t("goals.send_back", "Send back")}</button>`;
     }
-    if (canArchive) actions += `<button class="goal-complete-btn" data-id="${goal.id}">Complete</button>`;
+    if (canArchive) actions += `<button class="goal-complete-btn" data-id="${goal.id}">${this._t("goals.complete", "Complete")}</button>`;
     if (goal.status === GOAL_STATUS_OPEN && canManage) {
-      actions += `<button class="goal-edit-btn" data-id="${goal.id}">Edit</button>`;
+      actions += `<button class="goal-edit-btn" data-id="${goal.id}">${this._t("common.edit", "Edit")}</button>`;
     }
     if (canManage) actions += `<button class="goal-delete-btn" data-id="${goal.id}">&times;</button>`;
-    const dueHtml = goal.due_date ? `<div class="goal-due">Due ${new Date(goal.due_date).toLocaleString()}</div>` : "";
+    const dueHtml = goal.due_date ? `<div class="goal-due">${this._t("goals.due_x", "Due %date%", { date: new Date(goal.due_date).toLocaleString() })}</div>` : "";
     const notesHtml = goal.notes ? `<div class="goal-notes">${this._esc(goal.notes)}</div>` : "";
     return `
       <div class="goal-card status-${goal.status}" data-id="${goal.id}">
@@ -1109,7 +1551,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     `;
   }
 
-  // v143+ task #30: "My Goals" - a single flat list of just the logged-in
+  // "My Goals" - a single flat list of just the logged-in
   // viewer's own goals, replacing the old one-column-per-household-member
   // board (see this file's own header comment for the reasoning). Someone
   // not logged in at all (a kiosk display with no hass.user) sees a plain
@@ -1148,7 +1590,7 @@ class FamilyHubGoalsCard extends HTMLElement {
       <div class="completed-goals-row">
         <div class="completed-goals-header">
           <span class="completed-goals-toggle-icon">${open ? "&#9662;" : "&#9656;"}</span>
-          <span class="completed-goals-title">Completed</span>
+          <span class="completed-goals-title">${this._t("goals.completed_title", "Completed")}</span>
           <span class="completed-goals-badge">${archived.length}</span>
         </div>
         ${body}
@@ -1157,12 +1599,12 @@ class FamilyHubGoalsCard extends HTMLElement {
   }
   _boardHtml() {
     if (!this._myUserId()) {
-      return `<div class="empty-state">Log in to see your goals.</div>`;
+      return `<div class="empty-state">${this._t("goals.login_prompt", "Log in to see your goals.")}</div>`;
     }
     const goals = this._myGoals();
     const listHtml = goals.length
       ? `<div class="goal-list">${goals.map((g) => this._goalCardHtml(g)).join("")}</div>`
-      : `<div class="empty-state">No goals yet.</div>`;
+      : `<div class="empty-state">${this._t("goals.no_goals_yet", "No goals yet.")}</div>`;
     return `${listHtml}${this._completedGoalsAccordionHtml()}`;
   }
 
@@ -1174,7 +1616,7 @@ class FamilyHubGoalsCard extends HTMLElement {
 
   _css() {
     return `
-      /* v1.110.7+: position:relative is the containing block .add-goal-fab
+      /* position:relative is the containing block .add-goal-fab
          needs when [fab-position="card"] switches it to position:absolute. */
       :host { display: block; position: relative; font-family: 'Varela Round', sans-serif; }
       ha-card { background: var(--fc-bg); color: var(--fc-text); padding: 14px; }
@@ -1184,7 +1626,7 @@ class FamilyHubGoalsCard extends HTMLElement {
       .goal-list { display: flex; flex-direction: column; gap: 8px; }
       .empty-state { font-size: 12px; color: var(--fc-text-secondary); padding: 8px 2px; }
       .goal-card { background: var(--fc-card); border-radius: 10px; padding: 10px; box-shadow: var(--fc-shadow, 0 2px 5px rgba(0,0,0,0.08)); display: flex; flex-direction: column; gap: 4px; }
-      /* v144.5+: "Liquid glass" support, same convention as
+      /* "Liquid glass" support, same convention as
          family-week-calendar-card.js - see that file's own comment on its
          backdrop-filter rule for the full reasoning. Zero-cost for every
          existing theme (blur(0px) is a no-op); -webkit- prefix needed for
@@ -1207,7 +1649,7 @@ class FamilyHubGoalsCard extends HTMLElement {
       .goal-actions button { border: none; border-radius: 8px; padding: 4px 8px; font-size: 11px; font-weight: 700; cursor: pointer; background: var(--fc-accent); color: var(--fc-accent-text); }
       .goal-delete-btn { background: var(--fc-surface2) !important; color: var(--fc-accent3) !important; }
       .goal-complete-btn { background: var(--fc-accent2) !important; }
-      /* v144.13+: the Completed accordion - same collapsed-by-default,
+      /* the Completed accordion - same collapsed-by-default,
          click-to-expand shape as family-hub-chores-card.js's own per-column
          Completed accordion (_completedChoresAccordionHtml), just a single
          one here since My Goals is already one flat list, not one per
@@ -1217,10 +1659,10 @@ class FamilyHubGoalsCard extends HTMLElement {
       .completed-goals-title { flex: 1; }
       .completed-goals-badge { background: var(--fc-surface2); color: var(--fc-accent2); border-radius: 8px; padding: 1px 7px; font-size: 11px; }
       .completed-goals-body { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
-      /* v1.110.4+: bottom offset by --fh-fab-offset - see family-hub-chores-card.js's identical comment. */
+      /* bottom offset by --fh-fab-offset - see family-hub-chores-card.js's identical comment. */
       .add-goal-fab { position: fixed; right: 18px; bottom: calc(18px + var(--fh-fab-offset, 0px)); z-index: 900; width: 56px; height: 56px; border-radius: 50%; border: none; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 28px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(58,53,44,0.35); transition: bottom 0.15s ease; }
       .add-goal-fab[hidden] { display: none; }
-      /* v1.110.7+: fab_position: "card" - see family-hub-chores-card.js's
+      /* fab_position: "card" - see family-hub-chores-card.js's
          identical .add-chore-fab rule for the same mechanism. */
       :host([fab-position="card"]) .add-goal-fab { position: absolute; bottom: 18px; }
       .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 1000; align-items: center; justify-content: center; }
@@ -1240,7 +1682,7 @@ class FamilyHubGoalsCard extends HTMLElement {
 
 customElements.define("family-hub-goals-card", FamilyHubGoalsCard);
 
-// v1.111.0+: the card's native "Edit Card" config editor - a thin wrapper
+// the card's native "Edit Card" config editor - a thin wrapper
 // around Home Assistant's own <ha-form> (every field here is a plain text/
 // select the generic form already renders fine) rather than a hand-built
 // form, needed ONLY because the new theme_override field's option list has

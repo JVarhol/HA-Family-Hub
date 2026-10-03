@@ -172,6 +172,44 @@ SETTINGS_STORAGE_VERSION = 1
 SETTINGS_BACKUP_DIR_NAME = "family_hub_backups"
 SETTINGS_BACKUP_FILENAME = "settings_backup.json"
 
+# v1.153.11+ "Settings history" - household ask, verbatim: "some kind of
+# setting backup every hour and then save two or three of them in an admin
+# only panel... so that we can restore back." Deliberately a SEPARATE
+# mechanism from SETTINGS_BACKUP_FILENAME just above: that one is a single
+# always-latest safety net for the "removed and re-added the integration
+# entry" case and is silently overwritten on every save, so by the time
+# anyone notices a bad save (a buggy update, a stray edit) the one backup
+# file may already hold the bad data too - there is nothing to go back to.
+# This instead keeps SETTINGS_HISTORY_MAX_SNAPSHOTS distinct, timestamped
+# generations inside Home Assistant's own Store (not a bare file - this is
+# meant to be browsed and picked from an admin UI, not just read back blind
+# on an empty store), captured together as one snapshot ON THE HOUR, every
+# hour (__init__.py's async_setup_entry registers this with
+# async_track_time_change(hass, _snapshot_settings_history, minute=0,
+# second=0) - deliberately wall-clock-aligned rather than a plain interval
+# timer, so it always fires at :00 and never silently drifts to a
+# different minute depending on when the entry last started or reloaded) -
+# the Settings Store, the Permissions Store, AND the Device Settings Store
+# all at once, since an admin restoring "what things looked like at 3pm"
+# wants all three back in sync with each other, not just the Settings
+# blob. See __init__.py's _maybe_snapshot_settings_history (the automatic
+# on-the-hour capture, which skips a tick entirely when nothing in any of
+# the three stores changed since the last snapshot - a quiet household
+# shouldn't burn all 3 generations on identical copies of the same data),
+# _manual_backup_settings_history (the Settings panel's "Back up now"
+# button - same capture, but always saves even when unchanged, since
+# pressing that button is itself a request for a guaranteed restore point
+# right now), and config_flow.py's
+# FamilyHubOptionsFlow.async_step_restore_backup (how a snapshot gets
+# picked and restored - including the one extra safety snapshot always
+# taken of the CURRENT state immediately before restoring, so restoring
+# itself is never a one-way door). See store.py's
+# default_settings_history/async_load_settings_history for the on-disk
+# shape.
+SETTINGS_HISTORY_STORAGE_KEY_PREFIX = "family_hub_settings_history"
+SETTINGS_HISTORY_STORAGE_VERSION = 1
+SETTINGS_HISTORY_MAX_SNAPSHOTS = 3
+
 # Same durable-backup mechanism as SETTINGS_BACKUP_FILENAME above, extended
 # (1.78.2) to the three Chores/Rewards/Permissions stores - those are ALSO
 # keyed by entry.entry_id (see store.py) and were just as exposed to the

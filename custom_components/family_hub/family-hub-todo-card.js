@@ -58,9 +58,7 @@
 // `grocy_list_ids` yet) keeps behaving as "all lists" until the household
 // opens the new Settings modal once and saves - see _grocySelectedListIds.
 //
-// v1.109.9: "We should make the todo card fully customizable, add rows
-// columns, etc so you can have your lists shown how you want a line of
-// lists, 2 stacks, 3 stacks etc." The board's layout is now the
+// The board's layout is fully customizable, the
 // household's choice: the List(s) tab gained a Layout section (1-4 stacked
 // rows, TODO_CARD_MAX_BOARD_ROWS), persisted as a `rows` field in the very
 // same todo_card_config backend store the list selection uses, for the
@@ -232,7 +230,7 @@ const TODO_FEATURE_DUE_DATE = 16; // SET_DUE_DATE_ON_ITEM
 const TODO_FEATURE_DUE_DATETIME = 32; // SET_DUE_DATETIME_ON_ITEM
 const TODO_FEATURE_DESCRIPTION = 64; // SET_DESCRIPTION_ON_ITEM
 
-// Wish Lists (v1.122.0+) - the household's own ask: "I want to use the
+// Wish Lists - the household's own ask: "I want to use the
 // native list functionality to be able to do wish lists link name image
 // description that kind of thing but all built on top of the native list
 // functionality. I think that we can embed most of this data into the
@@ -283,7 +281,7 @@ function _parseWishlistDescription(raw) {
     image: typeof data.image === "string" ? data.image : "",
     claimedBy: typeof data.claimedBy === "string" && data.claimedBy ? data.claimedBy : null,
     claimedByName: typeof data.claimedByName === "string" ? data.claimedByName : "",
-    // v1.132.6+: "tie a wish list item to a reward" - see
+    // "tie a wish list item to a reward" - see
     // _wishlistItemHtml/_openTieRewardModal/_claimWishlistReward's own
     // comments for the full picture. rewardItemId is the linked
     // family_hub/rewards catalog item's id (always created with
@@ -398,6 +396,25 @@ if (!window.__familyHubFabCoordinator) {
     const SLOT_HEIGHT_PX = 66;
     const entries = new Map(); // client -> { kind, seq, meta, onUpdate }
     let seq = 0;
+    // Every FAB here is position:fixed, pinned to the viewport corner (or,
+    // for a fab-position:"card" client, to its own card's box) - each card
+    // is its own independently-loaded custom element with no idea what
+    // other Family Hub cards are doing on the same dashboard, so a full-
+    // screen modal opened by ANY of them (most visibly the calendar card's
+    // own Settings screen) could end up with a totally unrelated card's
+    // FAB painted on top of it: depending on how the dashboard lays out
+    // its cards (Home Assistant's newer Sections view in particular can
+    // give each card's container its own CSS containment/stacking
+    // context), a sibling card's FAB z-index isn't guaranteed to actually
+    // lose to this card's modal overlay the way a plain same-shadow-DOM
+    // z-index comparison would. Rather than depend on that, every FAB-
+    // bearing card asks every OTHER one to physically hide
+    // (fab.hidden = true, not just "behind" via z-index - see each card's
+    // own onUpdate) while any of them has a full-screen modal open, via
+    // openModalCount/pushModalOpen/popModalOpen below - same "don't trust
+    // cross-shadow-DOM z-index, coordinate explicitly instead" approach as
+    // this project's shared screensaver controller.
+    let openModalCount = 0;
 
     function orderIndex(kind) {
       const i = FAB_KIND_ORDER.indexOf(kind);
@@ -410,19 +427,20 @@ if (!window.__familyHubFabCoordinator) {
         if (oa !== ob) return oa - ob;
         return a[1].seq - b[1].seq;
       });
-      // v1.110.7+: entries with takesSlot:false (a fab_position: "card"
+      // entries with takesSlot:false (a fab_position: "card"
       // client - see registerClient's own doc below) are skipped when
       // handing out stacking slots/offsets, but still walked here so they
       // still see otherProvidesGoalTab and still get an onUpdate call.
       const slotCount = list.filter(([, entry]) => entry.takesSlot).length;
       let slotIndex = 0;
+      const hideForModal = openModalCount > 0;
       list.forEach(([client, entry]) => {
         const otherProvidesGoalTab = list.some(
           ([otherClient, otherEntry]) => otherClient !== client && otherEntry.meta && otherEntry.meta.providesGoalTab
         );
         const index = entry.takesSlot ? slotIndex++ : null;
         if (typeof entry.onUpdate === "function") {
-          entry.onUpdate({ offsetPx: (index || 0) * SLOT_HEIGHT_PX, slotIndex: index, count: slotCount, otherProvidesGoalTab });
+          entry.onUpdate({ offsetPx: (index || 0) * SLOT_HEIGHT_PX, slotIndex: index, count: slotCount, otherProvidesGoalTab, hideForModal });
         }
       });
     }
@@ -433,10 +451,12 @@ if (!window.__familyHubFabCoordinator) {
       // `providesGoalTab` (see this block's own docstring above). `onUpdate`
       // is called once immediately (so a lone card on an otherwise-empty
       // dashboard still gets offsetPx: 0) and again on every subsequent
-      // register/unregister/updateClientMeta from ANY card, since adding a
-      // second FAB changes where the first one's slot is too.
+      // register/unregister/updateClientMeta/pushModalOpen/popModalOpen
+      // from ANY card, since adding a second FAB changes where the first
+      // one's slot is too, and any card's modal opening/closing changes
+      // whether every FAB should currently be hidden.
       //
-      // v1.110.7+: `opts.takesSlot` (default true) - pass `{ takesSlot:
+      // `opts.takesSlot` (default true) - pass `{ takesSlot:
       // false }` for a card whose FAB has opted out of the shared
       // viewport-corner stack (fab_position: "card" - anchored to its own
       // card's box instead, see each card's own _registerFabCoordinator).
@@ -460,6 +480,24 @@ if (!window.__familyHubFabCoordinator) {
         entry.meta = Object.assign({}, entry.meta, meta || {});
         recompute();
       },
+      // Call when THIS card opens a full-screen modal that every OTHER
+      // Family Hub card's FAB should get out of the way of (today: only
+      // the calendar card's own Settings screen calls this - see its
+      // _setupSettingsFabCoordination). A plain counter, not a per-client
+      // flag, so this stays correct even if more than one such modal is
+      // ever open across more than one card at once - every pushModalOpen
+      // needs a matching popModalOpen before FABs reappear, and a card
+      // that unmounts while its own modal was still open (see
+      // disconnectedCallback) pops on its way out rather than leaking the
+      // count forever.
+      pushModalOpen() {
+        openModalCount += 1;
+        recompute();
+      },
+      popModalOpen() {
+        openModalCount = Math.max(0, openModalCount - 1);
+        recompute();
+      },
       // Call from disconnectedCallback. Frees this card's slot so every
       // remaining card's FAB shifts back down to close the gap, and (for
       // Goals) re-checks whether it's still safe to suppress its own FAB.
@@ -471,9 +509,7 @@ if (!window.__familyHubFabCoordinator) {
 }
 
 // Shared, dashboard-wide kiosk-PIN-login session (v1.132.4+, extended to
-// this card from Chores/Rewards) - household ask, verbatim: "need a way to
-// switch to other accounts for the wish lists, so people could mark things
-// off on a kiosk." Byte-identical copy of the singleton family-hub-chores-
+// this card from Chores/Rewards) - Byte-identical copy of the singleton family-hub-chores-
 // card.js/family-hub-rewards-card.js already define (see either one's own
 // docstring right above this same block for the full design note) - same
 // "independently-loaded Lovelace resources, not ES modules" reasoning as
@@ -555,10 +591,215 @@ if (!window.__familyHubKioskSession) {
   })();
 }
 
-// Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
-// "When you load a card it tends to load the default theme first then it
-// switches over to the theme you set how can we always make it load the
-// set theme first." Root cause: EVERY themed card's first paint happens
+// Household-wide timer alarm sound+modal (v1.119.0+, widened in
+// v1.132.55+) - see family-hub-active-timers-card.js's own top comment
+// above this same block for the full design note. Added here in
+// v1.132.59+ after a - this card never carried this singleton or subscribed to
+// the widened-alarm broadcast at all, so a kiosk whose dashboard shows
+// it silently never rang for anyone else's widened timer alarm. Kept
+// byte-identical to every other card's copy on purpose.
+if (!window.__familyHubTimerAlarm) {
+  window.__familyHubTimerAlarm = (function () {
+    let modalEl = null;
+    let audioCtx = null;
+    let beepHandle = null;
+    let activeUid = null;
+    // A timer's uid, once dismissed, stays dismissed - otherwise the very
+    // next poll's countdown tick (still <= 0 for a few more seconds until
+    // the backend's own sweep, up to TIMER_SWEEP_SECONDS later, actually
+    // removes it from family_hub/timers/list) would immediately re-open
+    // the modal a person just tapped Stop on. Unbounded but negligible: a
+    // few bytes per timer this ONE tab ever alarmed for in its lifetime.
+    const dismissedUids = new Set();
+    function ensureModal() {
+      if (modalEl) return modalEl;
+      modalEl = document.createElement("div");
+      modalEl.id = "family-hub-timer-alarm-overlay";
+      Object.assign(modalEl.style, {
+        position: "fixed", inset: "0", zIndex: "2147483647", display: "none",
+        alignItems: "center", justifyContent: "center",
+        background: "rgba(20,16,8,0.78)",
+      });
+      modalEl.innerHTML =
+        '<div style="background:#fff8ea;color:#3a352c;border-radius:22px;padding:38px 30px;max-width:360px;width:88vw;text-align:center;box-shadow:0 14px 46px rgba(0,0,0,0.45);font-family:-apple-system,\'Segoe UI\',Roboto,sans-serif;">' +
+        '<div style="font-size:48px;margin-bottom:12px;">&#9200;</div>' +
+        '<div class="fh-timer-alarm-title" style="font-size:1.3em;font-weight:800;margin-bottom:6px;"></div>' +
+        '<div style="font-size:14px;color:#96877a;margin-bottom:24px;">Time\'s up!</div>' +
+        '<button type="button" class="fh-timer-alarm-stop" style="min-height:54px;width:100%;border:none;border-radius:14px;background:#8f5a00;color:#fff8ea;font-size:19px;font-weight:800;cursor:pointer;">Stop</button>' +
+        "</div>";
+      document.body.appendChild(modalEl);
+      modalEl.querySelector(".fh-timer-alarm-stop").addEventListener("click", () => stop());
+      return modalEl;
+    }
+    // A plain oscillator beep via the Web Audio API - deliberately not a
+    // bundled sound file: no extra media asset for HACS/manual installs to
+    // ship or for a self-hosted install's network policy to worry about,
+    // and it sounds identical on every install.
+    //
+    // The original v1.119.0+ sound was one
+    // flat square-wave tone repeated once a second - metronomic, which is
+    // exactly what read as a countdown-bomb tick rather than an alarm. This
+    // plays a quick alternating two-pitch TRIPLET (a classic digital-alarm-
+    // clock trill) each cycle instead of a single tone, which is what
+    // actually reads as "alarm" to the ear - the alternating pitch is what
+    // a lone repeated tone can't give you, no matter how loud.
+    function playBeep(atTime, freq) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "square";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, atTime);
+      gain.gain.exponentialRampToValueAtTime(0.3, atTime + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, atTime + 0.13);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(atTime);
+      osc.stop(atTime + 0.15);
+    }
+    // Scheduled via Web Audio's own clock (osc.start(atTime)) rather than
+    // three back-to-back setTimeout calls, so the triplet's timing stays
+    // tight even if the main JS thread is briefly busy - it's the crisp,
+    // even spacing that makes it read as a trill instead of a stutter.
+    function beepOnce() {
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === "suspended") audioCtx.resume();
+        const now = audioCtx.currentTime;
+        [[0, 1046], [0.15, 1318], [0.3, 1046]].forEach(([offset, freq]) => playBeep(now + offset, freq));
+      } catch (e) {
+        // Autoplay blocked, or no Web Audio at all - the modal is still
+        // the primary alarm; sound is a bonus on top of it, not required.
+      }
+    }
+    // which hass connection to tell "dismiss this everywhere"
+    // when Stop is tapped - set by whichever card most recently called
+    // ring()/check() with one, since this singleton is shared across every
+    // card on the dashboard and any of them may have `hass` by now. Best-
+    // effort only (see stop() below): a same-tab-only local alarm (the
+    // original v1.119.0+ behavior this singleton already had) never had a
+    // server-side record to begin with, so the dismiss call below simply
+    // no-ops for it (ws_dismiss_timer_alarm pops a uid that was never
+    // registered - see its own docstring for why that's silent, not an
+    // error).
+    let lastHass = null;
+    function stop() {
+      if (activeUid) dismissedUids.add(activeUid);
+      const uid = activeUid;
+      activeUid = null;
+      if (beepHandle) {
+        clearInterval(beepHandle);
+        beepHandle = null;
+      }
+      if (modalEl) modalEl.style.display = "none";
+      // household's explicit choice - "first tap wins, from
+      // anyone" - so tapping Stop here also clears the alarm everywhere
+      // else (other kiosks, other people's phones-that-are-dashboards)
+      // rather than just silencing this one tab. No permission gate, by
+      // design.
+      if (uid && lastHass && lastHass.connection && lastHass.connection.sendMessagePromise) {
+        lastHass.connection.sendMessagePromise({ type: "family_hub/timers/dismiss_alarm", uid }).catch(() => {});
+      }
+    }
+    // This modal already outranks the screensaver's own overlay (z-index
+    // 2147483647 vs 2147483000, set in ensureModal() above), so it was
+    // always painting on top of it - but a screensaver left running
+    // underneath still means its video/camera poll keeps going, so it
+    // needs to actually END, not just be covered up.
+    // There are THREE independent screensaver implementations in this
+    // project (the calendar card's own, the shared window.__familyHub
+    // ScreenSaver controller used by Chores/Rewards/My Chores/etc., and the
+    // standalone family-screensaver-card.js) and this singleton has no
+    // reference to whichever one might be running on this particular
+    // dashboard. Rather than importing all three, every one of them marks
+    // its overlay element with the same data-family-hub-screensaver
+    // attribute and already dismisses itself (hides, stops video/camera
+    // polling, navigates to its configured return dashboard) on its own
+    // overlay's "pointerdown" listener - so a synthetic pointerdown on
+    // whichever overlay is actually showing reuses each implementation's
+    // own real dismiss path for free, with zero coupling to which one it
+    // is.
+    function wakeAnyScreenSaver() {
+      try {
+        const overlay = document.querySelector("[data-family-hub-screensaver]");
+        if (overlay && overlay.style.display !== "none") {
+          overlay.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        }
+      } catch (e) {
+        // Best-effort - worst case the alarm modal still shows ON TOP of a
+        // running screensaver rather than ending it outright.
+      }
+    }
+    function start(timer, hass) {
+      if (hass) lastHass = hass;
+      if (activeUid === timer.uid) return;
+      activeUid = timer.uid;
+      wakeAnyScreenSaver();
+      const el = ensureModal();
+      el.querySelector(".fh-timer-alarm-title").textContent = timer.title || "Timer";
+      el.style.display = "flex";
+      beepOnce();
+      if (beepHandle) clearInterval(beepHandle);
+      // Shorter gap than the old single-tone version (1200ms) since each
+      // cycle is now a ~450ms triplet, not a single ~340ms tone - this
+      // keeps the alarm feeling urgent/continuous rather than sparse.
+      beepHandle = setInterval(beepOnce, 950);
+    }
+    return {
+      // Call once a second from a card's own countdown ticker (the same
+      // tick that already repaints the visible "X:XX left" text), passing:
+      //   timers        - that card's own freshly-fetched timers list
+      //   clientId      - this tab's own id (see _familyHubClientId below)
+      //   remainingSecondsFn - a (timer) => seconds function, so this
+      //                   singleton reuses the CALLING card's own
+      //                   native-timer-aware math (_timerRemainingSeconds)
+      //                   instead of a second, potentially-drifting copy
+      //                   of it living here with no access to `hass`.
+      // Only a timer whose origin_client_id matches THIS tab's own id and
+      // whose alarm flag is on can ever trigger anything - a timer someone
+      // else started, or one this same tab started but didn't opt into
+      // alarms for, is silently ignored here exactly as before this
+      // feature existed.
+      check(timers, clientId, remainingSecondsFn, hass) {
+        if (!clientId) return;
+        const mine = (timers || []).find((t) => t.alarm && t.origin_client_id && t.origin_client_id === clientId);
+        if (!mine || dismissedUids.has(mine.uid)) return;
+        if (remainingSecondsFn(mine) <= 0) start(mine, hass);
+      },
+      // the WIDENED half - a household_timer_alarm_ring bus
+      // event (fired by chores_websocket_api.py's _dispatch_timer_alarm/
+      // _reannounce_active_alarms) that THIS login should also ring for,
+      // because it's either the timer's own owner, a login flagged as an
+      // always-on alarm kiosk, or the tier was "everyone." Unlike check()
+      // above (which only ever recognizes the ONE tab that started the
+      // timer, by origin_client_id), this recognizes a login/account -
+      // every open tab logged in as a matching user rings, on every
+      // dashboard, which is the whole point of the widened tiers. Re-fired
+      // on every re-announcement (see _reannounce_active_alarms), so
+      // calling this again for an already-ringing uid is a deliberate
+      // no-op (start() already short-circuits on activeUid === timer.uid).
+      ringBroadcast(payload, hass, myUserId) {
+        if (!payload || !payload.uid || dismissedUids.has(payload.uid)) return;
+        const targets = payload.target_user_ids || [];
+        const shouldRing = !!payload.broadcast_all || (myUserId && targets.includes(myUserId));
+        if (!shouldRing) return;
+        start({ uid: payload.uid, title: payload.title }, hass);
+      },
+      // The STOP half of the same broadcast pair - fired the instant
+      // ANY device dismisses (see ws_dismiss_timer_alarm's own "first tap
+      // wins" docstring), including a dismiss that originated from THIS
+      // singleton's own stop() above (that call's own dismiss already
+      // covers this tab; the event still arrives here a moment later and
+      // is a harmless no-op via stop()'s own activeUid !== uid guard, or
+      // via dismissedUids already containing it).
+      stopFromServer(uid) {
+        if (uid) dismissedUids.add(uid);
+        if (activeUid === uid) stop();
+      },
+    };
+  })();
+}
+
+// Theme flash-of-default fix - Root cause: EVERY themed card's first paint happens
 // with no theme CSS vars set at all (falls back to _defaultTheme()'s own
 // hardcoded palette), because resolving the household's actual theme
 // takes two sequential, awaited websocket round trips after `hass` is
@@ -660,7 +901,7 @@ class FamilyHubTodoCard extends HTMLElement {
         s.name === "title" ? "Title" : s.name === "entities" ? "Lists to show" : s.name === "include_grocy_shopping_lists" ? "Also show Grocy shopping list(s)" : s.name === "fab_position" ? "+ button position" : undefined,
     };
   }
-  // A custom editor element (v146.3+) rather than letting Home Assistant
+  // A custom editor element rather than letting Home Assistant
   // auto-build one straight from getConfigForm's own schema. That auto
   // editor's own "value-changed" event carries ONLY the schema's three
   // fields (title/entities/include_grocy_shopping_lists) as the WHOLE new
@@ -676,7 +917,7 @@ class FamilyHubTodoCard extends HTMLElement {
   static getConfigElement() {
     return document.createElement("family-hub-todo-card-editor");
   }
-  // v1.110.5+: this card's own stable per-instance identity, so two
+  // this card's own stable per-instance identity, so two
   // different Todo cards on two different views (or the same view) never
   // share the ONE family_hub_todo_card_config backend record - see
   // __init__.py's _ws_get_todo_card_config/_ws_set_todo_card_config and
@@ -696,9 +937,8 @@ class FamilyHubTodoCard extends HTMLElement {
   // was still, at bottom, guessing this card's identity from RUNTIME
   // bookkeeping (how many todo cards had been built so far, in what
   // order, in this browser, in this tab). Every one of those fixes closed
-  // one specific way that guess could drift, and the household kept
-  // finding the next one: "todo card needs to save config when you click
-  // save. It still is not" (twice, verbatim). The actual fix is to stop
+  // one specific way that guess could drift, and a new way kept
+  // turning up. The actual fix is to stop
   // guessing: derive the id straight from the card's own config - the
   // literal YAML/storage config this card was handed - so it's the exact
   // same value every single time this exact card (this view, this title,
@@ -753,7 +993,7 @@ class FamilyHubTodoCard extends HTMLElement {
   setConfig(config) {
     const cardId = this._ensureCardId(config);
     const entities = Array.isArray(config && config.entities) ? config.entities.filter((e) => typeof e === "string" && e.startsWith("todo.")) : [];
-    // grocy_list_ids (v146.2+) is the household's explicit pick of WHICH
+    // grocy_list_ids is the household's explicit pick of WHICH
     // Grocy shopping lists to show, saved by the new Settings modal - see
     // _grocySelectedListIds for how this and the older all-or-nothing
     // include_grocy_shopping_lists boolean combine (undefined here means
@@ -767,11 +1007,11 @@ class FamilyHubTodoCard extends HTMLElement {
       includeGrocyShoppingLists: !!(config && config.include_grocy_shopping_lists),
       grocyListIds,
       cardId,
-      // v1.110.7+: see family-hub-chores-card.js's identical setConfig/
+      // see family-hub-chores-card.js's identical setConfig/
       // _registerFabCoordinator comment for the full "dashboard" vs "card"
       // design note.
       fab_position: config && config.fab_position === "card" ? "card" : "dashboard",
-      // v1.111.0+: per-card Theme override - see family-hub-goals-card.js's
+      // per-card Theme override - see family-hub-goals-card.js's
       // identical field/comment for the full precedence story.
       theme_override: (config && typeof config.theme_override === "string") ? config.theme_override : "",
     };
@@ -815,7 +1055,7 @@ class FamilyHubTodoCard extends HTMLElement {
     if (this._grocyLocationsCache === undefined) this._grocyLocationsCache = null;
     if (this._firstLoadPromise === undefined) this._firstLoadPromise = null;
     if (this._dragState === undefined) this._dragState = null;
-    // The household's actual saved list selection (v146.5+), fetched once
+    // The household's actual saved list selection, fetched once
     // from the backend's own small Store - see _fetchTodoCardConfig and
     // _selectedTodoEntities/_grocySelectedListIds. null until the first
     // fetch resolves (during which _selectedTodoEntities/
@@ -823,23 +1063,23 @@ class FamilyHubTodoCard extends HTMLElement {
     // same as they would once fetched and finding nothing saved yet).
     if (this._backendEntities === undefined) this._backendEntities = null;
     if (this._backendGrocyListIds === undefined) this._backendGrocyListIds = null;
-    // v1.109.9+: how many stacked rows to spread the list columns across -
+    // how many stacked rows to spread the list columns across -
     // see _boardRows/_boardHtml. null until the first fetch resolves AND
     // until the household has ever picked one; both cases mean "1", i.e.
     // the single side-by-side row this card has always had.
     if (this._backendBoardRows === undefined) this._backendBoardRows = null;
-    // v1.130.0+: "fit to screen" - see _fitToScreen/_syncTodoCardHeight.
+    // "fit to screen" - see _fitToScreen/_syncTodoCardHeight.
     // null/false both mean off (today's always-grow-with-content behavior,
     // unchanged) until the first fetch resolves AND the household has
     // actually turned it on once.
     if (this._backendFitToScreen === undefined) this._backendFitToScreen = false;
-    // v1.130.0+: per-row height weights for the "fit to screen" layout's
+    // per-row height weights for the "fit to screen" layout's
     // drag-to-resize handles - see _rowHeightWeights/_persistRowHeights.
     // null means "never resized," which _rowHeightWeights treats as every
     // row getting an equal share, same as the board's always looked with
     // 2+ rows before this existed.
     if (this._backendRowHeights === undefined) this._backendRowHeights = null;
-    // Wish Lists (v1.122.0+): {[entity_id]: {ownerUserId}} for every
+    // Wish Lists: {[entity_id]: {ownerUserId}} for every
     // todo.* entity currently flagged as a wish list, household-wide -
     // fetched once from its own backend Store (family_hub/
     // get_wishlist_config, see _fetchWishlistConfig) alongside the rest of
@@ -847,11 +1087,11 @@ class FamilyHubTodoCard extends HTMLElement {
     // resolves, so every wishlist check is a plain, always-safe lookup
     // rather than needing its own null guard everywhere it's read.
     if (this._wishlistConfig === undefined) this._wishlistConfig = {};
-    // v1.132.5+: this card's own effective permission grants, resolved
+    // this card's own effective permission grants, resolved
     // server-side - see _fetchMyPermissions/_hasPermission. {} until the
     // first fetch resolves, same convention as family-hub-chores-card.js.
     if (this._myPermissions === undefined) this._myPermissions = {};
-    // v1.132.6+: "tie a wish list item to a reward" - live map of
+    // "tie a wish list item to a reward" - live map of
     // {catalog_item_id: catalog_item} from family_hub/rewards/get_state,
     // see _fetchRewardsCatalog/_wishlistItemHtml. null (not {}) until the
     // first fetch resolves, so a reward-tied item's star badge/self-heal
@@ -859,7 +1099,7 @@ class FamilyHubTodoCard extends HTMLElement {
     // reward genuinely isn't in the catalog anymore" - the latter is what
     // triggers self-healing removal.
     if (this._rewardsCatalogById === undefined) this._rewardsCatalogById = null;
-    // v1.132.4+: kiosk PIN login, joined from the shared
+    // kiosk PIN login, joined from the shared
     // window.__familyHubKioskSession singleton (see that block above this
     // class) - mirrors family-hub-chores-card.js's identical
     // this._kioskElevation/_kioskLoginUsers fields.
@@ -871,41 +1111,95 @@ class FamilyHubTodoCard extends HTMLElement {
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
+    this._ensureTranslationsLoaded();
     if (first) this._firstLoadPromise = this._initFirstLoad();
   }
   async _initFirstLoad() {
     await this._fetchSettings();
-    // v1.111.0+: always fetch (not just when useGlobalTheme is on) so a
+    // always fetch (not just when useGlobalTheme is on) so a
     // per-card theme_override can resolve even when the household hasn't
     // turned on Global Theme - same change as every other themed card.
     await this._fetchGlobalThemes();
     await this._fetchTodoCardConfig();
     await this._fetchWishlistConfig();
     await this._fetchAllLists();
-    // v1.132.4+: who (if anyone) can kiosk-PIN-login on this card - decides
+    // who (if anyone) can kiosk-PIN-login on this card - decides
     // whether the Login button even shows at all (see _updateKioskLoginUi).
     // Same "awaited, fails soft to an empty list" convention as Chores/
     // Rewards' own identical fetch.
     await this._fetchKioskLoginUsers();
     this._updateKioskLoginUi();
-    // v1.132.5+: this card's own effective grants (see _hasPermission) -
+    // this card's own effective grants (see _hasPermission) -
     // needed before the first render so claim-status visibility is correct
     // immediately, not just after a later re-render.
     await this._fetchMyPermissions();
-    // v1.132.6+: only bothers fetching the rewards catalog at all if this
+    // only bothers fetching the rewards catalog at all if this
     // card actually has a wish list configured - see _hasAnyWishlist's
     // own comment.
     if (this._hasAnyWishlist()) await this._fetchRewardsCatalog();
     this._startPolling();
     this._registerFabCoordinator();
     this._registerKioskSession();
+    // - see this
+    // file's own copy of the window.__familyHubTimerAlarm singleton
+    // (below) for the full design note. Kept byte-identical to every
+    // other card's copy on purpose.
+    this._subscribeAlarmEvents();
   }
-  // v1.110.4+: joins the shared FAB-stacking coordinator - see
+  // household-wide timer alarms - subscribe to the two bus
+  // events chores_websocket_api.py's _dispatch_timer_alarm/
+  // _reannounce_active_alarms fire (see const.py's
+  // EVENT_FAMILY_HUB_TIMER_ALARM_RING/_STOP), and hand each one to the
+  // shared window.__familyHubTimerAlarm singleton below - same "one modal/
+  // audio loop shared by every card on the dashboard" convention its own
+  // top comment describes. Subscribed once per card instance (guarded by
+  // _alarmUnsub so a re-run of _initFirstLoad, which shouldn't happen but
+  // costs nothing to guard against, never double-subscribes).
+  async _subscribeAlarmEvents() {
+    if (this._alarmUnsub || !this._hass || !this._hass.connection) return;
+    const myUserId = this._myUserId();
+    try {
+      const unsubRing = await this._hass.connection.subscribeEvents((event) => {
+        if (window.__familyHubTimerAlarm) {
+          window.__familyHubTimerAlarm.ringBroadcast(event.data, this._hass, myUserId);
+        }
+      }, "family_hub_timer_alarm_ring");
+      const unsubStop = await this._hass.connection.subscribeEvents((event) => {
+        if (window.__familyHubTimerAlarm && event.data) {
+          window.__familyHubTimerAlarm.stopFromServer(event.data.uid);
+        }
+      }, "family_hub_timer_alarm_stop");
+      this._alarmUnsub = () => {
+        try { unsubRing(); } catch (e) { /* no-op */ }
+        try { unsubStop(); } catch (e) { /* no-op */ }
+      };
+    } catch (e) {
+      // Best-effort - a dashboard that can't subscribe (e.g. a very old
+      // frontend build) simply never gets the WIDENED alarm reach; the
+      // same-tab-only local alarm (window.__familyHubTimerAlarm.check,
+      // unaffected by any of this) still works exactly as before.
+    }
+    // Catch up on anything already ringing before this tab opened, rather
+    // than waiting up to ALARM_REANNOUNCE_SECONDS for the next re-
+    // announcement's RING event.
+    if (this._hass.connection.sendMessagePromise) {
+      try {
+        const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/timers/list_active_alarms" });
+        for (const alarm of (result && result.alarms) || []) {
+          if (window.__familyHubTimerAlarm) window.__familyHubTimerAlarm.ringBroadcast(alarm, this._hass, myUserId);
+        }
+      } catch (e) {
+        // Best-effort catch-up only - the next re-announcement still
+        // covers it.
+      }
+    }
+  }
+  // joins the shared FAB-stacking coordinator - see
   // family-hub-chores-card.js's identical _registerFabCoordinator for the
   // full design note. This card offers no Goal tab, so it registers with
   // no meta at all - just a slot in the stack.
   //
-  // v1.110.7+: fab_position "card" toggles the [fab-position="card"] host
+  // fab_position "card" toggles the [fab-position="card"] host
   // attribute (position:fixed -> :host-relative position:absolute) and
   // registers with takesSlot:false - see family-hub-chores-card.js's
   // identical comment for the full reasoning.
@@ -916,16 +1210,22 @@ class FamilyHubTodoCard extends HTMLElement {
     else this.removeAttribute("fab-position");
     window.__familyHubFabCoordinator.registerClient(this, "todo", {}, (state) => {
       this.style.setProperty("--fh-fab-offset", `${state.offsetPx}px`);
+      // hideForModal is true while ANY Family Hub card on this dashboard
+      // has a full-screen modal open (most visibly the calendar card's
+      // own Settings screen) - see the coordinator's own doc for why this
+      // can't just rely on z-index across cards.
+      const fab = this._root && this._root.querySelector(".add-todo-fab");
+      if (fab) fab.hidden = !!state.hideForModal;
     }, { takesSlot: !cardRelative });
   }
-  // v1.132.4+: joins the shared kiosk-login session - byte-identical
+  // joins the shared kiosk-login session - byte-identical
   // reasoning to family-hub-chores-card.js's own _registerKioskSession.
   // Logging in on Chores/Rewards immediately elevates this card too (and
   // vice versa), with no second login.
   _registerKioskSession() {
     if (window.__familyHubKioskSession) window.__familyHubKioskSession.registerClient(this, (elevation) => this._onKioskElevationChanged(elevation));
   }
-  // v1.132.4+: kiosk PIN login - see family-hub-chores-card.js's own
+  // kiosk PIN login - see family-hub-chores-card.js's own
   // _myUserId/_myName/_openKioskLoginModal/_submitKioskLogin/
   // _onKioskElevationChanged for the full picture; this card's copies are
   // functionally identical except _myName is new here (Chores/Rewards only
@@ -939,7 +1239,7 @@ class FamilyHubTodoCard extends HTMLElement {
     if (this._kioskElevation) return this._kioskElevation.name || "";
     return (this._hass && this._hass.user && this._hass.user.name) || "";
   }
-  // v1.132.5+: mirrors family-hub-chores-card.js's own _isAdmin/_hasPermission
+  // mirrors family-hub-chores-card.js's own _isAdmin/_hasPermission
   // exactly (see that file's comment above them for the full picture) - this
   // card previously never needed either, but now uses _hasPermission("can_see_wishlist_claims")
   // to gate claim-status visibility (see _wishlistItemHtml) instead of the
@@ -953,7 +1253,76 @@ class FamilyHubTodoCard extends HTMLElement {
     if (this._kioskElevation) return !!(this._kioskElevation.permissions && this._kioskElevation.permissions[key]);
     return !!this._myPermissions[key];
   }
-  // v1.132.6+: mirrors family-hub-chores-card.js's own _kioskMsg exactly
+  // --- Native HA frontend i18n (same trio as family-hub-chores-card.js;
+  // see that file's own comment on _t/_ensureTranslationsLoaded/
+  // _applyTranslations for the full mechanism - hass.loadBackendTranslation
+  // + hass.localize, keyed by hass.language, no separate Family Hub
+  // language setting. Copied rather than shared, like every other card in
+  // this repo - none of the 11 card files share code. To-Do card UI
+  // strings live under the SAME "fh_ui" translation category as every
+  // other card, namespaced "todo.*" so it never collides with the others. ---
+  _t(key, fallback, vars) {
+    let str = "";
+    try {
+      if (this._hass && typeof this._hass.localize === "function") {
+        str = this._hass.localize(`component.family_hub.fh_ui.${key}`) || "";
+      }
+    } catch (e) {
+      str = "";
+    }
+    if (!str) str = fallback;
+    if (vars) {
+      Object.keys(vars).forEach((k) => {
+        str = str.split(`%${k}%`).join(vars[k]);
+      });
+    }
+    return str;
+  }
+  _baseLanguage(lang) {
+    return (lang || "en").split("-")[0].toLowerCase();
+  }
+  _ensureTranslationsLoaded() {
+    if (!this._hass || typeof this._hass.loadBackendTranslation !== "function") return;
+    const lang = this._baseLanguage(this._hass.language);
+    if (this._i18nLoadedLang === lang || this._i18nLoading === lang) return;
+    this._i18nLoading = lang;
+    this._hass
+      .loadBackendTranslation("fh_ui", "family_hub")
+      .then(() => {
+        this._i18nLoadedLang = lang;
+        this._i18nLoading = null;
+        this._applyTranslations();
+        // The kiosk-login button's own text/title is set imperatively
+        // (btn.textContent/.title in _updateKioskLoginUi, not data-i18n -
+        // it renders a dynamic name/icon prefix, not plain translatable
+        // text) so it needs its own re-sync here, same reason _render() is
+        // also called right after _applyTranslations().
+        this._updateKioskLoginUi();
+        this._render();
+      })
+      .catch((e) => {
+        this._i18nLoading = null;
+        console.warn("[family_hub] failed to load \"" + lang + "\" translations - staying on English fallback text", e);
+      });
+  }
+  _applyTranslations() {
+    if (!this._root) return;
+    this._root.querySelectorAll("[data-i18n]").forEach((el) => {
+      const key = el.dataset.i18n;
+      if (el.dataset.i18nFallback === undefined) el.dataset.i18nFallback = el.textContent;
+      el.textContent = this._t(key, el.dataset.i18nFallback);
+    });
+    this._root.querySelectorAll("[data-i18n-title]").forEach((el) => {
+      const key = el.dataset.i18nTitle;
+      if (el.dataset.i18nTitleFallback === undefined) {
+        el.dataset.i18nTitleFallback = el.getAttribute("title") || el.getAttribute("aria-label") || "";
+      }
+      const translated = this._t(key, el.dataset.i18nTitleFallback);
+      if (el.hasAttribute("title")) el.setAttribute("title", translated);
+      if (el.hasAttribute("aria-label")) el.setAttribute("aria-label", translated);
+    });
+  }
+  // mirrors family-hub-chores-card.js's own _kioskMsg exactly
   // (see that file's comment above it) - wraps a websocket message with
   // this card's own kiosk elevation_token (if any) so a server call made
   // from a kiosk-logged-in session (right now, only
@@ -972,7 +1341,7 @@ class FamilyHubTodoCard extends HTMLElement {
       this._myPermissions = {};
     }
   }
-  // v1.132.6+: "tie a wish list item to a reward" - family_hub/rewards/
+  // "tie a wish list item to a reward" - family_hub/rewards/
   // get_state is open to any authenticated household member (no
   // permission gate on the read itself, same as the Rewards card's own
   // fetch), so this card can safely read the full catalog just to look up
@@ -1021,13 +1390,13 @@ class FamilyHubTodoCard extends HTMLElement {
     if (!btn) return;
     btn.hidden = !this._kioskElevation && !(this._kioskLoginUsers && this._kioskLoginUsers.length);
     if (this._kioskElevation) {
-      btn.textContent = `\u{1F464} ${this._kioskElevation.name} · Log out`;
+      btn.textContent = `\u{1F464} ${this._kioskElevation.name} · ${this._t("todo.kiosk_login.log_out", "Log out")}`;
       btn.classList.add("active");
-      btn.title = "Tap to log out of this kiosk session";
+      btn.title = this._t("todo.kiosk_login.log_out_title", "Tap to log out of this kiosk session");
     } else {
-      btn.textContent = "\u{1F512} Login";
+      btn.textContent = `\u{1F512} ${this._t("todo.kiosk_login.login", "Login")}`;
       btn.classList.remove("active");
-      btn.title = "Log in as a specific household member on this kiosk display";
+      btn.title = this._t("todo.kiosk_login.login_title", "Log in as a specific household member on this kiosk display");
     }
   }
   async _onKioskLoginBtnClick() {
@@ -1050,7 +1419,7 @@ class FamilyHubTodoCard extends HTMLElement {
       if (!this._kioskLoginUsers.length) {
         const empty = document.createElement("div");
         empty.className = "kiosk-login-empty";
-        empty.textContent = "No one is set up for kiosk login yet - an admin can enable it under Settings > Users.";
+        empty.textContent = this._t("todo.kiosk_login.no_users", "No one is set up for kiosk login yet - an admin can enable it under Settings > Users.");
         pickerEl.appendChild(empty);
       } else {
         this._kioskLoginUsers.forEach((u) => {
@@ -1084,25 +1453,25 @@ class FamilyHubTodoCard extends HTMLElement {
     const userId = this._kioskLoginSelectedUserId;
     const pin = pinEl ? pinEl.value.trim() : "";
     if (!userId) {
-      if (errEl) errEl.textContent = "Pick who's logging in first.";
+      if (errEl) errEl.textContent = this._t("todo.kiosk_login.pick_user_first", "Pick who's logging in first.");
       return;
     }
     if (!pin) {
-      if (errEl) errEl.textContent = "Enter a PIN.";
+      if (errEl) errEl.textContent = this._t("todo.kiosk_login.enter_pin", "Enter a PIN.");
       return;
     }
     try {
       await window.__familyHubKioskSession.login(this._hass, userId, pin);
       this._closeKioskLoginModal();
     } catch (e) {
-      if (errEl) errEl.textContent = (e && e.message) || "Incorrect PIN.";
+      if (errEl) errEl.textContent = (e && e.message) || this._t("todo.kiosk_login.incorrect_pin", "Incorrect PIN.");
       if (pinEl) {
         pinEl.value = "";
         pinEl.focus();
       }
     }
   }
-  // v1.132.4+: called whenever window.__familyHubKioskSession's shared
+  // called whenever window.__familyHubKioskSession's shared
   // elevation changes - from THIS card's own login/logout, or from
   // Chores/Rewards. _myUserId/_myName/_isWishlistOwner all re-derive off
   // this._kioskElevation, so re-rendering is what actually makes the board
@@ -1117,7 +1486,7 @@ class FamilyHubTodoCard extends HTMLElement {
   async _kioskLogout() {
     if (window.__familyHubKioskSession) await window.__familyHubKioskSession.logout(this._hass);
   }
-  // The household's actual saved list selection (v146.5+) - see
+  // The household's actual saved list selection - see
   // family_hub/get_todo_card_config's own docstring in __init__.py for why
   // this now lives in its own small backend Store instead of only ever
   // round-tripping through the card's own Lovelace config (setConfig +
@@ -1139,12 +1508,12 @@ class FamilyHubTodoCard extends HTMLElement {
       this._backendGrocyListIds = Array.isArray(result && result.grocy_list_ids)
         ? result.grocy_list_ids.map((v) => parseInt(v, 10)).filter((v) => Number.isFinite(v))
         : null;
-      // v1.109.9+: board layout. The backend already clamps this to
+      // board layout. The backend already clamps this to
       // 1..TODO_CARD_MAX_BOARD_ROWS and sends null when it's never been
       // set, so this only has to reject a non-number.
       const rows = result && result.rows;
       this._backendBoardRows = Number.isFinite(rows) ? rows : null;
-      // v1.130.0+: "fit to screen" + its per-row height weights - see
+      // "fit to screen" + its per-row height weights - see
       // __init__.py's _ws_get_todo_card_config for why row_heights only
       // ever comes back here when it still matches the row count above (a
       // leftover from a row count the household has since changed away
@@ -1162,7 +1531,7 @@ class FamilyHubTodoCard extends HTMLElement {
       this._backendRowHeights = null;
     }
   }
-  // Wish Lists (v1.122.0+) - which todo.* entities are flagged as wish
+  // Wish Lists - which todo.* entities are flagged as wish
   // lists, household-wide (family_hub/get_wishlist_config - see its
   // docstring in __init__.py and TODO_WISHLIST_CONFIG_STORAGE_KEY_PREFIX
   // in const.py). Refetched on every open of the FAB's List(s) tab (see
@@ -1199,7 +1568,7 @@ class FamilyHubTodoCard extends HTMLElement {
   // ownerUserId) - drives hiding claim status from that one person so the
   // "surprise" isn't spoiled, per the household's own explicit choice when
   // asked about claiming. Nobody else, on this same list, sees anything
-  // hidden. v1.132.4+: reads _myUserId() (kiosk-elevation-aware) instead of
+  // hidden. reads _myUserId() (kiosk-elevation-aware) instead of
   // this._hass.user.id directly - on a shared kiosk device this._hass.user
   // is always the kiosk's own HA login, never any specific household
   // member, so before kiosk login existed here this could never actually
@@ -1225,11 +1594,8 @@ class FamilyHubTodoCard extends HTMLElement {
       else this._startPolling();
     }
     this._registerFabCoordinator();
-    // v1.132.6+: re-join the shared kiosk session too, not just the FAB
-    // coordinator - household report, verbatim: "there is a weird issue
-    // where you login on one screen and logout on another the todo login
-    // tab doesnt seem to recognize the log out and stays indicating a
-    // logged in user." Root cause: _registerKioskSession() was only ever
+    // re-join the shared kiosk session too, not just the FAB
+    // coordinator - Root cause: _registerKioskSession() was only ever
     // called once, from _initFirstLoad (first `hass` set) - unlike
     // Chores/Rewards, this card's connectedCallback never called it again.
     // A Lovelace view switch away and back disconnects/reconnects this
@@ -1243,7 +1609,7 @@ class FamilyHubTodoCard extends HTMLElement {
     // it's called, so simply calling it again here self-corrects any stale
     // state the instant the view becomes visible again.
     this._registerKioskSession();
-    // v1.130.0+: "fit to screen" - same resize/orientation/interval-
+    // "fit to screen" - same resize/orientation/interval-
     // polling pattern family-week-calendar-card.js's own _syncHeight uses
     // (see that method's comment for why an interval on top of the resize
     // listeners: some sources of a card's own on-screen position changing
@@ -1282,7 +1648,7 @@ class FamilyHubTodoCard extends HTMLElement {
     }
     this._endRowResizeDrag();
   }
-  // v1.130.0+: pins this card's own height to "however much viewport is
+  // pins this card's own height to "however much viewport is
   // left below it" when (and only when) fit-to-screen is on - see
   // family-week-calendar-card.js's own _syncHeight for the identical
   // rect/visualViewport math this is copied from (that card runs this
@@ -1322,7 +1688,7 @@ class FamilyHubTodoCard extends HTMLElement {
     };
   }
   _defaultSettings() {
-    return { theme: this._defaultTheme(), useGlobalTheme: false, globalThemeId: "" };
+    return { theme: this._defaultTheme(), useGlobalTheme: true, globalThemeId: "liquidglass" };
   }
   _getSettings() {
     return this._settingsCache || this._defaultSettings();
@@ -1354,7 +1720,7 @@ class FamilyHubTodoCard extends HTMLElement {
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
-    // v1.111.0+: a per-card-placement Theme override (set from this card's
+    // a per-card-placement Theme override (set from this card's
     // own native "Edit Card" dialog) wins over everything else, including
     // this device's own override and the household's Global Theme.
     const cardOverride = this._config && this._config.theme_override;
@@ -1379,7 +1745,7 @@ class FamilyHubTodoCard extends HTMLElement {
     const a = Math.max(0, Math.min(1, typeof alpha === "number" ? alpha : 1));
     return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
-  // v1.126.0+ - see window.__familyHubThemeCache's own comment above the
+  // see window.__familyHubThemeCache's own comment above the
   // class for the full "why a key, not one shared blob" reasoning. Called
   // identically from here (after resolving the REAL theme) and from
   // `_build()` (before the real theme is known yet, to look up whatever
@@ -1397,7 +1763,7 @@ class FamilyHubTodoCard extends HTMLElement {
     const theme = this._resolveTheme(this._getSettings());
     const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
     const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
-    // v1.126.0+: built as a plain object first (rather than each var going
+    // built as a plain object first (rather than each var going
     // straight into its own setProperty call, as before) purely so the
     // exact same values that get applied here also get cached - see
     // window.__familyHubThemeCache's own comment for why this fixes the
@@ -1419,7 +1785,7 @@ class FamilyHubTodoCard extends HTMLElement {
     Object.keys(vars).forEach((name) => this.style.setProperty(name, vars[name]));
     if (window.__familyHubThemeCache) window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
   }
-  // v1.126.0+: applies whatever theme this device/placement last actually
+  // applies whatever theme this device/placement last actually
   // resolved to, SYNCHRONOUSLY, before the real fetches that would
   // otherwise be the only way to know it - see window.__familyHubTheme
   // Cache's own comment above the class. Called once from `_build()`,
@@ -1454,7 +1820,7 @@ class FamilyHubTodoCard extends HTMLElement {
     } catch (e) {
       custom = [];
     }
-    // v1.111.0+: also merge in every installed native Home Assistant theme -
+    // also merge in every installed native Home Assistant theme -
     // duplicated (not shared/imported) from family-week-calendar-card.js's
     // own _fetchGlobalThemes/_nativeHaThemeEntries, same "independently
     // loaded Lovelace resources duplicate small helpers" convention as
@@ -1571,7 +1937,7 @@ class FamilyHubTodoCard extends HTMLElement {
   _descriptorByKey(key) {
     return this._listDescriptors().find((d) => d.key === key) || null;
   }
-  // -- Board layout (v1.109.9+) ----------------------------------------------
+  // -- Board layout ----------------------------------------------
   // "We should make the todo card fully customizable, add rows columns, etc
   // so you can have your lists shown how you want a line of lists, 2
   // stacks, 3 stacks etc."
@@ -1615,7 +1981,7 @@ class FamilyHubTodoCard extends HTMLElement {
     }
     return groups;
   }
-  // -- Fit to screen + row resizing (v1.130.0+) ------------------------------
+  // -- Fit to screen + row resizing ------------------------------
   // "add a way to todo card to fit to screen and also be able to resize
   // rows." Off by default (see setConfig's own _backendFitToScreen init) -
   // every card that's never turned this on keeps growing with its content
@@ -1639,7 +2005,7 @@ class FamilyHubTodoCard extends HTMLElement {
     if (Array.isArray(saved) && saved.length === rowCount) return saved;
     return Array(rowCount).fill(1);
   }
-  // Which todo.* entities to show as columns (v146.5+). Prefers the
+  // Which todo.* entities to show as columns. Prefers the
   // household's actual saved pick from the backend's own small Store
   // (family_hub/get_todo_card_config, fetched once at load - see
   // _fetchTodoCardConfig) over the card's own YAML/dashboard config
@@ -1654,7 +2020,7 @@ class FamilyHubTodoCard extends HTMLElement {
   _selectedTodoEntities() {
     return Array.isArray(this._backendEntities) ? this._backendEntities : (this._config.entities || []);
   }
-  // Which Grocy list ids to show as columns (v146.5+). Same backend-first,
+  // Which Grocy list ids to show as columns. Same backend-first,
   // config-as-legacy-fallback shape as _selectedTodoEntities above -
   // prefers the backend's own saved array, then the older
   // config.grocy_list_ids (v146.2-146.4, still round-tripped through
@@ -1705,7 +2071,7 @@ class FamilyHubTodoCard extends HTMLElement {
       rawName: row.name,
       productId: row.product_id != null ? row.product_id : null,
       amount: typeof row.amount === "number" && row.amount > 0 ? row.amount : 1,
-      // note (v146.3+): the shopping-list row's own free-text note field -
+      // note: the shopping-list row's own free-text note field -
       // the closest Grocy equivalent to a todo.* item's description, shown
       // and edited from the item detail modal (see _openItemDetailModal).
       note: row.note || "",
@@ -1747,7 +2113,7 @@ class FamilyHubTodoCard extends HTMLElement {
         if (!this._lists[d.key]) this._lists[d.key] = { items: [] };
       }
     });
-    // v1.132.6+: refreshed on every poll tick too (not just first load) so
+    // refreshed on every poll tick too (not just first load) so
     // a reward-tied wish-list item notices when its reward was redeemed
     // straight from the Rewards card, on a DIFFERENT device, and self-
     // heals (see _wishlistItemHtml) without needing this card reloaded.
@@ -1824,7 +2190,7 @@ class FamilyHubTodoCard extends HTMLElement {
       }
     } catch (e) {
     }
-    // v1.132.6+: deleting a wish-list item that still has a reward tied to
+    // deleting a wish-list item that still has a reward tied to
     // it (see _openTieRewardModal) also cleans up the now-orphaned catalog
     // entry, so removing the item from the wish list doesn't leave a
     // priced reward sitting in the Rewards catalog with nothing pointing
@@ -1857,7 +2223,7 @@ class FamilyHubTodoCard extends HTMLElement {
       } else {
         const data = { item: summary.trim() };
         if (dueDate && this._todoEntitySupportsDueDate(key)) data.due_date = dueDate;
-        // Wish Lists (v1.122.0+) - link/image typed in the Add modal
+        // Wish Lists - link/image typed in the Add modal
         // (see _renderAddItemTab) get folded straight into the new
         // item's own description at creation time, same encoding as
         // every other wishlist item (see _buildWishlistDescription).
@@ -1870,7 +2236,7 @@ class FamilyHubTodoCard extends HTMLElement {
     }
     this._fetchAllLists();
   }
-  // Item detail modal saves (v146.3+) - a todo.* item's native description
+  // Item detail modal saves - a todo.* item's native description
   // and due date (todo.update_item's own `description`/`due_date` fields,
   // the same ones family-week-calendar-card.js already uses for its own
   // repurposed to-do-backed storage, just used here for their literal
@@ -1895,7 +2261,7 @@ class FamilyHubTodoCard extends HTMLElement {
     }
     this._fetchAllLists();
   }
-  // Wish Lists (v1.122.0+) - claims/releases one item for the SIGNED-IN
+  // Wish Lists - claims/releases one item for the SIGNED-IN
   // household member, never offered at all to the list's own owner (see
   // _wishlistItemHtml/_isWishlistOwner) and never offered for an item
   // someone else already has claimed (the button renders `disabled` in
@@ -1905,7 +2271,7 @@ class FamilyHubTodoCard extends HTMLElement {
   // untouched, so claiming something never touches what the owner
   // themselves wrote for it.
   //
-  // v1.132.4+: "the signed-in household member" now means _myUserId()/
+  // "the signed-in household member" now means _myUserId()/
   // _myName() (kiosk-elevation-aware), not this._hass.user directly - on a
   // shared kiosk device, claiming with the raw kiosk HA login would
   // attribute every claim to "the kiosk" instead of whoever actually
@@ -1919,7 +2285,7 @@ class FamilyHubTodoCard extends HTMLElement {
     const parsed = _parseWishlistDescription(item.description || "");
     const myId = this._myUserId();
     if (!myId) return;
-    // v1.132.5+: defensive only - _wishlistItemHtml already never renders
+    // defensive only - _wishlistItemHtml already never renders
     // this button at all for a non-owner lacking can_see_wishlist_claims,
     // but a stale click event handler is worth guarding server-side-of-UI
     // too rather than trusting the DOM was never stale.
@@ -1931,7 +2297,7 @@ class FamilyHubTodoCard extends HTMLElement {
       image: parsed.image,
       claimedBy: claimedByMe ? null : myId,
       claimedByName: claimedByMe ? "" : myName,
-      // v1.132.6+: preserve a reward tie through this rebuild - this
+      // preserve a reward tie through this rebuild - this
       // "claim for someone else" toggle is unreachable at all once a
       // reward is tied (see _wishlistItemHtml, which renders the star
       // claim button instead of this one for a rewardItemId item), but
@@ -1950,7 +2316,7 @@ class FamilyHubTodoCard extends HTMLElement {
     }
     this._fetchAllLists();
   }
-  // v1.132.6+: "tie a wish list item to a reward" - opens a small modal
+  // "tie a wish list item to a reward" - opens a small modal
   // (title prefilled from the item's own summary, editable; a star cost)
   // that, on Save, creates a BRAND NEW Rewards catalog entry (always
   // redeem_mode "one_time" - see reward_engine.redeem_item's own
@@ -1969,14 +2335,14 @@ class FamilyHubTodoCard extends HTMLElement {
     const overlay = this._root.querySelector(".tie-reward-modal");
     const box = overlay.querySelector(".modal-box");
     box.innerHTML = `
-      <h3>&#127873; Add a star value</h3>
-      <div class="remind-hint">Turns this into a one-time reward: it'll show a star cost here and in the Rewards catalog, and claiming it (from either place) removes it from both.</div>
-      <label>Title<input type="text" class="tie-reward-title" maxlength="120"></label>
-      <label>Cost (stars)<input type="number" class="tie-reward-cost" min="0" step="1" inputmode="numeric"></label>
+      <h3>&#127873; ${this._t("todo.tie_reward.heading", "Add a star value")}</h3>
+      <div class="remind-hint">${this._t("todo.tie_reward.hint", "Turns this into a one-time reward: it'll show a star cost here and in the Rewards catalog, and claiming it (from either place) removes it from both.")}</div>
+      <label>${this._t("todo.tie_reward.title_label", "Title")}<input type="text" class="tie-reward-title" maxlength="120"></label>
+      <label>${this._t("todo.tie_reward.cost_label", "Cost (stars)")}<input type="number" class="tie-reward-cost" min="0" step="1" inputmode="numeric"></label>
       <div class="form-error"></div>
       <div class="modal-actions">
-        <button class="cancel-btn">Cancel</button>
-        <button class="save-btn tie-reward-save-btn">Save</button>
+        <button class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn tie-reward-save-btn">${this._t("common.save", "Save")}</button>
       </div>
     `;
     box.querySelector(".tie-reward-title").value = item.summary || "";
@@ -1989,18 +2355,16 @@ class FamilyHubTodoCard extends HTMLElement {
       const title = titleInput.value.trim();
       const cost = parseInt(costInput.value, 10);
       if (!title) {
-        errorEl.textContent = "A title is required.";
+        errorEl.textContent = this._t("todo.tie_reward.title_required", "A title is required.");
         return;
       }
       if (!Number.isFinite(cost) || cost < 0) {
-        errorEl.textContent = "Enter a star cost of 0 or more.";
+        errorEl.textContent = this._t("todo.tie_reward.cost_required", "Enter a star cost of 0 or more.");
         return;
       }
       try {
-        // v1.132.9+: routed through _kioskMsg (was a bare sendMessagePromise
-        // before) - household report, verbatim: "when logged in as elevated
-        // user on todo lists I cant assign a star value to items on the
-        // kiosk." Without the elevation_token, the backend had no way to
+        // routed through _kioskMsg (was a bare sendMessagePromise
+        // before) - Without the elevation_token, the backend had no way to
         // know a household member had PIN-elevated on this kiosk and
         // checked the shared kiosk HA login's own (typically nonexistent)
         // permissions instead - see chores_websocket_api.py's
@@ -2028,12 +2392,12 @@ class FamilyHubTodoCard extends HTMLElement {
         await this._fetchRewardsCatalog();
         this._fetchAllLists();
       } catch (e) {
-        errorEl.textContent = "Couldn't save - " + (e && e.message ? e.message : "try again.");
+        errorEl.textContent = this._t("todo.tie_reward.save_failed", "Couldn't save - %error%", { error: (e && e.message) ? e.message : this._t("todo.tie_reward.try_again", "try again.") });
       }
     });
     overlay.classList.add("open");
   }
-  // v1.132.6+: claims a reward tied to a wish-list item - a thin wrapper
+  // claims a reward tied to a wish-list item - a thin wrapper
   // around the exact same family_hub/rewards/redeem command the Rewards
   // card's own Claim button uses (deducts this person's own stars, and -
   // since this reward was always created with redeem_mode "one_time" -
@@ -2058,8 +2422,7 @@ class FamilyHubTodoCard extends HTMLElement {
     await this._deleteItem(key, uid);
     await this._fetchRewardsCatalog();
   }
-  // Upload a photo (v1.124.0+, v1.127.0+) - household ask, verbatim: "we
-  // need to make the wishlist modal be able to upload an image", followed
+  // Upload a photo (v1.124.0+, v1.127.0+) - , followed
   // up with: "for the wish list, when you upload an image, upload it to
   // home assistant as a photo and then call it from there." v1.124.0's
   // first cut stored a downscaled data: URL directly in the native todo
@@ -2198,7 +2561,7 @@ class FamilyHubTodoCard extends HTMLElement {
     fileInput.addEventListener("change", async () => {
       const file = fileInput.files && fileInput.files[0];
       if (!file) return;
-      if (statusEl) statusEl.textContent = "Uploading…";
+      if (statusEl) statusEl.textContent = this._t("todo.wishlist_upload.uploading", "Uploading…");
       try {
         const imageUrl = await this._wishlistUploadImage(file);
         if (!imageUrl) throw new Error("empty");
@@ -2207,9 +2570,9 @@ class FamilyHubTodoCard extends HTMLElement {
           previewEl.src = imageUrl;
           previewEl.hidden = false;
         }
-        if (statusEl) statusEl.textContent = "Photo added.";
+        if (statusEl) statusEl.textContent = this._t("todo.wishlist_upload.photo_added", "Photo added.");
       } catch (e) {
-        if (statusEl) statusEl.textContent = "Couldn't upload that photo - try a different file or paste a link instead.";
+        if (statusEl) statusEl.textContent = this._t("todo.wishlist_upload.upload_failed", "Couldn't upload that photo - try a different file or paste a link instead.");
       } finally {
         // Reset so picking the SAME file again (e.g. after an error)
         // still fires another change event.
@@ -2317,7 +2680,7 @@ class FamilyHubTodoCard extends HTMLElement {
 
   _itemHtml(key, item) {
     const completed = item.status === "completed";
-    // Put Away (v146.2+): offered on every ACTIVE Grocy item, not just
+    // Put Away: offered on every ACTIVE Grocy item, not just
     // ones Grocy already linked to a product - unlike the calendar card's
     // own Grocy Shopping List viewer (product_id-only), a freetext row
     // here still gets the button; _openPutAwayModal runs a fuzzy product
@@ -2326,9 +2689,9 @@ class FamilyHubTodoCard extends HTMLElement {
     // panel, so a poll-tick re-render of the board never wipes mid-entry.
     const descriptor = this._descriptorByKey(key);
     const putawayBtn = descriptor && descriptor.kind === "grocy" && !completed
-      ? `<button class="todo-putaway-btn" title="Put away" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">&#128230;</button>`
+      ? `<button class="todo-putaway-btn" title="${this._escAttr(this._t("todo.item.put_away", "Put away"))}" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">&#128230;</button>`
       : "";
-    // Wish Lists (v1.122.0+) - a wish-list item renders as a small
+    // Wish Lists - a wish-list item renders as a small
     // gift-registry card (image thumbnail, name, link, note) instead of a
     // plain checklist row, with a Claim button - unless the viewer IS this
     // list's own owner, in which case claim status/controls are left off
@@ -2340,11 +2703,11 @@ class FamilyHubTodoCard extends HTMLElement {
       <div class="todo-item${completed ? " completed" : ""}" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}" draggable="${completed ? "false" : "true"}">
         <input type="checkbox" class="todo-check" ${completed ? "checked" : ""} data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">
         <div class="todo-item-text">
-          <div class="todo-item-summary">${this._esc(item.summary || "(untitled)")}</div>
+          <div class="todo-item-summary">${this._esc(item.summary || this._t("todo.item.untitled", "(untitled)"))}</div>
           ${item.due ? `<div class="todo-item-due">${this._esc(item.due)}</div>` : ""}
         </div>
         ${putawayBtn}
-        <button class="todo-delete-btn" title="Delete" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">&#10005;</button>
+        <button class="todo-delete-btn" title="${this._escAttr(this._t("todo.item.delete", "Delete"))}" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">&#10005;</button>
       </div>
     `;
   }
@@ -2360,19 +2723,17 @@ class FamilyHubTodoCard extends HTMLElement {
       ? `<img class="wishlist-item-image" src="${this._escAttr(parsed.image)}" alt="" loading="lazy" onerror="this.style.display='none'">`
       : `<div class="wishlist-item-image wishlist-item-image-placeholder">&#127873;</div>`;
     const linkHtml = parsed.link
-      ? `<a class="wishlist-item-link" href="${this._escAttr(parsed.link)}" target="_blank" rel="noopener noreferrer" title="Open link">&#128279; View</a>`
+      ? `<a class="wishlist-item-link" href="${this._escAttr(parsed.link)}" target="_blank" rel="noopener noreferrer" title="${this._escAttr(this._t("todo.wishlist.open_link", "Open link"))}">&#128279; ${this._t("todo.wishlist.view_link", "View")}</a>`
       : "";
     // Claim UI is left off entirely for the list's own owner - see
     // _isWishlistOwner's own comment for the "hidden from the owner"
     // design and its acknowledged limitation.
     //
-    // v1.132.5+: ALSO left off for anyone lacking the can_see_wishlist_claims
+    // ALSO left off for anyone lacking the can_see_wishlist_claims
     // permission (see its own docstring in const.py; checked here via
     // _hasPermission, admin- and kiosk-elevation-aware the same as every
-    // other permission check on this card). Household ask, verbatim: "need
-    // a way to not allow kiosk devices to see claimed items on wish
-    // lists." This used to be a per-card "hide until login" toggle
-    // (v1.132.4); the household asked for it to be a per-person Permissions
+    // other permission check on this card). This used to be a per-card "hide until login" toggle,
+    // now a per-person Permissions
     // grant instead, so a shared/unidentified kiosk login (which has no
     // grant unless an admin explicitly adds one) never sees claim status,
     // while every household member who already had visibility before this
@@ -2380,11 +2741,8 @@ class FamilyHubTodoCard extends HTMLElement {
     // and its duplicate-purchase protection - stays fully available to
     // anyone with the permission, including someone who's kiosk-logged-in
     // as themselves via the Login button.
-    // v1.132.6+: "tie a wish list item to a reward" - household ask,
-    // verbatim: "Allow someone with the permission to add rewards to tie a
-    // wish list item to a reward. It will become a one time claim item and
-    // will show a star value to claim on the wish list and in the
-    // rewards. When claimed it should be removed from both locations."
+    // "tie a wish list item to a reward" - lets someone with the
+    // permission to add rewards tie a wish list item to a reward.
     // A reward tie (parsed.rewardItemId, see _openTieRewardModal) is a
     // DIFFERENT mechanic from the plain gift-claim above - it's not "I'll
     // buy this for you," it's a real Rewards catalog item (always created
@@ -2429,8 +2787,8 @@ class FamilyHubTodoCard extends HTMLElement {
         const canClaimReward = !!myId;
         rewardHtml = `
           <div class="wishlist-reward-row">
-            <span class="wishlist-reward-badge" title="Redeems this reward and removes it from both the wish list and the Rewards catalog">&#11088; ${Number.isFinite(cost) ? cost : "?"}</span>
-            <button type="button" class="wishlist-claim-reward-btn" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}" ${canClaimReward ? "" : "disabled"} title="${canClaimReward ? "" : "Log in to claim"}">Claim</button>
+            <span class="wishlist-reward-badge" title="${this._escAttr(this._t("todo.wishlist.reward_badge_title", "Redeems this reward and removes it from both the wish list and the Rewards catalog"))}">&#11088; ${Number.isFinite(cost) ? cost : "?"}</span>
+            <button type="button" class="wishlist-claim-reward-btn" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}" ${canClaimReward ? "" : "disabled"} title="${canClaimReward ? "" : this._escAttr(this._t("todo.wishlist.login_to_claim", "Log in to claim"))}">${this._t("todo.wishlist.claim", "Claim")}</button>
           </div>
         `;
       }
@@ -2438,9 +2796,12 @@ class FamilyHubTodoCard extends HTMLElement {
       const canSeeClaims = this._hasPermission("can_see_wishlist_claims");
       if (!isOwner && canSeeClaims) {
         if (parsed.claimedBy) {
-          claimHtml = `<button type="button" class="wishlist-claim-btn claimed${claimedByMe ? " claimed-by-me" : ""}" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}" ${claimedByMe ? "" : "disabled"}>${claimedByMe ? "Claimed by you – tap to release" : `Claimed${parsed.claimedByName ? ` by ${this._esc(parsed.claimedByName)}` : ""}`}</button>`;
+          const claimedLabel = claimedByMe
+            ? this._t("todo.wishlist.claimed_by_you", "Claimed by you – tap to release")
+            : (parsed.claimedByName ? this._t("todo.wishlist.claimed_by", "Claimed by %name%", { name: this._esc(parsed.claimedByName) }) : this._t("todo.wishlist.claimed", "Claimed"));
+          claimHtml = `<button type="button" class="wishlist-claim-btn claimed${claimedByMe ? " claimed-by-me" : ""}" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}" ${claimedByMe ? "" : "disabled"}>${claimedLabel}</button>`;
         } else {
-          claimHtml = `<button type="button" class="wishlist-claim-btn" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">Claim</button>`;
+          claimHtml = `<button type="button" class="wishlist-claim-btn" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">${this._t("todo.wishlist.claim", "Claim")}</button>`;
         }
       }
       // Only offered once (no reward tied yet) and only to whoever can add
@@ -2450,7 +2811,7 @@ class FamilyHubTodoCard extends HTMLElement {
       // submits (family_hub/rewards/add_catalog_item), so this is UX only,
       // not the real security boundary.
       if (this._hasPermission("can_add_rewards")) {
-        claimHtml += `<button type="button" class="wishlist-tie-reward-btn" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}" title="Tie this item to a one-time Rewards catalog entry">&#127873; Add star value</button>`;
+        claimHtml += `<button type="button" class="wishlist-tie-reward-btn" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}" title="${this._escAttr(this._t("todo.wishlist.tie_reward_title", "Tie this item to a one-time Rewards catalog entry"))}">&#127873; ${this._t("todo.wishlist.add_star_value", "Add star value")}</button>`;
       }
     }
     return `
@@ -2458,12 +2819,12 @@ class FamilyHubTodoCard extends HTMLElement {
         <input type="checkbox" class="todo-check" ${completed ? "checked" : ""} data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">
         ${imageHtml}
         <div class="todo-item-text wishlist-item-text">
-          <div class="todo-item-summary">${this._esc(item.summary || "(untitled)")}</div>
+          <div class="todo-item-summary">${this._esc(item.summary || this._t("todo.item.untitled", "(untitled)"))}</div>
           ${parsed.note ? `<div class="wishlist-item-note">${this._esc(parsed.note)}</div>` : ""}
           <div class="wishlist-item-row">${linkHtml}${claimHtml}</div>
           ${rewardHtml}
         </div>
-        <button class="todo-delete-btn" title="Delete" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">&#10005;</button>
+        <button class="todo-delete-btn" title="${this._escAttr(this._t("todo.item.delete", "Delete"))}" data-list-key="${this._escAttr(key)}" data-uid="${this._escAttr(item.uid)}">&#10005;</button>
       </div>
     `;
   }
@@ -2476,7 +2837,7 @@ class FamilyHubTodoCard extends HTMLElement {
       <div class="completed-row">
         <div class="completed-header" data-list-key="${this._escAttr(key)}">
           <span class="completed-toggle-icon">${open ? "&#9662;" : "&#9656;"}</span>
-          <span class="completed-title">Completed</span>
+          <span class="completed-title">${this._t("todo.column.completed", "Completed")}</span>
           <span class="completed-badge">${completed.length}</span>
         </div>
         ${body}
@@ -2489,17 +2850,17 @@ class FamilyHubTodoCard extends HTMLElement {
     const active = this._activeItems(key);
     const itemsHtml = active.length
       ? active.map((it) => this._itemHtml(key, it)).join("")
-      : `<div class="empty-state">Nothing here</div>`;
-    // v146.1+: a small "Grocy" tag on Grocy-backed columns, so the board
+      : `<div class="empty-state">${this._t("todo.column.nothing_here", "Nothing here")}</div>`;
+    // a small "Grocy" tag on Grocy-backed columns, so the board
     // makes it obvious at a glance which lists are shared with Grocy's own
     // separate app/website (someone might also add/check items there) vs.
     // a plain Home Assistant to-do list nobody else touches.
-    const grocyTag = descriptor.kind === "grocy" ? `<span class="todo-column-source-tag">Grocy</span>` : "";
-    // Wish Lists (v1.122.0+): same small tag treatment as the Grocy one
+    const grocyTag = descriptor.kind === "grocy" ? `<span class="todo-column-source-tag">${this._t("todo.column.grocy_tag", "Grocy")}</span>` : "";
+    // Wish Lists: same small tag treatment as the Grocy one
     // above, so a wish-list-flagged column is just as obvious at a glance
     // on the board itself, not only once you open an item (see
     // _isWishlistList).
-    const wishlistTag = this._isWishlistList(key) ? `<span class="todo-column-source-tag wishlist-column-tag">Wish List</span>` : "";
+    const wishlistTag = this._isWishlistList(key) ? `<span class="todo-column-source-tag wishlist-column-tag">${this._t("todo.column.wishlist_tag", "Wish List")}</span>` : "";
     return `
       <div class="todo-column" data-list-key="${this._escAttr(key)}">
         <div class="todo-column-header" style="border-top-color:${color}">
@@ -2517,11 +2878,11 @@ class FamilyHubTodoCard extends HTMLElement {
     const descriptors = this._listDescriptors();
     if (!descriptors.length) {
       const hint = this._grocyConfigured
-        ? "No lists configured yet - tap the gear icon to pick one or more to-do or Grocy lists to show."
-        : "No lists configured yet - tap the gear icon to pick one or more to-do lists to show.";
+        ? this._t("todo.board.no_lists_grocy", "No lists configured yet - tap the gear icon to pick one or more to-do or Grocy lists to show.")
+        : this._t("todo.board.no_lists", "No lists configured yet - tap the gear icon to pick one or more to-do lists to show.");
       return `<div class="empty-state">${hint}</div>`;
     }
-    // v1.109.9+: one `.todo-board-row` per chosen stack. Crucially these are
+    // one `.todo-board-row` per chosen stack. Crucially these are
     // still siblings INSIDE the same persistent `.board` element that every
     // drag/drop/click listener is delegated on (see _build) - _render only
     // ever replaces .board's innerHTML, never the .board node itself - so
@@ -2531,7 +2892,7 @@ class FamilyHubTodoCard extends HTMLElement {
     // which knows nothing about rows.
     const groups = this._boardRowGroups();
     const multi = groups.length > 1;
-    // v1.130.0+: when fit-to-screen is on and there's more than one row,
+    // when fit-to-screen is on and there's more than one row,
     // each row gets an inline flex-grow weight (see _rowHeightWeights) so
     // dragging a resize handle can shift height from one row to the next,
     // and a handle goes between each adjacent pair of rows to do the
@@ -2546,7 +2907,7 @@ class FamilyHubTodoCard extends HTMLElement {
         const rowHtml = `<div class="todo-board-row${multi ? " multi-row" : ""}"${weightStyle}>${group.map((d) => this._columnHtml(d)).join("")}</div>`;
         const handleHtml =
           weights && i < groups.length - 1
-            ? `<div class="todo-board-row-resize" data-row-index="${i}" title="Drag to resize rows"><span class="todo-board-row-resize-grip"></span></div>`
+            ? `<div class="todo-board-row-resize" data-row-index="${i}" title="${this._escAttr(this._t("todo.board.drag_to_resize", "Drag to resize rows"))}"><span class="todo-board-row-resize-grip"></span></div>`
             : "";
         return rowHtml + handleHtml;
       })
@@ -2556,7 +2917,7 @@ class FamilyHubTodoCard extends HTMLElement {
     if (!this._root) return;
     const board = this._root.querySelector(".board");
     board.innerHTML = this._boardHtml();
-    // v1.130.0+: toggled on the persistent `.board` node itself (unlike
+    // toggled on the persistent `.board` node itself (unlike
     // everything _boardHtml returns, which gets thrown away and rebuilt on
     // every render) so the CSS rules that depend on it stay in sync with
     // whatever was last fetched/saved, not just whatever _boardHtml
@@ -2575,7 +2936,7 @@ class FamilyHubTodoCard extends HTMLElement {
 
   _build() {
     this._built = true;
-    // v1.126.0+: applied BEFORE attachShadow/the first innerHTML paint -
+    // applied BEFORE attachShadow/the first innerHTML paint -
     // see _applyCachedThemeVarsIfAny's own comment and window.__familyHub
     // ThemeCache's above the class for why this is what actually fixes
     // the household's reported "loads the default theme first" flash.
@@ -2599,18 +2960,18 @@ class FamilyHubTodoCard extends HTMLElement {
       <div class="modal-overlay tie-reward-modal"><div class="modal-box"></div></div>
       <div class="modal-overlay kiosk-login-overlay">
         <div class="modal-box kiosk-login-box">
-          <button type="button" class="detail-close-btn kiosk-login-close" title="Close">&#10005;</button>
-          <h2>&#128274; Kiosk login</h2>
+          <button type="button" class="detail-close-btn kiosk-login-close" data-i18n-title="common.close" title="Close">&#10005;</button>
+          <h2>&#128274; <span data-i18n="todo.kiosk_login.heading">Kiosk login</span></h2>
           <div class="kiosk-login-user-picker"></div>
           <input type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" class="kiosk-login-pin-input" placeholder="PIN" />
           <div class="kiosk-login-error"></div>
           <div class="modal-actions">
-            <button class="cancel-btn kiosk-login-cancel">Cancel</button>
-            <button class="save-btn kiosk-login-submit">Log in</button>
+            <button class="cancel-btn kiosk-login-cancel" data-i18n="common.cancel">Cancel</button>
+            <button class="save-btn kiosk-login-submit" data-i18n="todo.kiosk_login.submit">Log in</button>
           </div>
         </div>
       </div>
-      <button class="add-todo-fab" title="Add an item" aria-haspopup="true">&#65291;</button>
+      <button class="add-todo-fab" data-i18n-title="todo.fab.add_item_title" title="Add an item" aria-haspopup="true">&#65291;</button>
     `;
     this._root = root;
     root.querySelector(".title").textContent = this._config.title;
@@ -2620,7 +2981,7 @@ class FamilyHubTodoCard extends HTMLElement {
         if (e.target === overlay) overlay.classList.remove("open");
       });
     });
-    // v1.132.4+: kiosk PIN login - see _onKioskLoginBtnClick's own
+    // kiosk PIN login - see _onKioskLoginBtnClick's own
     // docstring for the full picture. Byte-identical wiring to Chores/
     // Rewards' own copy.
     root.querySelector(".kiosk-login-btn").addEventListener("click", () => this._onKioskLoginBtnClick());
@@ -2658,7 +3019,7 @@ class FamilyHubTodoCard extends HTMLElement {
       this._deleteItem(deleteBtn.dataset.listKey, deleteBtn.dataset.uid);
       return;
     }
-    // Wish Lists (v1.122.0+): the Claim/Claimed button and the "View"
+    // Wish Lists: the Claim/Claimed button and the "View"
     // link both live inside .todo-item-text (see _wishlistItemHtml) but
     // must never fall through to opening the item detail modal below -
     // the link needs its own default browser navigation to actually
@@ -2668,7 +3029,7 @@ class FamilyHubTodoCard extends HTMLElement {
       if (!claimBtn.disabled) this._toggleWishlistClaim(claimBtn.dataset.listKey, claimBtn.dataset.uid);
       return;
     }
-    // v1.132.6+: "tie a wish list item to a reward" - see
+    // "tie a wish list item to a reward" - see
     // _openTieRewardModal/_claimWishlistReward's own comments.
     const tieRewardBtn = e.target.closest(".wishlist-tie-reward-btn");
     if (tieRewardBtn) {
@@ -2681,7 +3042,7 @@ class FamilyHubTodoCard extends HTMLElement {
       return;
     }
     if (e.target.closest(".wishlist-item-link")) return;
-    // Trello-style item detail (v146.3+) - only the text/summary part of a
+    // Trello-style item detail - only the text/summary part of a
     // row opens it, never the checkbox/delete/put-away buttons or a drag
     // gesture, so those keep working exactly as before.
     const itemText = e.target.closest(".todo-item-text");
@@ -2796,7 +3157,7 @@ class FamilyHubTodoCard extends HTMLElement {
     return last ? last.dataset.uid : undefined;
   }
 
-  // -- Row resizing (v1.130.0+) -----------------------------------------------
+  // -- Row resizing -----------------------------------------------
   // "add a way to todo card to fit to screen and also be able to resize
   // rows." A drag handle between each adjacent pair of stacked rows (see
   // _boardHtml) - only rendered at all when fit-to-screen is on AND there's
@@ -2919,7 +3280,7 @@ class FamilyHubTodoCard extends HTMLElement {
   }
 
   // -- Add / List(s) modal ---------------------------------------------------
-  // v146.3+: a two-tab modal opened by the FAB - "Add Item" (the original
+  // a two-tab modal opened by the FAB - "Add Item" (the original
   // Add form) and "List(s)" (the v146.2 Settings modal's own todo.*/Grocy
   // checklist, folded in here per the household's own ask: "when you click
   // the FAB there should be a second tab called List(s) that allows you to
@@ -2932,8 +3293,8 @@ class FamilyHubTodoCard extends HTMLElement {
     const box = overlay.querySelector(".modal-box");
     box.innerHTML = `
       <div class="modal-tabs">
-        <button type="button" class="modal-tab-btn active" data-tab="add">Add Item</button>
-        <button type="button" class="modal-tab-btn" data-tab="lists">List(s)</button>
+        <button type="button" class="modal-tab-btn active" data-tab="add">${this._t("todo.create_modal.add_item_tab", "Add Item")}</button>
+        <button type="button" class="modal-tab-btn" data-tab="lists">${this._t("todo.create_modal.lists_tab", "List(s)")}</button>
       </div>
       <div class="modal-tab-panel" data-tab-panel="add"></div>
       <div class="modal-tab-panel" data-tab-panel="lists" hidden></div>
@@ -2955,27 +3316,27 @@ class FamilyHubTodoCard extends HTMLElement {
   _renderAddItemTab(panel, overlay, switchTab) {
     const descriptors = this._listDescriptors();
     if (!descriptors.length) {
-      panel.innerHTML = `<div class="empty-state">No lists configured yet - switch to the List(s) tab to pick one or more to-do or Grocy lists first.</div><div class="modal-actions"><button type="button" class="goto-lists-btn">List(s)</button></div>`;
+      panel.innerHTML = `<div class="empty-state">${this._t("todo.create_modal.no_lists", "No lists configured yet - switch to the List(s) tab to pick one or more to-do or Grocy lists first.")}</div><div class="modal-actions"><button type="button" class="goto-lists-btn">${this._t("todo.create_modal.lists_tab", "List(s)")}</button></div>`;
       panel.querySelector(".goto-lists-btn").addEventListener("click", () => switchTab("lists"));
       return;
     }
     const listOptions = descriptors
-      .map((d) => `<option value="${this._escAttr(d.key)}" data-kind="${d.kind}">${this._esc(this._listName(d))}${d.kind === "grocy" ? " (Grocy)" : ""}</option>`)
+      .map((d) => `<option value="${this._escAttr(d.key)}" data-kind="${d.kind}">${this._esc(this._listName(d))}${d.kind === "grocy" ? ` (${this._t("todo.column.grocy_tag", "Grocy")})` : ""}</option>`)
       .join("");
     panel.innerHTML = `
-      <label>List<select class="f-list">${listOptions}</select></label>
-      <label>What do you need to do/get?<input type="text" class="f-summary" placeholder="e.g. Milk" autofocus></label>
-      <label class="f-wishlist-link-label">Link (optional)<input type="url" class="f-wishlist-link" placeholder="https://…"></label>
-      <label class="f-wishlist-image-label">Image URL (optional)<input type="url" class="f-wishlist-image" placeholder="https://…"></label>
+      <label>${this._t("todo.add_item.list_label", "List")}<select class="f-list">${listOptions}</select></label>
+      <label>${this._t("todo.add_item.summary_label", "What do you need to do/get?")}<input type="text" class="f-summary" placeholder="e.g. Milk" autofocus></label>
+      <label class="f-wishlist-link-label">${this._t("todo.add_item.link_label", "Link (optional)")}<input type="url" class="f-wishlist-link" placeholder="https://…"></label>
+      <label class="f-wishlist-image-label">${this._t("todo.add_item.image_label", "Image URL (optional)")}<input type="url" class="f-wishlist-image" placeholder="https://…"></label>
       <div class="f-wishlist-image-controls-wrap wishlist-image-controls">
-        <label class="wishlist-upload-btn">Upload photo…<input type="file" accept="image/*" class="f-wishlist-image-file" hidden></label>
+        <label class="wishlist-upload-btn">${this._t("todo.add_item.upload_photo", "Upload photo…")}<input type="file" accept="image/*" class="f-wishlist-image-file" hidden></label>
         <img class="wishlist-image-preview" alt="" hidden>
         <span class="wishlist-image-upload-status"></span>
       </div>
-      <label class="f-due-label">Due date (optional)<input type="date" class="f-due"></label>
+      <label class="f-due-label">${this._t("todo.add_item.due_label", "Due date (optional)")}<input type="date" class="f-due"></label>
       <div class="modal-actions">
-        <button class="cancel-btn">Cancel</button>
-        <button class="save-btn">Add</button>
+        <button class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn">${this._t("common.add", "Add")}</button>
       </div>
       <div class="form-error"></div>
     `;
@@ -2991,7 +3352,7 @@ class FamilyHubTodoCard extends HTMLElement {
     // todo.* list whose own entity doesn't advertise due-date support
     // (see the TODO_FEATURE_* comment up top) - showing the field there
     // used to throw a hard error on submit instead of being ignored. Link/
-    // Image (v1.122.0+) show only when the selected list is itself
+    // Image show only when the selected list is itself
     // flagged as a wish list (see _isWishlistList) AND supports
     // description at all, since that's where they're embedded.
     const syncFieldVisibility = () => {
@@ -3006,7 +3367,7 @@ class FamilyHubTodoCard extends HTMLElement {
     };
     syncFieldVisibility();
     listSelect.addEventListener("change", syncFieldVisibility);
-    // Upload a photo (v1.124.0+) - see _wireWishlistImageUpload's own
+    // Upload a photo - see _wireWishlistImageUpload's own
     // comment for why this writes straight into the same Image URL text
     // input rather than a separate field.
     this._wireWishlistImageUpload(
@@ -3023,7 +3384,7 @@ class FamilyHubTodoCard extends HTMLElement {
       const summary = summaryInput.value;
       const due = panel.querySelector(".f-due").value;
       if (!summary || !summary.trim()) {
-        errEl.textContent = "Give the item a name.";
+        errEl.textContent = this._t("todo.add_item.name_required", "Give the item a name.");
         return;
       }
       const wishlistExtra = wishlistLinkLabel.hidden ? undefined : {
@@ -3060,23 +3421,23 @@ class FamilyHubTodoCard extends HTMLElement {
             <input type="checkbox" class="settings-todo-check" value="${this._escAttr(id)}" ${selectedEntities.has(id) ? "checked" : ""}>
             <span>${this._esc(this._todoEntityLabel(id))}</span>
           </label>
-          <label class="settings-wishlist-check-wrap" title="Show this list as a wish list - image, link and description per item, with claiming.">
+          <label class="settings-wishlist-check-wrap" title="${this._escAttr(this._t("todo.lists_tab.wishlist_check_title", "Show this list as a wish list - image, link and description per item, with claiming."))}">
             <input type="checkbox" class="settings-wishlist-check" value="${this._escAttr(id)}" ${this._isWishlistList(id) ? "checked" : ""}>
-            <span>Wish list</span>
+            <span>${this._t("todo.lists_tab.wishlist_label", "Wish list")}</span>
           </label>
         </div>`
           )
           .join("")
-      : `<div class="empty-state">No to-do lists found on this Home Assistant instance yet.</div>`;
+      : `<div class="empty-state">${this._t("todo.lists_tab.no_todo_lists", "No to-do lists found on this Home Assistant instance yet.")}</div>`;
 
     const grocySelected = this._grocySelectedListIds();
     let grocySectionHtml;
     if (this._grocyConfigured === false) {
-      grocySectionHtml = `<div class="empty-state">Grocy isn't set up in Family Hub yet - add it under Settings &rarr; Devices &amp; Services &rarr; Family Hub &rarr; Configure &rarr; Grocy to show its shopping lists here.</div>`;
+      grocySectionHtml = `<div class="empty-state">${this._t("todo.lists_tab.grocy_not_set_up", "Grocy isn't set up in Family Hub yet - add it under Settings &rarr; Devices &amp; Services &rarr; Family Hub &rarr; Configure &rarr; Grocy to show its shopping lists here.")}</div>`;
     } else if (this._grocyConfigured === undefined) {
-      grocySectionHtml = `<div class="settings-loading">Loading…</div>`;
+      grocySectionHtml = `<div class="settings-loading">${this._t("todo.lists_tab.loading", "Loading…")}</div>`;
     } else if (!(this._grocyLists || []).length) {
-      grocySectionHtml = `<div class="empty-state">No Grocy shopping lists found yet.</div>`;
+      grocySectionHtml = `<div class="empty-state">${this._t("todo.lists_tab.no_grocy_lists", "No Grocy shopping lists found yet.")}</div>`;
     } else {
       grocySectionHtml = this._grocyLists
         .map((l) => {
@@ -3094,35 +3455,35 @@ class FamilyHubTodoCard extends HTMLElement {
     const layoutBtnsHtml = Array.from({ length: TODO_CARD_MAX_BOARD_ROWS }, (_, i) => i + 1)
       .map(
         (n) =>
-          `<button type="button" class="layout-btn${n === currentRows ? " active" : ""}" data-rows="${n}">${n === 1 ? "1 row" : `${n} rows`}</button>`
+          `<button type="button" class="layout-btn${n === currentRows ? " active" : ""}" data-rows="${n}">${n === 1 ? this._t("todo.layout_hint.row_count_one", "1 row") : this._t("todo.layout_hint.row_count_other", "%n% rows", { n })}</button>`
       )
       .join("");
 
     panel.innerHTML = `
       <div class="settings-section">
-        <div class="settings-section-title">To-Do Lists</div>
+        <div class="settings-section-title">${this._t("todo.lists_tab.todo_lists_heading", "To-Do Lists")}</div>
         <div class="settings-check-list">${todoRowsHtml}</div>
       </div>
       <div class="settings-section">
-        <div class="settings-section-title">Grocy Shopping Lists</div>
+        <div class="settings-section-title">${this._t("todo.lists_tab.grocy_lists_heading", "Grocy Shopping Lists")}</div>
         <div class="settings-check-list">${grocySectionHtml}</div>
       </div>
       <div class="settings-section layout-section">
-        <div class="settings-section-title">Layout</div>
+        <div class="settings-section-title">${this._t("todo.lists_tab.layout_heading", "Layout")}</div>
         <div class="layout-row">${layoutBtnsHtml}</div>
         <div class="layout-hint"></div>
         <label class="settings-check-row fit-screen-row">
           <input type="checkbox" class="settings-fit-screen-check" ${this._fitToScreen() ? "checked" : ""}>
-          <span>Fit to screen - the card fills the space below it instead of growing the page; each list scrolls on its own${currentRows > 1 ? ", and rows can be resized by dragging the handle between them" : ""}.</span>
+          <span>${this._fitScreenHintText(currentRows)}</span>
         </label>
       </div>
       <div class="modal-actions">
-        <button class="cancel-btn lists-cancel-btn">Cancel</button>
-        <button class="save-btn lists-save-btn">Save</button>
+        <button class="cancel-btn lists-cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn lists-save-btn">${this._t("common.save", "Save")}</button>
       </div>
       <div class="form-error"></div>
     `;
-    // v1.109.9+: the layout picker is a small row of preset buttons rather
+    // the layout picker is a small row of preset buttons rather
     // than a number stepper. Four options is few enough that presets show
     // every choice at once (no hunting up and down a counter to find out
     // what's available), and a segmented "one active option" row is this
@@ -3131,7 +3492,7 @@ class FamilyHubTodoCard extends HTMLElement {
     // pickers, which use the same .active-on-one-button shape. The draft
     // lives on the panel until Save, like every other control in this tab.
     this._listsTabRowsDraft = this._boardRows();
-    // v1.130.0+: same draft-until-Save pattern as the row count above - the
+    // same draft-until-Save pattern as the row count above - the
     // hint text mentioning row-dragging only makes sense once BOTH this and
     // the row count are actually 2+, so it's re-rendered off the live
     // checkbox state rather than baked into the innerHTML once above.
@@ -3139,7 +3500,7 @@ class FamilyHubTodoCard extends HTMLElement {
     const syncFitScreenHint = () => {
       const hint = panel.querySelector(".fit-screen-row span");
       const rows = this._listsTabRowsDraft || 1;
-      hint.textContent = `Fit to screen - the card fills the space below it instead of growing the page; each list scrolls on its own${rows > 1 ? ", and rows can be resized by dragging the handle between them" : ""}.`;
+      hint.textContent = this._fitScreenHintText(rows);
     };
     const syncLayoutUi = () => {
       panel.querySelectorAll(".layout-btn").forEach((btn) => {
@@ -3165,22 +3526,39 @@ class FamilyHubTodoCard extends HTMLElement {
   // right now ("6 lists across 2 rows - 3 per row"), rather than an
   // abstract description - the useful question when picking is "what will
   // MY board look like," and with a live count that's answerable.
+  _fitScreenHintText(rows) {
+    return rows > 1
+      ? this._t(
+          "todo.lists_tab.fit_screen_hint_resizable",
+          "Fit to screen - the card fills the space below it instead of growing the page; each list scrolls on its own, and rows can be resized by dragging the handle between them."
+        )
+      : this._t(
+          "todo.lists_tab.fit_screen_hint",
+          "Fit to screen - the card fills the space below it instead of growing the page; each list scrolls on its own."
+        );
+  }
   _layoutHintText(rows) {
     const total = this._listDescriptors().length;
-    if (rows <= 1) return total ? `All ${total} list${total === 1 ? "" : "s"} side by side in one row.` : "All lists side by side in one row.";
-    if (!total) return `Lists split across ${rows} stacked rows.`;
+    if (rows <= 1) {
+      if (!total) return this._t("todo.layout_hint.all_lists_one_row", "All lists side by side in one row.");
+      const listWord = total === 1 ? this._t("todo.layout_hint.list_one", "list") : this._t("todo.layout_hint.list_other", "lists");
+      return this._t("todo.layout_hint.one_row", "All %total% %list_word% side by side in one row.", { total, list_word: listWord });
+    }
+    if (!total) return this._t("todo.layout_hint.stacked_rows", "Lists split across %rows% stacked rows.", { rows });
     const perRow = Math.ceil(total / rows);
     const usedRows = Math.ceil(total / perRow);
     if (usedRows < rows) {
-      return `${total} list${total === 1 ? "" : "s"} only fill ${usedRows} row${usedRows === 1 ? "" : "s"} - pick more lists to use all ${rows}.`;
+      const listWord = total === 1 ? this._t("todo.layout_hint.list_one", "list") : this._t("todo.layout_hint.list_other", "lists");
+      const rowWord = usedRows === 1 ? this._t("todo.layout_hint.row_one", "row") : this._t("todo.layout_hint.row_other", "rows");
+      return this._t("todo.layout_hint.underfilled", "%total% %list_word% only fill %used_rows% %row_word% - pick more lists to use all %rows%.", { total, list_word: listWord, used_rows: usedRows, row_word: rowWord, rows });
     }
-    return `${total} lists across ${rows} rows - up to ${perRow} per row.`;
+    return this._t("todo.layout_hint.filled", "%total% lists across %rows% rows - up to %per_row% per row.", { total, rows, per_row: perRow });
   }
   _todoEntityLabel(entityId) {
     const st = this._hass && this._hass.states && this._hass.states[entityId];
     return (st && st.attributes && st.attributes.friendly_name) || entityId.replace(/^todo\./, "").replace(/_/g, " ");
   }
-  // Persists straight to the backend (v146.5+ - family_hub/
+  // Persists straight to the backend (family_hub/
   // set_todo_card_config) rather than through setConfig + a config-changed
   // event - see _fetchTodoCardConfig's own comment for why that never
   // actually survived a plain page reload (config-changed is only ever
@@ -3201,14 +3579,14 @@ class FamilyHubTodoCard extends HTMLElement {
           .filter((el) => el.checked)
           .map((el) => parseInt(el.value, 10))
       : this._grocySelectedListIds() || [];
-    // v1.109.9+: board layout, saved through the very same store as the
+    // board layout, saved through the very same store as the
     // list selection (and in the same round trip) - deliberately NOT
     // through the card's Lovelace config, for exactly the reason v146.5
     // moved the list selection off it: a config-changed event dispatched
     // from a plain, non-editing view is heard by nothing, so the setting
     // would silently evaporate on the next page reload.
     const rows = Math.max(1, Math.min(TODO_CARD_MAX_BOARD_ROWS, this._listsTabRowsDraft || 1));
-    // Wish Lists (v1.122.0+) - only the entities whose checkbox actually
+    // Wish Lists - only the entities whose checkbox actually
     // CHANGED get a family_hub/set_wishlist_flag call (comparing against
     // this._wishlistConfig, the last-fetched state) - this is a
     // household-wide flag, not this card instance's own, so there's no
@@ -3230,7 +3608,7 @@ class FamilyHubTodoCard extends HTMLElement {
         delete this._wishlistConfig[entity_id];
       }
     });
-    // v1.130.0+: "Fit to screen" is saved through this very same round trip.
+    // "Fit to screen" is saved through this very same round trip.
     // If the row count actually changed, any previously-saved row_heights
     // no longer line up with the new row count, so they're cleared
     // optimistically here too - mirroring the backend's own GET-time
@@ -3264,7 +3642,7 @@ class FamilyHubTodoCard extends HTMLElement {
     this._fetchAllLists();
   }
 
-  // -- Put Away modal (v146.2+) ---------------------------------------------
+  // -- Put Away modal ---------------------------------------------
   // Grocy's own "scan it home" flow: add a shopping-list item into real
   // Grocy stock (a location, an optional expiration date and purchase
   // price) and take it off the shopping list in the same step - see
@@ -3293,17 +3671,17 @@ class FamilyHubTodoCard extends HTMLElement {
 
     const renderShell = () => {
       box.innerHTML = `
-        <h3>Put away</h3>
+        <h3>${this._t("todo.putaway.heading", "Put away")}</h3>
         <div class="putaway-item-name">${this._esc(item.rawName || item.summary || "")}</div>
         <div class="putaway-product-section"></div>
         <div class="putaway-fields" hidden>
-          <label>Location<select class="pa-location"><option value="">Loading…</option></select></label>
-          <label>Expires<input type="date" class="pa-date"></label>
-          <label>Price<input type="number" class="pa-price" min="0" step="0.01" placeholder="Optional"></label>
+          <label>${this._t("todo.putaway.location_label", "Location")}<select class="pa-location"><option value="">${this._t("todo.putaway.loading", "Loading…")}</option></select></label>
+          <label>${this._t("todo.putaway.expires_label", "Expires")}<input type="date" class="pa-date"></label>
+          <label>${this._t("todo.putaway.price_label", "Price")}<input type="number" class="pa-price" min="0" step="0.01" placeholder="Optional"></label>
         </div>
         <div class="modal-actions">
-          <button class="cancel-btn">Cancel</button>
-          <button class="save-btn putaway-confirm-btn">Put Away</button>
+          <button class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+          <button class="save-btn putaway-confirm-btn">${this._t("todo.putaway.confirm_btn", "Put Away")}</button>
         </div>
         <div class="form-error"></div>
       `;
@@ -3327,15 +3705,15 @@ class FamilyHubTodoCard extends HTMLElement {
       const defaultId = item.defaultLocationId != null && locations.some((loc) => loc.id === item.defaultLocationId) ? item.defaultLocationId : null;
       locationSelect.innerHTML = locations.length
         ? locations.map((loc) => `<option value="${loc.id}"${defaultId === loc.id ? " selected" : ""}>${this._esc(loc.name)}</option>`).join("")
-        : `<option value="">No locations yet</option>`;
+        : `<option value="">${this._t("todo.putaway.no_locations", "No locations yet")}</option>`;
     };
 
     const renderProductSection = () => {
       const sectionEl = productSectionEl();
       if (selectedProductId != null) {
         sectionEl.innerHTML = `
-          <div class="putaway-product-label">Product: <strong>${this._esc(selectedProductName || "")}</strong>
-            ${wasLinked ? "" : `<button type="button" class="putaway-change-btn">Change</button>`}
+          <div class="putaway-product-label">${this._t("todo.putaway.product_label", "Product:")} <strong>${this._esc(selectedProductName || "")}</strong>
+            ${wasLinked ? "" : `<button type="button" class="putaway-change-btn">${this._t("todo.putaway.change_btn", "Change")}</button>`}
           </div>
         `;
         const changeBtn = sectionEl.querySelector(".putaway-change-btn");
@@ -3347,29 +3725,29 @@ class FamilyHubTodoCard extends HTMLElement {
       sectionEl.innerHTML = `
         <div class="putaway-search-row">
           <input type="text" class="pa-search-text" value="${this._escAttr(item.rawName || "")}" placeholder="Search Grocy products">
-          <button type="button" class="pa-search-btn">Search</button>
+          <button type="button" class="pa-search-btn">${this._t("todo.putaway.search_btn", "Search")}</button>
         </div>
-        <div class="putaway-match-list"><div class="putaway-searching">Searching…</div></div>
+        <div class="putaway-match-list"><div class="putaway-searching">${this._t("todo.putaway.searching", "Searching…")}</div></div>
       `;
       const searchInput = sectionEl.querySelector(".pa-search-text");
       const searchBtn = sectionEl.querySelector(".pa-search-btn");
       const runSearch = async () => {
         const matchListEl = sectionEl.querySelector(".putaway-match-list");
-        matchListEl.innerHTML = `<div class="putaway-searching">Searching…</div>`;
+        matchListEl.innerHTML = `<div class="putaway-searching">${this._t("todo.putaway.searching", "Searching…")}</div>`;
         const text = searchInput.value.trim();
         if (!text) {
-          matchListEl.innerHTML = `<div class="empty-state">Type a product name to search.</div>`;
+          matchListEl.innerHTML = `<div class="empty-state">${this._t("todo.putaway.type_to_search", "Type a product name to search.")}</div>`;
           return;
         }
         try {
           const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/match_grocy_product", text });
           if (result && result.configured === false) {
-            matchListEl.innerHTML = `<div class="empty-state">Grocy isn't connected yet.</div>`;
+            matchListEl.innerHTML = `<div class="empty-state">${this._t("todo.putaway.grocy_not_connected", "Grocy isn't connected yet.")}</div>`;
             return;
           }
           const matches = (result && Array.isArray(result.matches)) ? result.matches : [];
           if (!matches.length) {
-            matchListEl.innerHTML = `<div class="empty-state">No close matches found - try a different search.</div>`;
+            matchListEl.innerHTML = `<div class="empty-state">${this._t("todo.putaway.no_matches", "No close matches found - try a different search.")}</div>`;
             return;
           }
           matchListEl.innerHTML = matches
@@ -3385,7 +3763,7 @@ class FamilyHubTodoCard extends HTMLElement {
             });
           });
         } catch (e) {
-          matchListEl.innerHTML = `<div class="empty-state">Couldn't reach Grocy.</div>`;
+          matchListEl.innerHTML = `<div class="empty-state">${this._t("todo.putaway.cant_reach_grocy", "Couldn't reach Grocy.")}</div>`;
         }
       };
       searchBtn.addEventListener("click", runSearch);
@@ -3398,13 +3776,13 @@ class FamilyHubTodoCard extends HTMLElement {
     const confirm = async () => {
       const errEl = box.querySelector(".form-error");
       if (selectedProductId == null) {
-        errEl.textContent = "Pick a product first.";
+        errEl.textContent = this._t("todo.putaway.pick_product_first", "Pick a product first.");
         return;
       }
       const locationSelect = box.querySelector(".pa-location");
       const locationId = parseInt(locationSelect.value, 10);
       if (!locationId) {
-        errEl.textContent = "Pick a location before putting this away.";
+        errEl.textContent = this._t("todo.putaway.pick_location_first", "Pick a location before putting this away.");
         return;
       }
       const dateInput = box.querySelector(".pa-date");
@@ -3431,19 +3809,19 @@ class FamilyHubTodoCard extends HTMLElement {
           unlink_by_row_id: !wasLinked,
         });
         if (result && result.configured === false) {
-          errEl.textContent = "Grocy isn't connected yet.";
+          errEl.textContent = this._t("todo.putaway.grocy_not_connected", "Grocy isn't connected yet.");
           confirmBtn.disabled = false;
           return;
         }
         if (!result || !result.success) {
-          errEl.textContent = `Couldn't put that away: ${(result && result.error) || "unknown error"}`;
+          errEl.textContent = this._t("todo.putaway.put_away_failed", "Couldn't put that away: %error%", { error: (result && result.error) || this._t("todo.putaway.unknown_error", "unknown error") });
           confirmBtn.disabled = false;
           return;
         }
         overlay.classList.remove("open");
         this._fetchAllLists();
       } catch (e) {
-        errEl.textContent = "Couldn't reach Grocy.";
+        errEl.textContent = this._t("todo.putaway.cant_reach_grocy", "Couldn't reach Grocy.");
         confirmBtn.disabled = false;
       }
     };
@@ -3469,7 +3847,7 @@ class FamilyHubTodoCard extends HTMLElement {
     }
   }
 
-  // -- Item detail modal (v146.3+) ------------------------------------------
+  // -- Item detail modal ------------------------------------------
   // "Todo lists natively have descriptions and due dates when you click an
   // item it should open a Trello style modal to see the details" - clicking
   // an item's text/summary (see _onBoardClick) opens this instead of the
@@ -3500,7 +3878,7 @@ class FamilyHubTodoCard extends HTMLElement {
     // worse than not showing it at all.
     const supportsDescription = isGrocy || this._todoEntitySupportsDescription(key);
     const supportsDueDate = isGrocy || this._todoEntitySupportsDueDate(key);
-    // Wish Lists (v1.122.0+) - only offered on a todo.* item whose list is
+    // Wish Lists - only offered on a todo.* item whose list is
     // flagged AND whose entity actually supports description (link/image
     // are embedded straight into that same field - see WISHLIST_DATA_
     // MARKER's own comment). The Description field itself shows/edits
@@ -3514,35 +3892,35 @@ class FamilyHubTodoCard extends HTMLElement {
       <div class="detail-header">
         <label class="detail-check-wrap">
           <input type="checkbox" class="detail-check" ${completed ? "checked" : ""}>
-          <span class="detail-check-label">Done</span>
+          <span class="detail-check-label">${this._t("todo.item_detail.done", "Done")}</span>
         </label>
         <div class="detail-title-field">
-          <span class="detail-field-label">Title</span>
+          <span class="detail-field-label">${this._t("todo.item_detail.title_label", "Title")}</span>
           ${titleEditable
             ? `<input type="text" class="detail-title" value="${this._escAttr(originalTitle)}">`
             : `<div class="detail-title detail-title-readonly">${this._esc(originalTitle)}</div>`}
         </div>
       </div>
       ${isGrocy
-        ? `<label>Note<textarea class="detail-note" rows="4" placeholder="Add a note…">${this._esc(item.note || "")}</textarea></label>
-           <label>Amount<input type="number" class="detail-amount" min="0" step="0.01" value="${item.amount || 1}"></label>`
-        : `<label ${supportsDescription ? "" : "hidden"}>Description<textarea class="detail-description" rows="4" placeholder="Add a description…">${this._esc(isWishlist ? wishlistParsed.note : (item.description || ""))}</textarea></label>
+        ? `<label>${this._t("todo.item_detail.note_label", "Note")}<textarea class="detail-note" rows="4" placeholder="Add a note…">${this._esc(item.note || "")}</textarea></label>
+           <label>${this._t("todo.item_detail.amount_label", "Amount")}<input type="number" class="detail-amount" min="0" step="0.01" value="${item.amount || 1}"></label>`
+        : `<label ${supportsDescription ? "" : "hidden"}>${this._t("todo.item_detail.description_label", "Description")}<textarea class="detail-description" rows="4" placeholder="Add a description…">${this._esc(isWishlist ? wishlistParsed.note : (item.description || ""))}</textarea></label>
            ${isWishlist ? `
-           <label>Link<input type="url" class="detail-wishlist-link" placeholder="https://…" value="${this._escAttr(wishlistParsed.link)}"></label>
-           <label>Image URL<input type="url" class="detail-wishlist-image" placeholder="https://…" value="${this._escAttr(wishlistParsed.image)}"></label>
+           <label>${this._t("todo.item_detail.link_label", "Link")}<input type="url" class="detail-wishlist-link" placeholder="https://…" value="${this._escAttr(wishlistParsed.link)}"></label>
+           <label>${this._t("todo.item_detail.image_label", "Image URL")}<input type="url" class="detail-wishlist-image" placeholder="https://…" value="${this._escAttr(wishlistParsed.image)}"></label>
            <div class="wishlist-image-controls">
-             <label class="wishlist-upload-btn">Upload photo…<input type="file" accept="image/*" class="detail-wishlist-image-file" hidden></label>
+             <label class="wishlist-upload-btn">${this._t("todo.add_item.upload_photo", "Upload photo…")}<input type="file" accept="image/*" class="detail-wishlist-image-file" hidden></label>
              <img class="wishlist-image-preview" alt="" src="${this._escAttr(wishlistParsed.image)}" ${wishlistParsed.image ? "" : "hidden"}>
              <span class="wishlist-image-upload-status"></span>
            </div>` : ""}
-           <label ${supportsDueDate ? "" : "hidden"}>Due date<input type="date" class="detail-due" value="${item.due ? this._escAttr(item.due) : ""}"></label>
-           ${(!supportsDescription && !supportsDueDate) ? `<div class="detail-unsupported-hint">This list doesn't support descriptions or due dates.</div>` : ""}`}
+           <label ${supportsDueDate ? "" : "hidden"}>${this._t("todo.item_detail.due_date_label", "Due date")}<input type="date" class="detail-due" value="${item.due ? this._escAttr(item.due) : ""}"></label>
+           ${(!supportsDescription && !supportsDueDate) ? `<div class="detail-unsupported-hint">${this._t("todo.item_detail.unsupported_hint", "This list doesn't support descriptions or due dates.")}</div>` : ""}`}
       <div class="modal-actions detail-actions">
-        <button type="button" class="detail-delete-btn">Delete</button>
-        ${isGrocy ? `<button type="button" class="detail-putaway-btn">Put away</button>` : ""}
+        <button type="button" class="detail-delete-btn">${this._t("todo.item.delete", "Delete")}</button>
+        ${isGrocy ? `<button type="button" class="detail-putaway-btn">${this._t("todo.item_detail.put_away_btn", "Put away")}</button>` : ""}
         <span class="detail-actions-spacer"></span>
-        <button type="button" class="cancel-btn">Close</button>
-        <button type="button" class="save-btn detail-save-btn">Save</button>
+        <button type="button" class="cancel-btn">${this._t("common.close", "Close")}</button>
+        <button type="button" class="save-btn detail-save-btn">${this._t("common.save", "Save")}</button>
       </div>
       <div class="form-error"></div>
     `;
@@ -3588,7 +3966,7 @@ class FamilyHubTodoCard extends HTMLElement {
             image: box.querySelector(".detail-wishlist-image").value.trim(),
             claimedBy: wishlistParsed.claimedBy,
             claimedByName: wishlistParsed.claimedByName,
-            // v1.132.6+: a reward tie (see _openTieRewardModal) is never
+            // a reward tie (see _openTieRewardModal) is never
             // editable from this plain note/link/image editor - preserve
             // it through the rebuild rather than silently dropping it.
             rewardItemId: wishlistParsed.rewardItemId,
@@ -3609,7 +3987,7 @@ class FamilyHubTodoCard extends HTMLElement {
 
   _css() {
     return `
-      /* v1.110.7+: position:relative is the containing block .add-todo-fab
+      /* position:relative is the containing block .add-todo-fab
          needs when [fab-position="card"] switches it to position:absolute. */
       :host { display: block; position: relative; font-family: 'Varela Round', sans-serif; }
       ha-card { background: var(--fc-bg); color: var(--fc-text); padding: 14px; }
@@ -3617,7 +3995,7 @@ class FamilyHubTodoCard extends HTMLElement {
       .title { font-size: 18px; font-weight: 800; }
       .actions { display: flex; gap: 8px; }
       .board { display: block; }
-      /* v1.130.0+: "fit to screen" - see _fitToScreen/_syncTodoCardHeight.
+      /* "fit to screen" - see _fitToScreen/_syncTodoCardHeight.
          Off by default (no [fit-screen] attribute, no .fit-to-screen
          class), in which case every rule below is simply inert and the
          card looks exactly like it always has: it grows with its content
@@ -3637,7 +4015,7 @@ class FamilyHubTodoCard extends HTMLElement {
       .board.fit-to-screen .todo-board-row.multi-row { overflow: hidden; }
       .board.fit-to-screen .todo-column { height: 100%; overflow-y: auto; }
       .board.fit-to-screen .todo-column-header { position: sticky; top: 0; background: var(--fc-surface2); z-index: 1; }
-      /* v1.130.0+: the drag handle between two adjacent rows - only ever
+      /* the drag handle between two adjacent rows - only ever
          rendered (see _boardHtml) when fit-to-screen is on AND there's
          more than one row, since dragging two rows against each other
          means nothing otherwise. touch-action:none stops a touchscreen
@@ -3647,7 +4025,7 @@ class FamilyHubTodoCard extends HTMLElement {
       .todo-board-row-resize:hover .todo-board-row-resize-grip,
       .todo-board-row-resize.dragging .todo-board-row-resize-grip { background: var(--fc-accent); }
       .empty-state { font-size: 12px; color: var(--fc-text-secondary); padding: 8px 2px; }
-      /* v1.109.9+: the board is now one or more stacked rows (see
+      /* the board is now one or more stacked rows (see
          _boardRowGroups). A SINGLE row is untouched from every version
          before this - one scrolling line of fixed-ish-width columns - so
          the default layout is byte-for-byte what it always was. Only when
@@ -3656,7 +4034,7 @@ class FamilyHubTodoCard extends HTMLElement {
          point of stacking: two genuinely tiled rows, not two independently
          side-scrolling strips (which is what leaving overflow-x:auto on
          would have produced, and reads as broken). */
-      /* v1.109.9+: Layout picker in the FAB's List(s) tab - a segmented
+      /* Layout picker in the FAB's List(s) tab - a segmented
          row of presets, one active, matching this app's existing shape for
          a short enumerated choice. */
       .layout-row { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -3671,7 +4049,7 @@ class FamilyHubTodoCard extends HTMLElement {
       .todo-column-header { display: flex; align-items: center; gap: 6px; padding: 4px 4px 8px; border-top: 4px solid; border-radius: 3px 3px 0 0; margin: -8px -8px 6px; padding-top: 8px; padding-left: 8px; padding-right: 8px; }
       .todo-column-title { font-weight: 800; font-size: 13px; flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
       .todo-column-source-tag { flex: 0 0 auto; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; background: var(--fc-accent2); color: var(--fc-accent-text); border-radius: 6px; padding: 1px 6px; }
-      /* Wish Lists (v1.122.0+): its own color, distinct from the Grocy
+      /* Wish Lists: its own color, distinct from the Grocy
          tag's, so the two are never confused at a glance when a board has
          both kinds of tagged column. */
       .wishlist-column-tag { background: var(--fc-accent3); }
@@ -3699,10 +4077,15 @@ class FamilyHubTodoCard extends HTMLElement {
       .completed-title { flex: 1; }
       .completed-badge { background: var(--fc-surface-alt); color: var(--fc-accent2); border-radius: 8px; padding: 1px 6px; font-size: 10px; }
       .completed-body { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; }
-      /* v1.110.4+: bottom offset by --fh-fab-offset - see family-hub-chores-card.js's identical comment. */
+      /* bottom offset by --fh-fab-offset - see family-hub-chores-card.js's identical comment. */
       .add-todo-fab { position: fixed; right: 18px; bottom: calc(18px + var(--fh-fab-offset, 0px)); z-index: 900; width: 56px; height: 56px; border-radius: 50%; border: none; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 28px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(58,53,44,0.35); transition: transform 0.15s ease, bottom 0.15s ease; }
       .add-todo-fab:active { transform: scale(0.94); }
-      /* v1.110.7+: fab_position: "card" - see family-hub-chores-card.js's
+      /* Hidden (not just z-indexed behind) while ANY Family Hub card on
+         this dashboard has a full-screen modal open - see
+         family-hub-chores-card.js's identical .add-chore-fab[hidden] rule
+         for the same mechanism. */
+      .add-todo-fab[hidden] { display: none; }
+      /* fab_position: "card" - see family-hub-chores-card.js's
          identical .add-chore-fab rule for the same mechanism. */
       :host([fab-position="card"]) .add-todo-fab { position: absolute; bottom: 18px; }
       .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 1000; align-items: center; justify-content: center; }
@@ -3726,7 +4109,7 @@ class FamilyHubTodoCard extends HTMLElement {
       .settings-check-row:hover { background: var(--fc-surface-alt); }
       .settings-check-row input { width: auto; margin: 0; accent-color: var(--fc-accent); }
       .settings-loading { font-size: 12px; color: var(--fc-text-secondary); padding: 6px 2px; font-style: italic; }
-      /* Wish Lists (v1.122.0+): each to-do entity row in the List(s) tab
+      /* Wish Lists: each to-do entity row in the List(s) tab
          gets a second, smaller "Wish list" checkbox alongside its main
          show/hide one - see _renderListsTab. Both classes on the labels
          below deliberately outrank the generic .modal-box label rule
@@ -3737,7 +4120,7 @@ class FamilyHubTodoCard extends HTMLElement {
       .settings-todo-row .settings-check-row-main { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; margin: 4px 0; flex: 1 1 auto; min-width: 0; }
       .settings-todo-row .settings-wishlist-check-wrap { display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; margin: 4px 0; color: var(--fc-text-secondary); white-space: nowrap; flex: 0 0 auto; }
       .settings-todo-row input { width: auto; margin: 0; accent-color: var(--fc-accent); }
-      /* Wish Lists (v1.122.0+): item rendering on the board itself - see
+      /* Wish Lists: item rendering on the board itself - see
          _wishlistItemHtml. */
       .wishlist-item { align-items: flex-start; }
       .wishlist-item-image { flex: 0 0 auto; width: 40px; height: 40px; border-radius: 8px; object-fit: cover; background: var(--fc-surface-alt); }
@@ -3750,7 +4133,7 @@ class FamilyHubTodoCard extends HTMLElement {
       .wishlist-claim-btn { border: none; border-radius: 8px; padding: 3px 8px; font-size: 10px; font-weight: 800; cursor: pointer; background: var(--fc-accent2); color: var(--fc-accent-text); }
       .wishlist-claim-btn.claimed { background: var(--fc-surface-alt); color: var(--fc-text-secondary); cursor: default; }
       .wishlist-claim-btn.claimed-by-me { background: var(--fc-accent3); color: var(--fc-accent-text); cursor: pointer; }
-      /* v1.132.6+: "tie a wish list item to a reward" - see
+      /* "tie a wish list item to a reward" - see
          _wishlistItemHtml/_openTieRewardModal/_claimWishlistReward. */
       .wishlist-tie-reward-btn { border: none; border-radius: 8px; padding: 3px 8px; font-size: 10px; font-weight: 700; cursor: pointer; background: var(--fc-surface-alt); color: var(--fc-text-secondary); }
       .wishlist-reward-row { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
@@ -3759,7 +4142,7 @@ class FamilyHubTodoCard extends HTMLElement {
       .wishlist-claim-reward-btn:disabled { background: var(--fc-surface-alt); color: var(--fc-text-secondary); cursor: default; }
       .tie-reward-modal .modal-box label { display: block; margin-bottom: 10px; font-size: 13px; font-weight: 700; color: var(--fc-text); }
       .tie-reward-modal .modal-box input { display: block; width: 100%; box-sizing: border-box; margin-top: 4px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 14px; font-family: inherit; }
-      /* Upload a photo (v1.124.0+) - the Add/item detail modals' Upload
+      /* Upload a photo - the Add/item detail modals' Upload
          photo control, see _wireWishlistImageUpload. */
       .wishlist-image-controls { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
       .wishlist-upload-btn { display: inline-flex; align-items: center; margin: 0; border: 2px dashed var(--fc-border, rgba(0,0,0,0.2)); border-radius: 10px; padding: 6px 12px; font-size: 12px; font-weight: 700; color: var(--fc-text-secondary); cursor: pointer; }
@@ -3791,7 +4174,7 @@ class FamilyHubTodoCard extends HTMLElement {
       .detail-actions-spacer { flex: 1 1 auto; }
       .detail-delete-btn, .detail-putaway-btn { border: none; border-radius: 10px; padding: 8px 14px; font-weight: 700; cursor: pointer; background: var(--fc-surface-alt); color: var(--fc-accent3); }
       .detail-putaway-btn { color: var(--fc-accent2); }
-      /* v1.132.4+: kiosk PIN login - byte-identical to family-hub-chores-
+      /* kiosk PIN login - byte-identical to family-hub-chores-
          card.js/family-hub-rewards-card.js's own copy of these rules. */
       .detail-close-btn { border: none; background: none; color: var(--fc-text-secondary); font-size: 16px; cursor: pointer; line-height: 1; padding: 4px; }
       .kiosk-login-btn { border: 1px solid var(--fc-border); border-radius: 12px; padding: 6px 12px; font-size: 12px; font-weight: 700; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; }
@@ -3837,7 +4220,7 @@ class FamilyHubTodoCardEditor extends HTMLElement {
     if (this._form) this._form.hass = hass;
     if (!this._themeOptions) this._fetchThemeOptions();
   }
-  // v1.111.0+: per-card Theme override options - duplicated (not shared/
+  // per-card Theme override options - duplicated (not shared/
   // imported) from family-hub-goals-card.js's own editor, same
   // "independently loaded resources duplicate small helpers" convention.
   async _fetchThemeOptions() {

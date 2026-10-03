@@ -1,4 +1,4 @@
-// Family Hub Active Timers card (v1.110.1+) - "We should also build an
+// Family Hub Active Timers card - "We should also build an
 // active timers card that shows all the timers active in the house, color
 // coded if they are assigned to someone based on their user color. You
 // should be able to have a pop up modal that has 3-4 common timer times,
@@ -16,12 +16,10 @@
 //     quick-timer modal. The oven, a board game, whose turn it is. See
 //     TIMER_KIND_STANDALONE in const.py for why it's a third `kind` in the
 //     existing store rather than storage of its own.
-//   - v1.120.0+: FOREIGN native `timer.*` entities - any HA timer helper
+//   - FOREIGN native `timer.*` entities - any HA timer helper
 //     currently active that ISN'T one Family Hub itself started/adopted
 //     (someone else's automation, a helper made from Developer Tools or
-//     HA's own UI, another integration entirely). Household ask, verbatim:
-//     "can we make the timers card show all active timers not just from
-//     family hub." These render read-only aside from an admin-only Stop
+//     HA's own UI, another integration entirely). These render read-only aside from an admin-only Stop
 //     (no ownership model exists for an arbitrary entity the way it does
 //     for Family Hub's own timers) and with a dashed border so it's
 //     obvious at a glance which timers this board actually manages vs. is
@@ -64,10 +62,6 @@ const PALETTE = ["#a9c6c2", "#dba99c", "#d9bf7e", "#a8bd93", "#b9a7c9", "#cf8f6c
 const TIMER_PRESETS = [5, 15, 30, 60];
 const UNASSIGNED_COLOR = "#c9c2b3";
 
-// v1.119.0+: household ask, verbatim: "route this through alarm
-// notifications for the person the timer is for, if its started by a
-// device with a kiosk still open can we make sounds and pop up a modal
-// that requires you to click stop?"
 //
 // The phone-push half of that (Android alarm-stream channel / iOS
 // critical alert) is entirely server-side - see chores_websocket_api.py's
@@ -132,51 +126,115 @@ if (!window.__familyHubTimerAlarm) {
     // A plain oscillator beep via the Web Audio API - deliberately not a
     // bundled sound file: no extra media asset for HACS/manual installs to
     // ship or for a self-hosted install's network policy to worry about,
-    // and it sounds identical on every install. Repeated on an interval
-    // (not one long tone) so it reads as an alarm rather than a single
-    // chime, and so a tab that's autoplay-blocked the very first beep
-    // (some browsers require a prior user gesture) gets another chance
-    // shortly after - the very next tap ANYWHERE on the page (including
-    // Stop itself) unblocks it going forward for the rest of this tab's
-    // life, same as any other Web Audio use.
+    // and it sounds identical on every install.
+    //
+    // The original v1.119.0+ sound was one
+    // flat square-wave tone repeated once a second - metronomic, which is
+    // exactly what read as a countdown-bomb tick rather than an alarm. This
+    // plays a quick alternating two-pitch TRIPLET (a classic digital-alarm-
+    // clock trill) each cycle instead of a single tone, which is what
+    // actually reads as "alarm" to the ear - the alternating pitch is what
+    // a lone repeated tone can't give you, no matter how loud.
+    function playBeep(atTime, freq) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "square";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, atTime);
+      gain.gain.exponentialRampToValueAtTime(0.3, atTime + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, atTime + 0.13);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(atTime);
+      osc.stop(atTime + 0.15);
+    }
+    // Scheduled via Web Audio's own clock (osc.start(atTime)) rather than
+    // three back-to-back setTimeout calls, so the triplet's timing stays
+    // tight even if the main JS thread is briefly busy - it's the crisp,
+    // even spacing that makes it read as a trill instead of a stutter.
     function beepOnce() {
       try {
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         if (audioCtx.state === "suspended") audioCtx.resume();
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.type = "square";
-        osc.frequency.value = 880;
-        gain.gain.value = 0.0001;
-        gain.gain.exponentialRampToValueAtTime(0.28, audioCtx.currentTime + 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.32);
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-        osc.start();
-        osc.stop(audioCtx.currentTime + 0.34);
+        const now = audioCtx.currentTime;
+        [[0, 1046], [0.15, 1318], [0.3, 1046]].forEach(([offset, freq]) => playBeep(now + offset, freq));
       } catch (e) {
         // Autoplay blocked, or no Web Audio at all - the modal is still
         // the primary alarm; sound is a bonus on top of it, not required.
       }
     }
+    // which hass connection to tell "dismiss this everywhere"
+    // when Stop is tapped - set by whichever card most recently called
+    // ring()/check() with one, since this singleton is shared across every
+    // card on the dashboard and any of them may have `hass` by now. Best-
+    // effort only (see stop() below): a same-tab-only local alarm (the
+    // original v1.119.0+ behavior this singleton already had) never had a
+    // server-side record to begin with, so the dismiss call below simply
+    // no-ops for it (ws_dismiss_timer_alarm pops a uid that was never
+    // registered - see its own docstring for why that's silent, not an
+    // error).
+    let lastHass = null;
     function stop() {
       if (activeUid) dismissedUids.add(activeUid);
+      const uid = activeUid;
       activeUid = null;
       if (beepHandle) {
         clearInterval(beepHandle);
         beepHandle = null;
       }
       if (modalEl) modalEl.style.display = "none";
+      // household's explicit choice - "first tap wins, from
+      // anyone" - so tapping Stop here also clears the alarm everywhere
+      // else (other kiosks, other people's phones-that-are-dashboards)
+      // rather than just silencing this one tab. No permission gate, by
+      // design.
+      if (uid && lastHass && lastHass.connection && lastHass.connection.sendMessagePromise) {
+        lastHass.connection.sendMessagePromise({ type: "family_hub/timers/dismiss_alarm", uid }).catch(() => {});
+      }
     }
-    function start(timer) {
+    // This modal already outranks the screensaver's own overlay (z-index
+    // 2147483647 vs 2147483000, set in ensureModal() above), so it was
+    // always painting on top of it - but a screensaver left running
+    // underneath still means its video/camera poll keeps going, so it
+    // needs to actually END, not just be covered up.
+    // There are THREE independent screensaver implementations in this
+    // project (the calendar card's own, the shared window.__familyHub
+    // ScreenSaver controller used by Chores/Rewards/My Chores/etc., and the
+    // standalone family-screensaver-card.js) and this singleton has no
+    // reference to whichever one might be running on this particular
+    // dashboard. Rather than importing all three, every one of them marks
+    // its overlay element with the same data-family-hub-screensaver
+    // attribute and already dismisses itself (hides, stops video/camera
+    // polling, navigates to its configured return dashboard) on its own
+    // overlay's "pointerdown" listener - so a synthetic pointerdown on
+    // whichever overlay is actually showing reuses each implementation's
+    // own real dismiss path for free, with zero coupling to which one it
+    // is.
+    function wakeAnyScreenSaver() {
+      try {
+        const overlay = document.querySelector("[data-family-hub-screensaver]");
+        if (overlay && overlay.style.display !== "none") {
+          overlay.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        }
+      } catch (e) {
+        // Best-effort - worst case the alarm modal still shows ON TOP of a
+        // running screensaver rather than ending it outright.
+      }
+    }
+    function start(timer, hass) {
+      if (hass) lastHass = hass;
       if (activeUid === timer.uid) return;
       activeUid = timer.uid;
+      wakeAnyScreenSaver();
       const el = ensureModal();
       el.querySelector(".fh-timer-alarm-title").textContent = timer.title || "Timer";
       el.style.display = "flex";
       beepOnce();
       if (beepHandle) clearInterval(beepHandle);
-      beepHandle = setInterval(beepOnce, 1200);
+      // Shorter gap than the old single-tone version (1200ms) since each
+      // cycle is now a ~450ms triplet, not a single ~340ms tone - this
+      // keeps the alarm feeling urgent/continuous rather than sparse.
+      beepHandle = setInterval(beepOnce, 950);
     }
     return {
       // Call once a second from a card's own countdown ticker (the same
@@ -193,20 +251,47 @@ if (!window.__familyHubTimerAlarm) {
       // else started, or one this same tab started but didn't opt into
       // alarms for, is silently ignored here exactly as before this
       // feature existed.
-      check(timers, clientId, remainingSecondsFn) {
+      check(timers, clientId, remainingSecondsFn, hass) {
         if (!clientId) return;
         const mine = (timers || []).find((t) => t.alarm && t.origin_client_id && t.origin_client_id === clientId);
         if (!mine || dismissedUids.has(mine.uid)) return;
-        if (remainingSecondsFn(mine) <= 0) start(mine);
+        if (remainingSecondsFn(mine) <= 0) start(mine, hass);
+      },
+      // the WIDENED half - a household_timer_alarm_ring bus
+      // event (fired by chores_websocket_api.py's _dispatch_timer_alarm/
+      // _reannounce_active_alarms) that THIS login should also ring for,
+      // because it's either the timer's own owner, a login flagged as an
+      // always-on alarm kiosk, or the tier was "everyone." Unlike check()
+      // above (which only ever recognizes the ONE tab that started the
+      // timer, by origin_client_id), this recognizes a login/account -
+      // every open tab logged in as a matching user rings, on every
+      // dashboard, which is the whole point of the widened tiers. Re-fired
+      // on every re-announcement (see _reannounce_active_alarms), so
+      // calling this again for an already-ringing uid is a deliberate
+      // no-op (start() already short-circuits on activeUid === timer.uid).
+      ringBroadcast(payload, hass, myUserId) {
+        if (!payload || !payload.uid || dismissedUids.has(payload.uid)) return;
+        const targets = payload.target_user_ids || [];
+        const shouldRing = !!payload.broadcast_all || (myUserId && targets.includes(myUserId));
+        if (!shouldRing) return;
+        start({ uid: payload.uid, title: payload.title }, hass);
+      },
+      // The STOP half of the same broadcast pair - fired the instant
+      // ANY device dismisses (see ws_dismiss_timer_alarm's own "first tap
+      // wins" docstring), including a dismiss that originated from THIS
+      // singleton's own stop() above (that call's own dismiss already
+      // covers this tab; the event still arrives here a moment later and
+      // is a harmless no-op via stop()'s own activeUid !== uid guard, or
+      // via dismissedUids already containing it).
+      stopFromServer(uid) {
+        if (uid) dismissedUids.add(uid);
+        if (activeUid === uid) stop();
       },
     };
   })();
 }
 
-// Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
-// "When you load a card it tends to load the default theme first then it
-// switches over to the theme you set how can we always make it load the
-// set theme first." Root cause: EVERY themed card's first paint happens
+// Theme flash-of-default fix - Root cause: EVERY themed card's first paint happens
 // with no theme CSS vars set at all (falls back to _defaultTheme()'s own
 // hardcoded palette), because resolving the household's actual theme
 // takes two sequential, awaited websocket round trips after `hass` is
@@ -290,7 +375,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   static getStubConfig() {
     return { title: "Active Timers" };
   }
-  // v1.111.0+: switched to getConfigElement (a real custom element) so the
+  // switched to getConfigElement (a real custom element) so the
   // new theme_override field can offer a live-fetched theme list - see
   // FamilyHubActiveTimersCardEditor at the bottom of this file.
   static getConfigElement() {
@@ -299,7 +384,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   setConfig(config) {
     this._config = {
       title: (config && config.title) || "Active Timers",
-      // v1.111.0+: "" (default) = "Use device settings" - see
+      // "" (default) = "Use device settings" - see
       // _resolveTheme below for where this takes priority.
       theme_override: (config && typeof config.theme_override === "string") ? config.theme_override : "",
     };
@@ -318,23 +403,128 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
+    this._ensureTranslationsLoaded();
     if (first) this._firstLoadPromise = this._initFirstLoad();
+  }
+  _t(key, fallback, vars) {
+    let str = "";
+    try {
+      if (this._hass && typeof this._hass.localize === "function") {
+        str = this._hass.localize(`component.family_hub.fh_ui.${key}`) || "";
+      }
+    } catch (e) {
+      str = "";
+    }
+    if (!str) str = fallback;
+    if (vars) {
+      Object.keys(vars).forEach((k) => {
+        str = str.split(`%${k}%`).join(vars[k]);
+      });
+    }
+    return str;
+  }
+  _baseLanguage(lang) {
+    return (lang || "en").split("-")[0].toLowerCase();
+  }
+  _ensureTranslationsLoaded() {
+    if (!this._hass || typeof this._hass.loadBackendTranslation !== "function") return;
+    const lang = this._baseLanguage(this._hass.language);
+    if (this._i18nLoadedLang === lang || this._i18nLoading === lang) return;
+    this._i18nLoading = lang;
+    this._hass
+      .loadBackendTranslation("fh_ui", "family_hub")
+      .then(() => {
+        this._i18nLoadedLang = lang;
+        this._i18nLoading = null;
+        this._applyTranslations();
+        this._render();
+      })
+      .catch((e) => {
+        this._i18nLoading = null;
+        console.warn("[family_hub] failed to load \"" + lang + "\" translations - staying on English fallback text", e);
+      });
+  }
+  _applyTranslations() {
+    if (!this._root) return;
+    this._root.querySelectorAll("[data-i18n]").forEach((el) => {
+      const key = el.dataset.i18n;
+      if (el.dataset.i18nFallback === undefined) el.dataset.i18nFallback = el.textContent;
+      el.textContent = this._t(key, el.dataset.i18nFallback);
+    });
+    this._root.querySelectorAll("[data-i18n-title]").forEach((el) => {
+      const key = el.dataset.i18nTitle;
+      if (el.dataset.i18nTitleFallback === undefined) {
+        el.dataset.i18nTitleFallback = el.getAttribute("title") || el.getAttribute("aria-label") || "";
+      }
+      const translated = this._t(key, el.dataset.i18nTitleFallback);
+      if (el.hasAttribute("title")) el.setAttribute("title", translated);
+      if (el.hasAttribute("aria-label")) el.setAttribute("aria-label", translated);
+    });
   }
   async _initFirstLoad() {
     await Promise.all([this._fetchSettings(), this._fetchUsers(), this._fetchTimers(), this._fetchMyPermissions()]);
-    // v1.111.0+: always fetched now (not just when useGlobalTheme is on) -
+    // always fetched now (not just when useGlobalTheme is on) -
     // a per-card theme_override needs this list regardless.
     await this._fetchGlobalThemes();
-    // v1.110.3+ - backfill for a household that upgraded without re-saving
+    // backfill for a household that upgraded without re-saving
     // Settings (which is the calendar card's own trigger for this same
     // reconcile). Best-effort, never blocks the rest of first load.
     this._ensureTimerHelpers((this._getSettings().memberUserIds) || []).catch(() => {});
     this._startPolling();
     this._startTimerTicker();
+    this._subscribeAlarmEvents();
     this._render();
   }
+  // household-wide timer alarms - subscribe to the two bus
+  // events chores_websocket_api.py's _dispatch_timer_alarm/
+  // _reannounce_active_alarms fire (see const.py's
+  // EVENT_FAMILY_HUB_TIMER_ALARM_RING/_STOP), and hand each one to the
+  // shared window.__familyHubTimerAlarm singleton above - same "one modal/
+  // audio loop shared by every card on the dashboard" convention its own
+  // top comment describes. Subscribed once per card instance (guarded by
+  // _alarmUnsub so a re-run of _initFirstLoad, which shouldn't happen but
+  // costs nothing to guard against, never double-subscribes).
+  async _subscribeAlarmEvents() {
+    if (this._alarmUnsub || !this._hass || !this._hass.connection) return;
+    const myUserId = this._myUserId();
+    try {
+      const unsubRing = await this._hass.connection.subscribeEvents((event) => {
+        if (window.__familyHubTimerAlarm) {
+          window.__familyHubTimerAlarm.ringBroadcast(event.data, this._hass, myUserId);
+        }
+      }, "family_hub_timer_alarm_ring");
+      const unsubStop = await this._hass.connection.subscribeEvents((event) => {
+        if (window.__familyHubTimerAlarm && event.data) {
+          window.__familyHubTimerAlarm.stopFromServer(event.data.uid);
+        }
+      }, "family_hub_timer_alarm_stop");
+      this._alarmUnsub = () => {
+        try { unsubRing(); } catch (e) { /* no-op */ }
+        try { unsubStop(); } catch (e) { /* no-op */ }
+      };
+    } catch (e) {
+      // Best-effort - a dashboard that can't subscribe (e.g. a very old
+      // frontend build) simply never gets the WIDENED alarm reach; the
+      // same-tab-only local alarm (window.__familyHubTimerAlarm.check,
+      // unaffected by any of this) still works exactly as before.
+    }
+    // Catch up on anything already ringing before this tab opened, rather
+    // than waiting up to ALARM_REANNOUNCE_SECONDS for the next re-
+    // announcement's RING event.
+    if (this._hass.connection.sendMessagePromise) {
+      try {
+        const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/timers/list_active_alarms" });
+        for (const alarm of (result && result.alarms) || []) {
+          if (window.__familyHubTimerAlarm) window.__familyHubTimerAlarm.ringBroadcast(alarm, this._hass, myUserId);
+        }
+      } catch (e) {
+        // Best-effort catch-up only - the next re-announcement still
+        // covers it.
+      }
+    }
+  }
 
-  // v1.110.3+ - see family-week-calendar-card.js's copy of this function
+  // see family-week-calendar-card.js's copy of this function
   // for the full design note (why the frontend does this rather than
   // Python, the naming scheme, and why removal never deletes a helper).
   // Duplicated rather than shared, matching this project's established
@@ -408,6 +598,10 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     if (this._interval) clearInterval(this._interval);
     this._interval = null;
     this._stopTimerTicker();
+    if (this._alarmUnsub) {
+      this._alarmUnsub();
+      this._alarmUnsub = null;
+    }
   }
   getCardSize() {
     return 6;
@@ -436,12 +630,12 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     };
   }
   _defaultSettings() {
-    return { theme: this._defaultTheme(), useGlobalTheme: false, globalThemeId: "" };
+    return { theme: this._defaultTheme(), useGlobalTheme: true, globalThemeId: "liquidglass" };
   }
   _getSettings() {
     return this._settingsCache || this._defaultSettings();
   }
-  // v144.6+: "This device's theme" - a device-local override of the shared
+  // "This device's theme" - a device-local override of the shared
   // Settings > Appearance theme choice, same key/mechanism
   // family-week-calendar-card.js's own _getDeviceThemeOverride uses (see
   // its own comment) and configured from that card's Settings modal (this
@@ -476,7 +670,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
-    // v1.111.0+: a per-card-placement Theme override (from this card's own
+    // a per-card-placement Theme override (from this card's own
     // native "Edit Card" dialog) wins over this device's own override and
     // the household's Global Theme - the most specific choice available.
     const cardOverride = this._config && this._config.theme_override;
@@ -501,7 +695,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     const a = Math.max(0, Math.min(1, typeof alpha === "number" ? alpha : 1));
     return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
-  // v1.126.0+ - see window.__familyHubThemeCache's own comment above the
+  // see window.__familyHubThemeCache's own comment above the
   // class for the full "why a key, not one shared blob" reasoning. Called
   // identically from here (after resolving the REAL theme) and from
   // `_build()` (before the real theme is known yet, to look up whatever
@@ -517,14 +711,14 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   }
   _applyThemeVars() {
     const theme = this._resolveTheme(this._getSettings());
-    // v144.5+: same "liquid glass" support family-week-calendar-card.js has
+    // same "liquid glass" support family-week-calendar-card.js has
     // - a theme's cardOpacity/glassBlur (100/0 defaults, both no-ops) turn
     // the card/surface backgrounds translucent and blur whatever shows
     // through them, so picking a Liquid Glass theme actually looks glassy
     // on this card too, not just the calendar.
     const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
     const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
-    // v1.126.0+: built as a plain object first (rather than each var going
+    // built as a plain object first (rather than each var going
     // straight into its own setProperty call, as before) purely so the
     // exact same values that get applied here also get cached - see
     // window.__familyHubThemeCache's own comment for why this fixes the
@@ -546,7 +740,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     Object.keys(vars).forEach((name) => this.style.setProperty(name, vars[name]));
     if (window.__familyHubThemeCache) window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
   }
-  // v1.126.0+: applies whatever theme this device/placement last actually
+  // applies whatever theme this device/placement last actually
   // resolved to, SYNCHRONOUSLY, before the real fetches that would
   // otherwise be the only way to know it - see window.__familyHubTheme
   // Cache's own comment above the class. Called once from `_build()`,
@@ -581,7 +775,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     } catch (e) {
       custom = [];
     }
-    // v1.111.0+: also merge in every installed native Home Assistant theme
+    // also merge in every installed native Home Assistant theme
     // - duplicated (not shared/imported) from family-week-calendar-card.js.
     this._globalThemes = custom.concat(this._nativeHaThemeEntries());
     this._applyThemeVars();
@@ -669,8 +863,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   // actually done. Derived rather than stored is also why a reload or a
   // Home Assistant restart mid-countdown resumes at the right number.
   //
-  // v1.120.0+: household ask, verbatim: "can we make the timers card show
-  // all active timers not just from family hub." Family Hub's own timers
+  // Family Hub's own timers
   // (chore/reward/standalone) still come from family_hub/timers/list below
   // exactly as before; _foreignTimerEntities/_allTimers layer in every
   // OTHER `timer.*` domain entity currently running in the house - a plain
@@ -755,7 +948,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     if (this._timerTicker) clearInterval(this._timerTicker);
     this._timerTicker = null;
   }
-  // v1.119.0+: this browser tab's own stable id - sessionStorage-backed
+  // this browser tab's own stable id - sessionStorage-backed
   // (survives a reload of this same tab, gone once the tab actually
   // closes), shared under the same fixed key across every Family Hub
   // card on the page so a timer started from the Chores card and watched
@@ -779,7 +972,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   }
   _timerRemainingSeconds(timer) {
     if (!timer) return 0;
-    // v1.110.2+: when this timer is running on an adopted native HA
+    // when this timer is running on an adopted native HA
     // timer.* helper, Home Assistant already publishes the authoritative
     // finish time as a `finishes_at` state attribute - so read HA's own
     // number rather than recomputing it. Falls back to the original
@@ -811,24 +1004,31 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   _formatTimerLength(minutes) {
     const m = Number(minutes) || 0;
     if (m >= 60 && m % 60 === 0) return `${m / 60}h`;
-    if (m > 60) return `${Math.floor(m / 60)}h${m % 60}m`;
-    return `${m}m`;
+    if (m > 60) return `${Math.floor(m / 60)}h${Math.round(m % 60)}m`;
+    // "can we make the timer accept seconds" - a sub-minute
+    // (or otherwise non-whole-minute) duration now reads as "45s" / "1m30s"
+    // instead of rounding down to a misleading "0m" / "1m".
+    const totalSeconds = Math.round(m * 60);
+    if (totalSeconds < 60) return `${totalSeconds}s`;
+    const wholeMinutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return seconds === 0 ? `${wholeMinutes}m` : `${wholeMinutes}m${seconds}s`;
   }
   // Repaints only the countdown text, in place, once a second - a full
   // re-render at that rate would fight scrolling and any open modal.
   _renderTimerCountdowns() {
     if (!this._root) return;
-    // v1.119.0+: kiosk-side sound+modal alarm for whichever ONE running
+    // kiosk-side sound+modal alarm for whichever ONE running
     // timer this exact browser tab started, if it opted into alarm-style
     // delivery - see window.__familyHubTimerAlarm's own top comment.
     // Deliberately every tick (not just on the local zero-crossing) so a
     // tab that was reloaded/backgrounded right as a timer finished still
     // catches up and alarms once its poll comes back with remaining<=0.
     if (window.__familyHubTimerAlarm) {
-      window.__familyHubTimerAlarm.check(this._timers, this._familyHubClientId(), (t) => this._timerRemainingSeconds(t));
+      window.__familyHubTimerAlarm.check(this._timers, this._familyHubClientId(), (t) => this._timerRemainingSeconds(t), this._hass);
     }
     const allTimers = this._allTimers();
-    // v1.120.0+: a foreign HA timer.* entity can start or finish entirely
+    // a foreign HA timer.* entity can start or finish entirely
     // outside Family Hub (someone else's automation, a helper started from
     // Developer Tools, HA's own UI) with no family_hub/timers/list poll to
     // ever notice - so if the SET of what's currently running has changed
@@ -876,7 +1076,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     }
   }
   _userName(id) {
-    if (!id) return "Unassigned";
+    if (!id) return this._t("active_timers.unassigned", "Unassigned");
     const u = (this._users || []).find((x) => x.id === id);
     return u ? u.name : id;
   }
@@ -899,12 +1099,15 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   // hurriedly-started unnamed timer still reads as something.
   _timerLabel(timer) {
     if (timer.title) return timer.title;
-    if (timer.kind === "chore") return "Chore";
-    if (timer.kind === "reward") return "Reward";
-    return "Timer";
+    if (timer.kind === "chore") return this._t("active_timers.kind_chore", "Chore");
+    if (timer.kind === "reward") return this._t("active_timers.kind_reward", "Reward");
+    return this._t("active_timers.kind_timer", "Timer");
   }
   _timerKindLabel(kind) {
-    return kind === "chore" ? "Chore" : kind === "reward" ? "Reward" : kind === "native" ? "HA Timer" : "Timer";
+    return kind === "chore" ? this._t("active_timers.kind_chore", "Chore")
+      : kind === "reward" ? this._t("active_timers.kind_reward", "Reward")
+      : kind === "native" ? this._t("active_timers.kind_ha_timer", "HA Timer")
+      : this._t("active_timers.kind_timer", "Timer");
   }
   // Mirrors ws_cancel_timer's own rules exactly, so no button is offered
   // that the backend would refuse (it re-checks independently - this is
@@ -918,7 +1121,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     if (!timer) return false;
     const me = this._myUserId();
     if (this._isAdmin()) return true;
-    // v1.120.0+: a foreign HA timer.* entity has no owner/permission model
+    // a foreign HA timer.* entity has no owner/permission model
     // at all (unlike Family Hub's own timers, which always have a user_id
     // or are explicitly "the room's") - admin-only to stop, same as any
     // other raw entity control a non-admin shouldn't get from this board.
@@ -947,7 +1150,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
   }
   async _cancelTimer(uid) {
     if (!uid || !this._hass) return;
-    // v1.120.0+: a foreign HA timer.* entity (synthetic uid "ha:<entity_id>",
+    // a foreign HA timer.* entity (synthetic uid "ha:<entity_id>",
     // see _foreignTimerEntities) has no family_hub/timers/cancel record at
     // all - stop it the plain HA way instead, straight through the timer
     // domain's own cancel service.
@@ -956,7 +1159,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
       try {
         await this._hass.callService("timer", "cancel", {}, { entity_id: entityId });
       } catch (e) {
-        window.alert((e && e.message) || "Couldn't stop that timer.");
+        window.alert((e && e.message) || this._t("active_timers.couldnt_stop_timer", "Couldn't stop that timer."));
       }
       this._render();
       return;
@@ -964,7 +1167,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     try {
       await this._hass.connection.sendMessagePromise({ type: "family_hub/timers/cancel", uid });
     } catch (e) {
-      window.alert((e && e.message) || "Couldn't stop that timer.");
+      window.alert((e && e.message) || this._t("active_timers.couldnt_stop_timer", "Couldn't stop that timer."));
     }
     await this._fetchTimers();
   }
@@ -974,9 +1177,9 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     const color = this._userColor(timer.user_id);
     const unassigned = !timer.user_id;
     const left = this._timerRemainingSeconds(timer);
-    const who = unassigned ? "Unassigned" : this._userName(timer.user_id);
+    const who = unassigned ? this._t("active_timers.unassigned", "Unassigned") : this._userName(timer.user_id);
     const cancel = this._canCancelTimer(timer)
-      ? `<button class="timer-cancel-btn" data-uid="${this._esc(timer.uid)}" title="Stop this timer">&#10005;</button>`
+      ? `<button class="timer-cancel-btn" data-uid="${this._esc(timer.uid)}" title="${this._esc(this._t("active_timers.stop_timer_title", "Stop this timer"))}">&#10005;</button>`
       : "";
     return `
       <div class="timer-card${unassigned ? " unassigned" : ""}${timer.foreign ? " foreign-timer" : ""}${left > 0 && left <= 60 ? " is-finishing" : ""}" data-uid="${this._esc(timer.uid)}" style="--timer-color: ${this._esc(color)}">
@@ -987,7 +1190,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
         <div class="timer-label">${this._esc(this._timerLabel(timer))}</div>
         <div class="timer-remaining" data-timer-uid="${this._esc(timer.uid)}">${this._formatTimerRemaining(left)}</div>
         <div class="timer-who"><span class="timer-who-dot"></span>${this._esc(who)}</div>
-        <div class="timer-total">of ${this._formatTimerLength(timer.duration_minutes)}</div>
+        <div class="timer-total">${this._esc(this._t("active_timers.of_duration", "of %length%", { length: this._formatTimerLength(timer.duration_minutes) }))}</div>
       </div>
     `;
   }
@@ -998,7 +1201,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     const board = this._root.querySelector(".timers-board");
     board.innerHTML = timers.length
       ? timers.map((t) => this._timerCardHtml(t)).join("")
-      : `<div class="empty-state">Nothing's running right now. Tap &#65291; Start Timer to set one.</div>`;
+      : `<div class="empty-state">${this._t("active_timers.empty_state", "Nothing's running right now. Tap &#65291; Start Timer to set one.")}</div>`;
     const count = this._root.querySelector(".timer-count");
     if (count) count.textContent = timers.length ? String(timers.length) : "";
   }
@@ -1016,6 +1219,11 @@ class FamilyHubActiveTimersCard extends HTMLElement {
     const overlay = this._root.querySelector(".quick-timer-modal");
     const box = overlay.querySelector(".modal-box");
     this._draftMinutes = null;
+    // - same 3-way "self/kiosks/everyone" tier
+    // chores/rewards already have (see const.py's CHORE_KEY_ALARM_
+    // AUDIENCE), now offered here too. Resets to "self" (the pre-existing
+    // behavior) every time the modal opens, same as _draftMinutes above.
+    this._draftAlarmAudience = "self";
     const presetBtns = TIMER_PRESETS.map(
       (m) => `<button type="button" class="preset-btn" data-minutes="${m}">${this._formatTimerLength(m)}</button>`
     ).join("");
@@ -1023,38 +1231,60 @@ class FamilyHubActiveTimersCard extends HTMLElement {
       .map((u) => `<option value="${this._esc(u.id)}">${this._esc(u.name)}</option>`)
       .join("");
     box.innerHTML = `
-      <h3>Start a timer</h3>
+      <h3>${this._t("active_timers.modal_title", "Start a timer")}</h3>
       <div class="preset-row">${presetBtns}</div>
-      <label>Or a custom length (minutes)<input type="number" class="q-minutes" min="1" max="1440" placeholder="e.g. 12"></label>
-      <label>What's it for? (optional)<input type="text" class="q-label" maxlength="60" placeholder="Oven, Sam's turn, laundry..."></label>
-      <label>Assign to (optional)<select class="q-user"><option value="">Nobody - just a house timer</option>${userOptions}</select></label>
+      <label><span>${this._t("active_timers.custom_length_label", "Or a custom length")}</span>
+        <div class="q-custom-row">
+          <input type="number" class="q-minutes" min="0" max="1440" placeholder="min">
+          <input type="number" class="q-seconds" min="0" max="59" placeholder="sec">
+        </div>
+      </label>
+      <label><span>${this._t("active_timers.whats_it_for_label", "What's it for? (optional)")}</span><input type="text" class="q-label" maxlength="60" placeholder="Oven, Sam's turn, laundry..."></label>
+      <label><span>${this._t("active_timers.assign_to_label", "Assign to (optional)")}</span><select class="q-user"><option value="">${this._t("active_timers.nobody_option", "Nobody - just a house timer")}</option>${userOptions}</select></label>
+      <label><span>${this._t("active_timers.who_hears_label", "Who hears this alarm")}</span>
+        <div class="q-audience-row">
+          <button type="button" class="q-audience-btn active" data-value="self">${this._t("active_timers.audience_self", "Just them")}</button>
+          <button type="button" class="q-audience-btn" data-value="kiosks">${this._t("active_timers.audience_kiosks", "Them + kiosks")}</button>
+          <button type="button" class="q-audience-btn" data-value="everyone">${this._t("active_timers.audience_everyone", "Everyone")}</button>
+        </div>
+      </label>
       <div class="modal-actions">
-        <button type="button" class="cancel-btn">Cancel</button>
-        <button type="button" class="save-btn" disabled>Start</button>
+        <button type="button" class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button type="button" class="save-btn" disabled>${this._t("active_timers.start_btn", "Start")}</button>
       </div>
       <div class="form-error"></div>
     `;
     const minutesInput = box.querySelector(".q-minutes");
+    const secondsInput = box.querySelector(".q-seconds");
     const saveBtn = box.querySelector(".save-btn");
     const syncState = () => {
-      // A preset chip and the custom box are two ways of answering the same
-      // question, so typing in the box clears the chip rather than leaving
-      // two contradictory selections visible.
-      const typed = parseInt(minutesInput.value, 10);
-      const minutes = Number.isFinite(typed) && typed > 0 ? typed : this._draftMinutes;
+      // A preset chip and the custom min/sec boxes are two ways of
+      // answering the same question, so typing in either box clears the
+      // chip rather than leaving two contradictory selections visible.
+      const custom = this._customQuickTimerMinutes(box);
+      const minutes = custom !== null ? custom : this._draftMinutes;
       saveBtn.disabled = !(minutes > 0);
       box.querySelectorAll(".preset-btn").forEach((b) => {
-        b.classList.toggle("active", !typed && Number(b.dataset.minutes) === this._draftMinutes);
+        b.classList.toggle("active", custom === null && Number(b.dataset.minutes) === this._draftMinutes);
       });
     };
     box.querySelectorAll(".preset-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
         this._draftMinutes = Number(btn.dataset.minutes);
         minutesInput.value = "";
+        secondsInput.value = "";
         syncState();
       });
     });
     minutesInput.addEventListener("input", syncState);
+    secondsInput.addEventListener("input", syncState);
+    box.querySelectorAll(".q-audience-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        box.querySelectorAll(".q-audience-btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        this._draftAlarmAudience = btn.dataset.value;
+      });
+    });
     box.querySelector(".cancel-btn").addEventListener("click", () => overlay.classList.remove("open"));
     saveBtn.addEventListener("click", () => this._submitQuickTimer(box, overlay));
     syncState();
@@ -1066,9 +1296,27 @@ class FamilyHubActiveTimersCard extends HTMLElement {
       }
     }, 0);
   }
+  // Reads the modal's minutes + seconds custom-length boxes
+  // together and folds them into one fractional-minutes number (e.g. 1
+  // min 30 sec -> 1.5), or null if both are empty - null means "use
+  // whichever preset chip is active instead," same fallback the old
+  // minutes-only box already had. Shared between syncState (enabling the
+  // Start button / highlighting the active preset) and _submitQuickTimer
+  // so the two can never disagree about what's currently entered.
+  _customQuickTimerMinutes(box) {
+    const minVal = box.querySelector(".q-minutes").value;
+    const secVal = box.querySelector(".q-seconds").value;
+    if (minVal === "" && secVal === "") return null;
+    const typedMin = parseInt(minVal, 10);
+    const typedSec = parseInt(secVal, 10);
+    const min = Number.isFinite(typedMin) && typedMin > 0 ? typedMin : 0;
+    const sec = Number.isFinite(typedSec) && typedSec > 0 ? Math.min(59, typedSec) : 0;
+    const total = min + sec / 60;
+    return total > 0 ? total : null;
+  }
   async _submitQuickTimer(box, overlay) {
-    const typed = parseInt(box.querySelector(".q-minutes").value, 10);
-    const minutes = Number.isFinite(typed) && typed > 0 ? typed : this._draftMinutes;
+    const custom = this._customQuickTimerMinutes(box);
+    const minutes = custom !== null ? custom : this._draftMinutes;
     if (!minutes) return;
     const errEl = box.querySelector(".form-error");
     try {
@@ -1078,9 +1326,12 @@ class FamilyHubActiveTimersCard extends HTMLElement {
         label: (box.querySelector(".q-label").value || "").trim(),
         user_id: box.querySelector(".q-user").value || null,
         client_id: this._familyHubClientId(),
+        // "who hears this alarm" - see the button row's own
+        // comment above.
+        alarm_audience: this._draftAlarmAudience || "self",
       });
     } catch (e) {
-      errEl.textContent = (e && e.message) || "Couldn't start that timer.";
+      errEl.textContent = (e && e.message) || this._t("active_timers.couldnt_start_timer", "Couldn't start that timer.");
       return;
     }
     overlay.classList.remove("open");
@@ -1089,7 +1340,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
 
   _build() {
     this._built = true;
-    // v1.126.0+: applied BEFORE attachShadow/the first innerHTML paint -
+    // applied BEFORE attachShadow/the first innerHTML paint -
     // see _applyCachedThemeVarsIfAny's own comment and window.__familyHub
     // ThemeCache's above the class for why this is what actually fixes
     // the household's reported "loads the default theme first" flash.
@@ -1102,7 +1353,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
         <div class="header">
           <div class="title"></div>
           <span class="timer-count"></span>
-          <button class="add-timer-btn">&#65291; Start Timer</button>
+          <button class="add-timer-btn">&#65291; <span data-i18n="active_timers.start_timer_btn">Start Timer</span></button>
         </div>
         <div class="timers-board"></div>
       </ha-card>
@@ -1143,7 +1394,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
          countdown itself hard to read. */
       .timer-card { position: relative; border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--timer-color) 16%, var(--fc-card)); border: 2px solid var(--timer-color); box-shadow: var(--fc-shadow, 0 2px 5px rgba(0,0,0,0.06)); display: flex; flex-direction: column; gap: 2px; }
       .timer-card.unassigned { background: var(--fc-surface2); border-color: var(--fc-border); }
-      /* v1.120.0+: a plain HA timer.* entity, not one of Family Hub's own -
+      /* a plain HA timer.* entity, not one of Family Hub's own -
          dashed rather than solid so it's visually obvious at a glance which
          timers this board actually owns/can manage vs. is just reporting on. */
       .timer-card.foreign-timer { border-style: dashed; }
@@ -1171,6 +1422,18 @@ class FamilyHubActiveTimersCard extends HTMLElement {
       .preset-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
       .preset-btn { border: 2px solid var(--fc-border); border-radius: 10px; padding: 10px 4px; font-size: 13px; font-weight: 800; background: var(--fc-surface2); color: var(--fc-text); cursor: pointer; }
       .preset-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
+      /* "can we make the timer accept seconds" - the custom
+         length row is now two inputs (min/sec) side by side instead of
+         one; override the generic 100%-width input rule above so they
+         share the row instead of each claiming the full width. */
+      .q-custom-row { display: flex; gap: 8px; margin-top: 4px; }
+      .q-custom-row input { width: auto; flex: 1 1 0; margin-top: 0; }
+      /* "Who hears this alarm" 3-way row - same visual idiom
+         as .preset-btn above (a small pill button group), for the quick-
+         timer modal's new alarm_audience picker. */
+      .q-audience-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+      .q-audience-btn { flex: 1 1 0; min-width: 88px; min-height: 40px; border: 2px solid var(--fc-border); border-radius: 10px; padding: 8px 6px; font-size: 12.5px; font-weight: 800; background: var(--fc-surface2); color: var(--fc-text); cursor: pointer; }
+      .q-audience-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
       .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
       .modal-actions button { border: none; border-radius: 10px; padding: 8px 16px; font-weight: 700; cursor: pointer; }
       .save-btn { background: var(--fc-accent); color: var(--fc-accent-text); }
@@ -1183,7 +1446,7 @@ class FamilyHubActiveTimersCard extends HTMLElement {
 
 customElements.define("family-hub-active-timers-card", FamilyHubActiveTimersCard);
 
-// v1.111.0+: native "Edit Card" config editor - a thin wrapper around
+// native "Edit Card" config editor - a thin wrapper around
 // Home Assistant's own <ha-form>, needed only because the new
 // theme_override field's option list has to be fetched live. See
 // FamilyHubGoalsCardEditor in family-hub-goals-card.js for the identical

@@ -61,6 +61,8 @@ from .const import (
     ROUTINES_STORAGE_KEY_PREFIX,
     ROUTINES_STORAGE_VERSION,
     SETTINGS_BACKUP_DIR_NAME,
+    SETTINGS_HISTORY_STORAGE_KEY_PREFIX,
+    SETTINGS_HISTORY_STORAGE_VERSION,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -96,6 +98,10 @@ def create_device_settings_store(hass: HomeAssistant, entry: ConfigEntry) -> Sto
 
 def create_privacy_mode_store(hass: HomeAssistant, entry: ConfigEntry) -> Store:
     return Store(hass, PRIVACY_MODE_STORAGE_VERSION, f"{PRIVACY_MODE_STORAGE_KEY_PREFIX}_{entry.entry_id}")
+
+
+def create_settings_history_store(hass: HomeAssistant, entry: ConfigEntry) -> Store:
+    return Store(hass, SETTINGS_HISTORY_STORAGE_VERSION, f"{SETTINGS_HISTORY_STORAGE_KEY_PREFIX}_{entry.entry_id}")
 
 
 async def async_load_chores(store: Store) -> dict[str, dict[str, Any]]:
@@ -220,6 +226,38 @@ async def async_load_privacy_mode(store: Store) -> dict[str, Any]:
     for key, default_value in defaults.items():
         if key not in merged or not isinstance(merged[key], type(default_value)):
             merged[key] = default_value
+    return merged
+
+
+def default_settings_history() -> dict[str, Any]:
+    """See const.py's SETTINGS_HISTORY_STORAGE_KEY_PREFIX docstring for the
+    full picture of what this store is for (a rotating, admin-browsable
+    backup of Settings+Permissions+Device Settings together, separate from
+    the single-generation SETTINGS_BACKUP_FILENAME safety net above).
+
+    snapshots: a newest-first list of at most SETTINGS_HISTORY_MAX_SNAPSHOTS
+    {"timestamp": <ISO 8601 str, UTC>, "settings": {...}, "permissions":
+    {...}, "device_settings": {...}} dicts - see __init__.py's
+    _maybe_snapshot_settings_history for how/when these are captured, and
+    config_flow.py's FamilyHubOptionsFlow.async_step_restore_backup for how
+    one is picked and restored."""
+    return {"snapshots": []}
+
+
+async def async_load_settings_history(store: Store) -> dict[str, Any]:
+    """Loads the settings-history blob, filling in the one key if it's ever
+    missing (an older/partial save, or the very first load) - same
+    defensive merge as async_load_privacy_mode just above."""
+    data = await store.async_load()
+    if not isinstance(data, dict):
+        data = {}
+    defaults = default_settings_history()
+    merged = dict(data)
+    for key, default_value in defaults.items():
+        if key not in merged or not isinstance(merged[key], type(default_value)):
+            merged[key] = default_value
+    if not isinstance(merged.get("snapshots"), list):
+        merged["snapshots"] = []
     return merged
 
 

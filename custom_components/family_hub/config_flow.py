@@ -33,6 +33,7 @@ wizard.
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -45,11 +46,15 @@ from homeassistant.helpers import selector
 
 from . import (
     _build_upcoming_summary,
+    _capture_settings_history_snapshot,
     _get_family_hub_entry_data,
     _overrides_to_text,
     _parse_overrides,
+    _restore_settings_history_snapshot,
+    store as chores_store,
     updater,
 )
+from homeassistant.util import dt as dt_util
 from .const import (
     CONF_CALENDARS,
     CONF_DAILY_DIGEST_ENABLED,
@@ -71,6 +76,8 @@ from .const import (
     DEFAULT_DAILY_DIGEST_TIME,
     DEFAULT_POLL_MINUTES,
     DOMAIN,
+    SETTINGS_BACKUP_DIR_NAME,
+    SETTINGS_HISTORY_MAX_SNAPSHOTS as _SETTINGS_HISTORY_MAX_SNAPSHOTS,
 )
 
 
@@ -776,6 +783,111 @@ def _build_test_notify_schema(hass) -> vol.Schema:
     return vol.Schema({vol.Required(_TEST_TARGET_FIELD): _notify_target_selector(hass)})
 
 
+_RESTORE_SNAPSHOT_FIELD = "snapshot"
+_RESTORE_PUSH_DEVICES_FIELD = "push_device_settings"
+_EXPORT_SNAPSHOT_FIELD = "snapshot"
+_IMPORT_BACKUP_FILE_FIELD = "backup_file"
+
+# Keys a snapshot dict must carry to be treated as a real Family Hub
+# settings-history snapshot rather than some unrelated JSON file someone
+# picked by mistake - see store.py's default_settings_history() docstring
+# for the authoritative shape. "timestamp" is checked for type too (not
+# just presence) since _describe_settings_history_snapshot above needs a
+# parseable string, not just any truthy value.
+_SETTINGS_HISTORY_SNAPSHOT_REQUIRED_KEYS = ("timestamp", "settings", "permissions", "device_settings")
+
+
+def _write_backup_export_file(hass: HomeAssistant, snapshot: dict[str, Any]) -> str:
+    """Writes one Settings-history snapshot out as a standalone JSON file
+    under <config>/family_hub_backups/exports/, named after the snapshot's
+    own original timestamp so two exports of the same snapshot overwrite
+    each other instead of piling up. Returns the full path written, for
+    display in the confirmation screen - Home Assistant's config flow has
+    no way to push a browser download itself, so "here's the path, go get
+    it" (Samba, SSH, the Studio Code Server/Terminal add-ons, etc.) is the
+    only honest option. Blocking (file I/O) - always call this via
+    hass.async_add_executor_job, never awaited directly from a flow step.
+    """
+    export_dir = Path(hass.config.path(SETTINGS_BACKUP_DIR_NAME, "exports"))
+    export_dir.mkdir(parents=True, exist_ok=True)
+    raw_timestamp = snapshot.get("timestamp")
+    safe_timestamp = re.sub(r"[^0-9A-Za-z]+", "-", str(raw_timestamp or "unknown")).strip("-")
+    file_path = export_dir / f"family_hub_backup_{safe_timestamp}.json"
+    file_path.write_text(json.dumps(snapshot, indent=2, sort_keys=True), encoding="utf-8")
+    return str(file_path)
+
+
+def _read_uploaded_backup_snapshot(hass: HomeAssistant, uploaded_file_id: str) -> dict[str, Any]:
+    """Reads and parses a snapshot JSON file uploaded through a
+    FileSelector field (same process_uploaded_file idiom as
+    _read_uploaded_zip_bytes above, just text+json.loads instead of raw
+    bytes). Raises ValueError - caught by the calling flow step and turned
+    into the user-facing "invalid_backup_file" error - for anything that
+    isn't valid JSON, isn't a JSON object, or is missing one of
+    _SETTINGS_HISTORY_SNAPSHOT_REQUIRED_KEYS. Blocking (file I/O) - always
+    call this via hass.async_add_executor_job, never awaited directly."""
+    from homeassistant.components.file_upload import process_uploaded_file
+
+    with process_uploaded_file(hass, uploaded_file_id) as file_path:
+        raw = Path(file_path).read_text(encoding="utf-8")
+    try:
+        data = json.loads(raw)
+    except ValueError as err:
+        raise ValueError("not valid JSON") from err
+    if not isinstance(data, dict):
+        raise ValueError("not a JSON object")
+    for key in _SETTINGS_HISTORY_SNAPSHOT_REQUIRED_KEYS:
+        if key not in data:
+            raise ValueError(f"missing '{key}'")
+    if not isinstance(data.get("timestamp"), str):
+        raise ValueError("'timestamp' isn't a string")
+    for key in ("settings", "permissions", "device_settings"):
+        if not isinstance(data.get(key), dict):
+            raise ValueError(f"'{key}' isn't an object")
+    # Only the four recognized keys are kept - an export is meant to be
+    # re-imported as-is, but there's no reason to carry forward stray
+    # extra keys from a hand-edited or future-version file into this
+    # install's own history store.
+    return {key: data[key] for key in _SETTINGS_HISTORY_SNAPSHOT_REQUIRED_KEYS}
+
+
+def _describe_settings_history_snapshot(snapshot: dict[str, Any], now) -> str:
+    """Label for one Settings-history snapshot shown in the restore/export
+    picker and in confirmation/abort messages - the actual local date and
+    time it was taken (e.g. "Oct 3, 2026, 2:15 PM"), plus a relative-age
+    hint in parentheses (e.g. "35 minutes ago", "2 days ago"). Picking the
+    right one of SETTINGS_HISTORY_MAX_SNAPSHOTS recent snapshots - or
+    confirming an imported one landed where expected - needs the real
+    clock time, not just a fuzzy "2 hours ago" with no date attached (that
+    reads fine for a same-day pick, but is ambiguous the moment a snapshot
+    is more than a day old, or has been sitting in an exported file for
+    however long before being imported back in). Falls back to the raw
+    timestamp string if it's ever missing/unparseable rather than
+    crashing the options flow over a cosmetic label."""
+    timestamp = snapshot.get("timestamp")
+    parsed = dt_util.parse_datetime(timestamp) if isinstance(timestamp, str) else None
+    if parsed is None:
+        return str(timestamp or "unknown time")
+    local = dt_util.as_local(parsed)
+    date_part = local.strftime("%b %-d, %Y, %-I:%M %p")
+    delta = now - parsed
+    seconds = max(int(delta.total_seconds()), 0)
+    if seconds < 90:
+        relative = "just now"
+    else:
+        minutes = seconds // 60
+        if minutes < 60:
+            relative = f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+        else:
+            hours = minutes // 60
+            if hours < 48:
+                relative = f"{hours} hour{'s' if hours != 1 else ''} ago"
+            else:
+                days = hours // 24
+                relative = f"{days} day{'s' if days != 1 else ''} ago"
+    return f"{date_part} ({relative})"
+
+
 class FamilyHubOptionsFlow(config_entries.OptionsFlow):
     """Configure reminders, send a test notification, install an update, or
     get pointed at the card's own Settings modal - all live here
@@ -786,7 +898,9 @@ class FamilyHubOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         return self.async_show_menu(
             step_id="init",
-            menu_options=["settings", "reminders", "grocy", "test_notify", "upcoming", "update"],
+            menu_options=[
+                "settings", "reminders", "grocy", "test_notify", "upcoming", "restore_backup", "update",
+            ],
         )
 
     # Home Assistant's own "Configure" button
@@ -906,6 +1020,227 @@ class FamilyHubOptionsFlow(config_entries.OptionsFlow):
             step_id="upcoming",
             data_schema=vol.Schema({}),
             description_placeholders={"summary": summary},
+        )
+
+    async def async_step_restore_backup(self, user_input: dict[str, Any] | None = None):
+        """Entry point for everything backup-related: restoring an
+        existing automatically-captured snapshot, exporting one to a file,
+        or importing a snapshot from a file someone exported earlier
+        (possibly from a different installation entirely - e.g. restoring
+        a household's settings onto a replacement Home Assistant instance,
+        where the automatic hourly history was never populated in the
+        first place). Just a menu - see async_step_restore_backup_pick/
+        async_step_export_backup/async_step_import_backup for the actual
+        work."""
+        return self.async_show_menu(
+            step_id="restore_backup",
+            menu_options=["restore_backup_pick", "export_backup", "import_backup"],
+        )
+
+    async def async_step_restore_backup_pick(self, user_input: dict[str, Any] | None = None):
+        """Step 1 of 2: pick which automatically-captured (or previously
+        imported - the two live in the same history store once imported,
+        see async_step_import_backup) Settings-history snapshot to
+        restore (see const.py's SETTINGS_HISTORY_STORAGE_KEY_PREFIX
+        docstring for what's captured and how often). Snapshots are
+        listed newest-first, labeled with the actual date/time they were
+        taken plus a relative-age hint."""
+        entry_data = _get_family_hub_entry_data(self.hass)
+        if entry_data is None:
+            return self.async_abort(reason="not_found")
+        history_store = entry_data.get("settings_history_store")
+        history = await chores_store.async_load_settings_history(history_store) if history_store else {"snapshots": []}
+        snapshots = history.get("snapshots") or []
+        if not snapshots:
+            return self.async_abort(reason="no_backups")
+
+        if user_input is not None:
+            self._restore_snapshot_index = int(user_input[_RESTORE_SNAPSHOT_FIELD])
+            return await self.async_step_restore_backup_confirm()
+
+        now = dt_util.utcnow()
+        options = []
+        for index, snapshot in enumerate(snapshots):
+            options.append(
+                selector.SelectOptionDict(
+                    value=str(index), label=_describe_settings_history_snapshot(snapshot, now)
+                )
+            )
+        schema = vol.Schema(
+            {
+                vol.Required(_RESTORE_SNAPSHOT_FIELD): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=options, mode=selector.SelectSelectorMode.LIST)
+                ),
+            }
+        )
+        return self.async_show_form(step_id="restore_backup_pick", data_schema=schema)
+
+    async def async_step_export_backup(self, user_input: dict[str, Any] | None = None):
+        """Pick one of the existing Settings-history snapshots and write
+        it out as a standalone .json file under
+        <config>/family_hub_backups/exports/ - the file to hand off for
+        safekeeping outside this install entirely, or to later feed back
+        in on this or another install via async_step_import_backup. Home
+        Assistant's config flow has no way to trigger a browser download
+        directly, so the confirmation screen just names the path; use
+        Samba, SSH, or the Studio Code Server/Terminal add-ons to actually
+        grab the file from there."""
+        entry_data = _get_family_hub_entry_data(self.hass)
+        if entry_data is None:
+            return self.async_abort(reason="not_found")
+        history_store = entry_data.get("settings_history_store")
+        history = await chores_store.async_load_settings_history(history_store) if history_store else {"snapshots": []}
+        snapshots = history.get("snapshots") or []
+        if not snapshots:
+            return self.async_abort(reason="no_backups")
+
+        now = dt_util.utcnow()
+        if user_input is not None:
+            index = int(user_input[_EXPORT_SNAPSHOT_FIELD])
+            if index < 0 or index >= len(snapshots):
+                return self.async_abort(reason="no_backups")
+            snapshot = snapshots[index]
+            path = await self.hass.async_add_executor_job(_write_backup_export_file, self.hass, snapshot)
+            return self.async_abort(
+                reason="export_done",
+                description_placeholders={
+                    "when": _describe_settings_history_snapshot(snapshot, now),
+                    "path": path,
+                },
+            )
+
+        options = []
+        for index, snapshot in enumerate(snapshots):
+            options.append(
+                selector.SelectOptionDict(
+                    value=str(index), label=_describe_settings_history_snapshot(snapshot, now)
+                )
+            )
+        schema = vol.Schema(
+            {
+                vol.Required(_EXPORT_SNAPSHOT_FIELD): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=options, mode=selector.SelectSelectorMode.LIST)
+                ),
+            }
+        )
+        return self.async_show_form(step_id="export_backup", data_schema=schema)
+
+    async def async_step_import_backup(self, user_input: dict[str, Any] | None = None):
+        """Upload a .json file previously produced by
+        async_step_export_backup (from this install or a different one)
+        and add it to this install's own settings-history store as a new,
+        newest-first entry, trimmed to SETTINGS_HISTORY_MAX_SNAPSHOTS same
+        as the hourly capture. Deliberately does NOT restore it
+        automatically - it only becomes available to pick from
+        async_step_restore_backup_pick, same two-step confirm-and-
+        automatic-safety-snapshot flow as any other snapshot, so importing
+        a file is never by itself a one-way door into someone else's
+        settings."""
+        import_schema = vol.Schema(
+            {
+                vol.Required(_IMPORT_BACKUP_FILE_FIELD): selector.FileSelector(
+                    selector.FileSelectorConfig(accept=".json,application/json")
+                ),
+            }
+        )
+        if user_input is not None:
+            entry_data = _get_family_hub_entry_data(self.hass)
+            if entry_data is None:
+                return self.async_abort(reason="not_found")
+            try:
+                snapshot = await self.hass.async_add_executor_job(
+                    _read_uploaded_backup_snapshot, self.hass, user_input[_IMPORT_BACKUP_FILE_FIELD]
+                )
+            except ValueError as err:
+                return self.async_show_form(
+                    step_id="import_backup",
+                    data_schema=import_schema,
+                    errors={"base": "invalid_backup_file"},
+                    description_placeholders={"error": str(err)},
+                )
+            except Exception as err:  # noqa: BLE001 - never leave the user with a raw traceback
+                return self.async_show_form(
+                    step_id="import_backup",
+                    data_schema=import_schema,
+                    errors={"base": "invalid_backup_file"},
+                    description_placeholders={"error": f"Unexpected error: {err}"},
+                )
+
+            history_store = entry_data.get("settings_history_store")
+            history = (
+                await chores_store.async_load_settings_history(history_store) if history_store else {"snapshots": []}
+            )
+            snapshots = history.get("snapshots") or []
+            snapshots.insert(0, snapshot)
+            del snapshots[_SETTINGS_HISTORY_MAX_SNAPSHOTS:]
+            history["snapshots"] = snapshots
+            if history_store is not None:
+                await history_store.async_save(history)
+
+            return self.async_abort(
+                reason="import_done",
+                description_placeholders={"when": _describe_settings_history_snapshot(snapshot, dt_util.utcnow())},
+            )
+
+        return self.async_show_form(step_id="import_backup", data_schema=import_schema)
+
+    async def async_step_restore_backup_confirm(self, user_input: dict[str, Any] | None = None):
+        """Step 2 of 2: confirm, and separately decide whether the restore
+        should also push the snapshot's Device Settings out live to every
+        known device/instance (see _restore_settings_history_snapshot's own
+        docstring for exactly what that does and doesn't touch) - off by
+        default, since the far more common case is "undo a bad Settings
+        save," not "roll every tablet's view/layout back too."""
+        entry_data = _get_family_hub_entry_data(self.hass)
+        if entry_data is None:
+            return self.async_abort(reason="not_found")
+        history_store = entry_data.get("settings_history_store")
+        history = await chores_store.async_load_settings_history(history_store) if history_store else {"snapshots": []}
+        snapshots = history.get("snapshots") or []
+        index = getattr(self, "_restore_snapshot_index", None)
+        if index is None or index < 0 or index >= len(snapshots):
+            return self.async_abort(reason="no_backups")
+        snapshot = snapshots[index]
+
+        if user_input is not None:
+            push_device_settings = bool(user_input.get(_RESTORE_PUSH_DEVICES_FIELD))
+            # One more automatic safety snapshot of the CURRENT state,
+            # taken immediately before restoring - see
+            # _restore_settings_history_snapshot's own docstring for why
+            # this makes restoring itself never a one-way door. Saved the
+            # same way the hourly timer would, including the same
+            # MAX_SNAPSHOTS trim.
+            fresh_history = await chores_store.async_load_settings_history(history_store) if history_store else {
+                "snapshots": []
+            }
+            fresh_snapshots = fresh_history.get("snapshots") or []
+            safety_snapshot = await _capture_settings_history_snapshot(self.hass, entry_data)
+            fresh_snapshots.insert(0, safety_snapshot)
+            del fresh_snapshots[_SETTINGS_HISTORY_MAX_SNAPSHOTS:]
+            fresh_history["snapshots"] = fresh_snapshots
+            if history_store is not None:
+                await history_store.async_save(fresh_history)
+
+            await _restore_settings_history_snapshot(
+                self.hass, entry_data, snapshot, push_device_settings=push_device_settings
+            )
+            return self.async_abort(
+                reason="restore_done",
+                description_placeholders={
+                    "when": _describe_settings_history_snapshot(snapshot, dt_util.utcnow()),
+                    "devices": "yes" if push_device_settings else "no",
+                },
+            )
+
+        schema = vol.Schema(
+            {
+                vol.Optional(_RESTORE_PUSH_DEVICES_FIELD, default=False): selector.BooleanSelector(),
+            }
+        )
+        return self.async_show_form(
+            step_id="restore_backup_confirm",
+            data_schema=schema,
+            description_placeholders={"when": _describe_settings_history_snapshot(snapshot, dt_util.utcnow())},
         )
 
     async def async_step_update(self, user_input: dict[str, Any] | None = None):

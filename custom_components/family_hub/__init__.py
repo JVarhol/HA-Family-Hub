@@ -48,12 +48,14 @@ import voluptuous as vol
 from homeassistant.components import panel_custom, websocket_api
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import __version__ as HA_CORE_VERSION
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
 from homeassistant.helpers.storage import Store
+from homeassistant.loader import async_get_integration
 from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
@@ -135,6 +137,7 @@ from .const import (
     SETTINGS_KEY_GOALS_IN_REWARDS,
     SETTINGS_BACKUP_DIR_NAME,
     SETTINGS_BACKUP_FILENAME,
+    SETTINGS_HISTORY_MAX_SNAPSHOTS,
     DEFAULT_DIGEST_SECTIONS,
     CHORE_BIN_SENTINEL,
     CHORE_KEY_REMINDER_MINUTES,
@@ -1227,6 +1230,211 @@ async def _maybe_restore_settings_backup(hass: HomeAssistant, settings_store: St
     )
 
 
+async def _capture_settings_history_snapshot(hass: HomeAssistant, entry_data: dict[str, Any]) -> dict[str, Any]:
+    """Builds one Settings-history snapshot from this entry's current
+    live data - the Settings Store, the Permissions Store, and the Device
+    Settings Store, all three together (see const.py's
+    SETTINGS_HISTORY_STORAGE_KEY_PREFIX docstring for why all three, not
+    just Settings). Pure read - never writes anything itself; the caller
+    decides whether/where to save the result (see
+    _maybe_snapshot_settings_history for the hourly timer's own
+    change-detection before it bothers saving one of these, and
+    FamilyHubOptionsFlow.async_step_restore_backup for the one-off safety
+    snapshot taken immediately before a restore)."""
+    settings_store: Store | None = entry_data.get("settings_store")
+    permissions_store: Store | None = entry_data.get("permissions_store")
+    device_settings_store: Store | None = entry_data.get("device_settings_store")
+    settings = (await settings_store.async_load() if settings_store is not None else None) or {}
+    permissions = (await permissions_store.async_load() if permissions_store is not None else None) or {}
+    device_settings = (
+        await chores_store.async_load_device_settings(device_settings_store)
+        if device_settings_store is not None
+        else chores_store.default_device_settings()
+    )
+    return {
+        "timestamp": dt_util.utcnow().isoformat(),
+        "settings": settings,
+        "permissions": permissions,
+        "device_settings": device_settings,
+    }
+
+
+def _settings_history_snapshot_unchanged(previous: dict[str, Any] | None, candidate: dict[str, Any]) -> bool:
+    """True when `candidate` would be a pointless duplicate of the most
+    recent snapshot already on file - same settings, same permissions, AND
+    same device settings. Only the three captured payloads are compared
+    (never the timestamp, which obviously always differs) - see
+    _maybe_snapshot_settings_history's own docstring for why a quiet
+    household should never burn all SETTINGS_HISTORY_MAX_SNAPSHOTS
+    generations on identical copies of the same data."""
+    if previous is None:
+        return False
+    return (
+        previous.get("settings") == candidate.get("settings")
+        and previous.get("permissions") == candidate.get("permissions")
+        and previous.get("device_settings") == candidate.get("device_settings")
+    )
+
+
+async def _maybe_snapshot_settings_history(hass: HomeAssistant, entry_data: dict[str, Any]) -> None:
+    """On-the-hour capture (see async_setup_entry's own
+    async_track_time_change(hass, _snapshot_settings_history, minute=0, second=0)
+    call - deliberately wall-clock-aligned, not a plain interval timer, so
+    this always fires at :00 regardless of when the entry last started or
+    reloaded) of this entry's Settings+Permissions+Device Settings into the
+    rotating Settings-history Store. A brand-new install with nothing
+    configured yet (an entirely empty snapshot) is still worth keeping -
+    unlike the single-generation SETTINGS_BACKUP_FILENAME safety net, an
+    admin browsing Settings history naturally expects to see "what this
+    looked like an hour ago" even if that was also empty - so this never
+    skips on emptiness, only on being an exact duplicate of the most
+    recent snapshot already on file (see
+    _settings_history_snapshot_unchanged). Keeps at most
+    SETTINGS_HISTORY_MAX_SNAPSHOTS generations, newest first, dropping the
+    oldest once that cap is exceeded."""
+    history_store: Store | None = entry_data.get("settings_history_store")
+    if history_store is None:
+        return
+    history = await chores_store.async_load_settings_history(history_store)
+    snapshots = history.get("snapshots") or []
+    candidate = await _capture_settings_history_snapshot(hass, entry_data)
+    if _settings_history_snapshot_unchanged(snapshots[0] if snapshots else None, candidate):
+        return
+    snapshots.insert(0, candidate)
+    del snapshots[SETTINGS_HISTORY_MAX_SNAPSHOTS:]
+    history["snapshots"] = snapshots
+    await history_store.async_save(history)
+
+
+async def _manual_backup_settings_history(hass: HomeAssistant, entry_data: dict[str, Any]) -> dict[str, Any]:
+    """Manual counterpart to _maybe_snapshot_settings_history's hourly
+    automatic capture - powers the Settings panel's "Back up now" button
+    (see _ws_backup_settings_now). Always saves a new snapshot, even if
+    nothing's changed since the last one: unlike the hourly timer's own
+    dedup (_settings_history_snapshot_unchanged), a household that
+    explicitly presses "Back up now" - most likely right before making a
+    risky change - wants a guaranteed restore point at this exact moment,
+    not to be silently told "nothing changed, skipped." Still respects
+    SETTINGS_HISTORY_MAX_SNAPSHOTS (a manual backup can push out the
+    oldest automatic one), and raises if this entry has no settings-
+    history store yet (an older, not-yet-updated entry_data shape) so the
+    websocket command can report a clear error rather than pretending it
+    worked."""
+    history_store: Store | None = entry_data.get("settings_history_store")
+    if history_store is None:
+        raise RuntimeError("Settings history isn't available on this install yet")
+    history = await chores_store.async_load_settings_history(history_store)
+    snapshots = history.get("snapshots") or []
+    candidate = await _capture_settings_history_snapshot(hass, entry_data)
+    snapshots.insert(0, candidate)
+    del snapshots[SETTINGS_HISTORY_MAX_SNAPSHOTS:]
+    history["snapshots"] = snapshots
+    await history_store.async_save(history)
+    return candidate
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/backup_settings_now"})
+@websocket_api.async_response
+async def _ws_backup_settings_now(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Settings panel's "Back up now" button - see
+    _manual_backup_settings_history's own docstring. Not server-side
+    admin-gated, same as _ws_set_settings/_ws_get_settings just above
+    (every Settings-panel write in this project is frontend-hidden from
+    non-admins via .admin-only-setting, not backend-enforced - see that
+    CSS class's own comment on why) - the card only shows this button to
+    an admin in the first place."""
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    try:
+        snapshot = await _manual_backup_settings_history(hass, entry_data)
+    except Exception as err:  # noqa: BLE001 - surface the real reason to the card, don't crash the connection
+        connection.send_error(msg["id"], "backup_failed", str(err))
+        return
+    connection.send_result(msg["id"], {"timestamp": snapshot.get("timestamp")})
+
+
+async def _restore_settings_history_snapshot(
+    hass: HomeAssistant,
+    entry_data: dict[str, Any],
+    snapshot: dict[str, Any],
+    *,
+    push_device_settings: bool,
+) -> None:
+    """Restores Settings + Permissions immediately and unconditionally from
+    `snapshot` (see FamilyHubOptionsFlow.async_step_restore_backup, the
+    only caller - it always takes one more automatic safety snapshot of
+    the CURRENT state first, via _capture_settings_history_snapshot, so
+    this is never a one-way door).
+
+    Device Settings is handled separately and only when `push_device_
+    settings` is true (the admin explicitly opted in on the follow-up
+    question - see const.py's SETTINGS_HISTORY_STORAGE_KEY_PREFIX
+    docstring for why this is a separate ask): restores the Device
+    Settings Store's own on-disk blob (presets, each device's last-known
+    settings) AND actively pushes each device's/instance's restored
+    settings out live, reusing the exact same primitives ws_apply_preset
+    already uses (device_settings_websocket_api._push_settings/
+    _push_instance_settings) - so a dashboard that's open right now
+    updates immediately, and one that's closed picks the restored values
+    up the next time it loads via its own existing ws_get_pending
+    sequence-number check. Skipping this (push_device_settings=False)
+    leaves every device's actual live settings completely untouched -
+    only the admin's own Devices-tab view of presets/last-known-settings
+    is restored, same "advisory mirror, not a device's source of truth"
+    distinction const.py's DEVICE_SETTINGS_STORAGE_KEY_PREFIX docstring
+    already draws.
+    """
+    settings_store: Store | None = entry_data.get("settings_store")
+    permissions_store: Store | None = entry_data.get("permissions_store")
+    if settings_store is not None:
+        restored_settings = dict(snapshot.get("settings") or {})
+        await settings_store.async_save(restored_settings)
+        await _backup_settings(hass, restored_settings)
+    if permissions_store is not None:
+        restored_permissions = dict(snapshot.get("permissions") or {})
+        await permissions_store.async_save(restored_permissions)
+        await chores_store.backup_permissions(hass, restored_permissions)
+        entry_data["permissions"] = restored_permissions
+
+    if not push_device_settings:
+        return
+
+    device_settings_store: Store | None = entry_data.get("device_settings_store")
+    restored_blob = snapshot.get("device_settings")
+    if not isinstance(restored_blob, dict):
+        return
+    devices = restored_blob.get("devices")
+    if isinstance(devices, dict):
+        for device_id, record in devices.items():
+            if not isinstance(record, dict):
+                continue
+            device_settings = {
+                k: v
+                for k, v in (record.get("settings") or {}).items()
+                if k in device_settings_ws_api.DEVICE_SCOPED_SETTINGS_FIELDS
+            }
+            if device_settings:
+                device_settings_ws_api._push_settings(hass, entry_data, device_id, device_settings)
+            instances = record.get("instances")
+            if isinstance(instances, dict):
+                for instance_id, instance_record in instances.items():
+                    if not isinstance(instance_record, dict):
+                        continue
+                    instance_settings = {
+                        k: v
+                        for k, v in (instance_record.get("settings") or {}).items()
+                        if k in device_settings_ws_api.INSTANCE_SCOPED_SETTINGS_FIELDS
+                    }
+                    if instance_settings:
+                        device_settings_ws_api._push_instance_settings(
+                            hass, entry_data, device_id, instance_id, instance_settings
+                        )
+    if device_settings_store is not None:
+        await device_settings_store.async_save(entry_data["device_settings"])
+
+
 def _targets_for_calendar(profiles: dict[str, dict[str, Any]], calendar_entity: str) -> list[str]:
     """Union (deduped, order-stable) of every subscribed user's notify
     targets for one calendar - replaces the old single override list."""
@@ -1469,6 +1677,126 @@ def _get_family_hub_entry_data(hass: HomeAssistant) -> dict[str, Any] | None:
     if entry is None:
         return None
     return hass.data.get(DOMAIN, {}).get("entries", {}).get(entry.entry_id)
+
+
+async def _build_debug_info(hass: HomeAssistant, entry: ConfigEntry, entry_data: dict[str, Any]) -> dict[str, Any]:
+    """Assembles a full, server-side snapshot of this install for the
+    card's Debug Info panel (see _renderDebug in the card's JS, which
+    merges this with its own client-side diagnostics - connection state,
+    the current view, per-calendar fetch results - that only the browser
+    can see).
+
+    Deliberately counts/summarizes rather than dumping raw data (e.g.
+    "12 chores" not the chores themselves) - this is meant to be pasted
+    into a GitHub issue or shared with support, and the real content of a
+    household's calendars/chores/permissions has no business leaving the
+    browser for that. The one exception is userProfiles' own ids/names/
+    flags (not pinHash/pinSalt, never included in the settings blob this
+    reads - see _ws_set_settings's own docstring on why those two never
+    even reach the frontend), since "which members exist and what's
+    enabled for them" is exactly the kind of thing a migration/permissions
+    bug report needs to show.
+
+    Every feature area here has an obvious owner (the Store/entry_data key
+    that feature already uses elsewhere in this file) - new features should
+    add a line here the same way, not leave this panel stale."""
+    try:
+        integration = await async_get_integration(hass, DOMAIN)
+        version = str(integration.version) if integration.version else "unknown"
+    except Exception:  # noqa: BLE001 - a version lookup failure must never break the whole panel
+        version = "unknown"
+
+    settings = (await entry_data["settings_store"].async_load()) if entry_data.get("settings_store") else None
+    settings = settings or {}
+    profiles = _get_user_profiles(settings)
+    permissions = entry_data.get("permissions") or {}
+    chores = entry_data.get("chores") or {}
+    rewards = entry_data.get("rewards") or {}
+    routines = entry_data.get("routines") or {}
+    goals = entry_data.get("goals") or {}
+    pantry_extras = entry_data.get("pantry_extras") or {}
+    device_settings = entry_data.get("device_settings") or {}
+    privacy_mode = entry_data.get("privacy_mode") or {}
+    event_checklists = entry_data.get("event_checklists") or {}
+    timers = entry_data.get("timers") or {}
+
+    history_store: Store | None = entry_data.get("settings_history_store")
+    history = await chores_store.async_load_settings_history(history_store) if history_store is not None else {}
+    snapshots = history.get("snapshots") or []
+
+    options = dict(entry.options) if entry is not None else {}
+
+    return {
+        "generated_at": dt_util.utcnow().isoformat(),
+        "family_hub_version": version,
+        "home_assistant_version": HA_CORE_VERSION,
+        "entry_id": entry.entry_id if entry is not None else None,
+        "members": {
+            "member_user_ids_count": len(settings.get(SETTINGS_KEY_MEMBER_USER_IDS) or []),
+            "user_profiles": [
+                {
+                    "user_id": user_id,
+                    "name": profile.get("name") if isinstance(profile, dict) else None,
+                    "included_in_chores": (
+                        bool(profile.get("includeInChores", True)) if isinstance(profile, dict) else None
+                    ),
+                    "kiosk_login_enabled": (
+                        user_id in (settings.get("kioskLoginEnabledUserIds") or [])
+                    ),
+                }
+                for user_id, profile in profiles.items()
+            ],
+        },
+        "permissions_granted_count": len(permissions),
+        "chores_feature": {
+            "chores_count": len(chores),
+            "rewards_catalog_count": len(rewards.get("catalog") or []),
+            "rewards_balances_count": len(rewards.get("balances") or {}),
+            "routines_enabled": bool(settings.get(SETTINGS_KEY_ROUTINES_ENABLED)),
+            "routines_items_count": len((routines or {}).get("items") or {}),
+            "goals_count": len(goals),
+            "goals_shown_in_chores": bool(settings.get(SETTINGS_KEY_GOALS_IN_CHORES)),
+            "goals_shown_in_rewards": bool(settings.get(SETTINGS_KEY_GOALS_IN_REWARDS)),
+            "timers_running": sum(1 for t in timers.values() if isinstance(t, dict) and t.get("status") == "running"),
+        },
+        "pantry": {
+            "grocy_configured": bool(options.get(CONF_GROCY_URL)),
+            "pantry_extras_count": len(pantry_extras),
+        },
+        "device_settings": {
+            "devices_known": len(device_settings.get("devices") or {}),
+            "presets_saved": len(device_settings.get("presets") or {}),
+        },
+        "privacy_mode_enabled": bool(privacy_mode.get("enabled")),
+        "settings_history": {
+            "snapshots_kept": len(snapshots),
+            "newest_snapshot": snapshots[0].get("timestamp") if snapshots else None,
+            "oldest_snapshot": snapshots[-1].get("timestamp") if snapshots else None,
+        },
+        "reminders": {
+            "calendars_monitored": len(options.get(CONF_CALENDARS) or []),
+            "poll_minutes": options.get(CONF_POLL_MINUTES, DEFAULT_POLL_MINUTES),
+        },
+        "daily_digest_enabled": bool(options.get(CONF_DAILY_DIGEST_ENABLED)),
+        "event_checklists_count": len(event_checklists),
+    }
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/get_debug_info"})
+@websocket_api.async_response
+async def _ws_get_debug_info(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Powers the card's Debug Info panel + its "Export to file" button -
+    see _build_debug_info's own docstring for exactly what's included and
+    why. Not admin-gated: same reasoning as _ws_get_settings just below -
+    this is read-only, diagnostic, and the existing client-side half of
+    the same panel (connection state, fetch errors) was never gated
+    either."""
+    entry = _get_family_hub_entry(hass)
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry is None or entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    connection.send_result(msg["id"], {"info": await _build_debug_info(hass, entry, entry_data)})
 
 
 @websocket_api.websocket_command({vol.Required("type"): "family_hub/get_notify_config"})
@@ -10598,6 +10926,8 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     websocket_api.async_register_command(hass, _ws_get_daily_digest)
     websocket_api.async_register_command(hass, _ws_get_settings)
     websocket_api.async_register_command(hass, _ws_set_settings)
+    websocket_api.async_register_command(hass, _ws_get_debug_info)
+    websocket_api.async_register_command(hass, _ws_backup_settings_now)
     websocket_api.async_register_command(hass, _ws_get_todo_card_config)
     websocket_api.async_register_command(hass, _ws_set_todo_card_config)
     # on-demand Local To-do list creation - see its own docstring.
@@ -10903,6 +11233,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Settings just above (a live on/off flag, not data worth restoring).
     privacy_mode_store_obj = chores_store.create_privacy_mode_store(hass, entry)
     privacy_mode = await chores_store.async_load_privacy_mode(privacy_mode_store_obj)
+    # Settings history - see const.py's SETTINGS_HISTORY_STORAGE_KEY_PREFIX
+    # docstring. Captured hourly below (_maybe_snapshot_settings_history)
+    # and restored from FamilyHubOptionsFlow.async_step_restore_backup.
+    settings_history_store_obj = chores_store.create_settings_history_store(hass, entry)
     # Catches the "Home Assistant was off/restarted overnight" case - see
     # routine_engine.maybe_reset_daily's own docstring for why this also
     # needs to run on every later poll tick below, not just here.
@@ -11006,6 +11340,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass, _sweep_timers, timedelta(seconds=TIMER_SWEEP_SECONDS)
     )
 
+    # Settings history - capture of Settings+Permissions+Device Settings
+    # together, ON THE HOUR (see const.py's
+    # SETTINGS_HISTORY_STORAGE_KEY_PREFIX docstring and
+    # _maybe_snapshot_settings_history's own docstring for why this is its
+    # own schedule rather than riding _poll above: _poll's cadence is
+    # driven by CONF_POLL_MINUTES, a household-tunable reminder setting
+    # that has nothing to do with when a safety snapshot should be taken).
+    # Deliberately async_track_time_change(minute=0, second=0) rather than
+    # async_track_time_interval(timedelta(hours=...)) - an interval timer
+    # is anchored to whenever THIS call ran (entry setup, or any later
+    # reload), so its actual fire times silently drift to a different
+    # :MM every time Home Assistant restarts or the entry reloads for any
+    # reason (an update, a settings change, anything). A household
+    # restoring "what things looked like an hour ago" expects that to mean
+    # the top of the hour, not whatever minute the integration happened to
+    # last reload at.
+    async def _snapshot_settings_history(_now=None) -> None:
+        entry_data_for_history = hass.data.get(DOMAIN, {}).get("entries", {}).get(entry.entry_id)
+        if entry_data_for_history is None:
+            return
+        try:
+            await _maybe_snapshot_settings_history(hass, entry_data_for_history)
+        except Exception as err:  # noqa: BLE001 - a snapshot failure must never kill the schedule
+            _LOGGER.warning("Family Hub: settings history snapshot failed: %s", err)
+
+    cancel_settings_history = async_track_time_change(hass, _snapshot_settings_history, minute=0, second=0)
+
     # "this should use the home assistant native timer.*". When a
     # Family Hub timer is running on an adopted native timer helper, HOME
     # ASSISTANT decides it is done and says so on its own event bus - these
@@ -11066,6 +11427,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "device_settings": device_settings,
         "privacy_mode_store": privacy_mode_store_obj,
         "privacy_mode": privacy_mode,
+        "settings_history_store": settings_history_store_obj,
+        "cancel_settings_history": cancel_settings_history,
     }
 
     # Root cause: v186 added the
@@ -11143,6 +11506,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # cancel, or it keeps firing against a torn-down entry after unload.
     if entry_data and entry_data.get("cancel_timer_sweep"):
         entry_data["cancel_timer_sweep"]()
+    # the settings-history snapshot timer is its own interval and needs its
+    # own cancel, or it keeps firing against a torn-down entry after unload.
+    if entry_data and entry_data.get("cancel_settings_history"):
+        entry_data["cancel_settings_history"]()
     # the two native timer.* bus listeners need their own
     # unsubscribes, or they keep firing against a torn-down entry.
     for key in ("cancel_timer_finished", "cancel_timer_cancelled"):

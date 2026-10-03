@@ -1,4 +1,4 @@
-// Family Hub My Pantry card (v141+) - a household's stock at a glance, in
+// Family Hub My Pantry card - a household's stock at a glance, in
 // two parts: a live Grocy Stock list (every product currently in stock,
 // read/written straight through Grocy's own REST API - see __init__.py's
 // _fetch_pantry_stock/_ws_get_pantry_stock and friends, right alongside
@@ -15,10 +15,215 @@
 // it, matching this project's established convention for every Family Hub
 // card.
 
-// Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
-// "When you load a card it tends to load the default theme first then it
-// switches over to the theme you set how can we always make it load the
-// set theme first." Root cause: EVERY themed card's first paint happens
+// Household-wide timer alarm sound+modal (v1.119.0+, widened in
+// v1.132.55+) - see family-hub-active-timers-card.js's own top comment
+// above this same block for the full design note. Added here in
+// v1.132.59+ after a - this card never carried this singleton or subscribed to
+// the widened-alarm broadcast at all, so a kiosk whose dashboard shows
+// it silently never rang for anyone else's widened timer alarm. Kept
+// byte-identical to every other card's copy on purpose.
+if (!window.__familyHubTimerAlarm) {
+  window.__familyHubTimerAlarm = (function () {
+    let modalEl = null;
+    let audioCtx = null;
+    let beepHandle = null;
+    let activeUid = null;
+    // A timer's uid, once dismissed, stays dismissed - otherwise the very
+    // next poll's countdown tick (still <= 0 for a few more seconds until
+    // the backend's own sweep, up to TIMER_SWEEP_SECONDS later, actually
+    // removes it from family_hub/timers/list) would immediately re-open
+    // the modal a person just tapped Stop on. Unbounded but negligible: a
+    // few bytes per timer this ONE tab ever alarmed for in its lifetime.
+    const dismissedUids = new Set();
+    function ensureModal() {
+      if (modalEl) return modalEl;
+      modalEl = document.createElement("div");
+      modalEl.id = "family-hub-timer-alarm-overlay";
+      Object.assign(modalEl.style, {
+        position: "fixed", inset: "0", zIndex: "2147483647", display: "none",
+        alignItems: "center", justifyContent: "center",
+        background: "rgba(20,16,8,0.78)",
+      });
+      modalEl.innerHTML =
+        '<div style="background:#fff8ea;color:#3a352c;border-radius:22px;padding:38px 30px;max-width:360px;width:88vw;text-align:center;box-shadow:0 14px 46px rgba(0,0,0,0.45);font-family:-apple-system,\'Segoe UI\',Roboto,sans-serif;">' +
+        '<div style="font-size:48px;margin-bottom:12px;">&#9200;</div>' +
+        '<div class="fh-timer-alarm-title" style="font-size:1.3em;font-weight:800;margin-bottom:6px;"></div>' +
+        '<div style="font-size:14px;color:#96877a;margin-bottom:24px;">Time\'s up!</div>' +
+        '<button type="button" class="fh-timer-alarm-stop" style="min-height:54px;width:100%;border:none;border-radius:14px;background:#8f5a00;color:#fff8ea;font-size:19px;font-weight:800;cursor:pointer;">Stop</button>' +
+        "</div>";
+      document.body.appendChild(modalEl);
+      modalEl.querySelector(".fh-timer-alarm-stop").addEventListener("click", () => stop());
+      return modalEl;
+    }
+    // A plain oscillator beep via the Web Audio API - deliberately not a
+    // bundled sound file: no extra media asset for HACS/manual installs to
+    // ship or for a self-hosted install's network policy to worry about,
+    // and it sounds identical on every install.
+    //
+    // The original v1.119.0+ sound was one
+    // flat square-wave tone repeated once a second - metronomic, which is
+    // exactly what read as a countdown-bomb tick rather than an alarm. This
+    // plays a quick alternating two-pitch TRIPLET (a classic digital-alarm-
+    // clock trill) each cycle instead of a single tone, which is what
+    // actually reads as "alarm" to the ear - the alternating pitch is what
+    // a lone repeated tone can't give you, no matter how loud.
+    function playBeep(atTime, freq) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "square";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, atTime);
+      gain.gain.exponentialRampToValueAtTime(0.3, atTime + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, atTime + 0.13);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(atTime);
+      osc.stop(atTime + 0.15);
+    }
+    // Scheduled via Web Audio's own clock (osc.start(atTime)) rather than
+    // three back-to-back setTimeout calls, so the triplet's timing stays
+    // tight even if the main JS thread is briefly busy - it's the crisp,
+    // even spacing that makes it read as a trill instead of a stutter.
+    function beepOnce() {
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === "suspended") audioCtx.resume();
+        const now = audioCtx.currentTime;
+        [[0, 1046], [0.15, 1318], [0.3, 1046]].forEach(([offset, freq]) => playBeep(now + offset, freq));
+      } catch (e) {
+        // Autoplay blocked, or no Web Audio at all - the modal is still
+        // the primary alarm; sound is a bonus on top of it, not required.
+      }
+    }
+    // which hass connection to tell "dismiss this everywhere"
+    // when Stop is tapped - set by whichever card most recently called
+    // ring()/check() with one, since this singleton is shared across every
+    // card on the dashboard and any of them may have `hass` by now. Best-
+    // effort only (see stop() below): a same-tab-only local alarm (the
+    // original v1.119.0+ behavior this singleton already had) never had a
+    // server-side record to begin with, so the dismiss call below simply
+    // no-ops for it (ws_dismiss_timer_alarm pops a uid that was never
+    // registered - see its own docstring for why that's silent, not an
+    // error).
+    let lastHass = null;
+    function stop() {
+      if (activeUid) dismissedUids.add(activeUid);
+      const uid = activeUid;
+      activeUid = null;
+      if (beepHandle) {
+        clearInterval(beepHandle);
+        beepHandle = null;
+      }
+      if (modalEl) modalEl.style.display = "none";
+      // household's explicit choice - "first tap wins, from
+      // anyone" - so tapping Stop here also clears the alarm everywhere
+      // else (other kiosks, other people's phones-that-are-dashboards)
+      // rather than just silencing this one tab. No permission gate, by
+      // design.
+      if (uid && lastHass && lastHass.connection && lastHass.connection.sendMessagePromise) {
+        lastHass.connection.sendMessagePromise({ type: "family_hub/timers/dismiss_alarm", uid }).catch(() => {});
+      }
+    }
+    // This modal already outranks the screensaver's own overlay (z-index
+    // 2147483647 vs 2147483000, set in ensureModal() above), so it was
+    // always painting on top of it - but a screensaver left running
+    // underneath still means its video/camera poll keeps going, so it
+    // needs to actually END, not just be covered up.
+    // There are THREE independent screensaver implementations in this
+    // project (the calendar card's own, the shared window.__familyHub
+    // ScreenSaver controller used by Chores/Rewards/My Chores/etc., and the
+    // standalone family-screensaver-card.js) and this singleton has no
+    // reference to whichever one might be running on this particular
+    // dashboard. Rather than importing all three, every one of them marks
+    // its overlay element with the same data-family-hub-screensaver
+    // attribute and already dismisses itself (hides, stops video/camera
+    // polling, navigates to its configured return dashboard) on its own
+    // overlay's "pointerdown" listener - so a synthetic pointerdown on
+    // whichever overlay is actually showing reuses each implementation's
+    // own real dismiss path for free, with zero coupling to which one it
+    // is.
+    function wakeAnyScreenSaver() {
+      try {
+        const overlay = document.querySelector("[data-family-hub-screensaver]");
+        if (overlay && overlay.style.display !== "none") {
+          overlay.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        }
+      } catch (e) {
+        // Best-effort - worst case the alarm modal still shows ON TOP of a
+        // running screensaver rather than ending it outright.
+      }
+    }
+    function start(timer, hass) {
+      if (hass) lastHass = hass;
+      if (activeUid === timer.uid) return;
+      activeUid = timer.uid;
+      wakeAnyScreenSaver();
+      const el = ensureModal();
+      el.querySelector(".fh-timer-alarm-title").textContent = timer.title || "Timer";
+      el.style.display = "flex";
+      beepOnce();
+      if (beepHandle) clearInterval(beepHandle);
+      // Shorter gap than the old single-tone version (1200ms) since each
+      // cycle is now a ~450ms triplet, not a single ~340ms tone - this
+      // keeps the alarm feeling urgent/continuous rather than sparse.
+      beepHandle = setInterval(beepOnce, 950);
+    }
+    return {
+      // Call once a second from a card's own countdown ticker (the same
+      // tick that already repaints the visible "X:XX left" text), passing:
+      //   timers        - that card's own freshly-fetched timers list
+      //   clientId      - this tab's own id (see _familyHubClientId below)
+      //   remainingSecondsFn - a (timer) => seconds function, so this
+      //                   singleton reuses the CALLING card's own
+      //                   native-timer-aware math (_timerRemainingSeconds)
+      //                   instead of a second, potentially-drifting copy
+      //                   of it living here with no access to `hass`.
+      // Only a timer whose origin_client_id matches THIS tab's own id and
+      // whose alarm flag is on can ever trigger anything - a timer someone
+      // else started, or one this same tab started but didn't opt into
+      // alarms for, is silently ignored here exactly as before this
+      // feature existed.
+      check(timers, clientId, remainingSecondsFn, hass) {
+        if (!clientId) return;
+        const mine = (timers || []).find((t) => t.alarm && t.origin_client_id && t.origin_client_id === clientId);
+        if (!mine || dismissedUids.has(mine.uid)) return;
+        if (remainingSecondsFn(mine) <= 0) start(mine, hass);
+      },
+      // the WIDENED half - a household_timer_alarm_ring bus
+      // event (fired by chores_websocket_api.py's _dispatch_timer_alarm/
+      // _reannounce_active_alarms) that THIS login should also ring for,
+      // because it's either the timer's own owner, a login flagged as an
+      // always-on alarm kiosk, or the tier was "everyone." Unlike check()
+      // above (which only ever recognizes the ONE tab that started the
+      // timer, by origin_client_id), this recognizes a login/account -
+      // every open tab logged in as a matching user rings, on every
+      // dashboard, which is the whole point of the widened tiers. Re-fired
+      // on every re-announcement (see _reannounce_active_alarms), so
+      // calling this again for an already-ringing uid is a deliberate
+      // no-op (start() already short-circuits on activeUid === timer.uid).
+      ringBroadcast(payload, hass, myUserId) {
+        if (!payload || !payload.uid || dismissedUids.has(payload.uid)) return;
+        const targets = payload.target_user_ids || [];
+        const shouldRing = !!payload.broadcast_all || (myUserId && targets.includes(myUserId));
+        if (!shouldRing) return;
+        start({ uid: payload.uid, title: payload.title }, hass);
+      },
+      // The STOP half of the same broadcast pair - fired the instant
+      // ANY device dismisses (see ws_dismiss_timer_alarm's own "first tap
+      // wins" docstring), including a dismiss that originated from THIS
+      // singleton's own stop() above (that call's own dismiss already
+      // covers this tab; the event still arrives here a moment later and
+      // is a harmless no-op via stop()'s own activeUid !== uid guard, or
+      // via dismissedUids already containing it).
+      stopFromServer(uid) {
+        if (uid) dismissedUids.add(uid);
+        if (activeUid === uid) stop();
+      },
+    };
+  })();
+}
+
+// Theme flash-of-default fix - Root cause: EVERY themed card's first paint happens
 // with no theme CSS vars set at all (falls back to _defaultTheme()'s own
 // hardcoded palette), because resolving the household's actual theme
 // takes two sequential, awaited websocket round trips after `hass` is
@@ -102,7 +307,7 @@ class FamilyHubPantryCard extends HTMLElement {
   static getStubConfig() {
     return { title: "My Pantry" };
   }
-  // v1.111.0+: switched to getConfigElement (a real custom element) so the
+  // switched to getConfigElement (a real custom element) so the
   // new theme_override field can offer a live-fetched theme list - see
   // FamilyHubPantryCardEditor at the bottom of this file.
   static getConfigElement() {
@@ -121,7 +326,7 @@ class FamilyHubPantryCard extends HTMLElement {
     if (this._pickerProducts === undefined) this._pickerProducts = [];
     if (this._pickerUnits === undefined) this._pickerUnits = [];
     if (this._locations === undefined) this._locations = [];
-    // v144.17+: full-CRUD pass - categories (Grocy's "product groups"),
+    // full-CRUD pass - categories (Grocy's "product groups"),
     // plus the toolbar's own live search/sort/filter state. These are
     // deliberately plain instance fields rather than persisted Settings -
     // same "just how much room THIS device gives a feature right now"
@@ -140,15 +345,127 @@ class FamilyHubPantryCard extends HTMLElement {
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
+    this._ensureTranslationsLoaded();
     if (first) this._firstLoadPromise = this._initFirstLoad();
+  }
+  _t(key, fallback, vars) {
+    let str = "";
+    try {
+      if (this._hass && typeof this._hass.localize === "function") {
+        str = this._hass.localize(`component.family_hub.fh_ui.${key}`) || "";
+      }
+    } catch (e) {
+      str = "";
+    }
+    if (!str) str = fallback;
+    if (vars) {
+      Object.keys(vars).forEach((k) => {
+        str = str.split(`%${k}%`).join(vars[k]);
+      });
+    }
+    return str;
+  }
+  _baseLanguage(lang) {
+    return (lang || "en").split("-")[0].toLowerCase();
+  }
+  _ensureTranslationsLoaded() {
+    if (!this._hass || typeof this._hass.loadBackendTranslation !== "function") return;
+    const lang = this._baseLanguage(this._hass.language);
+    if (this._i18nLoadedLang === lang || this._i18nLoading === lang) return;
+    this._i18nLoading = lang;
+    this._hass
+      .loadBackendTranslation("fh_ui", "family_hub")
+      .then(() => {
+        this._i18nLoadedLang = lang;
+        this._i18nLoading = null;
+        this._applyTranslations();
+        this._render();
+      })
+      .catch((e) => {
+        this._i18nLoading = null;
+        console.warn("[family_hub] failed to load \"" + lang + "\" translations - staying on English fallback text", e);
+      });
+  }
+  _applyTranslations() {
+    if (!this._root) return;
+    this._root.querySelectorAll("[data-i18n]").forEach((el) => {
+      const key = el.dataset.i18n;
+      if (el.dataset.i18nFallback === undefined) el.dataset.i18nFallback = el.textContent;
+      el.textContent = this._t(key, el.dataset.i18nFallback);
+    });
+    this._root.querySelectorAll("[data-i18n-title]").forEach((el) => {
+      const key = el.dataset.i18nTitle;
+      if (el.dataset.i18nTitleFallback === undefined) {
+        el.dataset.i18nTitleFallback = el.getAttribute("title") || el.getAttribute("aria-label") || "";
+      }
+      const translated = this._t(key, el.dataset.i18nTitleFallback);
+      if (el.hasAttribute("title")) el.setAttribute("title", translated);
+      if (el.hasAttribute("aria-label")) el.setAttribute("aria-label", translated);
+    });
   }
   async _initFirstLoad() {
     await Promise.all([this._fetchSettings(), this._fetchStock(), this._fetchExtras()]);
-    // v1.111.0+: always fetched now - a per-card theme_override needs this
+    // always fetched now - a per-card theme_override needs this
     // list regardless of the household's own useGlobalTheme setting.
     await this._fetchGlobalThemes();
     this._startPolling();
+    // - see this
+    // file's own copy of the window.__familyHubTimerAlarm singleton
+    // (below) for the full design note. Kept byte-identical to every
+    // other card's copy on purpose.
+    this._subscribeAlarmEvents();
     this._render();
+  }
+  _myUserId() {
+    return this._hass && this._hass.user ? this._hass.user.id : null;
+  }
+  // household-wide timer alarms - subscribe to the two bus
+  // events chores_websocket_api.py's _dispatch_timer_alarm/
+  // _reannounce_active_alarms fire (see const.py's
+  // EVENT_FAMILY_HUB_TIMER_ALARM_RING/_STOP), and hand each one to the
+  // shared window.__familyHubTimerAlarm singleton below - same "one modal/
+  // audio loop shared by every card on the dashboard" convention its own
+  // top comment describes. Subscribed once per card instance (guarded by
+  // _alarmUnsub so a re-run of _initFirstLoad, which shouldn't happen but
+  // costs nothing to guard against, never double-subscribes).
+  async _subscribeAlarmEvents() {
+    if (this._alarmUnsub || !this._hass || !this._hass.connection) return;
+    const myUserId = this._myUserId();
+    try {
+      const unsubRing = await this._hass.connection.subscribeEvents((event) => {
+        if (window.__familyHubTimerAlarm) {
+          window.__familyHubTimerAlarm.ringBroadcast(event.data, this._hass, myUserId);
+        }
+      }, "family_hub_timer_alarm_ring");
+      const unsubStop = await this._hass.connection.subscribeEvents((event) => {
+        if (window.__familyHubTimerAlarm && event.data) {
+          window.__familyHubTimerAlarm.stopFromServer(event.data.uid);
+        }
+      }, "family_hub_timer_alarm_stop");
+      this._alarmUnsub = () => {
+        try { unsubRing(); } catch (e) { /* no-op */ }
+        try { unsubStop(); } catch (e) { /* no-op */ }
+      };
+    } catch (e) {
+      // Best-effort - a dashboard that can't subscribe (e.g. a very old
+      // frontend build) simply never gets the WIDENED alarm reach; the
+      // same-tab-only local alarm (window.__familyHubTimerAlarm.check,
+      // unaffected by any of this) still works exactly as before.
+    }
+    // Catch up on anything already ringing before this tab opened, rather
+    // than waiting up to ALARM_REANNOUNCE_SECONDS for the next re-
+    // announcement's RING event.
+    if (this._hass.connection.sendMessagePromise) {
+      try {
+        const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/timers/list_active_alarms" });
+        for (const alarm of (result && result.alarms) || []) {
+          if (window.__familyHubTimerAlarm) window.__familyHubTimerAlarm.ringBroadcast(alarm, this._hass, myUserId);
+        }
+      } catch (e) {
+        // Best-effort catch-up only - the next re-announcement still
+        // covers it.
+      }
+    }
   }
   _startPolling() {
     if (this._interval) return;
@@ -187,12 +504,12 @@ class FamilyHubPantryCard extends HTMLElement {
     };
   }
   _defaultSettings() {
-    return { theme: this._defaultTheme(), useGlobalTheme: false, globalThemeId: "" };
+    return { theme: this._defaultTheme(), useGlobalTheme: true, globalThemeId: "liquidglass" };
   }
   _getSettings() {
     return this._settingsCache || this._defaultSettings();
   }
-  // v144.6+: "This device's theme" - a device-local override of the shared
+  // "This device's theme" - a device-local override of the shared
   // Settings > Appearance theme choice, same key/mechanism
   // family-week-calendar-card.js's own _getDeviceThemeOverride uses (see
   // its own comment) and configured from that card's Settings modal (this
@@ -225,7 +542,7 @@ class FamilyHubPantryCard extends HTMLElement {
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
-    // v1.111.0+: a per-card-placement Theme override (from this card's own
+    // a per-card-placement Theme override (from this card's own
     // native "Edit Card" dialog) wins over this device's own override and
     // the household's Global Theme.
     const cardOverride = this._config && this._config.theme_override;
@@ -250,7 +567,7 @@ class FamilyHubPantryCard extends HTMLElement {
     const a = Math.max(0, Math.min(1, typeof alpha === "number" ? alpha : 1));
     return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
-  // v1.126.0+ - see window.__familyHubThemeCache's own comment above the
+  // see window.__familyHubThemeCache's own comment above the
   // class for the full "why a key, not one shared blob" reasoning. Called
   // identically from here (after resolving the REAL theme) and from
   // `_build()` (before the real theme is known yet, to look up whatever
@@ -266,14 +583,14 @@ class FamilyHubPantryCard extends HTMLElement {
   }
   _applyThemeVars() {
     const theme = this._resolveTheme(this._getSettings());
-    // v144.5+: same "liquid glass" support family-week-calendar-card.js has
+    // same "liquid glass" support family-week-calendar-card.js has
     // - a theme's cardOpacity/glassBlur (100/0 defaults, both no-ops) turn
     // the card/surface backgrounds translucent and blur whatever shows
     // through them, so picking a Liquid Glass theme actually looks glassy
     // on this card too, not just the calendar.
     const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
     const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
-    // v1.126.0+: built as a plain object first (rather than each var going
+    // built as a plain object first (rather than each var going
     // straight into its own setProperty call, as before) purely so the
     // exact same values that get applied here also get cached - see
     // window.__familyHubThemeCache's own comment for why this fixes the
@@ -295,7 +612,7 @@ class FamilyHubPantryCard extends HTMLElement {
     Object.keys(vars).forEach((name) => this.style.setProperty(name, vars[name]));
     if (window.__familyHubThemeCache) window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
   }
-  // v1.126.0+: applies whatever theme this device/placement last actually
+  // applies whatever theme this device/placement last actually
   // resolved to, SYNCHRONOUSLY, before the real fetches that would
   // otherwise be the only way to know it - see window.__familyHubTheme
   // Cache's own comment above the class. Called once from `_build()`,
@@ -330,7 +647,7 @@ class FamilyHubPantryCard extends HTMLElement {
     } catch (e) {
       custom = [];
     }
-    // v1.111.0+: also merge in every installed native Home Assistant theme.
+    // also merge in every installed native Home Assistant theme.
     this._globalThemes = custom.concat(this._nativeHaThemeEntries());
     this._applyThemeVars();
   }
@@ -460,11 +777,11 @@ class FamilyHubPantryCard extends HTMLElement {
   _daysUntilLabel(dateStr) {
     if (!dateStr) return "";
     const days = this._daysUntil(dateStr);
-    if (days < 0) return `<span class="expired">Expired ${this._esc(dateStr)}</span>`;
-    if (days === 0) return `<span class="expiring-soon">Expires today</span>`;
-    if (days === 1) return `<span class="expiring-soon">Expires tomorrow</span>`;
-    if (days <= 7) return `<span class="expiring-soon">Expires in ${days} days</span>`;
-    return `Expires ${this._esc(dateStr)}`;
+    if (days < 0) return `<span class="expired">${this._t("pantry.expired_on", "Expired %date%", { date: this._esc(dateStr) })}</span>`;
+    if (days === 0) return `<span class="expiring-soon">${this._t("pantry.expires_today", "Expires today")}</span>`;
+    if (days === 1) return `<span class="expiring-soon">${this._t("pantry.expires_tomorrow", "Expires tomorrow")}</span>`;
+    if (days <= 7) return `<span class="expiring-soon">${this._t("pantry.expires_in_days", "Expires in %days% days", { days })}</span>`;
+    return this._t("pantry.expires_on", "Expires %date%", { date: this._esc(dateStr) });
   }
   // Plain integer days-until (negative once past) - the numeric half of
   // _daysUntilLabel above, split out so the toolbar's "Show expired"/
@@ -479,14 +796,14 @@ class FamilyHubPantryCard extends HTMLElement {
 
   _build() {
     this._built = true;
-    // v1.126.0+: applied BEFORE attachShadow/the first innerHTML paint -
+    // applied BEFORE attachShadow/the first innerHTML paint -
     // see _applyCachedThemeVarsIfAny's own comment and window.__familyHub
     // ThemeCache's above the class for why this is what actually fixes
     // the household's reported "loads the default theme first" flash.
     this._applyCachedThemeVarsIfAny();
     this.attachShadow({ mode: "open" });
     const root = this.shadowRoot;
-    // v144.13+: restyled to match the Chores/Rewards board's own chrome
+    // restyled to match the Chores/Rewards board's own chrome
     // (see this card's own docstring at the top of the file) - a real
     // .header + .actions bar and a .board of side-by-side columns, same
     // classes/shapes those cards already use, rather than the old single
@@ -498,32 +815,32 @@ class FamilyHubPantryCard extends HTMLElement {
         <div class="header">
           <div class="title"></div>
           <div class="actions">
-            <button type="button" class="add-stock-btn">&#65291; Add stock</button>
+            <button type="button" class="add-stock-btn">&#65291; <span data-i18n="pantry.add_stock">Add stock</span></button>
           </div>
         </div>
-        <div class="not-configured-hint" hidden>
+        <div class="not-configured-hint" hidden data-i18n="pantry.not_configured_hint">
           Connect Grocy under Family Hub's Settings to track real stock here. Your "Also Tracking" list below still works either way.
         </div>
         <div class="toolbar">
           <input type="search" class="pantry-search" placeholder="Search pantry...">
-          <select class="pantry-sort" title="Sort Grocy Stock by">
-            <option value="name">Sort: Name</option>
-            <option value="location">Sort: Location</option>
-            <option value="category">Sort: Category</option>
-            <option value="expiration">Sort: Expiration</option>
+          <select class="pantry-sort" title="Sort Grocy Stock by" data-i18n-title="pantry.sort_title">
+            <option value="name" data-i18n="pantry.sort_name">Sort: Name</option>
+            <option value="location" data-i18n="pantry.sort_location">Sort: Location</option>
+            <option value="category" data-i18n="pantry.sort_category">Sort: Category</option>
+            <option value="expiration" data-i18n="pantry.sort_expiration">Sort: Expiration</option>
           </select>
-          <label class="filter-toggle"><input type="checkbox" class="filter-expired"> Expired</label>
-          <label class="filter-toggle"><input type="checkbox" class="filter-expiring"> Expiring soon</label>
+          <label class="filter-toggle"><input type="checkbox" class="filter-expired"> <span data-i18n="pantry.filter_expired">Expired</span></label>
+          <label class="filter-toggle"><input type="checkbox" class="filter-expiring"> <span data-i18n="pantry.filter_expiring_soon">Expiring soon</span></label>
         </div>
         <div class="board">
           <div class="pantry-column stock-column">
-            <div class="pantry-col-header">Grocy Stock</div>
+            <div class="pantry-col-header" data-i18n="pantry.grocy_stock">Grocy Stock</div>
             <div class="pantry-col-body stock-list"></div>
           </div>
           <div class="pantry-column extras-column">
-            <div class="pantry-col-header">Also Tracking <span class="extras-hint">(not counted in Grocy)</span></div>
+            <div class="pantry-col-header"><span data-i18n="pantry.also_tracking">Also Tracking</span> <span class="extras-hint" data-i18n="pantry.not_counted_in_grocy">(not counted in Grocy)</span></div>
             <div class="pantry-col-body extras-list"></div>
-            <button type="button" class="add-extra-btn">&#65291; Track something else</button>
+            <button type="button" class="add-extra-btn">&#65291; <span data-i18n="pantry.track_something_else">Track something else</span></button>
           </div>
         </div>
       </ha-card>
@@ -586,24 +903,24 @@ class FamilyHubPantryCard extends HTMLElement {
     const overlay = this._root.querySelector(".add-stock-modal");
     const box = overlay.querySelector(".modal-box");
     const productOptions = this._pickerProducts.map((p) => `<option value="${p.id}">${this._esc(p.name)}</option>`).join("");
-    const locationOptions = `<option value="">(product's default)</option>` + this._locations.map((l) => `<option value="${l.id}">${this._esc(l.name)}</option>`).join("");
+    const locationOptions = `<option value="">${this._t("pantry.product_default_location", "(product's default)")}</option>` + this._locations.map((l) => `<option value="${l.id}">${this._esc(l.name)}</option>`).join("");
     const unitOptions = this._pickerUnits.map((u) => `<option value="${u.id}">${this._esc(u.name)}</option>`).join("");
     box.innerHTML = `
-      <h3>Add stock</h3>
-      <label class="existing-product-field">Product
+      <h3>${this._t("pantry.add_stock_title", "Add stock")}</h3>
+      <label class="existing-product-field">${this._t("pantry.product_label", "Product")}
         <select class="f-product">${productOptions}</select>
       </label>
-      <label class="new-product-toggle"><input type="checkbox" class="f-new-product"> This isn't in Grocy yet - add it as a new product</label>
+      <label class="new-product-toggle"><input type="checkbox" class="f-new-product"> ${this._t("pantry.not_in_grocy_toggle", "This isn't in Grocy yet - add it as a new product")}</label>
       <div class="new-product-fields" hidden>
-        <label>New product name<input type="text" class="f-new-name" placeholder="e.g. Canned tomatoes"></label>
-        <label>Stock unit<select class="f-new-unit">${unitOptions}</select></label>
+        <label>${this._t("pantry.new_product_name_label", "New product name")}<input type="text" class="f-new-name" placeholder="e.g. Canned tomatoes"></label>
+        <label>${this._t("pantry.stock_unit_label", "Stock unit")}<select class="f-new-unit">${unitOptions}</select></label>
       </div>
-      <label>Amount<input type="number" class="f-amount" min="0" step="any" value="1"></label>
-      <label>Location<select class="f-location">${locationOptions}</select></label>
-      <label>Best-before date (optional)<input type="date" class="f-best-before"></label>
+      <label>${this._t("pantry.amount_label", "Amount")}<input type="number" class="f-amount" min="0" step="any" value="1"></label>
+      <label>${this._t("pantry.location_label", "Location")}<select class="f-location">${locationOptions}</select></label>
+      <label>${this._t("pantry.best_before_label", "Best-before date (optional)")}<input type="date" class="f-best-before"></label>
       <div class="modal-actions">
-        <button class="cancel-btn">Cancel</button>
-        <button class="save-btn">Add</button>
+        <button class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn">${this._t("common.add", "Add")}</button>
       </div>
       <div class="form-error"></div>
     `;
@@ -624,7 +941,7 @@ class FamilyHubPantryCard extends HTMLElement {
     errEl.textContent = "";
     const amount = parseFloat(box.querySelector(".f-amount").value);
     if (!(amount > 0)) {
-      errEl.textContent = "Amount must be greater than 0.";
+      errEl.textContent = this._t("pantry.amount_must_be_positive", "Amount must be greater than 0.");
       return;
     }
     const locationVal = box.querySelector(".f-location").value;
@@ -635,11 +952,11 @@ class FamilyHubPantryCard extends HTMLElement {
       const name = box.querySelector(".f-new-name").value.trim();
       const unitId = box.querySelector(".f-new-unit").value;
       if (!name) {
-        errEl.textContent = "The new product needs a name.";
+        errEl.textContent = this._t("pantry.new_product_needs_name", "The new product needs a name.");
         return;
       }
       if (!unitId || !locationVal) {
-        errEl.textContent = "A new product needs both a stock unit and a location.";
+        errEl.textContent = this._t("pantry.new_product_needs_unit_and_location", "A new product needs both a stock unit and a location.");
         return;
       }
       try {
@@ -647,17 +964,17 @@ class FamilyHubPantryCard extends HTMLElement {
           type: "family_hub/create_grocy_product", name, location_id: parseInt(locationVal, 10), qu_id: parseInt(unitId, 10),
         });
         if (!created || !created.success) {
-          errEl.textContent = (created && created.error) || "Couldn't create this product in Grocy.";
+          errEl.textContent = (created && created.error) || this._t("pantry.create_product_failed", "Couldn't create this product in Grocy.");
           return;
         }
         productId = created.product_id;
       } catch (e) {
-        errEl.textContent = (e && e.message) || "Couldn't create this product in Grocy.";
+        errEl.textContent = (e && e.message) || this._t("pantry.create_product_failed", "Couldn't create this product in Grocy.");
         return;
       }
     }
     if (!productId) {
-      errEl.textContent = "Pick a product (or add it as new).";
+      errEl.textContent = this._t("pantry.pick_product_or_new", "Pick a product (or add it as new).");
       return;
     }
 
@@ -667,11 +984,11 @@ class FamilyHubPantryCard extends HTMLElement {
     try {
       const result = await this._hass.connection.sendMessagePromise(payload);
       if (!result || !result.success) {
-        errEl.textContent = (result && result.error) || "Couldn't add this stock.";
+        errEl.textContent = (result && result.error) || this._t("pantry.add_stock_failed", "Couldn't add this stock.");
         return;
       }
     } catch (e) {
-      errEl.textContent = (e && e.message) || "Couldn't add this stock.";
+      errEl.textContent = (e && e.message) || this._t("pantry.add_stock_failed", "Couldn't add this stock.");
       return;
     }
     overlay.classList.remove("open");
@@ -679,7 +996,7 @@ class FamilyHubPantryCard extends HTMLElement {
   }
 
   async _promptConsume(productId, name) {
-    const raw = window.prompt(`Remove how much "${name}"?`, "1");
+    const raw = window.prompt(this._t("pantry.remove_how_much_prompt", 'Remove how much "%name%"?', { name }), "1");
     if (raw === null) return;
     const amount = parseFloat(raw);
     if (!(amount > 0)) return;
@@ -696,7 +1013,7 @@ class FamilyHubPantryCard extends HTMLElement {
   async _openEditStockModal(productId, name) {
     const overlay = this._root.querySelector(".edit-stock-modal");
     const box = overlay.querySelector(".modal-box");
-    box.innerHTML = `<h3>Edit ${this._esc(name)}</h3><div class="entries-loading">Loading...</div>`;
+    box.innerHTML = `<h3>${this._t("pantry.edit_name_title", "Edit %name%", { name: this._esc(name) })}</h3><div class="entries-loading">${this._t("pantry.loading", "Loading...")}</div>`;
     overlay.classList.add("open");
     const [entriesResult] = await Promise.all([
       this._hass.connection.sendMessagePromise({
@@ -705,8 +1022,8 @@ class FamilyHubPantryCard extends HTMLElement {
       this._fetchLocations(),
     ]);
     const entries = (entriesResult && Array.isArray(entriesResult.entries)) ? entriesResult.entries : [];
-    const locationOptions = `<option value="">(product's default)</option>` + this._locations.map((l) => `<option value="${l.id}">${this._esc(l.name)}</option>`).join("");
-    // v144.17+: price/location per entry, alongside the original amount/
+    const locationOptions = `<option value="">${this._t("pantry.product_default_location", "(product's default)")}</option>` + this._locations.map((l) => `<option value="${l.id}">${this._esc(l.name)}</option>`).join("");
+    // price/location per entry, alongside the original amount/
     // best-before - see _ws_update_grocy_stock_entry's own docstring on why
     // both are optional on the backend (a blank price field just omits
     // price from that entry's save, same as before this existed).
@@ -716,23 +1033,23 @@ class FamilyHubPantryCard extends HTMLElement {
             (en) => `
         <div class="entry-row" data-entry-id="${en.id}">
           <div class="entry-row-fields">
-            <label>Amount<input type="number" class="entry-amount" min="0" step="any" value="${en.amount}"></label>
-            <label>Best before<input type="date" class="entry-best-before" value="${en.best_before_date || ""}"></label>
+            <label>${this._t("pantry.amount_label", "Amount")}<input type="number" class="entry-amount" min="0" step="any" value="${en.amount}"></label>
+            <label>${this._t("pantry.best_before_short_label", "Best before")}<input type="date" class="entry-best-before" value="${en.best_before_date || ""}"></label>
           </div>
           <div class="entry-row-fields">
-            <label>Price<input type="number" class="entry-price" min="0" step="any" placeholder="e.g. 3.99" value="${en.price != null ? en.price : ""}"></label>
-            <label>Location<select class="entry-location">${locationOptions}</select></label>
+            <label>${this._t("pantry.price_label", "Price")}<input type="number" class="entry-price" min="0" step="any" placeholder="e.g. 3.99" value="${en.price != null ? en.price : ""}"></label>
+            <label>${this._t("pantry.location_label", "Location")}<select class="entry-location">${locationOptions}</select></label>
           </div>
         </div>`
           )
           .join("")
-      : `<div class="empty-state">No individual stock entries found.</div>`;
+      : `<div class="empty-state">${this._t("pantry.no_entries_found", "No individual stock entries found.")}</div>`;
     box.innerHTML = `
-      <h3>Edit ${this._esc(name)}</h3>
+      <h3>${this._t("pantry.edit_name_title", "Edit %name%", { name: this._esc(name) })}</h3>
       <div class="entries-list">${rowsHtml}</div>
       <div class="modal-actions">
-        <button class="cancel-btn">Cancel</button>
-        <button class="save-btn">Save</button>
+        <button class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn">${this._t("common.save", "Save")}</button>
       </div>
       <div class="form-error"></div>
     `;
@@ -765,7 +1082,7 @@ class FamilyHubPantryCard extends HTMLElement {
         await this._hass.connection.sendMessagePromise(payload);
       }
     } catch (e) {
-      errEl.textContent = (e && e.message) || "Couldn't save one of these entries.";
+      errEl.textContent = (e && e.message) || this._t("pantry.save_entry_failed", "Couldn't save one of these entries.");
       return;
     }
     overlay.classList.remove("open");
@@ -773,7 +1090,7 @@ class FamilyHubPantryCard extends HTMLElement {
   }
 
   // --- Edit product (full CRUD on the Grocy product itself) -----------
-  // v144.17+: Add/Read/Update/Delete on a product's own core fields (name,
+  // Add/Read/Update/Delete on a product's own core fields (name,
   // category, default location, stock/purchase quantity unit, min stock
   // amount, description) - as opposed to _openEditStockModal just above,
   // which only ever touched individual stock purchases (amount/best-before/
@@ -784,7 +1101,7 @@ class FamilyHubPantryCard extends HTMLElement {
   async _openEditProductModal(productId, name) {
     const overlay = this._root.querySelector(".edit-product-modal");
     const box = overlay.querySelector(".modal-box");
-    box.innerHTML = `<h3>Edit product</h3><div class="entries-loading">Loading...</div>`;
+    box.innerHTML = `<h3>${this._t("pantry.edit_product_title", "Edit product")}</h3><div class="entries-loading">${this._t("pantry.loading", "Loading...")}</div>`;
     overlay.classList.add("open");
     const [detailsResult] = await Promise.all([
       this._hass.connection.sendMessagePromise({
@@ -796,33 +1113,33 @@ class FamilyHubPantryCard extends HTMLElement {
     ]);
     const product = detailsResult && detailsResult.product;
     if (!product) {
-      box.innerHTML = `<h3>Edit product</h3><div class="empty-state">Couldn't load this product's details.</div><div class="modal-actions"><button class="cancel-btn">Close</button></div>`;
+      box.innerHTML = `<h3>${this._t("pantry.edit_product_title", "Edit product")}</h3><div class="empty-state">${this._t("pantry.load_product_failed", "Couldn't load this product's details.")}</div><div class="modal-actions"><button class="cancel-btn">${this._t("common.close", "Close")}</button></div>`;
       box.querySelector(".cancel-btn").addEventListener("click", () => overlay.classList.remove("open"));
       return;
     }
     const categoryOptions =
-      `<option value="">(none)</option>` +
+      `<option value="">${this._t("common.none", "None")}</option>` +
       this._categories.map((c) => `<option value="${c.id}">${this._esc(c.name)}</option>`).join("") +
-      `<option value="__new__">+ New category...</option>`;
+      `<option value="__new__">${this._t("pantry.new_category_option", "+ New category...")}</option>`;
     const locationOptions =
       this._locations.map((l) => `<option value="${l.id}">${this._esc(l.name)}</option>`).join("") +
-      `<option value="__new__">+ New location...</option>`;
+      `<option value="__new__">${this._t("pantry.new_location_option", "+ New location...")}</option>`;
     const unitOptions = this._pickerUnits.map((u) => `<option value="${u.id}">${this._esc(u.name)}</option>`).join("");
     box.innerHTML = `
-      <h3>Edit product</h3>
-      <label>Name<input type="text" class="f-name" value="${this._escAttr(product.name)}"></label>
-      <label>Category<select class="f-category">${categoryOptions}</select></label>
+      <h3>${this._t("pantry.edit_product_title", "Edit product")}</h3>
+      <label>${this._t("pantry.name_label", "Name")}<input type="text" class="f-name" value="${this._escAttr(product.name)}"></label>
+      <label>${this._t("pantry.category_label", "Category")}<select class="f-category">${categoryOptions}</select></label>
       <input type="text" class="f-new-category-name" hidden placeholder="New category name">
-      <label>Location<select class="f-location">${locationOptions}</select></label>
+      <label>${this._t("pantry.location_label", "Location")}<select class="f-location">${locationOptions}</select></label>
       <input type="text" class="f-new-location-name" hidden placeholder="New location name">
-      <label>Stock unit<select class="f-qu-stock">${unitOptions}</select></label>
-      <label>Purchase unit<select class="f-qu-purchase">${unitOptions}</select></label>
-      <label>Min stock amount<input type="number" class="f-min-stock" min="0" step="any" value="${product.min_stock_amount || 0}"></label>
-      <label>Description<textarea class="f-description" rows="2">${this._esc(product.description || "")}</textarea></label>
+      <label>${this._t("pantry.stock_unit_label", "Stock unit")}<select class="f-qu-stock">${unitOptions}</select></label>
+      <label>${this._t("pantry.purchase_unit_label", "Purchase unit")}<select class="f-qu-purchase">${unitOptions}</select></label>
+      <label>${this._t("pantry.min_stock_amount_label", "Min stock amount")}<input type="number" class="f-min-stock" min="0" step="any" value="${product.min_stock_amount || 0}"></label>
+      <label>${this._t("pantry.description_label", "Description")}<textarea class="f-description" rows="2">${this._esc(product.description || "")}</textarea></label>
       <div class="modal-actions product-modal-actions">
-        <button class="delete-btn">Delete product</button>
-        <button class="cancel-btn">Cancel</button>
-        <button class="save-btn">Save</button>
+        <button class="delete-btn">${this._t("pantry.delete_product_button", "Delete product")}</button>
+        <button class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn">${this._t("common.save", "Save")}</button>
       </div>
       <div class="form-error"></div>
     `;
@@ -850,7 +1167,7 @@ class FamilyHubPantryCard extends HTMLElement {
     errEl.textContent = "";
     const name = box.querySelector(".f-name").value.trim();
     if (!name) {
-      errEl.textContent = "This product needs a name.";
+      errEl.textContent = this._t("pantry.product_needs_name", "This product needs a name.");
       return;
     }
     let categoryVal = box.querySelector(".f-category").value;
@@ -860,12 +1177,12 @@ class FamilyHubPantryCard extends HTMLElement {
       if (categoryVal === "__new__") {
         const newName = box.querySelector(".f-new-category-name").value.trim();
         if (!newName) {
-          errEl.textContent = "Give the new category a name.";
+          errEl.textContent = this._t("pantry.new_category_needs_name", "Give the new category a name.");
           return;
         }
         const created = await this._hass.connection.sendMessagePromise({ type: "family_hub/create_grocy_category", name: newName });
         if (!created || !created.success) {
-          errEl.textContent = (created && created.error) || "Couldn't create this category.";
+          errEl.textContent = (created && created.error) || this._t("pantry.create_category_failed", "Couldn't create this category.");
           return;
         }
         categoryVal = String(created.category.id);
@@ -873,18 +1190,18 @@ class FamilyHubPantryCard extends HTMLElement {
       if (locationVal === "__new__") {
         const newName = box.querySelector(".f-new-location-name").value.trim();
         if (!newName) {
-          errEl.textContent = "Give the new location a name.";
+          errEl.textContent = this._t("pantry.new_location_needs_name", "Give the new location a name.");
           return;
         }
         const created = await this._hass.connection.sendMessagePromise({ type: "family_hub/create_grocy_location", name: newName });
         if (!created || !created.success) {
-          errEl.textContent = (created && created.error) || "Couldn't create this location.";
+          errEl.textContent = (created && created.error) || this._t("pantry.create_location_failed", "Couldn't create this location.");
           return;
         }
         locationVal = String(created.location.id);
       }
       if (!locationVal) {
-        errEl.textContent = "Pick a location.";
+        errEl.textContent = this._t("pantry.pick_location", "Pick a location.");
         return;
       }
       const payload = {
@@ -900,11 +1217,11 @@ class FamilyHubPantryCard extends HTMLElement {
       };
       const result = await this._hass.connection.sendMessagePromise(payload);
       if (!result || !result.success) {
-        errEl.textContent = (result && result.error) || "Couldn't save this product.";
+        errEl.textContent = (result && result.error) || this._t("pantry.save_product_failed", "Couldn't save this product.");
         return;
       }
     } catch (e) {
-      errEl.textContent = (e && e.message) || "Couldn't save this product.";
+      errEl.textContent = (e && e.message) || this._t("pantry.save_product_failed", "Couldn't save this product.");
       return;
     }
     overlay.classList.remove("open");
@@ -912,16 +1229,16 @@ class FamilyHubPantryCard extends HTMLElement {
   }
 
   async _deleteProduct(overlay, box, productId, name) {
-    if (!window.confirm(`Delete "${name}" from Grocy entirely? This can't be undone.`)) return;
+    if (!window.confirm(this._t("pantry.delete_product_confirm", 'Delete "%name%" from Grocy entirely? This can\'t be undone.', { name }))) return;
     const errEl = box.querySelector(".form-error");
     try {
       const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/delete_grocy_product", product_id: productId });
       if (!result || !result.success) {
-        errEl.textContent = (result && result.error) || "Couldn't delete this product - it may still be used elsewhere in Grocy (a recipe, a shopping list, etc.).";
+        errEl.textContent = (result && result.error) || this._t("pantry.delete_product_in_use", "Couldn't delete this product - it may still be used elsewhere in Grocy (a recipe, a shopping list, etc.).");
         return;
       }
     } catch (e) {
-      errEl.textContent = (e && e.message) || "Couldn't delete this product.";
+      errEl.textContent = (e && e.message) || this._t("pantry.delete_product_failed", "Couldn't delete this product.");
       return;
     }
     overlay.classList.remove("open");
@@ -935,15 +1252,15 @@ class FamilyHubPantryCard extends HTMLElement {
     const overlay = this._root.querySelector(".extra-modal");
     const box = overlay.querySelector(".modal-box");
     box.innerHTML = `
-      <h3>${extra ? "Edit item" : "Track something else"}</h3>
-      <label>Name<input type="text" class="f-name" value="${extra ? this._escAttr(extra.name) : ""}" placeholder="e.g. Paper towels (garage backup)"></label>
-      <label>Quantity<input type="text" class="f-quantity" value="${extra ? this._escAttr(extra.quantity || "") : ""}" placeholder="e.g. 2 rolls"></label>
-      <label>Location<input type="text" class="f-location" value="${extra ? this._escAttr(extra.location || "") : ""}" placeholder="e.g. Garage shelf"></label>
-      <label>Expiration date (optional)<input type="date" class="f-expiration" value="${extra && extra.expiration_date ? extra.expiration_date : ""}"></label>
-      <label>Notes<textarea class="f-notes" rows="2">${extra ? this._esc(extra.notes || "") : ""}</textarea></label>
+      <h3>${extra ? this._t("pantry.edit_item_title", "Edit item") : this._t("pantry.track_something_else", "Track something else")}</h3>
+      <label>${this._t("pantry.name_label", "Name")}<input type="text" class="f-name" value="${extra ? this._escAttr(extra.name) : ""}" placeholder="e.g. Paper towels (garage backup)"></label>
+      <label>${this._t("pantry.quantity_label", "Quantity")}<input type="text" class="f-quantity" value="${extra ? this._escAttr(extra.quantity || "") : ""}" placeholder="e.g. 2 rolls"></label>
+      <label>${this._t("pantry.location_label", "Location")}<input type="text" class="f-location" value="${extra ? this._escAttr(extra.location || "") : ""}" placeholder="e.g. Garage shelf"></label>
+      <label>${this._t("pantry.expiration_date_label", "Expiration date (optional)")}<input type="date" class="f-expiration" value="${extra && extra.expiration_date ? extra.expiration_date : ""}"></label>
+      <label>${this._t("pantry.notes_label", "Notes")}<textarea class="f-notes" rows="2">${extra ? this._esc(extra.notes || "") : ""}</textarea></label>
       <div class="modal-actions">
-        <button class="cancel-btn">Cancel</button>
-        <button class="save-btn">Save</button>
+        <button class="cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+        <button class="save-btn">${this._t("common.save", "Save")}</button>
       </div>
       <div class="form-error"></div>
     `;
@@ -957,7 +1274,7 @@ class FamilyHubPantryCard extends HTMLElement {
     errEl.textContent = "";
     const name = box.querySelector(".f-name").value.trim();
     if (!name) {
-      errEl.textContent = "This item needs a name.";
+      errEl.textContent = this._t("pantry.extra_needs_name", "This item needs a name.");
       return;
     }
     const payload = {
@@ -972,7 +1289,7 @@ class FamilyHubPantryCard extends HTMLElement {
     try {
       await this._hass.connection.sendMessagePromise(payload);
     } catch (e) {
-      errEl.textContent = (e && e.message) || "Couldn't save this item.";
+      errEl.textContent = (e && e.message) || this._t("pantry.save_extra_failed", "Couldn't save this item.");
       return;
     }
     overlay.classList.remove("open");
@@ -980,7 +1297,7 @@ class FamilyHubPantryCard extends HTMLElement {
   }
 
   async _deleteExtra(extraId) {
-    if (!window.confirm("Stop tracking this item?")) return;
+    if (!window.confirm(this._t("pantry.stop_tracking_confirm", "Stop tracking this item?"))) return;
     try {
       await this._hass.connection.sendMessagePromise({ type: "family_hub/pantry_extras/delete", extra_id: extraId });
     } catch (e) {
@@ -996,7 +1313,7 @@ class FamilyHubPantryCard extends HTMLElement {
     const badgeBits = [];
     if (item.location_name) badgeBits.push(`<span class="stock-badge">${this._esc(item.location_name)}</span>`);
     if (item.category_name) badgeBits.push(`<span class="stock-badge">${this._esc(item.category_name)}</span>`);
-    if (item.low_stock) badgeBits.push(`<span class="stock-badge low-stock-badge">Low stock</span>`);
+    if (item.low_stock) badgeBits.push(`<span class="stock-badge low-stock-badge">${this._t("pantry.low_stock_badge", "Low stock")}</span>`);
     const badgesHtml = badgeBits.length ? `<div class="stock-badges">${badgeBits.join("")}</div>` : "";
     const unitHtml = item.unit_name ? ` ${this._esc(item.unit_name)}` : "";
     return `
@@ -1008,9 +1325,9 @@ class FamilyHubPantryCard extends HTMLElement {
         </div>
         <div class="stock-amount">${item.amount}${unitHtml}</div>
         <div class="stock-actions">
-          <button class="stock-editproduct-btn" data-product-id="${item.product_id}" data-name="${this._escAttr(item.name)}" title="Edit product">&#9881;&#65039;</button>
-          <button class="stock-edit-btn" data-product-id="${item.product_id}" data-name="${this._escAttr(item.name)}" title="Edit entries">&#9999;&#65039;</button>
-          <button class="stock-remove-btn" data-product-id="${item.product_id}" data-name="${this._escAttr(item.name)}" title="Remove stock">&minus;</button>
+          <button class="stock-editproduct-btn" data-product-id="${item.product_id}" data-name="${this._escAttr(item.name)}" title="${this._escAttr(this._t("pantry.edit_product_title", "Edit product"))}">&#9881;&#65039;</button>
+          <button class="stock-edit-btn" data-product-id="${item.product_id}" data-name="${this._escAttr(item.name)}" title="${this._escAttr(this._t("pantry.edit_entries_button_title", "Edit entries"))}">&#9999;&#65039;</button>
+          <button class="stock-remove-btn" data-product-id="${item.product_id}" data-name="${this._escAttr(item.name)}" title="${this._escAttr(this._t("pantry.remove_stock_button_title", "Remove stock"))}">&minus;</button>
         </div>
       </div>
     `;
@@ -1030,14 +1347,14 @@ class FamilyHubPantryCard extends HTMLElement {
           ${expiryHtml}
         </div>
         <div class="stock-actions">
-          <button class="extra-edit-btn" data-id="${extra.id}" title="Edit">&#9999;&#65039;</button>
-          <button class="extra-delete-btn" data-id="${extra.id}" title="Stop tracking">&times;</button>
+          <button class="extra-edit-btn" data-id="${extra.id}" title="${this._escAttr(this._t("common.edit", "Edit"))}">&#9999;&#65039;</button>
+          <button class="extra-delete-btn" data-id="${extra.id}" title="${this._escAttr(this._t("pantry.stop_tracking_button_title", "Stop tracking"))}">&times;</button>
         </div>
       </div>
     `;
   }
 
-  // v144.17+: the toolbar's search/sort/expired/expiring-soon controls, all
+  // the toolbar's search/sort/expired/expiring-soon controls, all
   // applied client-side over whatever this._stock already holds (no extra
   // round trip per keystroke/toggle) - _render() below calls this instead
   // of using this._stock directly.
@@ -1088,9 +1405,9 @@ class FamilyHubPantryCard extends HTMLElement {
     } else {
       const visible = this._visibleStock();
       if (!this._stock.length) {
-        stockList.innerHTML = `<div class="empty-state">Nothing in stock yet - use "Add stock" above.</div>`;
+        stockList.innerHTML = `<div class="empty-state">${this._t("pantry.empty_stock", 'Nothing in stock yet - use "Add stock" above.')}</div>`;
       } else if (!visible.length) {
-        stockList.innerHTML = `<div class="empty-state">Nothing matches your search/filters.</div>`;
+        stockList.innerHTML = `<div class="empty-state">${this._t("pantry.empty_stock_filtered", "Nothing matches your search/filters.")}</div>`;
       } else {
         stockList.innerHTML = visible.map((it) => this._stockRowHtml(it)).join("");
       }
@@ -1103,13 +1420,13 @@ class FamilyHubPantryCard extends HTMLElement {
       .sort((a, b) => a.name.localeCompare(b.name));
     extrasList.innerHTML = visibleExtras.length
       ? visibleExtras.map((ex) => this._extraRowHtml(ex)).join("")
-      : `<div class="empty-state">${this._extras.length ? "Nothing matches your search." : "Nothing else being tracked."}</div>`;
+      : `<div class="empty-state">${this._extras.length ? this._t("pantry.empty_extras_filtered", "Nothing matches your search.") : this._t("pantry.empty_extras", "Nothing else being tracked.")}</div>`;
   }
 
   _css() {
     return `
       :host { display: block; font-family: 'Varela Round', sans-serif; }
-      /* v144.13+: matches the Chores/Rewards board's own ha-card chrome
+      /* matches the Chores/Rewards board's own ha-card chrome
          pixel-for-pixel (same padding/flex/overflow rules) so Pantry reads
          as another full board alongside them rather than a small stacked
          card - see family-hub-chores-card.js's own ha-card/.header/.board
@@ -1122,7 +1439,7 @@ class FamilyHubPantryCard extends HTMLElement {
       .add-extra-btn { margin: 10px; }
       .not-configured-hint { font-size: 12px; color: var(--fc-text-secondary); background: var(--fc-surface-alt); border-radius: 10px; padding: 8px 10px; margin-bottom: 10px; }
       .not-configured-hint[hidden] { display: none; }
-      /* v144.17+: full-CRUD pass - search/sort/filter toolbar, sitting
+      /* full-CRUD pass - search/sort/filter toolbar, sitting
          between the header and the board same as it would on any list
          view. Wraps to multiple lines on a narrow dashboard rather than
          needing its own breakpoint. */
@@ -1142,7 +1459,7 @@ class FamilyHubPantryCard extends HTMLElement {
       .pantry-col-body { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
       .empty-state { font-size: 13px; color: var(--fc-text-secondary); padding: 10px 4px; }
       .stock-row, .extra-row { display: flex; align-items: center; gap: 10px; background: var(--fc-surface2, var(--fc-bg)); border-radius: 12px; padding: 12px 14px; box-shadow: var(--fc-shadow, 0 2px 5px rgba(0,0,0,0.08)); }
-      /* v144.5+: "Liquid glass" support, same convention as
+      /* "Liquid glass" support, same convention as
          family-week-calendar-card.js - see that file's own comment on its
          backdrop-filter rule for the full reasoning. Zero-cost for every
          existing theme (blur(0px) is a no-op); -webkit- prefix needed for
@@ -1157,7 +1474,7 @@ class FamilyHubPantryCard extends HTMLElement {
       .stock-expiry .expiring-soon { color: var(--fc-accent3); font-weight: 700; }
       .stock-expiry .expired { color: var(--fc-accent3); font-weight: 800; }
       .extra-meta, .extra-notes { font-size: 12px; color: var(--fc-text-secondary); }
-      /* v144.17+: location/category/low-stock badges on a stock row. */
+      /* location/category/low-stock badges on a stock row. */
       .stock-badges { display: flex; flex-wrap: wrap; gap: 4px; margin: 3px 0; }
       .stock-badge { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 8px; background: var(--fc-surface-alt); color: var(--fc-text-secondary); }
       .low-stock-badge { background: var(--fc-accent3); color: #fff; }
@@ -1174,7 +1491,7 @@ class FamilyHubPantryCard extends HTMLElement {
       .new-product-toggle input { width: auto; margin: 0; }
       .new-product-fields[hidden], .existing-product-field[hidden] { display: none; }
       .entries-list { display: flex; flex-direction: column; gap: 10px; margin: 10px 0; }
-      /* v144.17+: each stock entry now edits amount+best-before AND
+      /* each stock entry now edits amount+best-before AND
          price+location, so a row is two label/input pairs stacked instead
          of the original two bare inputs side by side. */
       .entry-row { display: flex; flex-direction: column; gap: 6px; padding-bottom: 8px; border-bottom: 1px solid var(--fc-border); }
@@ -1186,7 +1503,7 @@ class FamilyHubPantryCard extends HTMLElement {
       .modal-actions button { border: none; border-radius: 10px; padding: 8px 16px; font-weight: 700; cursor: pointer; }
       .save-btn { background: var(--fc-accent); color: var(--fc-accent-text); }
       .cancel-btn { background: var(--fc-surface-alt); color: var(--fc-text); }
-      /* v144.17+: the Edit Product modal's Delete button sits at the far
+      /* the Edit Product modal's Delete button sits at the far
          left of the same .modal-actions row, visually separated from
          Cancel/Save by margin-right: auto so a household never mistakes
          it for a third "confirm" option next to Save. */
@@ -1207,7 +1524,7 @@ class FamilyHubPantryCard extends HTMLElement {
 
 customElements.define("family-hub-pantry-card", FamilyHubPantryCard);
 
-// v1.111.0+: native "Edit Card" config editor - a thin wrapper around
+// native "Edit Card" config editor - a thin wrapper around
 // Home Assistant's own <ha-form>, needed only because the new
 // theme_override field's option list has to be fetched live.
 class FamilyHubPantryCardEditor extends HTMLElement {

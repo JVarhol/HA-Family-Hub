@@ -1,6 +1,6 @@
 // Family Hub - Family Week Calendar card.
 //
-// v1.109.6: menu permissions. A new granular permission, can_edit_menu
+// Menu permissions. A granular permission, can_edit_menu
 // (PERMISSION_EDIT_MENU in const.py, granted from this card's own
 // Settings > Permissions tab), now gates editing the weekly meal plan.
 // Without it the meal editor's Save/Clear/Delete/Move/repeat/leftovers
@@ -13,13 +13,13 @@
 // menu gating is UI-only (read __init__.py's design note above
 // _encode_dish_description before relying on it).
 //
-// v1.109.8: adding an additional (side/dessert/sauce) recipe "from a link"
+// Adding an additional (side/dessert/sauce) recipe "from a link"
 // no longer fires two stacked window.prompt() dialogs - it expands an
 // inline name + link form under the additional-recipes list instead, which
 // doubles as the edit surface for an already-added entry (new pencil
 // button per row). See _openAdditionalRecipeForm.
 //
-// v1.109.7: the meal editor's leftovers day-picker (13 checkboxes, by far
+// The meal editor's leftovers day-picker (13 checkboxes, by far
 // the tallest single field in that modal) is now an accordion - collapsed
 // by default, auto-expanded when the meal already has leftover days
 // picked, with the count in the header. Reuses this file's existing
@@ -54,10 +54,72 @@ link.rel = "stylesheet";
 link.href = "https://fonts.googleapis.com/css2?family=Varela+Round&display=swap";
 document.head.appendChild(link);
 })();
+// Privacy mode's lock overlay/unlock modal live at document.body level, same
+// as the screensaver overlay (_ensureScreenSaverOverlay's own comment
+// explains why: escaping both this card's shadow root AND Home Assistant's
+// own outer shell is required for a true fixed, full-viewport overlay). The
+// screensaver overlay sets everything inline since it's one simple element;
+// this one has enough moving pieces (lock button, user picker, PIN input,
+// "no PIN set" message) that a real stylesheet is clearer - injected once
+// into document.head, guarded exactly like the scroll-lock style above so
+// multiple Family Hub cards on one dashboard don't each add their own copy.
+(function () {
+if (document.getElementById("family-hub-privacy-mode-style")) return;
+const styleEl = document.createElement("style");
+styleEl.id = "family-hub-privacy-mode-style";
+styleEl.textContent = `
+.fh-privacy-mode-overlay { position: fixed; z-index: 2147483000; background: transparent; display: none; align-items: center; justify-content: center; font-family: inherit; pointer-events: none; overflow: hidden; }
+.fh-privacy-mode-overlay.open { display: flex; }
+.fh-privacy-lock-btn { pointer-events: auto; background: rgba(10,10,15,0.82); border: none; border-radius: 20px; padding: 22px 30px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 10px; color: #fff; box-shadow: 0 8px 28px rgba(0,0,0,0.35); }
+.fh-privacy-lock-icon { font-size: 56px; line-height: 1; }
+.fh-privacy-lock-label { font-size: 15px; font-weight: 700; opacity: 0.9; }
+/* Household ask: "let's just make it not have a modal, just make it
+   present a pin login when you tap the screen" (no SECOND element
+   popping up on top of the lock pill - this still renders INLINE inside
+   the one .fh-privacy-mode-overlay the lock pill already occupies, see
+   _renderPrivacyOverlayLockView/_openPrivacyModeUnlock), THEN "I want
+   them visually identical" to family-hub-chores-card.js's own
+   .kiosk-login-overlay/.kiosk-login-box kiosk-login modal - so every
+   rule below is a deliberate copy of that card's own kiosk-login-*
+   rules (same class shapes, renamed to the fh-privacy-unlock-* family
+   so they can't collide with anything already in this file), right
+   down to the dimmed backdrop, which .fh-privacy-mode-overlay.unlocking
+   below turns on only while the form is showing - the lock-pill-only
+   state stays exactly as before (transparent, just the dark pill). The
+   --fc-* custom properties are copied onto this overlay element itself
+   from the card's own host (see _syncPrivacyOverlayThemeVars) since a
+   body-level element like this one sits outside the card's shadow DOM
+   and can't otherwise inherit them, with the chores card's own literal
+   default-theme colors as the fallback for each var. */
+.fh-privacy-mode-overlay.unlocking { background: rgba(0,0,0,0.4); pointer-events: auto; }
+.fh-privacy-unlock-box { position: relative; pointer-events: auto; background: var(--fc-bg, #fff); color: var(--fc-text, #2a2a2a); border-radius: 14px; padding: 18px; width: min(92vw, 480px); max-width: 360px; box-sizing: border-box; max-height: 85vh; overflow-y: auto; }
+.fh-privacy-unlock-box h2 { margin: 0 0 10px; font-size: 18px; }
+.fh-privacy-unlock-close-btn { position: absolute; top: 10px; right: 10px; border: none; background: none; color: var(--fc-text-secondary, #6b6b6b); font-size: 16px; cursor: pointer; line-height: 1; padding: 4px; }
+.fh-privacy-unlock-user-picker { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.fh-privacy-unlock-user-btn { border: 2px solid var(--fc-border, #ddd); border-radius: 12px; padding: 10px 14px; font-weight: 700; background: var(--fc-card, #fff); color: var(--fc-text, #2a2a2a); cursor: pointer; }
+.fh-privacy-unlock-user-btn.active { background: var(--fc-accent, #4a7c59); color: var(--fc-accent-text, #fff); border-color: var(--fc-accent, #4a7c59); }
+.fh-privacy-unlock-empty { color: var(--fc-text-secondary, #6b6b6b); font-size: 13px; }
+.fh-privacy-unlock-pin-input { width: 100%; box-sizing: border-box; font-size: 22px; letter-spacing: 6px; text-align: center; padding: 10px; border-radius: 10px; border: 1px solid var(--fc-border, #ddd); background: var(--fc-card, #fff); color: var(--fc-text, #2a2a2a); margin-bottom: 12px; }
+.fh-privacy-unlock-error { color: #b3462c; font-size: 13px; min-height: 18px; margin-top: 6px; }
+.fh-privacy-unlock-msg { font-size: 14px; line-height: 1.4; margin-bottom: 16px; color: var(--fc-text, #2a2a2a); }
+.fh-privacy-unlock-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.fh-privacy-unlock-actions button { border: none; border-radius: 10px; padding: 10px 18px; font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,0.15); }
+.fh-privacy-unlock-cancel-btn { background: var(--fc-surface-alt, #f0f0ee); color: var(--fc-text, #2a2a2a); }
+.fh-privacy-unlock-submit-btn { background: var(--fc-accent, #4a7c59); color: var(--fc-accent-text, #fff); }
+`;
+document.head.appendChild(styleEl);
+})();
 // A fixed accent color for reminder pills/blocks in the grid - reminders
 // aren't tied to any one calendar (and so have no calendar color of their
 // own), but still need to look consistent wherever they show up.
 const REMINDER_COLOR = "#b58cd9";
+// 0=Monday..6=Sunday, matching the backend's own
+// REMINDER_ROLLOVER_DAYS_MARKER_PATTERN parsing (see const.py) and the
+// Chores card's identical WEEKDAY_LABELS convention (0=Mon..6=Sun, same as
+// Python's own date.weekday()) - kept as this file's own copy rather than
+// a shared import since the two card files are independently loaded
+// resources with no shared module (this project's established pattern).
+const REMINDER_WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 // Must match __init__.py's own HA_THEME_PREFIX exactly - Theme Builder's
 // own custom themes auto-register into hass.themes.themes under a name
 // starting with this prefix (see _register_ha_themes), so the Global
@@ -75,6 +137,68 @@ const HA_THEME_PREFIX_MARKER = "Theme Builder - ";
 // work everywhere the card is installed.
 const HALLOWEEN_BG_IMAGE =
 "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0MDAgODAwIiB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIj4KICA8ZGVmcz4KICAgIDwhLS0gU29mdCBMaWdodCBQYXN0ZWwgQmFja2dyb3VuZCAtLT4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0ibGlnaHQtYmciIHgxPSIwJSIgeTE9IjAlIiB4Mj0iMCUiIHkyPSIxMDAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI2YzZThmZiIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjQwJSIgc3RvcC1jb2xvcj0iI2ZhZWZlZSIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjgwJSIgc3RvcC1jb2xvcj0iI2ZmZjRlNiIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiNmZmU4ZDYiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CgogICAgPCEtLSBTdW4vTW9vbiBTb2Z0IFBhc3RlbCBSYWRpYWwgLS0+CiAgICA8cmFkaWFsR3JhZGllbnQgaWQ9ImxpZ2h0LXN1biIgY3g9IjUwJSIgY3k9IjUwJSIgcj0iNTAlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI2ZmYjcwMyIgc3RvcC1vcGFjaXR5PSIwLjM1Ii8+CiAgICAgIDxzdG9wIG9mZnNldD0iNzAlIiBzdG9wLWNvbG9yPSIjZmI4NTAwIiBzdG9wLW9wYWNpdHk9IjAuMTUiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjZmI4NTAwIiBzdG9wLW9wYWNpdHk9IjAiLz4KICAgIDwvcmFkaWFsR3JhZGllbnQ+CiAgPC9kZWZzPgoKICA8IS0tIENhbnZhcyBCYWNrZ3JvdW5kIC0tPgogIDxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iODAwIiBmaWxsPSJ1cmwoI2xpZ2h0LWJnKSIvPgoKICA8IS0tIFRvcCBBbWJpZW50IFN1biBHbG93IC0tPgogIDxjaXJjbGUgY3g9IjIwMCIgY3k9IjEzMCIgcj0iMTQwIiBmaWxsPSJ1cmwoI2xpZ2h0LXN1bikiLz4KCiAgPCEtLSBGbG9hdGluZyBHaG9zdHMgJiBCYXRzIChUb3AgSGVhZGVyIEFyZWEgLSBJbmNyZWFzZWQpIC0tPgogIDxnIGZpbGw9IiM2YjIxYTgiIG9wYWNpdHk9IjAuMTgiPgogICAgPCEtLSBNYWluIExlZnQgR2hvc3QgLS0+CiAgICA8cGF0aCBkPSJNIDUwIDExMCBDIDUwIDkwIDcwIDkwIDcwIDExMCBDIDcwIDEyNSA2NSAxMjAgNjUgMTMwIEMgNjAgMTI1IDU4IDEzMCA1NSAxMjUgQyA1MiAxMzAgNTAgMTI1IDUwIDExMCBaIi8+CiAgICA8Y2lyY2xlIGN4PSI1OCIgY3k9IjEwMyIgcj0iMS41IiBmaWxsPSIjNGMxZDk1Ii8+CiAgICA8Y2lyY2xlIGN4PSI2NCIgY3k9IjEwMyIgcj0iMS41IiBmaWxsPSIjNGMxZDk1Ii8+CiAgICAKICAgIDwhLS0gQ2x1c3RlciBVcHBlciBMZWZ0IC0tPgogICAgPHBhdGggZD0iTSAxMTAgODAgQyAxMTAgNjUgMTI1IDY1IDEyNSA4MCBRIDEyNSA5MCAxMjAgOTUgTCAxMTUgOTAgWiIgb3BhY2l0eT0iMC43Ii8+CiAgICA8cGF0aCBkPSJNIDg1IDU1IFEgODkgNTEgOTMgNTUgUSA5NyA1MSAxMDEgNTUgUSA5MyA2MCA4NSA1NSBaIi8+CgogICAgPCEtLSBNYWluIFJpZ2h0IEdob3N0IC0tPgogICAgPHBhdGggZD0iTSAzMzAgNzAgQyAzMzAgNTUgMzQ1IDU1IDM0NSA3MCBDIDM0NSA4MiAzNDEgNzggMzQxIDg2IEMgMzM3IDgyIDMzNSA4NiAzMzMgODIgQyAzMzEgODYgMzMwIDgyIDMzMCA3MCBaIi8+CiAgICA8Y2lyY2xlIGN4PSIzMzUuNSIgY3k9IjY1IiByPSIxLjIiIGZpbGw9IiM0YzFkOTUiLz4KICAgIDxjaXJjbGUgY3g9IjM0MC41IiBjeT0iNjUiIHI9IjEuMiIgZmlsbD0iIzRjMWQ5NSIvPgogICAgCiAgICA8IS0tIENsdXN0ZXIgVXBwZXIgUmlnaHQgLS0+CiAgICA8cGF0aCBkPSJNIDI5MCA5NSBDIDI5MCA4NSAzMDAgODUgMzAwIDk1IFEgMzAwIDEwMiAyOTUgMTA1IEwgMjkyIDEwMiBaIiBvcGFjaXR5PSIwLjciLz4KICAgIDxwYXRoIGQ9Ik0gMzU1IDExMCBRIDM1OSAxMDYgMzYzIDExMCBRIDM2NyAxMDYgMzcxIDExMCBRIDM2MyAxMTUgMzU1IDExMCBaIi8+CgogICAgPCEtLSBBZGRpdGlvbmFsIENlbnRlciBTbWFsbCBHaG9zdHMgLS0+CiAgICA8cGF0aCBkPSJNIDE3MCAxNzAgQyAxNzAgMTYwIDE4MCAxNjAgMTgwIDE3MCBRIDE4MCAxNzYgMTc1IDE3OCBaIiBvcGFjaXR5PSIwLjYiLz4KICAgIDxwYXRoIGQ9Ik0gMjMwIDE1MCBDIDIzMCAxNDAgMjQwIDE0MCAyNDAgMTUwIFEgMjQwIDE1NiAyMzUgMTU4IFoiIG9wYWNpdHk9IjAuNiIvPgoKICAgIDwhLS0gTWluaW1hbCBCYXRzIC0tPgogICAgPHBhdGggZD0iTSAxODAgNjAgUSAxODUgNTUgMTkwIDYwIFEgMTk1IDU1IDIwMCA2MCBRIDE5MCA2NyAxODAgNjAgWiIvPgogICAgPHBhdGggZD0iTSAyMjAgODUgUSAyMjMgODEgMjI3IDg1IFEgMjMxIDgxIDIzNSA4NSBRIDIyNyA5MCAyMjAgODUgWiIvPgogICAgPHBhdGggZD0iTSAxNDAgNDAgUSAxNDMgMzYgMTQ3IDQwIFEgMTUxIDM2IDE1NSA0MCBRIDE0NyA0NSAxNDAgNDAgWiIvPgogIDwvZz4KCiAgPCEtLSBCb3R0b20gUHVtcGtpbiAmIEhpbGwgU2lsaG91ZXR0ZXMgKFN1YnRsZSBGb290ZXIgQW5jaG9yIC0gSW5jcmVhc2VkIFBhdGNoKSAtLT4KICA8ZyBmaWxsPSIjNGMxZDk1IiBvcGFjaXR5PSIwLjEyIj4KICAgIDwhLS0gQmFzZSBDdXJ2ZWQgSGlsbCAtLT4KICAgIDxwYXRoIGQ9Ik0gLTIwIDc0MCBRIDE4MCA3MDAgNDIwIDc0MCBMIDQyMCA4MDAgTCAtMjAgODAwIFoiLz4KICAgIAogICAgPCEtLSBMZWZ0IE1haW4gUHVtcGtpbiAtLT4KICAgIDxwYXRoIGQ9Ik0gNDAgNzM1IEMgMjUgNzM1IDIwIDc0OCAyMCA3NTggQyAyMCA3NzAgMjggNzc4IDQwIDc3OCBDIDUyIDc3OCA2MCA3NzAgNjAgNzU4IEMgNjAgNzQ4IDU1IDczNSA0MCA3MzUgWiIvPgogICAgPHJlY3QgeD0iMzgiIHk9IjczMCIgd2lkdGg9IjQiIGhlaWdodD0iNyIgcng9IjEiIGZpbGw9IiM0YzFkOTUiLz4KICAgIDwhLS0gTGVmdCBDbHVzdGVyIEFkZGl0aW9ucyAtLT4KICAgIDxwYXRoIGQ9Ik0gNzUgNzQ1IEMgNjggNzQ1IDY1IDc1MiA2NSA3NTcgQyA2NSA3NjMgNjkgNzY3IDc1IDc2NyBDIDgxIDc2NyA4NSA3NjMgODUgNzU3IEMgODUgNzUyIDgyIDc0NSA3NSA3NDUgWiIgb3BhY2l0eT0iMC43Ii8+CiAgICA8cmVjdCB4PSI3NCIgeT0iNzQyIiB3aWR0aD0iMiIgaGVpZ2h0PSI0IiByeD0iMSIgZmlsbD0iIzRjMWQ5NSIvPgoKICAgIDwhLS0gUmlnaHQgTWFpbiBQdW1wa2luIChTbWFsbCkgLS0+CiAgICA8cGF0aCBkPSJNIDM0MCA3NDUgQyAzMjggNzQ1IDMyNCA3NTUgMzI0IDc2MyBDIDMyNCA3NzMgMzMwIDc3OSAzNDAgNzc5IEMgMzUwIDc3OSAzNTYgNzczIDM1NiA3NjMgQyAzNTYgNzU1IDM1MiA3NDUgMzQwIDc0NSBaIi8+CiAgICA8cmVjdCB4PSIzMzkiIHk9Ijc0MSIgd2lkdGg9IjMiIGhlaWdodD0iNSIgcng9IjEiIGZpbGw9IiM0YzFkOTUiLz4KICAgIDwhLS0gUmlnaHQgQ2x1c3RlciBBZGRpdGlvbnMgLS0+CiAgICA8cGF0aCBkPSJNIDMxMCA3NTUgQyAzMDMgNzU1IDMwMCA3NjAgMzAwIDc2NCBDIDMwMCA3NjkgMzAzIDc3MiAzMTAgNzcyIEMgMzE3IDc3MiAzMjAgNzY5IDMyMCA3NjQgQyAzMjAgNzYwIDMxNyA3NTUgMzEwIDc1NSBaIiBvcGFjaXR5PSIwLjciLz4KICAgIDxwYXRoIGQ9Ik0gMzY1IDc1MCBDIDM1OCA3NTAgMzU1IDc1NyAzNTUgNzYyIEMgMzU1IDc2OCAzNTkgNzcyIDM2NSA3NzIgQyAzNzEgNzcyIDM3NSA3NjggMzc1IDc2MiBDIDM3NSA3NTcgMzcyIDc1MCAzNjUgNzUwIFoiIG9wYWNpdHk9IjAuOCIvPgoKICAgIDwhLS0gQ2VudGVyIEdyb3VuZCBDb3ZlciAtLT4KICAgIDxwYXRoIGQ9Ik0gMTgwIDczMCBDIDE3MCA3MzAgMTY3IDczOCAxNjcgNzQzIEMgMTY3IDc0OCAxNzEgNzUxIDE4MCA3NTEgQyAxODkgNzUxIDE5MyA3NDggMTkzIDc0MyBDIDE5MyA3MzggMTkwIDczMCAxODAgNzMwIFoiIG9wYWNpdHk9IjAuNSIvPgogICAgPHBhdGggZD0iTSAyMjAgNzM1IEMgMjEzIDczNSAyMTAgNzQwIDIxMCA3NDQgQyAyMTAgNzQ5IDIxMyA3NTEgMjIwIDc1MSBDIDIyNyA3NTEgMjMwIDc0OSAyMzAgNzQ0IEMgMjMwIDc0MCAyMjcgNzM1IDIyMCA3MzUgWiIgb3BhY2l0eT0iMC41Ii8+CiAgPC9nPgo8L3N2Zz4K";
+// ---------------------------------------------------------------------
+// Holiday & special-day backgrounds (Settings > General > Holiday
+// Backgrounds) - a household-configurable version of the single hardcoded
+// Halloween easter egg just above (HALLOWEEN_BG_IMAGE/_isHalloweenToday),
+// but covering any number of household-picked holidays/special days, each
+// with its OWN uploaded photo rather than one shared built-in SVG, shown
+// either as a soft background behind just that day's column (the
+// default) or, if "Expand to full screen" is checked for that date, as a
+// full-card background - see _matchHolidayBackgroundForDate,
+// _buildDayColumnHtml's dayColHolidayStyle, and _applySizeVars's bg
+// variable for where this list is actually read.
+//
+// Nth given weekday of a month (used for "4th Thursday of November" =
+// Thanksgiving) - weekday0to6 is JS Date's own getDay() convention
+// (0=Sunday..6=Saturday), n is 1-based (4 = the 4th occurrence that
+// month, not a 0-based index).
+function _nthWeekdayOfMonth(year, month1to12, weekday0to6, n) {
+const firstWeekday = new Date(year, month1to12 - 1, 1).getDay();
+const day = 1 + ((weekday0to6 - firstWeekday + 7) % 7) + (n - 1) * 7;
+return { month: month1to12, day };
+}
+// Anonymous Gregorian algorithm (Meeus/Jones/Butcher) - the standard
+// closed-form way to compute Easter Sunday's month/day for a given year,
+// accurate for every year this integration will ever actually run in
+// (the Gregorian calendar).
+function _computeEasterDate(year) {
+const a = year % 19;
+const b = Math.floor(year / 100);
+const c = year % 100;
+const d = Math.floor(b / 4);
+const e = b % 4;
+const f = Math.floor((b + 8) / 25);
+const g = Math.floor((b - f + 1) / 3);
+const h = (19 * a + b - d - g + 15) % 30;
+const i = Math.floor(c / 4);
+const k = c % 4;
+const l = (32 + 2 * e + 2 * i - h - k) % 7;
+const m = Math.floor((a + 11 * h + 22 * l) / 451);
+const month = Math.floor((h + l - 7 * m + 114) / 31);
+const day = ((h + l - 7 * m + 114) % 31) + 1;
+return { month, day };
+}
+// The built-in US holiday calendar households can toggle on from Settings
+// - dates only (no bundled image), so a household that turns one on still
+// uploads their own photo for it. Two "floating" holidays (Easter,
+// Thanksgiving) don't fall on the same month/day every year, so their
+// entry carries a `compute(year)` function instead of fixed month/day
+// fields - every fixed-date entry below just uses plain month/day,
+// unchanged year to year. `name` is the default display name only - an
+// admin can rename any of these from Settings (see
+// _normalizeHolidayBackgrounds), same spirit as every other editable
+// label in this card.
+const HOLIDAY_PREDEFINED_DEFS = [
+{ key: "new_years", name: "New Year's Day", month: 1, day: 1 },
+{ key: "valentines", name: "Valentine's Day", month: 2, day: 14 },
+{ key: "st_patricks", name: "St. Patrick's Day", month: 3, day: 17 },
+{ key: "easter", name: "Easter", compute: _computeEasterDate },
+{ key: "july4th", name: "4th of July", month: 7, day: 4 },
+{ key: "halloween", name: "Halloween", month: 10, day: 31 },
+{ key: "thanksgiving", name: "Thanksgiving", compute: (year) => _nthWeekdayOfMonth(year, 11, 4, 4) },
+{ key: "christmas", name: "Christmas", month: 12, day: 25 },
+];
 // Shared, dashboard-wide FAB coordinator - "when a user has more than one
 // card on the same screen, the FAB buttons overlap, what is the solution?
 // Can we detect and combine them? If they have the same tabs can we make
@@ -142,6 +266,25 @@ if (!window.__familyHubFabCoordinator) {
     const SLOT_HEIGHT_PX = 66;
     const entries = new Map(); // client -> { kind, seq, meta, onUpdate }
     let seq = 0;
+    // Every FAB here is position:fixed, pinned to the viewport corner (or,
+    // for a fab-position:"card" client, to its own card's box) - each card
+    // is its own independently-loaded custom element with no idea what
+    // other Family Hub cards are doing on the same dashboard, so a full-
+    // screen modal opened by ANY of them (most visibly the calendar card's
+    // own Settings screen) could end up with a totally unrelated card's
+    // FAB painted on top of it: depending on how the dashboard lays out
+    // its cards (Home Assistant's newer Sections view in particular can
+    // give each card's container its own CSS containment/stacking
+    // context), a sibling card's FAB z-index isn't guaranteed to actually
+    // lose to this card's modal overlay the way a plain same-shadow-DOM
+    // z-index comparison would. Rather than depend on that, every FAB-
+    // bearing card asks every OTHER one to physically hide
+    // (fab.hidden = true, not just "behind" via z-index - see each card's
+    // own onUpdate) while any of them has a full-screen modal open, via
+    // openModalCount/pushModalOpen/popModalOpen below - same "don't trust
+    // cross-shadow-DOM z-index, coordinate explicitly instead" approach as
+    // this project's shared screensaver controller.
+    let openModalCount = 0;
 
     function orderIndex(kind) {
       const i = FAB_KIND_ORDER.indexOf(kind);
@@ -154,19 +297,20 @@ if (!window.__familyHubFabCoordinator) {
         if (oa !== ob) return oa - ob;
         return a[1].seq - b[1].seq;
       });
-      // v1.110.7+: entries with takesSlot:false (a fab_position: "card"
+      // entries with takesSlot:false (a fab_position: "card"
       // client - see registerClient's own doc below) are skipped when
       // handing out stacking slots/offsets, but still walked here so they
       // still see otherProvidesGoalTab and still get an onUpdate call.
       const slotCount = list.filter(([, entry]) => entry.takesSlot).length;
       let slotIndex = 0;
+      const hideForModal = openModalCount > 0;
       list.forEach(([client, entry]) => {
         const otherProvidesGoalTab = list.some(
           ([otherClient, otherEntry]) => otherClient !== client && otherEntry.meta && otherEntry.meta.providesGoalTab
         );
         const index = entry.takesSlot ? slotIndex++ : null;
         if (typeof entry.onUpdate === "function") {
-          entry.onUpdate({ offsetPx: (index || 0) * SLOT_HEIGHT_PX, slotIndex: index, count: slotCount, otherProvidesGoalTab });
+          entry.onUpdate({ offsetPx: (index || 0) * SLOT_HEIGHT_PX, slotIndex: index, count: slotCount, otherProvidesGoalTab, hideForModal });
         }
       });
     }
@@ -177,10 +321,12 @@ if (!window.__familyHubFabCoordinator) {
       // `providesGoalTab` (see this block's own docstring above). `onUpdate`
       // is called once immediately (so a lone card on an otherwise-empty
       // dashboard still gets offsetPx: 0) and again on every subsequent
-      // register/unregister/updateClientMeta from ANY card, since adding a
-      // second FAB changes where the first one's slot is too.
+      // register/unregister/updateClientMeta/pushModalOpen/popModalOpen
+      // from ANY card, since adding a second FAB changes where the first
+      // one's slot is too, and any card's modal opening/closing changes
+      // whether every FAB should currently be hidden.
       //
-      // v1.110.7+: `opts.takesSlot` (default true) - pass `{ takesSlot:
+      // `opts.takesSlot` (default true) - pass `{ takesSlot:
       // false }` for a card whose FAB has opted out of the shared
       // viewport-corner stack (fab_position: "card" - anchored to its own
       // card's box instead, see each card's own _registerFabCoordinator).
@@ -204,6 +350,24 @@ if (!window.__familyHubFabCoordinator) {
         entry.meta = Object.assign({}, entry.meta, meta || {});
         recompute();
       },
+      // Call when THIS card opens a full-screen modal that every OTHER
+      // Family Hub card's FAB should get out of the way of (today: only
+      // the calendar card's own Settings screen calls this - see its
+      // _setupSettingsFabCoordination). A plain counter, not a per-client
+      // flag, so this stays correct even if more than one such modal is
+      // ever open across more than one card at once - every pushModalOpen
+      // needs a matching popModalOpen before FABs reappear, and a card
+      // that unmounts while its own modal was still open (see
+      // disconnectedCallback) pops on its way out rather than leaking the
+      // count forever.
+      pushModalOpen() {
+        openModalCount += 1;
+        recompute();
+      },
+      popModalOpen() {
+        openModalCount = Math.max(0, openModalCount - 1);
+        recompute();
+      },
       // Call from disconnectedCallback. Frees this card's slot so every
       // remaining card's FAB shifts back down to close the gap, and (for
       // Goals) re-checks whether it's still safe to suppress its own FAB.
@@ -215,8 +379,8 @@ if (!window.__familyHubFabCoordinator) {
 }
 
 // -------------------------------------------------------------------------
-// Recipe Box ("Loved Dishes") shared logic (v1.110.6+) - "the menu box" the
-// household asked to also see as its own dashboard tab. There is no literal
+// Recipe Box ("Loved Dishes") shared logic - "the menu box"
+// as its own dashboard tab. There is no literal
 // "menu box" anywhere else in this codebase; this modal - searchable/
 // filterable/sortable, add/edit/delete a dish, heart it, suggest it for a
 // meal - is the only self-contained thing that reads as a "box" someone
@@ -238,10 +402,19 @@ if (!window.__familyHubFabCoordinator) {
 // method here) - editing the modal's code in this one block is guaranteed to
 // change the standalone card's behavior identically, and vice versa.
 //
-// Same window-singleton, guarded-by-`if` shape as window.__familyHubFabCoordinator
-// above (the only cross-card-coordination precedent this codebase already had) -
-// whichever of this file or the standalone card's file loads first "wins" and
-// defines it; the second file's identical guarded block becomes a no-op.
+// Same window-singleton shape as window.__familyHubFabCoordinator above (the
+// only cross-card-coordination precedent this codebase already had), but
+// (v1.132.50+, see the "this._t is not a function" fix further below) THIS
+// file's own copy is deliberately UNGUARDED - it always (re)defines window.
+// __familyHubRecipeBoxShared, every time this module runs, rather than only
+// when it's not already set. The standalone recipe box card's own copy is
+// still guarded the old way (only defines it if unset), which is exactly
+// what lets it work completely on its own when this card's file isn't even
+// loaded. When both files ARE loaded, Home Assistant does not guarantee
+// which one's module executes first, so this file being unconditional is
+// what guarantees FamilyWeekCalendarCard.prototype always ends up with this
+// file's complete method set regardless of load order - see that fix's own
+// comment for the full story.
 //
 // Deliberately NOT included here (kept card-specific, each side supplies its
 // own): _openDishEditor/_saveDishEditor - fused with the day/menu editor's
@@ -257,11 +430,52 @@ if (!window.__familyHubFabCoordinator) {
 // (_selectLovedDish, _addAdditionalRecipeFromLoved) - calendar-only call
 // sites.
 //
-// v1.118.0+: the full in-card Grocy Recipe Viewer (_openGrocyRecipeViewer and
+// the full in-card Grocy Recipe Viewer (_openGrocyRecipeViewer and
 // its whole supporting cast) IS included below, no longer out of scope -
-// household report: "the recipe box card tries to send you to the external
-// grocy link for recipes. this needs to use the internal recipe viewer."
-if (!window.__familyHubRecipeBoxShared) {
+//
+// - detail text "this._t is not a function". Root
+// cause: this block used to be guarded by `if (!window.__familyHub
+// RecipeBoxShared)`, on the (wrong) assumption that it didn't matter which
+// of this file or family-hub-recipe-box-card.js's own identically-guarded
+// block "won" the race to define window.__familyHubRecipeBoxShared first -
+// see this file's own test_recipe_box_card_sharing.js, which only ever
+// loads this file BEFORE the recipe box card's file and so never caught
+// this. In reality, Home Assistant loads each registered dashboard
+// resource as its own dynamically-imported ES module, and does NOT
+// guarantee they execute in registration order - so on this household's
+// instance, family-hub-recipe-box-card.js's own (much smaller, recipe-
+// only) copy of this object was winning the race instead. Its own copy
+// never defined _t/_isAdmin/_myUserId/_hasPermission/the permission-modal
+// helpers/etc. (it only needs the recipe-box-specific methods for its own
+// standalone card), so once THIS card's own `Object.assign
+// (FamilyWeekCalendarCard.prototype, window.__familyHubRecipeBoxShared)`
+// below ran against that smaller object, this._t (and friends) were simply
+// never attached to FamilyWeekCalendarCard.prototype at all - hence
+// "this._t is not a function" the moment _render() or setConfig() first
+// called it, which Lovelace's own card-creation code catches and surfaces
+// as the generic "Configuration error" box (see this card's own error
+// path - nothing about this ever reached Home Assistant's server-side
+// logs, which is why the formatjs translation bug fixed in v1.132.49 and
+// this were two entirely separate issues that just happened to get
+// reported back to back).
+//
+// Fix: this file's own copy of the object is now defined UNCONDITIONALLY
+// (no more `if (!window.X)` guard) every time this module runs, always
+// overwriting window.__familyHubRecipeBoxShared with this file's complete,
+// authoritative version immediately before this file's own Object.assign
+// call further below uses it - so FamilyWeekCalendarCard.prototype always
+// ends up with the full method set regardless of which of the two card
+// files' modules Home Assistant happens to execute first. The recipe box
+// card's own file is UNCHANGED - it still only defines its own (smaller)
+// fallback copy when window.__familyHubRecipeBoxShared isn't already set,
+// which is exactly what it needs for standalone use when this card's file
+// isn't loaded at all; when both are present, whichever order they run in,
+// this file's own unconditional (re)definition + immediate Object.assign
+// guarantees THIS card is never left with a partial object. If this file
+// happens to run after the recipe box card's file already did its own
+// Object.assign using the smaller object, the recipe box card simply keeps
+// whatever smaller set it already copied - harmless, since it never calls
+// any of the methods that set doesn't include.
 window.__familyHubRecipeBoxShared = {
 _genId() {
 return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -298,10 +512,10 @@ grocyRecipeId: parsed.grocyRecipeId || null,
 // for how this becomes a real (persistent) edit to the recipe in
 // Grocy at push time.
 servings: typeof parsed.servings === "number" ? parsed.servings : null,
-// v141+: leftovers - how many EXTRA days (beyond the day it's actually
+// leftovers - how many EXTRA days (beyond the day it's actually
 // entered on) this same meal should keep showing for, same block, on
 // the immediately following days. 1 (the default) means "just this one
-// day," identical to every meal entered before this existed. v144.10+:
+// day," identical to every meal entered before this existed.
 // superseded by leftoverDates below for anything saved from here on
 // (an explicit, non-contiguous day picker instead of "the next N days
 // in a row") - spanDays is kept ONLY so pre-v144.10 data (which never
@@ -309,7 +523,7 @@ servings: typeof parsed.servings === "number" ? parsed.servings : null,
 // did; see _fetchMealPlan for the actual fallback logic, since a single
 // number here can no longer represent an arbitrary day selection.
 spanDays: typeof parsed.spanDays === "number" && parsed.spanDays > 1 ? parsed.spanDays : 1,
-// v144.10+: "leftovers should let you choose what days you have the
+// "leftovers should let you choose what days you have the
 // leftovers on" - an explicit list of "YYYY-MM-DD" date keys this same
 // meal should ALSO show on (same block), replacing spanDays' "next N
 // days in a row" assumption with an arbitrary pick of any day(s), not
@@ -317,7 +531,7 @@ spanDays: typeof parsed.spanDays === "number" && parsed.spanDays > 1 ? parsed.sp
 // Malformed/non-string entries are dropped defensively, same reasoning
 // as additionalRecipes just below.
 leftoverDates: Array.isArray(parsed.leftoverDates) ? parsed.leftoverDates.filter((d) => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d)) : [],
-// v142+: "additional recipes" - any number of side/dessert/sauce
+// "additional recipes" - any number of side/dessert/sauce
 // recipes attached alongside this one main recipe (see _upsertMealPlan
 // and the day/menu editor's Additional Recipes field). Each entry is
 // {name, link, grocyRecipeId} - name-less/malformed entries are
@@ -387,6 +601,132 @@ bestDistance = distance;
 }
 }
 return best;
+},
+// "Suggestive meal line" ). Runs on every
+// keystroke in .input-name (day/menu editor AND the Recipe Box's own
+// Add/Edit Recipe editor share that field). This is a live, dismissible
+// cousin of the existing Save-time duplicate confirm (_findFuzzyDuplicate/
+// _normalizeForDuplicateCheck, used by _upsertDish/_addSuggestion) - same
+// normalization, but with its own matching (_findMealNameSuggestionMatch
+// below), since _findFuzzyDuplicate's whole-string edit distance alone
+// wouldn't catch the household's own example: "Cilli dogs" is nowhere
+// close, character-for-character, to "Chilli Cheese Dogs" (it's missing
+// an entire word), even though it's obviously the same dish.
+_recipeNameTokens(name) {
+return this._normalizeForDuplicateCheck(name)
+.split(" ")
+.filter((t) => t.length >= 2);
+},
+_tokensFuzzyMatch(a, b) {
+if (a === b) return true;
+if (a.length >= 3 && b.length >= 3 && (a.indexOf(b) === 0 || b.indexOf(a) === 0)) return true;
+// Broadened from an earlier, tighter threshold to catch more near-misses.
+const threshold = Math.max(1, Math.round(Math.max(a.length, b.length) * 0.45));
+return this._levenshteinDistance(a, b) <= threshold;
+},
+// Two ways a catalog recipe counts as "similar" to what's being typed:
+// (1) the whole normalized name is a close edit-distance match (a typo of
+// the same overall name, same threshold _findFuzzyDuplicate uses), or
+// (2) every word actually typed fuzzily lands on some word in the
+// candidate's name (a shortened/typo'd fragment of a longer catalog
+// entry) - gated to 2+ typed words so a single common word ("dogs")
+// doesn't flag half the catalog on its own. An exact normalized match
+// isn't "similar", it's the same name already - never suggested.
+//
+// v1.132.41+ ): returns up
+// to 3 candidates now (highest score first) instead of just the single
+// best one, and the whole-name threshold was loosened 0.2 -> 0.3 to
+// match (see _tokensFuzzyMatch above for the word-level threshold).
+_findMealNameSuggestionMatches(name) {
+const norm = this._normalizeForDuplicateCheck(name);
+if (!norm) return [];
+const typedTokens = this._recipeNameTokens(name);
+if (!typedTokens.length) return [];
+const scored = [];
+for (const recipe of this._recipes || []) {
+const otherNorm = this._normalizeForDuplicateCheck(recipe.name);
+if (!otherNorm || otherNorm === norm) continue;
+const wholeDistance = this._levenshteinDistance(norm, otherNorm);
+const wholeThreshold = Math.max(1, Math.round(Math.max(norm.length, otherNorm.length) * 0.3));
+const wholeMatch = wholeDistance <= wholeThreshold;
+const otherTokens = this._recipeNameTokens(recipe.name);
+const matchedTokenCount = typedTokens.filter((t) => otherTokens.some((o) => this._tokensFuzzyMatch(t, o))).length;
+const wordMatch = typedTokens.length >= 2 && matchedTokenCount === typedTokens.length;
+if (!wholeMatch && !wordMatch) continue;
+const score = wholeMatch ? 1000 - wholeDistance : matchedTokenCount;
+scored.push({ recipe, score });
+}
+scored.sort((a, b) => b.score - a.score);
+return scored.slice(0, 3).map((s) => s.recipe);
+},
+_updateMealNameSuggestion() {
+const root = this._root;
+if (!root) return;
+const box = root.querySelector(".meal-name-suggestion");
+if (!box) return;
+const list = box.querySelector(".meal-name-suggestion-list");
+const raw = root.querySelector(".input-name").value;
+const name = raw.trim();
+// Below a couple characters there's nothing meaningful to fuzzy-match
+// yet (and it'd otherwise flag almost anything against a short recipe
+// name).
+if (name.length < 3) {
+this._hideMealNameSuggestion();
+return;
+}
+const matches = this._findMealNameSuggestionMatches(name);
+if (!matches.length) {
+this._hideMealNameSuggestion();
+return;
+}
+this._mealNameSuggestionMatches = matches;
+list.innerHTML = "";
+matches.forEach((recipe) => {
+const row = document.createElement("div");
+row.className = "meal-name-suggestion-item";
+const label = document.createElement("span");
+label.className = "meal-name-suggestion-match";
+label.textContent = recipe.name || "";
+const btn = document.createElement("button");
+btn.type = "button";
+btn.className = "meal-name-suggestion-use";
+btn.dataset.uid = recipe.uid || "";
+btn.textContent = "Use this instead?";
+row.appendChild(label);
+row.appendChild(btn);
+list.appendChild(row);
+});
+box.style.display = "";
+},
+_hideMealNameSuggestion() {
+const root = this._root;
+if (!root) return;
+const box = root.querySelector(".meal-name-suggestion");
+if (box) {
+box.style.display = "none";
+const list = box.querySelector(".meal-name-suggestion-list");
+if (list) list.innerHTML = "";
+}
+this._mealNameSuggestionMatches = null;
+},
+// Fills the shared name/description/link/rating/Grocy-link fields from
+// the picked catalog recipe (matched by uid against the current
+// suggestion list), same as picking it from "Pick a Recipe"
+// (_selectLovedDish) - minus that flow's _closeLoved()/servings-reset,
+// since there's no picker overlay open here to close.
+_applyMealNameSuggestion(uid) {
+const matches = this._mealNameSuggestionMatches || [];
+const recipe = matches.find((r) => (r.uid || "") === uid) || matches[0];
+if (!recipe) return;
+const root = this._root;
+root.querySelector(".input-name").value = recipe.name || "";
+root.querySelector(".input-description").value = recipe.description || "";
+root.querySelector(".input-link").value = recipe.link || "";
+this._currentGrocyRecipeId = recipe.grocyRecipeId || null;
+this._updateMenuLinkOpenBtn();
+this._currentRating = recipe.rating || null;
+this._updateRatingButtons();
+this._hideMealNameSuggestion();
 },
 async _fetchRecipes() {
 if (!this._hass) return;
@@ -487,6 +827,180 @@ return !!(this._myPermissions && this._myPermissions[key]);
 _canEditMenu() {
 return this._hasPermission("can_edit_menu");
 },
+_canDeleteEvent() {
+return this._hasPermission("can_delete_event");
+},
+// ->
+// clarified to use Home Assistant's OWN native frontend translation
+// system rather than a bespoke one, and to follow HA's own language
+// automatically (no separate Family Hub language picker to maintain -
+// Home Assistant already has one, per-user, under its own Settings ->
+// General -> Language, and that's what `hass.language` reflects).
+//
+// The mechanism: family_hub/translations/<lang>.json (the SAME files
+// this integration already ships for its config_flow) gets a new
+// top-level "frontend" key holding this card's own UI strings, keyed by
+// dotted path (e.g. "nav.week"). hass.loadBackendTranslation(category,
+// integration) is real, native Home Assistant frontend API - it fetches
+// `/api/translations` for whatever `hass.language` currently is, scoped
+// to a (category, integration) pair, and populates hass.resources so
+// hass.localize(`component.family_hub.<category>.<path>`) can find it.
+// The "frontend" category name is our own invention (nothing enforces a
+// fixed category list at runtime - see translations/en.json's own
+// comment) - HA's own frontend TypeScript types constrain ITS OWN
+// built-in categories at compile time, but that has no bearing on what
+// a custom integration's translations file can define or what a plain-
+// JS custom card can request.
+//
+// _t() is a synchronous, always-safe wrapper: hass.localize() returns
+// "" (not the raw key) when a key is missing, wrapped translations
+// haven't loaded yet, or hass isn't ready at all - never throws, and
+// this always has an inline English fallback baked in right at the call
+// site, so the very first paint (before the async loadBackendTranslation
+// round trip resolves) - and any household that's simply using English
+// - looks and behaves exactly as if this feature didn't exist.
+_t(key, fallback, vars) {
+// v1.132.48's fix for the "Failed to format translation ...
+// [formatjs Error: MISSING_VALUE]" log spam (see that version's own
+// changelog entry) turned out to be WRONG and didn't actually stop it -
+// confirmed still logging on the household's instance after installing
+// v1.132.48 and a full Home Assistant restart, so the theory that
+// hass.localize(key, "name", value, ...) (flattened pairs, the OLD
+// Polymer-era HA frontend convention) was the right substitution
+// signature for this HA version (2026.9.1) was wrong. The REAL fix:
+// stop using "{x}"-style ICU placeholder syntax in the translation JSON
+// strings at all (see translations/en.json's own comment on this), so
+// hass.localize's internal formatjs call never sees an unresolved
+// argument in the first place, on ANY Home Assistant version, and never
+// logs anything - our own split/join below (now matching translations/
+// *.json's new "%x%" token instead of "{x}") does 100% of the
+// substitution work ourselves, exactly like this was always intended
+// to. hass.localize(key) is called with no extra arguments again.
+// Mirrors the identical fix in family-hub-chores-card.js's own copy of
+// this same trio.
+//
+// - confirmed Home
+// Assistant's own core UI (sidebar, other native pages) DID switch to
+// German, so hass.language really is "de" and the per-user profile
+// setting genuinely took effect; only Family Hub's own strings stayed
+// English. Root cause: the translation category this whole trio has used
+// since v1.132.44, "frontend", is not actually a free, collision-proof
+// name - it's also the literal domain/category name of Home Assistant's
+// OWN built-in frontend integration, which serves ITS OWN UI strings
+// (sidebar labels, common panel titles, etc.) through this exact same
+// generic backend translation API. hass.loadBackendTranslation caches
+// and batches its fetches per (language, category) - once HA's own core
+// frontend has already requested category "frontend" for the current
+// language (which it does on every app load, to translate its own UI),
+// this card's own later `hass.loadBackendTranslation("frontend",
+// "family_hub")` call could be satisfied entirely from that ALREADY-
+// cached (language, "frontend") result instead of actually performing a
+// fresh fetch scoped to include family_hub's own integration - silently
+// leaving hass.resources without any of family_hub's own German/Spanish
+// strings under that category, which is exactly what makes _t() fall
+// through to its own hard-coded English fallback for every single key,
+// forever, with nothing ever thrown or logged anywhere (this card's own
+// .catch() below never even fires, since the promise still resolves
+// successfully - it just resolves to translations that don't include
+// ours). Fixed by renaming this integration's OWN custom category from
+// "frontend" (a name it was never safe to reuse) to "fh_ui" - see
+// translations/en.json's own comment and _ensureTranslationsLoaded's own
+// loadBackendTranslation call below for the matching change. Also added
+// a console.warn on this trio's own .catch() (see
+// _ensureTranslationsLoaded below) so a genuine future load failure is
+// at least visible in the browser console instead of silently staying
+// English with zero trace anywhere, the way this exact bug did.
+let str = "";
+try {
+if (this._hass && typeof this._hass.localize === "function") {
+str = this._hass.localize(`component.family_hub.fh_ui.${key}`) || "";
+}
+} catch (e) {
+str = "";
+}
+if (!str) str = fallback;
+if (vars) {
+Object.keys(vars).forEach((k) => {
+str = str.split(`%${k}%`).join(vars[k]);
+});
+}
+return str;
+},
+// The two-language files ship today (German/Spanish, per the household's
+// own ask) - adding a third is just a new translations/<lang>.json file
+// with the same "frontend" key, no code change here at all.
+_supportedLanguages() {
+return ["en", "de", "es"];
+},
+// Home Assistant's own language codes are occasionally region-qualified
+// (e.g. "en-GB", "pt-BR") - only the base subtag matters for picking
+// which of our translation files to load.
+_baseLanguage(lang) {
+return (lang || "en").split("-")[0].toLowerCase();
+},
+// Called from the hass setter on every assignment (cheap - it's a no-op
+// once this._i18nLoadedLang already matches the current language, which
+// is true on every call after the first for the overwhelming majority of
+// sessions where the household's HA language never changes mid-session).
+// Kicks off hass.loadBackendTranslation for a NEW language, then re-runs
+// _applyTranslations() (for the static, built-once chrome) and
+// _renderGrid() (for the calendar body's own dynamic _t() calls, e.g.
+// _updateNavLabel's "This Week"/"Next Week" text) once it resolves -
+// never blocks the initial synchronous _build()/render path on this
+// round trip, so there's no added load-time delay for anyone.
+_ensureTranslationsLoaded() {
+if (!this._hass || typeof this._hass.loadBackendTranslation !== "function") return;
+const lang = this._baseLanguage(this._hass.language);
+if (this._i18nLoadedLang === lang || this._i18nLoading === lang) return;
+this._i18nLoading = lang;
+this._hass
+.loadBackendTranslation("fh_ui", "family_hub")
+.then(() => {
+this._i18nLoadedLang = lang;
+this._i18nLoading = null;
+this._applyTranslations();
+if (this._root) this._renderGrid();
+})
+.catch((e) => {
+// Transient failure (or an older HA core without this API) - stays on
+// whatever's already showing (English, via _t()'s own fallback); the
+// next hass assignment or language change tries again.
+this._i18nLoading = null;
+// this used to fail completely silently (see _t's own
+// comment above) - a real load failure now at least leaves a trace in
+// the browser console instead of just staying English with no way to
+// tell why.
+console.warn("[family_hub] failed to load \"" + lang + "\" translations - staying on English fallback text", e);
+});
+},
+// Sweeps the static, built-ONCE chrome (_build()'s own giant template -
+// the top nav bar, the Add Event modal's field labels, the Settings tab
+// bar - none of which get their innerHTML regenerated after _build()
+// runs, unlike e.g. the event-info popup's content, which is rebuilt
+// fresh on every open and so just calls _t() directly inline instead of
+// needing this sweep at all). Every translatable element in that static
+// template carries data-i18n (its own text) and/or data-i18n-title (its
+// title/aria-label) - this reads each one's ORIGINAL English text once
+// (cached on the element itself, in data-i18n-fallback) so re-running
+// this after a language change always translates from the true English
+// source, never from a previous translation attempt's leftover text.
+_applyTranslations() {
+if (!this._root) return;
+this._root.querySelectorAll("[data-i18n]").forEach((el) => {
+const key = el.dataset.i18n;
+if (el.dataset.i18nFallback === undefined) el.dataset.i18nFallback = el.textContent;
+el.textContent = this._t(key, el.dataset.i18nFallback);
+});
+this._root.querySelectorAll("[data-i18n-title]").forEach((el) => {
+const key = el.dataset.i18nTitle;
+if (el.dataset.i18nTitleFallback === undefined) {
+el.dataset.i18nTitleFallback = el.getAttribute("title") || el.getAttribute("aria-label") || "";
+}
+const translated = this._t(key, el.dataset.i18nTitleFallback);
+if (el.hasAttribute("title")) el.setAttribute("title", translated);
+if (el.hasAttribute("aria-label")) el.setAttribute("aria-label", translated);
+});
+},
 async _fetchMyPermissions() {
 if (!this._hass) return;
 try {
@@ -577,7 +1091,7 @@ await this._addSuggestion(recipe.name, recipe.description, recipe.link, recipe.g
 this._renderLoved();
 },
 _openLoved(pickerMode) {
-// v142+: pickerMode is now also allowed to be the string "additional"
+// pickerMode is now also allowed to be the string "additional"
 // (the day/menu editor's "+ From Recipe Box" additional-recipe button -
 // see _addAdditionalRecipeFromLoved), on top of the existing true/false.
 // Both true and "additional" are equally "picker mode" for every
@@ -725,10 +1239,7 @@ this._addAdditionalRecipeFromLoved(recipe);
 } else if (this._pickerMode) {
 this._selectLovedDish(recipe);
 } else if (recipe.grocyRecipeId) {
-// v1.129.0+: household report, verbatim: "the recipe box card open
-// a menu in a modal but the recipe modal in the calendar opens the
-// recipe full screen, the recipe box card needs to function the
-// same." Root cause: browsing the Recipe Box always opened the
+// Root cause: browsing the Recipe Box always opened the
 // small `.dish-detail-overlay` "menu" first (name/photo/rating/
 // description plus Suggest/Edit/Delete and a "View recipe" link) -
 // reaching the actual full-screen Grocy Recipe Viewer took a
@@ -931,6 +1442,33 @@ _toggleDishLoved(recipe) {
 const newRating = recipe.rating === "up" ? null : "up";
 this._upsertDish(recipe.name, recipe.description, recipe.link, newRating, recipe.uid, recipe.grocyRecipeId);
 },
+// Household ask, verbatim: "If you qu[i]ck a meal block and click the
+// heart, it should auto save to the meal" - heart/thumbsdown in the
+// day/menu editor (NOT the Recipe Box's own Add/Edit Recipe editor - see
+// _dishEditorMode/_saveDishEditor, which already persists on ITS OWN
+// Save button same as always) used to only set this._currentRating in
+// memory, taking effect only once the whole form's Save button was
+// pressed - so a quick "actually I loved this" tap on an already-planned
+// meal was easy to lose by closing/navigating away without hitting Save.
+// Mirrors _toggleDishLoved's own instant-persist pattern (a Recipe Box
+// card's heart already saves immediately, no separate Save step) - same
+// _upsertDish call _saveEditor's Save button makes for this exact field,
+// fired right away instead of waiting. Only fires once there's an actual
+// name to save a rating against - a heart tap on a still-blank new-meal
+// slot has nothing to attach a rating to yet (that path still needs the
+// normal Save, which is what first gives it a name at all), and only for
+// someone actually allowed to edit the menu (same gate _saveEditor itself
+// checks).
+_maybeAutoSaveMealEditorRating() {
+if (this._dishEditorMode || !this._canEditMenu()) return;
+const root = this._root;
+if (!root) return;
+const name = root.querySelector(".input-name").value.trim();
+if (!name) return;
+const description = root.querySelector(".input-description").value.trim();
+const link = root.querySelector(".input-link").value.trim();
+this._upsertDish(name, description, link, this._currentRating, null, this._currentGrocyRecipeId);
+},
 _renderRecipeBoxCategoryChips() {
 const root = this._root;
 if (!root) return;
@@ -1028,7 +1566,7 @@ new Set((this._recipes || []).map((r) => (r.category || "").trim()).filter(Boole
 ).sort((a, b) => a.localeCompare(b));
 datalist.innerHTML = categories.map((c) => `<option value="${c.replace(/"/g, "&quot;")}"></option>`).join("");
 },
-// v1.118.0+: the full in-card Grocy Recipe Viewer, moved here from being
+// the full in-card Grocy Recipe Viewer, moved here from being
 // a FamilyWeekCalendarCard-only set of methods so family-hub-recipe-box-
 // card.js can open the exact same live viewer for a Grocy-linked dish
 // instead of just opening the plain external Grocy link (household
@@ -1037,8 +1575,7 @@ datalist.innerHTML = categories.map((c) => `<option value="${c.replace(/"/g, "&q
 // shared: _selectGrocyRecipe/_renderGrocyPicker (the "Add from Grocy"
 // search picker) - Recipe Box has no such picker and doesn't need one,
 // same as before.
-// v1.121.0+: household report, verbatim: "recipe card opens recipes in a
-// modal instead of the full screen like the recipe modal does." Root
+// Root
 // cause: wherever this shared viewer is running, if the card sits in a
 // normal masonry/sections dashboard grid (rather than filling the whole
 // screen, which is how a panel-view deployment usually hides this
@@ -1122,7 +1659,7 @@ _openGrocyRecipeViewer(recipeId, fallbackName, fallbackLink, isPreview, tabs, so
 if (!recipeId) return;
 this._grocyRecipeViewerRecipeId = recipeId;
 this._grocyRecipeViewerFallbackLink = fallbackLink || "";
-// v1.129.0+: the actual Recipe Box entry this viewer was opened FROM, if
+// the actual Recipe Box entry this viewer was opened FROM, if
 // any - only ever passed by the Recipe Box's own primary browse click
 // (see that click handler's own comment, just below in this file), never
 // by a meal-preview/Expiring-Soon/additional-recipe call site elsewhere,
@@ -1131,7 +1668,7 @@ this._grocyRecipeViewerFallbackLink = fallbackLink || "";
 // see the .grocy-recipe-viewer-recipe-actions toggle a few lines down.
 this._grocyRecipeViewerSourceRecipe = sourceRecipe || null;
 const overlay = this._grocyViewerOverlay();
-// Preview mode (task #177's picker preview icon) opens the exact same
+// Preview mode ('s picker preview icon) opens the exact same
 // viewer, but over a picker that's deliberately left open underneath -
 // show a "Back" button instead of relying on the plain close (X) to
 // implicitly reveal it, so it reads as "look, then come back" rather
@@ -1142,7 +1679,7 @@ overlay.classList.toggle("preview-mode", !!isPreview);
 // the inline style here would silently leave it hidden even in preview
 // mode instead of showing it.
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-back-btn").style.display = isPreview ? "block" : "none";
-// v1.129.0+: same "block", not "" gotcha as the back button above -
+// same "block", not "" gotcha as the back button above -
 // .grocy-recipe-viewer-recipe-actions defaults to display:none in CSS.
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-recipe-actions").style.display = this._grocyRecipeViewerSourceRecipe ? "flex" : "none";
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = fallbackName || "Recipe";
@@ -1211,7 +1748,7 @@ this._resetScreenSaverIdleTimer();
 },
 _closeGrocyRecipeViewer() {
 this._grocyViewerOverlay().classList.remove("open");
-// v1.129.0+: don't let a stale Recipe Box entry leak into the NEXT
+// don't let a stale Recipe Box entry leak into the NEXT
 // viewer open (a bare-recipe-id call site, e.g. a meal preview, that
 // forgets to pass a 6th argument would otherwise inherit whatever was
 // last set here rather than correctly showing no Suggest/Edit/Delete
@@ -1385,7 +1922,7 @@ photoEl.style.display = "none";
 photoEl.src = "";
 }
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = recipe.name || "Recipe";
-// Prep/Cook/Total stat pills (task #250/mockup) - only the ones this
+// Prep/Cook/Total stat pills (/mockup) - only the ones this
 // recipe actually has real data for; a manually-typed Grocy recipe with
 // none of the three published just gets an empty (and, per the
 // :empty CSS rule, invisible) stats row instead of a placeholder.
@@ -1408,7 +1945,7 @@ this._grocyRecipeViewerFallbackLink = recipe.link || this._grocyRecipeViewerFall
 
 const ingredients = Array.isArray(recipe.ingredients) ? recipe.ingredients : [];
 this._grocyRecipeViewerIngredients = ingredients;
-// The scaler (task #173) works off the recipe's own base_servings - the
+// The scaler () works off the recipe's own base_servings - the
 // serving count Grocy's recipes_pos amounts are actually calibrated for -
 // separate from "servings" above, which can reflect a previously-saved
 // desired_servings override instead. Falls back gracefully to whatever's
@@ -1426,7 +1963,7 @@ this._renderGrocyRecipeIngredients();
 // The description/instructions HTML can itself embed a plain-text
 // ingredients list (see _createImportedGrocyRecipe's "Ingredients"
 // <ul> block, added for recipes imported via the card's "Import a
-// recipe from a link" flow, task #158) - kept unscaled here so
+// recipe from a link" flow, ) - kept unscaled here so
 // _renderGrocyRecipeDescription can re-derive the scaled version from
 // the original every time the stepper changes, rather than scaling an
 // already-scaled string a second time.
@@ -1437,7 +1974,7 @@ this._renderGrocyRecipeDescription();
 // servings ratio - mirrors _renderGrocyRecipeIngredients, but for the
 // plain-text "Ingredients" list some recipes also carry inside their
 // description HTML (see the comment above). Recipes without that exact
-// block (hand-typed directly in Grocy, or from before task #158) simply
+// block (hand-typed directly in Grocy, or from before) simply
 // pass through _scaleIngredientsDescriptionHtml unchanged.
 _renderGrocyRecipeDescription() {
 if (!this._root) return;
@@ -1456,7 +1993,7 @@ const ratio = baseServings > 0 ? servings / baseServings : 1;
 let html = this._scaleIngredientsDescriptionHtml(raw, ratio);
 
 // Recipes imported via this card's own "Import a recipe from a link"
-// flow (_createImportedGrocyRecipe, task #158/#223) write a predictable
+// flow (_createImportedGrocyRecipe, /#223) write a predictable
 // "<p><strong>Preparation</strong></p><p>step 1</p><p>step 2</p>..."
 // block, followed by (optionally) the Prep/Cook line and/or a Source
 // line, each of which starts with its own "<p><strong>". Recipes without
@@ -1495,8 +2032,7 @@ steps
 // _ws_create_grocy_recipe's "skipped" list), so the structured list
 // above can be a strict SUBSET of what's in the raw text - and outright
 // removing the raw block used to hide those skipped ingredients
-// entirely (a real household report: "not including the ingredients in
-// the preparation section"). Rather than try to judge redundancy and
+// entirely (a real ). Rather than try to judge redundancy and
 // hide it, this always keeps the raw written-out list available - just
 // tucked behind a collapsed-by-default accordion, so it's a tap away
 // when needed (a skipped ingredient, double-checking exact wording,
@@ -1563,7 +2099,7 @@ return html.slice(0, match.index) + match[1] + scaledItems + match[3] + html.sli
 // "1 1/2" / "1/2" / "1½" / "½" / "2" / "2.5" / "1-2" -> a plain decimal.
 // A plain range ("1-2", "3-4") resolves to its upper bound rather than
 // failing outright - see the backend's _parse_quantity_token (kept in
-// sync deliberately) for why: a household reported ordinary countable
+// sync deliberately) for why: the old behavior left ordinary countable
 // ingredients like "1-2 russet potatoes" defaulting to "Don't count
 // toward stock" every time, since that checkbox's own default just
 // follows whether a usable number came back at all. Returns null for
@@ -1652,7 +2188,7 @@ if (group) groupHtml = `<div class="grocy-recipe-ingredient-group">${group}</div
 }
 const note = ing.note ? ` <span class="grocy-recipe-ingredient-note">(${ing.note})</span>` : "";
 const amountText = this._formatScaledIngredientAmount(ing, ratio);
-// Numbered circular badge (task #251/mockup) in place of the amount
+// Numbered circular badge (/mockup) in place of the amount
 // leading the row - the amount itself moves down alongside the
 // product name so nothing shown before is lost.
 return `${groupHtml}<div class="grocy-recipe-ingredient-row"><span class="grocy-recipe-ingredient-badge">${idx + 1}</span><span><span class="grocy-recipe-ingredient-amount">${amountText}</span> ${ing.product || ""}${note}</span></div>`;
@@ -1681,13 +2217,219 @@ this._renderGrocyRecipeIngredients();
 this._renderGrocyRecipeDescription();
 },
 };
+
+
+// Household-wide timer alarm sound+modal (v1.119.0+, widened in v1.132.55+)
+// - see family-hub-active-timers-card.js's own top comment above this same
+// block for the full design note. Added here in v1.132.59+ after a
+// - this card (the one a
+// wall-mounted kiosk dashboard most commonly shows) never carried this
+// singleton or subscribed to the widened-alarm broadcast at all, so a kiosk
+// whose dashboard is just the calendar (running the built-in screensaver
+// below) silently never rang for anyone else's widened timer alarm. Kept
+// byte-identical to every other card's copy on purpose.
+if (!window.__familyHubTimerAlarm) {
+  window.__familyHubTimerAlarm = (function () {
+    let modalEl = null;
+    let audioCtx = null;
+    let beepHandle = null;
+    let activeUid = null;
+    // A timer's uid, once dismissed, stays dismissed - otherwise the very
+    // next poll's countdown tick (still <= 0 for a few more seconds until
+    // the backend's own sweep, up to TIMER_SWEEP_SECONDS later, actually
+    // removes it from family_hub/timers/list) would immediately re-open
+    // the modal a person just tapped Stop on. Unbounded but negligible: a
+    // few bytes per timer this ONE tab ever alarmed for in its lifetime.
+    const dismissedUids = new Set();
+    function ensureModal() {
+      if (modalEl) return modalEl;
+      modalEl = document.createElement("div");
+      modalEl.id = "family-hub-timer-alarm-overlay";
+      Object.assign(modalEl.style, {
+        position: "fixed", inset: "0", zIndex: "2147483647", display: "none",
+        alignItems: "center", justifyContent: "center",
+        background: "rgba(20,16,8,0.78)",
+      });
+      modalEl.innerHTML =
+        '<div style="background:#fff8ea;color:#3a352c;border-radius:22px;padding:38px 30px;max-width:360px;width:88vw;text-align:center;box-shadow:0 14px 46px rgba(0,0,0,0.45);font-family:-apple-system,\'Segoe UI\',Roboto,sans-serif;">' +
+        '<div style="font-size:48px;margin-bottom:12px;">&#9200;</div>' +
+        '<div class="fh-timer-alarm-title" style="font-size:1.3em;font-weight:800;margin-bottom:6px;"></div>' +
+        '<div style="font-size:14px;color:#96877a;margin-bottom:24px;">Time\'s up!</div>' +
+        '<button type="button" class="fh-timer-alarm-stop" style="min-height:54px;width:100%;border:none;border-radius:14px;background:#8f5a00;color:#fff8ea;font-size:19px;font-weight:800;cursor:pointer;">Stop</button>' +
+        "</div>";
+      document.body.appendChild(modalEl);
+      modalEl.querySelector(".fh-timer-alarm-stop").addEventListener("click", () => stop());
+      return modalEl;
+    }
+    // A plain oscillator beep via the Web Audio API - deliberately not a
+    // bundled sound file: no extra media asset for HACS/manual installs to
+    // ship or for a self-hosted install's network policy to worry about,
+    // and it sounds identical on every install.
+    //
+    // The original v1.119.0+ sound was one
+    // flat square-wave tone repeated once a second - metronomic, which is
+    // exactly what read as a countdown-bomb tick rather than an alarm. This
+    // plays a quick alternating two-pitch TRIPLET (a classic digital-alarm-
+    // clock trill) each cycle instead of a single tone, which is what
+    // actually reads as "alarm" to the ear - the alternating pitch is what
+    // a lone repeated tone can't give you, no matter how loud.
+    function playBeep(atTime, freq) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "square";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, atTime);
+      gain.gain.exponentialRampToValueAtTime(0.3, atTime + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, atTime + 0.13);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(atTime);
+      osc.stop(atTime + 0.15);
+    }
+    // Scheduled via Web Audio's own clock (osc.start(atTime)) rather than
+    // three back-to-back setTimeout calls, so the triplet's timing stays
+    // tight even if the main JS thread is briefly busy - it's the crisp,
+    // even spacing that makes it read as a trill instead of a stutter.
+    function beepOnce() {
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === "suspended") audioCtx.resume();
+        const now = audioCtx.currentTime;
+        [[0, 1046], [0.15, 1318], [0.3, 1046]].forEach(([offset, freq]) => playBeep(now + offset, freq));
+      } catch (e) {
+        // Autoplay blocked, or no Web Audio at all - the modal is still
+        // the primary alarm; sound is a bonus on top of it, not required.
+      }
+    }
+    // which hass connection to tell "dismiss this everywhere"
+    // when Stop is tapped - set by whichever card most recently called
+    // ring()/check() with one, since this singleton is shared across every
+    // card on the dashboard and any of them may have `hass` by now. Best-
+    // effort only (see stop() below): a same-tab-only local alarm (the
+    // original v1.119.0+ behavior this singleton already had) never had a
+    // server-side record to begin with, so the dismiss call below simply
+    // no-ops for it (ws_dismiss_timer_alarm pops a uid that was never
+    // registered - see its own docstring for why that's silent, not an
+    // error).
+    let lastHass = null;
+    function stop() {
+      if (activeUid) dismissedUids.add(activeUid);
+      const uid = activeUid;
+      activeUid = null;
+      if (beepHandle) {
+        clearInterval(beepHandle);
+        beepHandle = null;
+      }
+      if (modalEl) modalEl.style.display = "none";
+      // household's explicit choice - "first tap wins, from
+      // anyone" - so tapping Stop here also clears the alarm everywhere
+      // else (other kiosks, other people's phones-that-are-dashboards)
+      // rather than just silencing this one tab. No permission gate, by
+      // design.
+      if (uid && lastHass && lastHass.connection && lastHass.connection.sendMessagePromise) {
+        lastHass.connection.sendMessagePromise({ type: "family_hub/timers/dismiss_alarm", uid }).catch(() => {});
+      }
+    }
+    // This modal already outranks the screensaver's own overlay (z-index
+    // 2147483647 vs 2147483000, set in ensureModal() above), so it was
+    // always painting on top of it - but a screensaver left running
+    // underneath still means its video/camera poll keeps going, so it
+    // needs to actually END, not just be covered up.
+    // There are THREE independent screensaver implementations in this
+    // project (the calendar card's own, the shared window.__familyHub
+    // ScreenSaver controller used by Chores/Rewards/My Chores/etc., and the
+    // standalone family-screensaver-card.js) and this singleton has no
+    // reference to whichever one might be running on this particular
+    // dashboard. Rather than importing all three, every one of them marks
+    // its overlay element with the same data-family-hub-screensaver
+    // attribute and already dismisses itself (hides, stops video/camera
+    // polling, navigates to its configured return dashboard) on its own
+    // overlay's "pointerdown" listener - so a synthetic pointerdown on
+    // whichever overlay is actually showing reuses each implementation's
+    // own real dismiss path for free, with zero coupling to which one it
+    // is.
+    function wakeAnyScreenSaver() {
+      try {
+        const overlay = document.querySelector("[data-family-hub-screensaver]");
+        if (overlay && overlay.style.display !== "none") {
+          overlay.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        }
+      } catch (e) {
+        // Best-effort - worst case the alarm modal still shows ON TOP of a
+        // running screensaver rather than ending it outright.
+      }
+    }
+    function start(timer, hass) {
+      if (hass) lastHass = hass;
+      if (activeUid === timer.uid) return;
+      activeUid = timer.uid;
+      wakeAnyScreenSaver();
+      const el = ensureModal();
+      el.querySelector(".fh-timer-alarm-title").textContent = timer.title || "Timer";
+      el.style.display = "flex";
+      beepOnce();
+      if (beepHandle) clearInterval(beepHandle);
+      // Shorter gap than the old single-tone version (1200ms) since each
+      // cycle is now a ~450ms triplet, not a single ~340ms tone - this
+      // keeps the alarm feeling urgent/continuous rather than sparse.
+      beepHandle = setInterval(beepOnce, 950);
+    }
+    return {
+      // Call once a second from a card's own countdown ticker (the same
+      // tick that already repaints the visible "X:XX left" text), passing:
+      //   timers        - that card's own freshly-fetched timers list
+      //   clientId      - this tab's own id (see _familyHubClientId below)
+      //   remainingSecondsFn - a (timer) => seconds function, so this
+      //                   singleton reuses the CALLING card's own
+      //                   native-timer-aware math (_timerRemainingSeconds)
+      //                   instead of a second, potentially-drifting copy
+      //                   of it living here with no access to `hass`.
+      // Only a timer whose origin_client_id matches THIS tab's own id and
+      // whose alarm flag is on can ever trigger anything - a timer someone
+      // else started, or one this same tab started but didn't opt into
+      // alarms for, is silently ignored here exactly as before this
+      // feature existed.
+      check(timers, clientId, remainingSecondsFn, hass) {
+        if (!clientId) return;
+        const mine = (timers || []).find((t) => t.alarm && t.origin_client_id && t.origin_client_id === clientId);
+        if (!mine || dismissedUids.has(mine.uid)) return;
+        if (remainingSecondsFn(mine) <= 0) start(mine, hass);
+      },
+      // the WIDENED half - a household_timer_alarm_ring bus
+      // event (fired by chores_websocket_api.py's _dispatch_timer_alarm/
+      // _reannounce_active_alarms) that THIS login should also ring for,
+      // because it's either the timer's own owner, a login flagged as an
+      // always-on alarm kiosk, or the tier was "everyone." Unlike check()
+      // above (which only ever recognizes the ONE tab that started the
+      // timer, by origin_client_id), this recognizes a login/account -
+      // every open tab logged in as a matching user rings, on every
+      // dashboard, which is the whole point of the widened tiers. Re-fired
+      // on every re-announcement (see _reannounce_active_alarms), so
+      // calling this again for an already-ringing uid is a deliberate
+      // no-op (start() already short-circuits on activeUid === timer.uid).
+      ringBroadcast(payload, hass, myUserId) {
+        if (!payload || !payload.uid || dismissedUids.has(payload.uid)) return;
+        const targets = payload.target_user_ids || [];
+        const shouldRing = !!payload.broadcast_all || (myUserId && targets.includes(myUserId));
+        if (!shouldRing) return;
+        start({ uid: payload.uid, title: payload.title }, hass);
+      },
+      // The STOP half of the same broadcast pair - fired the instant
+      // ANY device dismisses (see ws_dismiss_timer_alarm's own "first tap
+      // wins" docstring), including a dismiss that originated from THIS
+      // singleton's own stop() above (that call's own dismiss already
+      // covers this tab; the event still arrives here a moment later and
+      // is a harmless no-op via stop()'s own activeUid !== uid guard, or
+      // via dismissedUids already containing it).
+      stopFromServer(uid) {
+        if (uid) dismissedUids.add(uid);
+        if (activeUid === uid) stop();
+      },
+    };
+  })();
 }
 
-
-// Theme flash-of-default fix (v1.126.0+) - household report, verbatim:
-// "When you load a card it tends to load the default theme first then it
-// switches over to the theme you set how can we always make it load the
-// set theme first." Root cause: EVERY themed card's first paint happens
+// Theme flash-of-default fix - Root cause: EVERY themed card's first paint happens
 // with no theme CSS vars set at all (falls back to _defaultTheme()'s own
 // hardcoded palette), because resolving the household's actual theme
 // takes two sequential, awaited websocket round trips after `hass` is
@@ -1760,13 +2502,29 @@ if (!window.__familyHubThemeCache) {
 }
 
 class FamilyWeekCalendarCard extends HTMLElement {
-// No getConfigElement/getConfigForm here on purpose - a graphical editor
-// was tried (v33) but reverted (v34): it only ever covered a bootstrap
-// subset of config (calendars + a few entities), while everything else
-// lived in the card's own Settings panel, so having two places to
-// configure the card added confusion rather than convenience. All setup
-// and ongoing editing is meant to happen from the in-card Settings modal
-// (gear icon) instead - YAML is only needed once, for the entities block.
+// No general getConfigElement/getConfigForm here on purpose - a graphical
+// editor covering the full config was tried (v33) but reverted (v34): it
+// only ever covered a bootstrap subset of config (calendars + a few
+// entities), while everything else lived in the card's own Settings
+// panel, so having two places to configure the card added confusion
+// rather than convenience. All setup and ongoing editing is still meant
+// to happen from the in-card Settings modal (gear icon) - YAML is only
+// needed once, for the entities block.
+//
+// The one narrow exception is staticLayoutAcrossDevices (see
+// getConfigElement below): unlike everything else in the Settings modal,
+// that field describes a property of THIS card placement itself (does it
+// share one static Week/Month layout across every device, or does each
+// device keep its own), not a value a person is entering per-device/per-
+// instance from wherever they happen to be using the card - so it belongs
+// with the rest of this placement's config, edited from the Edit Card
+// screen, rather than buried in the same modal as per-device settings.
+static getConfigElement() {
+if (!customElements.get("family-week-calendar-card-editor")) {
+customElements.define("family-week-calendar-card-editor", FamilyWeekCalendarCardEditor);
+}
+return document.createElement("family-week-calendar-card-editor");
+}
 setConfig(config) {
 config = config || {};
 const palette = ["#a9c6c2", "#dba99c", "#d9bf7e", "#a8bd93", "#b9a7c9", "#cf8f6c", "#a89a83"];
@@ -1798,7 +2556,33 @@ birthdays_entity: config.birthdays_entity || "calendar.birthdays",
 // own To-do UI (or from this card) without touching Google Calendar or
 // whatever the "real" calendars are backed by.
 reminders_entity: config.reminders_entity || "todo.family_reminders",
+// Opt-out of the per-device/per-instance local settings model the
+// Week/Month view/layout getters otherwise use (see
+// _getStaticLayoutAcrossDevices). A real card-config option (edited from
+// this card's own Edit Card screen - see getConfigElement below), not a
+// household-wide setting: it describes what THIS placement of the card
+// should do, same as every other key in this object. Off by default, so
+// each dashboard/device keeps its own independent value unless someone
+// explicitly opts a given placement into sharing one static value.
+staticLayoutAcrossDevices: config.static_layout_across_devices === true,
+// "dashboard" (default) pins the + FAB to the viewport's bottom-right
+// corner, stacked with every other Family Hub card's FAB via the shared
+// window.__familyHubFabCoordinator - "card" instead anchors it to THIS
+// card's own box. A real card-config option (edited from this card's own
+// Edit Card screen - see getConfigElement below), matching how every
+// other Family Hub card (Chores/Rewards/Goals/To-do) already exposes
+// fab_position - not a household-wide Settings-modal toggle, since it
+// describes where THIS placement of the card should put its own button,
+// not something every device in the house should agree on.
+fabPosition: config.fab_position === "card" ? "card" : "dashboard",
 };
+// Re-apply the [fab-position] host attribute immediately on every
+// setConfig - not just on first load - so editing fab_position from this
+// card's own Edit Card screen updates the live dashboard preview right
+// away, same as every other FAB-bearing Family Hub card's setConfig
+// already does. Safe to call this early/more than once - see
+// _registerFabCoordinator's own docstring.
+this._registerFabCoordinator();
 this._events = {};
 this._fetchErrors = {};
 this._reminders = [];
@@ -1825,7 +2609,7 @@ this._recipeBoxSort = "default";
 this._recipeBoxSelectMode = false;
 this._recipeBoxSelectedUids = new Set();
 this._mealPlan = {};
-// v142+: "additional recipes" - side/dessert/sauce recipes attached to
+// "additional recipes" - side/dessert/sauce recipes attached to
 // whatever meal slot is currently open in the day/menu editor, alongside
 // (not replacing) that slot's one main recipe - see _openEditorForDate,
 // _renderAdditionalRecipesList, and _saveEditor. Scratch editor state,
@@ -1859,9 +2643,13 @@ if (this._weekOffset === undefined) this._weekOffset = 0;
 if (this._monthOffset === undefined) this._monthOffset = 0;
 if (this._settingsCache === undefined) this._settingsCache = null;
 if (this._settingsItemUid === undefined) this._settingsItemUid = null;
+if (this._householdMealListsEnsureAttempted === undefined) this._householdMealListsEnsureAttempted = false;
+if (this._userTodoListsEnsuredFor === undefined) this._userTodoListsEnsuredFor = new Set();
 if (this._screenSaverSettingsSnapshot === undefined) this._screenSaverSettingsSnapshot = null;
 if (this._settingsPeopleDraft === undefined) this._settingsPeopleDraft = [];
 if (this._mealEditMode === undefined) this._mealEditMode = false;
+if (this._weekSelectedDate === undefined) this._weekSelectedDate = null;
+if (this._calendarDeleteSupport === undefined) this._calendarDeleteSupport = {};
 if (this._settingsFetchSeq === undefined) this._settingsFetchSeq = 0;
 if (this._eventsFetchSeq === undefined) this._eventsFetchSeq = 0;
 if (this._topModalZ === undefined) this._topModalZ = 1006;
@@ -1871,7 +2659,7 @@ if (this._settingsUserProfilesDraft === undefined) this._settingsUserProfilesDra
 if (this._notifyProfileEditingUserId === undefined) this._notifyProfileEditingUserId = null;
 if (this._notifyProfileUsersCache === undefined) this._notifyProfileUsersCache = null;
 if (this._notifyProfileUsersError === undefined) this._notifyProfileUsersError = false;
-// v1.131.0+: {user_id: name} for every household member, fetched
+// {user_id: name} for every household member, fetched
 // unconditionally (see _fetchHouseholdMemberNames, called from
 // _refreshAllData) rather than only when Settings happens to be open -
 // _getPeople's own profile-calendar synthesis needs a display name for
@@ -1885,11 +2673,16 @@ if (this._householdMemberNamesById === undefined) this._householdMemberNamesById
 if (this._settingsActiveTab === undefined) this._settingsActiveTab = "general";
 if (this._reminderOverrides === undefined) this._reminderOverrides = {};
 if (this._eventPeopleOverrides === undefined) this._eventPeopleOverrides = {};
+// attachable checklists - see _fetchEventChecklists's own
+// comment for why this is fetched proactively like _eventPeopleOverrides
+// rather than lazily like _reminderOverrides.
+if (this._eventChecklists === undefined) this._eventChecklists = {};
+if (this._todoListCandidates === undefined) this._todoListCandidates = null;
 if (this._eventInfoOpenId === undefined) this._eventInfoOpenId = null;
 if (this._eventInfoRemindDirty === undefined) this._eventInfoRemindDirty = false;
 if (this._eventInfoPeopleDirty === undefined) this._eventInfoPeopleDirty = false;
 if (this._firstLoadPromise === undefined) this._firstLoadPromise = null;
-// v1.109.6+: the CALLER's own effective permissions, as resolved by
+// the CALLER's own effective permissions, as resolved by
 // family_hub/permissions/get_mine - see _fetchMyPermissions/_hasPermission.
 // This card had no permission-fetching code at all before now; it's
 // introduced here for can_edit_menu, mirroring the convention
@@ -1905,9 +2698,11 @@ if (!this._built) this._build();
 set hass(hass) {
 const first = !this._hass;
 this._hass = hass;
+this._ensureTranslationsLoaded();
+this._updateHaStartingBanner();
 if (first) {
 this._firstLoadPromise = this._initFirstLoad();
-// v1.126.0+: skip the _applySizeVars() call below on this very first
+// skip the _applySizeVars() call below on this very first
 // assignment - _settingsCache/_globalThemes are still their just-
 // initialized defaults at this exact synchronous point (the real
 // values only arrive once _initFirstLoad's own awaited fetches above
@@ -1924,6 +2719,17 @@ this._firstLoadPromise = this._initFirstLoad();
 // once they actually have something real to resolve.
 } else {
 this._applySizeVars();
+}
+// Keep any already-mounted screensaver widget cards (weather, sensors,
+// etc.) live while the screensaver is showing, the same way every other
+// hosted Lovelace card gets a fresh hass on every update - without this
+// a widget would freeze on whatever state it had when the screensaver
+// first woke rather than ticking along with the rest of the dashboard.
+if (this._screenSaverWidgetEls) {
+Object.values(this._screenSaverWidgetEls).forEach((wrap) => {
+const cardEl = wrap && wrap.firstElementChild;
+if (cardEl) cardEl.hass = hass;
+});
 }
 }
 // One shared list of "refresh everything" fetches, used by the very first
@@ -1942,15 +2748,16 @@ this._fetchWeather();
 this._fetchCountdown();
 this._fetchGlobalThemes();
 this._fetchReminders();
-// v129+: multi-person events - unlike reminder overrides (only ever read
+// multi-person events - unlike reminder overrides (only ever read
 // when the event-info popup itself opens), this has to be loaded up
 // front and kept current on every poll tick, since every render pass
 // (week/month/timeline/planner/all-day) needs it to know which events
 // get the multi-person color collage.
 this._fetchEventPeopleOverrides();
+this._fetchEventChecklists();
 this._fetchHouseholdMemberNames();
 }
-// v1.131.0+: household member display names, kept current independent of
+// household member display names, kept current independent of
 // whether the Settings modal (and its own, Settings-scoped
 // _notifyProfileUsersCache) has ever been opened this session - see
 // _householdMemberNamesById's own comment for why _getPeople needs this
@@ -1983,7 +2790,7 @@ this._refreshAllData();
 }
 async _initFirstLoad() {
 await this._fetchSettings();
-// v129+: awaited here (unlike every other _fetch* in _refreshAllData,
+// awaited here (unlike every other _fetch* in _refreshAllData,
 // which are fire-and-forget) so the very first render already has real
 // override data to color multi-person events with, rather than briefly
 // showing every event solid-colored until the next poll tick catches up
@@ -1991,7 +2798,7 @@ await this._fetchSettings();
 // own render (see its own docstring), so without this the first
 // _fetchEvents()-driven render would run before this ever resolved.
 await this._fetchEventPeopleOverrides();
-// v1.109.6+: awaited before the first render so the very first meal
+// awaited before the first render so the very first meal
 // editor opened in a session already knows whether this person can edit
 // the menu - otherwise a kid would briefly see (and could tap) the real
 // Save button before the answer arrived. _hasPermission's own admin
@@ -1999,7 +2806,7 @@ await this._fetchEventPeopleOverrides();
 await this._fetchMyPermissions();
 if (!this._viewMode) {
 const s = this._getSettings();
-// v144+ task #28: the shared setting only picks the family (week vs
+// the shared setting only picks the family (week vs
 // month) - which variant within that family renders is this device's
 // own choice, same as _getShowTimeline etc.
 this._viewMode = s.defaultView === "month" ? this._getMonthViewVariant() : this._getWeekViewVariant();
@@ -2015,13 +2822,90 @@ this._syncDailyDigestConfig();
 this._syncGrocyExpiringConfig();
 this._syncGrocyLowStockConfig();
 this._syncNotificationClickPath();
+// - see this
+// file's own copy of the window.__familyHubTimerAlarm singleton above
+// for the full design note. This is the card a wall-mounted kiosk
+// dashboard most commonly shows, so it needs its own subscription just
+// like family-hub-active-timers-card.js/chores/rewards do - kept byte-
+// identical to those on purpose.
+this._subscribeAlarmEvents();
+// Device Settings admin dashboard - see _reportDeviceSettings/
+// _checkPendingDeviceSettings/_subscribeDeviceSettingsPush/
+// _subscribeDeviceIdentifyPush's own docstrings. All four are best-
+// effort/fire-and-forget, same as the _sync* calls just above - never
+// awaited, so a slow or failed backend round trip here can't delay the
+// very first render.
+this._reportDeviceSettings();
+this._checkPendingDeviceSettings();
+this._subscribeDeviceSettingsPush();
+this._subscribeDeviceIdentifyPush();
+this._subscribeScreenSaverTogglePush();
+this._subscribePrivacyParticipationTogglePush();
+// Privacy mode - see _fetchPrivacyModeState/_subscribePrivacyModeChanged's
+// own docstrings. Same best-effort/fire-and-forget shape as every other
+// call in this block.
+this._fetchPrivacyModeState();
+this._subscribePrivacyModeChanged();
+// Daily Digest modal - see _subscribeDailyDigestOpen's own
+// docstring. Same best-effort/fire-and-forget shape as the three calls
+// just above.
+this._subscribeDailyDigestOpen();
 }
-// v1.110.4+: joins the shared FAB-stacking coordinator - see
+// household-wide timer alarms - subscribe to the two bus
+// events chores_websocket_api.py's _dispatch_timer_alarm/
+// _reannounce_active_alarms fire (see const.py's
+// EVENT_FAMILY_HUB_TIMER_ALARM_RING/_STOP), and hand each one to the
+// shared window.__familyHubTimerAlarm singleton above - same "one modal/
+// audio loop shared by every card on the dashboard" convention its own
+// top comment describes. Subscribed once per card instance (guarded by
+// _alarmUnsub so a re-run of _initFirstLoad, which shouldn't happen but
+// costs nothing to guard against, never double-subscribes).
+async _subscribeAlarmEvents() {
+  if (this._alarmUnsub || !this._hass || !this._hass.connection) return;
+  const myUserId = this._myUserId();
+  try {
+    const unsubRing = await this._hass.connection.subscribeEvents((event) => {
+      if (window.__familyHubTimerAlarm) {
+        window.__familyHubTimerAlarm.ringBroadcast(event.data, this._hass, myUserId);
+      }
+    }, "family_hub_timer_alarm_ring");
+    const unsubStop = await this._hass.connection.subscribeEvents((event) => {
+      if (window.__familyHubTimerAlarm && event.data) {
+        window.__familyHubTimerAlarm.stopFromServer(event.data.uid);
+      }
+    }, "family_hub_timer_alarm_stop");
+    this._alarmUnsub = () => {
+      try { unsubRing(); } catch (e) { /* no-op */ }
+      try { unsubStop(); } catch (e) { /* no-op */ }
+    };
+  } catch (e) {
+    // Best-effort - a dashboard that can't subscribe (e.g. a very old
+    // frontend build) simply never gets the WIDENED alarm reach; the
+    // same-tab-only local alarm (window.__familyHubTimerAlarm.check,
+    // unaffected by any of this) still works exactly as before.
+  }
+  // Catch up on anything already ringing before this tab opened, rather
+  // than waiting up to ALARM_REANNOUNCE_SECONDS for the next re-
+  // announcement's RING event.
+  if (this._hass.connection.sendMessagePromise) {
+    try {
+      const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/timers/list_active_alarms" });
+      for (const alarm of (result && result.alarms) || []) {
+        if (window.__familyHubTimerAlarm) window.__familyHubTimerAlarm.ringBroadcast(alarm, this._hass, myUserId);
+      }
+    } catch (e) {
+      // Best-effort catch-up only - the next re-announcement still
+      // covers it.
+    }
+  }
+}
+// joins the shared FAB-stacking coordinator - see
 // family-hub-chores-card.js's identical _registerFabCoordinator for the
 // full design note. This card's FAB (add-event-fab) offers no Goal tab,
 // so it registers with no meta at all - just a slot in the stack.
 //
-// v1.110.7+: settings.fabPosition ("dashboard" default | "card") toggles
+// this._config.fabPosition ("dashboard" default | "card", from this
+// card's own config - see setConfig/getConfigElement) toggles
 // the [fab-position="card"] host attribute the CSS below keys off of to
 // switch .add-event-fab from position:fixed (viewport corner, stacked
 // with every other Family Hub card's FAB via the coordinator) to
@@ -2032,10 +2916,7 @@ this._syncNotificationClickPath();
 // own doc for why a shared viewport-corner stacking slot is meaningless
 // once a FAB is positioned relative to its own card's box instead.
 _registerFabCoordinator() {
-// v1.132.5+: "Small screen mode" - household ask, verbatim: "Create a
-// small screen mode for small devices, this would hide the top bar on
-// the calendar, and moves the settings button to the fab, this only
-// happens when you turn on small screen mode." Folded into this same
+// "Small screen mode" - Folded into this same
 // method (rather than its own call site) purely because it's already
 // called from exactly the right places - first load, and after every
 // settings save/refetch - same reasoning as the fab-position attribute
@@ -2046,13 +2927,49 @@ _registerFabCoordinator() {
 if (this._getSmallScreenMode()) this.setAttribute("small-screen-mode", "");
 else this.removeAttribute("small-screen-mode");
 if (!window.__familyHubFabCoordinator) return;
-const settings = this._getSettings ? this._getSettings() : null;
-const cardRelative = !!(settings && settings.fabPosition === "card");
+const cardRelative = !!(this._config && this._config.fabPosition === "card");
 if (cardRelative) this.setAttribute("fab-position", "card");
 else this.removeAttribute("fab-position");
 window.__familyHubFabCoordinator.registerClient(this, "calendar", {}, (state) => {
 this.style.setProperty("--fh-fab-offset", `${state.offsetPx}px`);
+// hideForModal is true while ANY Family Hub card on this dashboard
+// (not just this one) has a full-screen modal open - see the
+// coordinator's own doc for why this can't just rely on z-index
+// across cards. This card's OWN modals (Settings included) already
+// contribute to that via _setupSettingsFabCoordination below.
+const fab = this._root && this._root.querySelector(".add-event-fab");
+if (fab) fab.hidden = !!state.hideForModal;
 }, { takesSlot: !cardRelative });
+}
+// Tells the shared window.__familyHubFabCoordinator singleton whenever
+// THIS card's own Settings screen (.settings-overlay) opens/closes, so
+// every OTHER Family Hub card sharing this dashboard hides its FAB while
+// Settings is open instead of potentially painting on top of it (see the
+// coordinator's own doc for why cross-card z-index alone can't be
+// trusted for this). Watches the overlay's own "open" class directly
+// with a MutationObserver, rather than only hooking _openSettings/
+// _closeSettings, because Settings can also be closed by the mobile back
+// button/gesture (_handleModalPopState), which removes the "open" class
+// itself without going through _closeSettings - observing the class is
+// what stays correct regardless of which of those paths closed it.
+// Idempotent/guarded (_settingsFabCoordinationSetup) so calling this
+// again on a reconnect is a harmless no-op; disconnectedCallback tears
+// the observer down and pops any still-outstanding push.
+_setupSettingsFabCoordination() {
+if (this._settingsFabCoordinationSetup || !this._root) return;
+const overlay = this._root.querySelector(".settings-overlay");
+if (!overlay) return;
+this._settingsFabCoordinationSetup = true;
+this._settingsFabOpenState = overlay.classList.contains("open");
+this._settingsFabCoordinationObserver = new MutationObserver(() => {
+const isOpen = overlay.classList.contains("open");
+if (isOpen === this._settingsFabOpenState) return;
+this._settingsFabOpenState = isOpen;
+if (!window.__familyHubFabCoordinator) return;
+if (isOpen) window.__familyHubFabCoordinator.pushModalOpen();
+else window.__familyHubFabCoordinator.popModalOpen();
+});
+this._settingsFabCoordinationObserver.observe(overlay, { attributes: true, attributeFilter: ["class"] });
 }
 connectedCallback() {
 if (this._hass && !this._interval) {
@@ -2083,25 +3000,34 @@ this._startPolling();
 }
 }
 this._registerFabCoordinator();
+this._setupSettingsFabCoordination();
 if (!this._boundSyncHeight) this._boundSyncHeight = this._syncHeight.bind(this);
 window.addEventListener("resize", this._boundSyncHeight);
 window.addEventListener("orientationchange", this._boundSyncHeight);
-if (window.visualViewport) {
-window.visualViewport.addEventListener("resize", this._boundSyncHeight);
-window.visualViewport.addEventListener("scroll", this._boundSyncHeight);
-}
-if (!this._heightInterval) {
-this._heightInterval = setInterval(this._boundSyncHeight, 1500);
-}
+// capture:true - 'scroll' doesn't bubble, so this is the only way to
+// hear about scrolling on an ancestor scroll container (e.g. Home
+// Assistant's own dashboard body), which is exactly when the Privacy
+// Mode lock badge (see _syncPrivacyModeOverlayRect) needs to be
+// repositioned to stay pinned over this card.
+window.addEventListener("scroll", this._boundSyncHeight, { passive: true, capture: true });
+// This card no longer measures or sets its own height at all (see
+// _syncHeight's own comment - it now just fills whatever box Home
+// Assistant's layout gives it via plain CSS), so there's nothing left
+// here that an on-screen keyboard opening/closing could fight with.
+// What's left just keeps --fh-header-offset (a read-only position, not
+// a resize) current for the full-screen Recipe Viewer overlay.
 requestAnimationFrame(this._boundSyncHeight);
 setTimeout(this._boundSyncHeight, 300);
 setTimeout(this._boundSyncHeight, 1200);
 this._applyScrollLock();
-// v142+: Planner's mobile-friendly stacked layout (see _renderPlannerGrid)
-// is decided by matchMedia at render time, not pure CSS, so unlike Week/
-// Portrait's collapse (which just reflows on its own) it needs an actual
-// re-render when the breakpoint is crossed - e.g. rotating a tablet/phone,
-// or resizing a browser window, while Planner is already open.
+// Planner's mobile-friendly stacked layout (see _renderPlannerGrid)
+// is decided by matchMedia at render time, not pure CSS, so it needs an
+// actual re-render when the breakpoint is crossed - e.g. rotating a
+// tablet/phone, or resizing a browser window, while Planner is already
+// open. Week's own row-splitting layout (_renderWeekGrid) is pure CSS
+// flex all the way down (same as the old Portrait mode it merged with -
+// see that function's own comment) and just reflows on its own at any
+// width with no JS involved, so it doesn't need to be in this list.
 if (window.matchMedia) {
 if (!this._plannerMobileMQ) this._plannerMobileMQ = window.matchMedia("(max-width: 700px)");
 if (!this._boundPlannerMQChange) {
@@ -2121,9 +3047,22 @@ this._plannerMobileMQ.addListener(this._boundPlannerMQChange);
 }
 disconnectedCallback() {
 if (window.__familyHubFabCoordinator) window.__familyHubFabCoordinator.unregisterClient(this);
+if (this._settingsFabCoordinationObserver) {
+this._settingsFabCoordinationObserver.disconnect();
+this._settingsFabCoordinationObserver = null;
+this._settingsFabCoordinationSetup = false;
+// If this card is being torn down (dashboard edit, view switch) while
+// its own Settings modal happened to be open, its own pushModalOpen()
+// above never got a matching popModalOpen() - without this, every
+// other Family Hub card's FAB would stay hidden forever.
+if (this._settingsFabOpenState && window.__familyHubFabCoordinator) {
+window.__familyHubFabCoordinator.popModalOpen();
+}
+this._settingsFabOpenState = false;
+}
 if (this._interval) clearInterval(this._interval);
 this._interval = null;
-// v1.121.0+: the Grocy Recipe Viewer's portal (see _grocyViewerOverlay's
+// the Grocy Recipe Viewer's portal (see _grocyViewerOverlay's
 // own comment) lives on document.body, outside this card's own DOM
 // entirely - it must be torn down here explicitly, or a dashboard edit/
 // Lovelace re-creating this element would leave an orphaned full-screen
@@ -2133,17 +3072,12 @@ this._grocyRecipeViewerPortalEl.remove();
 this._grocyRecipeViewerPortalEl = null;
 this._grocyRecipeViewerOverlayEl = null;
 }
-if (this._heightInterval) clearInterval(this._heightInterval);
-this._heightInterval = null;
 if (this._countdownTickerInterval) clearInterval(this._countdownTickerInterval);
 this._countdownTickerInterval = null;
 if (this._boundSyncHeight) {
 window.removeEventListener("resize", this._boundSyncHeight);
 window.removeEventListener("orientationchange", this._boundSyncHeight);
-if (window.visualViewport) {
-window.visualViewport.removeEventListener("resize", this._boundSyncHeight);
-window.visualViewport.removeEventListener("scroll", this._boundSyncHeight);
-}
+window.removeEventListener("scroll", this._boundSyncHeight, { capture: true });
 }
 if (this._plannerMobileMQ && this._boundPlannerMQChange) {
 if (this._plannerMobileMQ.removeEventListener) {
@@ -2184,29 +3118,61 @@ if (this._screenSaverOverlayEl) {
 this._screenSaverOverlayEl.remove();
 this._screenSaverOverlayEl = null;
 }
+// Same reasoning as the screensaver overlay just above - the Privacy Mode
+// lock overlay and its unlock modal are also appended straight to
+// document.body, so they need the same explicit teardown here.
+if (this._privacyModeOverlayEl) {
+this._privacyModeOverlayEl.remove();
+this._privacyModeOverlayEl = null;
+}
+if (this._deviceSettingsUnsub) {
+this._deviceSettingsUnsub();
+this._deviceSettingsUnsub = null;
+}
+if (this._deviceIdentifyUnsub) {
+this._deviceIdentifyUnsub();
+this._deviceIdentifyUnsub = null;
+}
+if (this._screenSaverToggleUnsub) {
+this._screenSaverToggleUnsub();
+this._screenSaverToggleUnsub = null;
+}
+if (this._privacyParticipationToggleUnsub) {
+this._privacyParticipationToggleUnsub();
+this._privacyParticipationToggleUnsub = null;
+}
+if (this._privacyModeUnsub) {
+this._privacyModeUnsub();
+this._privacyModeUnsub = null;
+}
 }
 _syncHeight() {
+// No longer measures the viewport or sets this card's own height at
+// all - household ask, verbatim: "make the calendar fill the card that
+// it has" instead of this card computing and assigning its own pixel
+// height via JS (the source of the on-screen-keyboard resize-and-
+// never-restore bug fixed earlier, and every other "renders taller/
+// shorter than the space it actually has" report before that). The
+// card now just fills whatever box Home Assistant's own layout gives
+// it via plain CSS (:host { height: 100%; }, ha-card { height: 100%; })
+// - exactly as normal a browser element as this card can be. The one
+// thing still computed here is purely informational/positional, not a
+// resize: --fh-header-offset, which the full-screen Recipe Viewer (a
+// position:fixed, viewport-anchored overlay) uses so its own heading
+// doesn't render underneath Home Assistant's top app bar on a non-kiosk
+// dashboard. Reading rect.top doesn't change this card's own size, so
+// none of the keyboard-resize issues apply to keeping this live.
 if (!this.isConnected) return;
 const rect = this.getBoundingClientRect();
-const vv = window.visualViewport;
-const viewportHeight = vv ? vv.height : window.innerHeight;
-const viewportTop = vv ? vv.offsetTop : 0;
-const available = Math.max(300, Math.floor(viewportHeight - (rect.top - viewportTop)));
-if (this.style.height !== `${available}px`) {
-this.style.height = `${available}px`;
-}
-// Whatever sits above the card in the actual dashboard - most commonly
-// Home Assistant's own top app bar, when the view isn't in a fully
-// chromeless/kiosk layout - has already pushed the card's own top edge
-// down by this many pixels, which is exactly the same amount any
-// position:fixed, viewport-anchored overlay (the full-screen Recipe
-// Viewer) needs to be offset by so its heading doesn't render underneath
-// that bar instead of below it. Exposed as a custom property (rather than
-// only used here) so the fix applies wherever a fixed overlay needs it,
-// and stays live via the same resize/orientation/interval polling this
-// method already runs on.
-const headerOffset = Math.max(0, Math.round(rect.top - viewportTop));
+const headerOffset = Math.max(0, Math.round(rect.top));
 this.style.setProperty("--fh-header-offset", `${headerOffset}px`);
+// Keeps the Privacy Mode lock badge (a body-level element - see
+// _ensurePrivacyModeOverlay's own comment) pinned to this card's own
+// rect any time that rect might have changed - resize, orientation
+// change, or (via the scroll listener below, which also calls
+// _syncHeight through the same _boundSyncHeight) scrolling the page.
+// A no-op when the overlay doesn't exist yet/isn't open.
+this._syncPrivacyModeOverlayRect();
 }
 getCardSize() {
 return 8;
@@ -2217,7 +3183,7 @@ return { grid_rows: "auto", grid_columns: "full" };
 _dateKey(d) {
 return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
-// v1.110.5+: the household's chosen day-count (_getWeekViewDayCount,
+// the household's chosen day-count (_getWeekViewDayCount,
 // 3/5/7 - see its own comment) branches this in two ways:
 //  - 7 (the default, unchanged): exactly today's Week-view behavior -
 //    the calendar week containing today, offset by this._weekOffset
@@ -2241,11 +3207,31 @@ return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String
 _weekStart() {
 const n = this._weekViewDayCount ? this._weekViewDayCount() : 7;
 const now = new Date();
-if (n === 7) {
+// This-device-only override (_getCurrentDayFirst) that takes over
+// the whole function when on, for every day count (not just 7) - the
+// window always starts on today rather than Sunday-aligning (n===7) or
+// centering (n===3/5/etc below), still advancing by whole N-day windows
+// via this._weekOffset exactly like the other two branches.
+if (this._getCurrentDayFirst && this._getCurrentDayFirst()) {
+const start = new Date(now);
+start.setHours(0, 0, 0, 0);
+start.setDate(start.getDate() + (this._weekOffset || 0) * n);
+return start;
+}
+// Any whole-week multiple (7, 14, ...) Sunday-aligns the window's FIRST
+// day to the start of the current week, the same as the classic n===7
+// case, rather than centering today in the middle of it - household ask:
+// showing 14 days (two weeks), the week they're currently in should
+// always be the first week shown, not buried in the second half with
+// "next week" appearing before it. Non-whole-week counts (3, 5, 10, ...)
+// keep the older "center today in the window" behavior below, since
+// those are rolling look-around windows, not a whole number of weeks, so
+// there's no single "week start" to align to.
+if (n % 7 === 0) {
 const day = now.getDay();
 const sunday = new Date(now);
 sunday.setHours(0, 0, 0, 0);
-sunday.setDate(now.getDate() - day + (this._weekOffset || 0) * 7);
+sunday.setDate(now.getDate() - day + (this._weekOffset || 0) * n);
 return sunday;
 }
 const center = new Date(now);
@@ -2260,18 +3246,40 @@ return start;
 // itself rather than reading localStorage directly - _getWeekViewDayCount
 // is the one place that actually knows the storage key/valid values.
 //
-// Deliberately scoped to the plain "week" variant only (this._viewMode
-// === "week") - Planner and Portrait both still hardcode 7 day columns
-// (Portrait's own 4-then-3 split in particular has nowhere sane to put a
-// 3- or 5-day window), and the household's chosen day-count is stored
-// independently of which Week-family variant is currently showing, so
-// switching to Portrait/Planner must not suddenly hand _weekStart a
-// day-count those renderers never asked for and don't lay out for.
+// Scoped to "week" - v1.134.0+ merged the old separate "portrait"
+// _viewMode into "week" itself (see _renderWeekGrid/_getWeekRows), so
+// there's no longer a second mode that needs to ask for this same
+// setting alongside it. Planner still hardcodes 7 - it has nowhere sane
+// to put a non-7 window - so switching to Planner must not suddenly hand
+// _weekStart a day-count that renderer never asked for and doesn't lay
+// out for.
 _weekViewDayCount() {
 return this._viewMode === "week" ? this._getWeekViewDayCount() : 7;
 }
 _setWeekOffset(n) {
 this._weekOffset = n;
+// a selected day only means anything relative to the week
+// currently showing - navigating to a different week without clearing it
+// would leave a stale highlight pointing at a date that's scrolled off
+// screen (and silently keep defaulting Add Event/Reminder to it).
+this._weekSelectedDate = null;
+// _fetchEvents() is async and
+// only calls _renderGrid() once its network round-trip resolves, but
+// _updateNavLabel() (and, wherever this same offset/family-changing
+// pattern is used elsewhere - see _setMonthOffset/_setDayOffset/
+// _goToWeekFromDate below, and the Week/Month/Day dropdown's own click
+// handler - a change to this._viewMode itself) always ran synchronously
+// right away. That left a real, visible window - as long as that fetch
+// took - where the label/dropdown already named the new
+// view/date-range but the actual .grid markup still showed whatever
+// was painted before, since nothing had told it to repaint yet.
+// Calling _renderGrid() synchronously here closes that window
+// immediately with whatever events are already cached (stale ones, if
+// this is also changing the date range - fine, since the _fetchEvents()
+// call right below repaints again the instant fresh ones arrive); what
+// it guarantees is that the grid's TYPE always matches the label the
+// same instant the label changes, not moments later.
+this._renderGrid();
 this._fetchEvents();
 this._updateNavLabel();
 }
@@ -2290,8 +3298,28 @@ return { gridStart, gridEnd, anchor };
 }
 _setMonthOffset(n) {
 this._monthOffset = n;
+// See _setWeekOffset's own comment for why this renders synchronously
+// instead of waiting on _fetchEvents().
+this._renderGrid();
 this._fetchEvents();
 this._updateNavLabel();
+}
+// Same "n whole windows from today" pattern as _weekOffset/_monthOffset -
+// Day just has a window size of exactly 1, so n is literally a day count
+// (0 = today, 1 = tomorrow, -1 = yesterday, ...).
+_setDayOffset(n) {
+this._dayOffset = n;
+// See _setWeekOffset's own comment for why this renders synchronously
+// instead of waiting on _fetchEvents().
+this._renderGrid();
+this._fetchEvents();
+this._updateNavLabel();
+}
+_dayAnchor() {
+const d = new Date();
+d.setHours(0, 0, 0, 0);
+d.setDate(d.getDate() + (this._dayOffset || 0));
+return d;
 }
 _goToWeekFromDate(date) {
 const now = new Date();
@@ -2304,23 +3332,37 @@ clickedSunday.setDate(date.getDate() - date.getDay());
 const diffWeeks = Math.round((clickedSunday - nowSunday) / (7 * 86400000));
 this._viewMode = "week";
 this._weekOffset = diffWeeks;
+// See _setWeekOffset's own comment - this is the one most likely to
+// actually surface the "shows month view but says its week view" bug,
+// since this is exactly the "jump from Month into a Week" path (a
+// Month/split day-cell click), the clearest possible viewMode mismatch
+// window between the two.
+this._renderGrid();
 this._fetchEvents();
 this._updateNavLabel();
 }
 _updateNavLabel() {
 if (!this._root) return;
-this._root.querySelectorAll(".view-btn").forEach((btn) => {
-btn.classList.toggle("active", btn.dataset.view === this._viewFamily(this._viewMode));
+// The Week/Month/Day dropdown replaced three (soon-to-be-three)
+// always-visible buttons - see .view-select-wrap's own CSS comment. The
+// button's own label always names the current FAMILY (Week/Month/Day),
+// and the open dropdown highlights that same family's item, exactly like
+// the old .view-btn.active toggling did for two buttons.
+const family = this._viewFamily(this._viewMode);
+const familyLabels = { week: this._t("nav.week", "Week"), month: this._t("nav.month", "Month"), day: this._t("nav.day", "Day") };
+const viewSelectLabelEl = this._root.querySelector(".view-select-label");
+if (viewSelectLabelEl) viewSelectLabelEl.textContent = familyLabels[family] || familyLabels.week;
+this._root.querySelectorAll(".view-select-item").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.view === family);
 });
-// Rearranging meals works off Week's day-columns - Portrait reuses those
-// exact same columns (just split 4-and-3 across two rows, see
-// _renderPortraitGrid), so it gets the button too. Month has no banners
-// to drag, and Planner deliberately shows only calendar events (see
-// _renderPlannerGrid), so this button would just be dead weight there.
+// Rearranging meals works off Week's day-columns, whatever row count
+// this device has them split across (see _renderWeekGrid) - Month has no
+// banners to drag, and Planner deliberately shows only calendar events
+// (see _renderPlannerGrid), so this button would just be dead weight
+// there.
 const editBtn = this._root.querySelector(".edit-meals-btn");
 if (editBtn) {
-editBtn.style.display =
-(this._viewMode === "week" || this._viewMode === "portrait") && this._getBlocks().length ? "" : "none";
+editBtn.style.display = this._viewMode === "week" && this._getBlocks().length ? "" : "none";
 }
 const shortcuts = this._root.querySelector(".week-shortcuts");
 if (this._viewFamily(this._viewMode) === "month") {
@@ -2328,9 +3370,30 @@ if (shortcuts) shortcuts.style.display = "none";
 this._closeWeekShortcuts();
 const anchor = this._monthAnchor();
 this._root.querySelector(".week-label").textContent = anchor.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+} else if (this._viewFamily(this._viewMode) === "day") {
+// No week-shortcuts row (jump to a specific week) or "N Weeks Out"
+// framing makes sense for a single day - same treatment Month gets
+// above, just with a Today/Tomorrow/Yesterday/date label instead of a
+// month/year one.
+if (shortcuts) shortcuts.style.display = "none";
+this._closeWeekShortcuts();
+const anchor = this._dayAnchor();
+const today = new Date();
+today.setHours(0, 0, 0, 0);
+const diffDays = Math.round((anchor.getTime() - today.getTime()) / 86400000);
+const weekdayDate = anchor.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
+const prefix =
+diffDays === 0
+? this._t("nav.label_today", "Today")
+: diffDays === 1
+? this._t("nav.label_tomorrow", "Tomorrow")
+: diffDays === -1
+? this._t("nav.label_yesterday", "Yesterday")
+: null;
+this._root.querySelector(".week-label").textContent = prefix ? `${prefix} · ${weekdayDate}` : weekdayDate;
 } else {
 if (shortcuts) shortcuts.style.display = "";
-// v1.110.5+: a 3/5-day window isn't a "week" at all - this._weekOffset
+// a 3/5-day window isn't a "week" at all - this._weekOffset
 // counts N-day windows in that case (see _weekStart's own comment), so
 // the "N Weeks Out"/"This Week" phrasing (and the day-shortcut buttons,
 // which jump by whole weeks) only make sense for the plain 7-day Week
@@ -2345,7 +3408,13 @@ end.setDate(start.getDate() + dayCount - 1);
 const fmt = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 if (dayCount === 7) {
 const prefix =
-this._weekOffset === 0 ? "This Week" : this._weekOffset === 1 ? "Next Week" : this._weekOffset > 1 ? `${this._weekOffset} Weeks Out` : `${Math.abs(this._weekOffset)} Week(s) Ago`;
+this._weekOffset === 0
+? this._t("nav.label_this_week", "This Week")
+: this._weekOffset === 1
+? this._t("nav.label_next_week", "Next Week")
+: this._weekOffset > 1
+? this._t("nav.label_weeks_out", `${this._weekOffset} Weeks Out`, { n: String(this._weekOffset) })
+: this._t("nav.label_weeks_ago", `${Math.abs(this._weekOffset)} Week(s) Ago`, { n: String(Math.abs(this._weekOffset)) });
 this._root.querySelector(".week-label").textContent = `${prefix} · ${fmt(start)} – ${fmt(end)}`;
 if (shortcuts) shortcuts.style.display = "";
 } else {
@@ -2366,30 +3435,51 @@ return `${hour12} ${period}`;
 _fmtHourOrMidnight(h) {
 return h >= 24 ? "Midnight" : this._fmtHour12(h);
 }
+// Opt-out of the per-device/per-instance local settings model every
+// _get* getter below otherwise uses for the Week/Month view/layout
+// fields - a card-config option (see setConfig's own comment on
+// staticLayoutAcrossDevices and getConfigElement below), not a shared
+// setting, so it describes THIS placement of the card specifically.
+// Checked FIRST by each of those getters; when true, this card behaves
+// like a normal, static Home Assistant card (same value everywhere the
+// shared mirror fields below are read from) instead.
+_getStaticLayoutAcrossDevices() {
+return !!(this._config && this._config.staticLayoutAcrossDevices);
+}
 _getShowTimeline() {
+if (this._getStaticLayoutAcrossDevices()) return !!this._getSettings().showTimeline;
 let local = null;
 try {
-local = localStorage.getItem("familyCalendarShowTimelineLocal");
+local = this._getScopedSettingItem("familyCalendarShowTimelineLocal");
 } catch (e) {
 }
 if (local === "on") return true;
 if (local === "off") return false;
 return !!this._getSettings().showTimeline;
 }
-// v144+ task #28: "Week" is a family of view-btn, not a single view -
+// "Week" is a family of view-btn, not a single view -
 // this device's own choice of which variant actually renders when the
 // Week button is pressed (or it's the startup default). Same
 // this-device-only localStorage pattern as _getShowTimeline above, kept
 // deliberately separate from the shared/household defaultView setting
 // so the UI stays a simple two-button Week/Month switcher even as more
 // week-family variants get added later.
+//
+// v1.134.0+: "portrait" retired as a variant here - it's now just "week"
+// with more than one row (see _getWeekRows) rather than a separate
+// choice, so a device that still has the literal string "portrait"
+// saved under this key from before the merge simply falls through to the
+// "week" default below, exactly like any other unrecognized value
+// always has. Its row count isn't lost either way - see _getWeekRows'
+// own comment for the one-time migration that reads it back out.
 _getWeekViewVariant() {
+if (this._getStaticLayoutAcrossDevices()) return this._getSettings().weekViewVariantShared;
 let local = null;
 try {
-local = localStorage.getItem("familyCalendarWeekViewVariantLocal");
+local = this._getScopedSettingItem("familyCalendarWeekViewVariantLocal");
 } catch (e) {
 }
-return ["week", "planner", "portrait"].includes(local) ? local : "week";
+return ["week", "planner"].includes(local) ? local : "week";
 }
 // v1.110.5+ task: "Display X days for smaller displays - In calendar
 // settings add a way to change how many days to view at a time this
@@ -2402,19 +3492,1697 @@ return ["week", "planner", "portrait"].includes(local) ? local : "week";
 // behavior, unchanged) is the default for anyone who's never touched
 // this control. See _weekStart's own comment for how 3/5 vs 7 change
 // which dates actually get computed.
+// Widened from the
+// original [3, 5, 7]-only allowlist to any whole number 2-14, then widened
+// again to 1-36 (a single day up to roughly a five-week span) - still the
+// exact same this-device-only localStorage key/pattern, just a wider range
+// check.
 _getWeekViewDayCount() {
+if (this._getStaticLayoutAcrossDevices()) return this._getSettings().weekDayCountShared;
 let local = null;
 try {
-local = localStorage.getItem("familyCalendarWeekDayCountLocal");
+local = this._getScopedSettingItem("familyCalendarWeekDayCountLocal");
 } catch (e) {
 }
 const n = parseInt(local, 10);
-return [3, 5, 7].includes(n) ? n : 7;
+return Number.isInteger(n) && n >= 1 && n <= 36 ? n : 7;
 }
-// v1.132.7+: "Small screen mode" was originally a shared household
-// Settings field (v1.132.5) - household report, verbatim: "the small
-// display mode needs to be device specific. only apply to the device its
-// marked on." Turning it on on one tablet was turning it on on every
+// Confirmed with the
+// household to be a this-device-only preference (same pattern as
+// _getWeekViewDayCount/_getWeekViewVariant above), not a shared/
+// household setting - which day count "feels right" to start the week
+// window on is a per-device display choice. See _weekStart's own
+// comment for how this changes which dates get computed.
+_getCurrentDayFirst() {
+if (this._getStaticLayoutAcrossDevices()) return !!this._getSettings().currentDayFirstShared;
+let local = null;
+try {
+local = this._getScopedSettingItem("familyCalendarCurrentDayFirstLocal");
+} catch (e) {
+}
+return local === "on";
+}
+// Same this-device-only localStorage pattern as the other Week-view
+// display settings above. See _renderWeekGrid for how this splits the
+// day columns across rows.
+//
+// v1.134.0+: this is the ONE unified row count for Week (the merged
+// "week is just portrait with 7 days and one row" mode) - the household
+// ask, verbatim: "make it so people that were on a 7-day week view one
+// row still see that and people on two-row 7-day portrait mode see
+// that." A brand new key (familyCalendarWeekRowsLocal, not the old
+// familyCalendarPortraitRowsLocal) so this is unambiguous: once it's
+// ever explicitly set, it's simply what this device wants, full stop -
+// no need to also fall through to reasoning about a view that no longer
+// exists. It's only ever UNSET on a device that's never touched this
+// control since the merge, and that's exactly when the one-time
+// migration below runs, computed fresh from the two OLD settings every
+// time (not written back - so this never actually "runs" a migration
+// step, it just recomputes an equivalent answer for as long as the new
+// key stays untouched, which is simpler and can't leave a device half-
+// migrated):
+//   - old familyCalendarWeekViewVariantLocal === "portrait": that
+//     device's Week button used to render Portrait's multi-row layout,
+//     so it keeps whatever row count it had there (the OLD
+//     familyCalendarPortraitRowsLocal, default 2 if that was never
+//     touched either - Portrait's own original default).
+//   - anything else (plain "week", "planner", or never touched at all):
+//     that device's Week button rendered a single row, so it stays a
+//     single row now too - regardless of what value happens to already
+//     be sitting in familyCalendarPortraitRowsLocal. That old key was
+//     written on EVERY Settings save regardless of which variant was
+//     selected (the old input's value was never gated on Portrait being
+//     the active variant), so a household that only ever used plain
+//     Week could easily have some leftover non-default number parked in
+//     there - reading it unconditionally would have very plausibly
+//     shown some Week households an unexpected second row the moment
+//     they upgraded, which is precisely the regression the household
+//     asked this merge NOT to cause.
+_getWeekRows() {
+if (this._getStaticLayoutAcrossDevices()) return this._getSettings().weekRowsShared;
+let local = null;
+try {
+local = this._getScopedSettingItem("familyCalendarWeekRowsLocal");
+} catch (e) {
+}
+const n = parseInt(local, 10);
+if (Number.isInteger(n) && n >= 1 && n <= 7) return n;
+let legacyVariant = null;
+try {
+legacyVariant = this._getScopedSettingItem("familyCalendarWeekViewVariantLocal");
+} catch (e) {
+}
+if (legacyVariant !== "portrait") return 1;
+let legacyRows = null;
+try {
+legacyRows = localStorage.getItem("familyCalendarPortraitRowsLocal");
+} catch (e) {
+}
+const ln = parseInt(legacyRows, 10);
+return Number.isInteger(ln) && ln >= 1 && ln <= 7 ? ln : 2;
+}
+// "Layout ideas" quick-pick registry (household ask, v1.134.x+: "give
+// users a couple jumping off points, ideas of layouts, the week view,
+// the portrait view maybe 2 more") - four named starting points spanning
+// the shapes this card can already produce, so nothing new had to be
+// built to render them: the classic single-row grid, the same week
+// split into 2 rows (what used to be the separate Portrait mode before
+// v1.134.0's merge), the existing Planner variant reframed as an
+// "Agenda" glance view for a small screen, and a 2-week-ahead grid for
+// forward planning. Each entry names the exact three raw fields the
+// Settings > General tab's Week variant/day-count/rows controls already
+// read/write, so picking one is just filling those in - see the
+// .layout-preset-btn click handler and _updateActiveLayoutPresetHighlight
+// right below.
+_layoutPresetRegistry() {
+return {
+  week: { variant: "week", dayCount: 7, rows: 1 },
+  portrait: { variant: "week", dayCount: 7, rows: 2 },
+  agenda: { variant: "planner", dayCount: 7, rows: 1 },
+  two_week: { variant: "week", dayCount: 14, rows: 2 },
+};
+}
+// Highlights whichever preset (if any) exactly matches the Settings
+// form's CURRENT, possibly-unsaved field values - called right after a
+// preset is clicked (confirms the click "took") and from the Settings-
+// populate function (shows which preset, if any, this device is already
+// using when Settings is opened). Deliberately shows NONE highlighted
+// when the fields don't exactly match a known preset (e.g. a custom day
+// count like 5, or a custom row count) rather than guessing at the
+// closest one - a wrong guess would be more misleading than no
+// highlight at all, and the raw fields right below always show the
+// actual values regardless.
+_updateActiveLayoutPresetHighlight() {
+const root = this._root;
+if (!root) return;
+const activeVariantBtn = root.querySelector(".week-variant-btn.active");
+const variant = activeVariantBtn ? activeVariantBtn.dataset.value : "week";
+const dayCountEl = root.querySelector(".week-day-count-input");
+const dayCount = dayCountEl ? parseInt(dayCountEl.value, 10) : NaN;
+const rowsEl = root.querySelector(".week-rows-input");
+const rows = rowsEl ? parseInt(rowsEl.value, 10) : NaN;
+const registry = this._layoutPresetRegistry();
+root.querySelectorAll(".layout-preset-btn").forEach((btn) => {
+const preset = registry[btn.dataset.preset];
+// Day count/rows only matter for the "week" variant - Planner (the
+// Agenda preset) ignores both (_weekViewDayCount always forces 7 for
+// it, and the rows field is hidden), so matching it shouldn't depend
+// on whatever those two inputs currently happen to hold.
+const matches = !!preset && preset.variant === variant && (preset.variant !== "week" || (preset.dayCount === dayCount && preset.rows === rows));
+btn.classList.toggle("active", matches);
+});
+}
+// Same this-device-only localStorage pattern as the getters above, but for
+// the screensaver widget layout (see screenSaverWidgets in
+// _normalizeSettings): the layout itself is shared household-wide, while
+// which widgets actually show up stays a per-device choice, so one tablet
+// can hide a widget (a todo list on a phone-sized screen, say) without
+// affecting anyone else's screen or the shared layout other devices see.
+_getScreenSaverHiddenWidgetIds() {
+let raw = null;
+try {
+raw = localStorage.getItem("familyCalendarScreenSaverHiddenWidgetIdsLocal");
+} catch (e) {
+}
+if (!raw) return [];
+try {
+const parsed = JSON.parse(raw);
+return Array.isArray(parsed) ? parsed.filter((id) => typeof id === "string" && id) : [];
+} catch (e) {
+return [];
+}
+}
+_setScreenSaverHiddenWidgetIds(ids) {
+const clean = Array.isArray(ids) ? ids.filter((id) => typeof id === "string" && id) : [];
+try {
+localStorage.setItem("familyCalendarScreenSaverHiddenWidgetIdsLocal", JSON.stringify(clean));
+} catch (e) {
+}
+}
+_isScreenSaverWidgetHiddenOnThisDevice(widgetId) {
+return this._getScreenSaverHiddenWidgetIds().includes(widgetId);
+}
+_toggleScreenSaverWidgetHiddenOnThisDevice(widgetId, hidden) {
+const ids = this._getScreenSaverHiddenWidgetIds();
+const idx = ids.indexOf(widgetId);
+if (hidden && idx === -1) {
+ids.push(widgetId);
+} else if (!hidden && idx !== -1) {
+ids.splice(idx, 1);
+}
+this._setScreenSaverHiddenWidgetIds(ids);
+}
+// Small shared helper for the Settings modal's one status line (".settings-
+// save-status") - factored out here since the Devices tab's
+// push/apply-preset actions below need the exact same "Saving…"/"Saved"/
+// error text treatment the main Save button's own handler already applies
+// inline (see its own statusEl.textContent/classList lines further down) -
+// this doesn't change that existing inline code, just gives the new
+// Devices-tab call sites a one-line way to match it instead of duplicating
+// the same four lines again at each one.
+_showSettingsSaveStatus(text, isError) {
+const root = this._root;
+if (!root) return;
+const statusEl = root.querySelector(".settings-save-status");
+if (!statusEl) return;
+statusEl.textContent = text;
+statusEl.classList.toggle("is-error", !!isError);
+}
+// ---------------------------------------------------------------------
+// Device Settings admin dashboard - Every field below already lived ONLY in
+// this-device-only localStorage (each one's own getter is right above/
+// near here) - this registry is the frontend's copy of const.py's
+// DEVICE_SETTINGS_FIELDS (kept in sync by hand, same "duplicated, not
+// imported" tradeoff chores_websocket_api.py's own module docstring
+// explains for its own local copies of __init__.py helpers - there's no
+// shared-module boundary between Python and this card's JS to import
+// across). Used two ways: _deviceSettingsSnapshot below reads/validates
+// THIS device's own current values against it before reporting them up,
+// and _renderDeviceSettingsList uses the copy the backend itself sends
+// back in family_hub/device_settings/list's own "fields" key (the
+// authoritative one) to render each device's generic edit controls -
+// deliberately NOT this local copy, so a future field added only on the
+// backend still renders correctly in the admin tab even before this file
+// gets updated to match.
+// Every entry also carries "scope" - "instance" for the
+// Week/Month view/layout fields (one value per dashboard/view placement
+// of this card, see _getCardInstanceId/_getScopedSettingItem/
+// _setScopedSettingItem above) or "device" for the field that describes
+// the physical screen itself (shared across every dashboard on it, read/
+// written via plain localStorage exactly as before instances existed).
+// Kept in sync BY HAND with const.py's own DEVICE_SETTINGS_FIELDS "scope"
+// tagging - see this function's own docstring above for why there's no
+// shared-module boundary to import across instead.
+_deviceSettingsFieldRegistry() {
+return {
+  familyCalendarCurrentDayFirstLocal: { type: "enum", choices: ["on", "off"], default: "off", scope: "instance", label: this._t("settings.current_day_first_label", "Current day always first") },
+  familyCalendarWeekDayCountLocal: { type: "int", min: 1, max: 36, default: 7, scope: "instance", label: this._t("settings.days_shown_label", "Days shown in Week view") },
+  familyCalendarWeekRowsLocal: { type: "int", min: 1, max: 7, default: 1, scope: "instance", label: this._t("settings.week_rows_label", "Rows shown in Week view") },
+  familyCalendarWeekViewVariantLocal: { type: "enum", choices: ["week", "planner"], default: "week", scope: "instance", label: this._t("settings.week_button_shows_label", "Week button shows") },
+  familyCalendarMonthViewVariantLocal: { type: "enum", choices: ["month", "split"], default: "month", scope: "instance", label: this._t("settings.month_button_shows_label", "Month button shows") },
+  familyCalendarShowTimelineLocal: { type: "enum", choices: ["on", "off"], default: "off", scope: "instance", label: this._t("settings.show_hours_label", "Show hours of the day (timeline)") },
+  familyCalendarSmallScreenModeLocal: { type: "enum", choices: ["on", "off"], default: "off", scope: "instance", label: this._t("settings.small_screen_mode_label", "Small screen mode") },
+  // See _getDeviceName's own comment for how this overrides the
+  // auto-guessed browser/OS name once set, either right here in the
+  // admin Devices tab (like any other field - edit, then Push to this
+  // device) or locally via the "This device" field on the General tab
+  // (see _saveThisDeviceName).
+  familyHubDeviceCustomNameLocal: { type: "text", max_length: 60, default: "", scope: "device", label: this._t("settings.device_name_label", "Device name") },
+};
+}
+// A stable, anonymous per-device id - generated once and persisted, never
+// tied to any Home Assistant user account (several household members can
+// share one tablet's login, or one person can have several devices) since
+// the whole point is identifying the physical dashboard, not who's logged
+// into it. Household explicitly chose "auto-generated ID only" (no
+// friendly-name prompt) when this feature was scoped - the admin tab just
+// shows this id verbatim (see _renderDeviceSettingsList).
+_getDeviceId() {
+let id = null;
+try {
+id = localStorage.getItem("familyHubDeviceIdLocal");
+} catch (e) {
+}
+if (id) return id;
+id = `dev-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+try {
+localStorage.setItem("familyHubDeviceIdLocal", id);
+} catch (e) {
+}
+return id;
+}
+// v1.139.0+: identifies ONE dashboard/view placement of this card,
+// distinct from _getDeviceId's own per-browser device id above - several
+// dashboards/views on the same physical device (household's own scenario
+// that prompted this: "people may have this card in multiple dashboards
+// on one device") each need their own copy of the Week/Month view/layout
+// settings (see _deviceSettingsFieldRegistry's own "scope" entries)
+// without stepping on each other's saved values. Auto-derived from
+// window.location.pathname (the household's own explicit choice - no
+// manual per-card configuration needed) and persisted per-path, so the
+// same dashboard/view keeps the same instance id across reloads while a
+// different dashboard/view on the same browser gets its own. Two
+// side-by-side cards on the exact same dashboard/view path would share
+// one instance id (a narrower case than per-dashboard, accepted the same
+// way _getDeviceId already accepts "shared across every card instance in
+// that browser" for the device-scoped fields).
+_getCardInstanceId() {
+const storageKey = `familyHubCardInstanceIdLocal:${window.location.pathname}`;
+let id = null;
+try {
+id = localStorage.getItem(storageKey);
+} catch (e) {
+}
+if (id) return id;
+id = `inst-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+try {
+localStorage.setItem(storageKey, id);
+} catch (e) {
+}
+return id;
+}
+// Storage-key helper for an instance-scoped field (see _deviceSettings
+// FieldRegistry's own "scope" entries) - namespaces the field's own
+// localStorage key by this card's instance id so each dashboard/view
+// placement keeps its own value.
+_instanceScopedStorageKey(key) {
+return `${key}__inst_${this._getCardInstanceId()}`;
+}
+// Read for an instance-scoped field: this instance's own value if it's
+// ever saved one, else a one-time-per-call fallback to the OLD shared
+// (pre-instance) key so a device upgrading to this version doesn't lose
+// whatever it already had - deliberately never write-migrated (a second
+// dashboard/view on the same device must NOT silently inherit the first
+// one's value just because it asked before ever saving its own), so this
+// fallback keeps being read fresh for as long as this instance's own key
+// stays unset.
+_getScopedSettingItem(key) {
+let value = null;
+try {
+value = localStorage.getItem(this._instanceScopedStorageKey(key));
+} catch (e) {
+}
+if (value !== null) return value;
+try {
+value = localStorage.getItem(key);
+} catch (e) {
+}
+return value;
+}
+// Write for an instance-scoped field - always goes to this instance's own
+// key, never the legacy shared one (see _getScopedSettingItem's own
+// comment for why that's never write-migrated either).
+_setScopedSettingItem(key, value) {
+try {
+localStorage.setItem(this._instanceScopedStorageKey(key), value);
+} catch (e) {
+}
+}
+// familyHubDeviceCustomNameLocal (see its own entry in
+// _deviceSettingsFieldRegistry) is a user-set override that, once set
+// (either locally via the "This device" field on the General tab, or
+// pushed from the admin Devices tab like any other managed field),
+// always wins over _getDeviceAutoName's UA guess below - and, because it
+// flows through the exact same report/push/pending machinery every other
+// device setting already does, it keeps getting reported back verbatim
+// on every future _reportDeviceSettings call too, instead of a fresh UA
+// guess silently overwriting it.
+_getDeviceName() {
+let custom = "";
+try {
+custom = (localStorage.getItem("familyHubDeviceCustomNameLocal") || "").trim();
+} catch (e) {
+}
+return custom || this._getDeviceAutoName();
+}
+// A best-effort, purely cosmetic browser/OS guess ("Chrome-Windows",
+// "Safari-iPad", ...) parsed from navigator.userAgent - paired with the
+// anonymous id above so the admin Devices tab is actually readable. This
+// is _getDeviceName's own fallback once no familyHubDeviceCustomNameLocal
+// override is set - it is NEVER parsed back or relied on for anything
+// functional, so a UA string this rough heuristic doesn't recognize just
+// falls back to the generic "Device" rather than needing to be
+// exhaustive. Deliberately not memoized: navigator.userAgent can't change
+// mid-session, so there's nothing to gain by caching it, and leaving it
+// uncached keeps this trivial to call from anywhere.
+_getDeviceAutoName() {
+const ua = (navigator.userAgent || "");
+let os = "Device";
+if (/iPad/.test(ua)) os = "iPad";
+else if (/iPhone/.test(ua)) os = "iPhone";
+else if (/Android/.test(ua)) os = "Android";
+else if (/Macintosh|Mac OS X/.test(ua)) os = "Mac";
+else if (/Windows/.test(ua)) os = "Windows";
+else if (/CrOS/.test(ua)) os = "ChromeOS";
+else if (/Linux/.test(ua)) os = "Linux";
+let browser = "";
+if (/Edg\//.test(ua)) browser = "Edge";
+else if (/OPR\//.test(ua)) browser = "Opera";
+else if (/CriOS/.test(ua)) browser = "Chrome";
+else if (/FxiOS/.test(ua)) browser = "Firefox";
+else if (/Firefox\//.test(ua)) browser = "Firefox";
+else if (/Chrome\//.test(ua) && !/Chromium/.test(ua)) browser = "Chrome";
+else if (/Safari\//.test(ua) && !/Chrome/.test(ua)) browser = "Safari";
+return browser ? `${browser}-${os}` : os;
+}
+// Shared "<name>_<id>" formatting for a device row - used both for this
+// device's own label (the Identify modal, on itself) and for another
+// device's row in the admin Devices tab (_renderDeviceSettingsList),
+// so the two can never drift into two different-looking formats.
+_deviceLabel(deviceName, deviceId) {
+return `${deviceName || "Device"}_${deviceId}`;
+}
+// "This device" field (Settings > General, deliberately NOT gated
+// .admin-only-setting like the Devices tab itself, so it can be used by
+// whoever is standing at the device, not only from the admin's own
+// Devices list on another screen). Fills the input with the CURRENT
+// override only (blank/placeholder "auto" means
+// none is set yet, not an empty name), and the hint line below it with
+// the full "<name>_<id>" label exactly as the admin Devices tab and the
+// Identify modal both already format it, so all three surfaces always
+// read as the same device.
+_populateThisDeviceField() {
+const root = this._root;
+if (!root) return;
+let custom = "";
+try {
+custom = (localStorage.getItem("familyHubDeviceCustomNameLocal") || "").trim();
+} catch (e) {
+}
+const inputEl = root.querySelector(".this-device-name-input");
+if (inputEl) inputEl.value = custom;
+const labelEl = root.querySelector(".this-device-current-label");
+if (labelEl) labelEl.textContent = this._deviceLabel(this._getDeviceName(), this._getDeviceId());
+}
+// Saves this device's own custom name locally, then reports it to the
+// backend right away (same as any other Settings save - see
+// _reportDeviceSettings's own docstring) so the admin Devices tab shows
+// it without waiting on this device's own next report cycle. No reload
+// needed - _getDeviceName() reads this key fresh on every call, so just
+// re-populating the field's own hint line is enough for immediate
+// feedback on THIS device (same no-reload reasoning
+// _applyPushedDeviceSettingsLive relies on for an admin's own push).
+async _saveThisDeviceName() {
+const root = this._root;
+if (!root) return;
+const inputEl = root.querySelector(".this-device-name-input");
+const name = inputEl ? inputEl.value.trim().slice(0, 60) : "";
+try {
+localStorage.setItem("familyHubDeviceCustomNameLocal", name);
+} catch (e) {
+}
+this._populateThisDeviceField();
+this._showSettingsSaveStatus(this._t("settings.device_name_saved", "Saved"));
+await this._reportDeviceSettings();
+}
+// Reads and validates this device's own current value for one managed
+// field against _deviceSettingsFieldRegistry - same read-then-validate
+// shape as every _get* getter above, just data-driven so one function
+// covers every field instead of one getter each. Reads through
+// _getScopedSettingItem (this card instance's own value, falling back to
+// the legacy shared key) for an instance-scoped field, or straight from
+// localStorage for a device-scoped one - see _getCardInstanceId's own
+// comment for why the two need different storage.
+_readDeviceSettingField(key, field) {
+let raw = null;
+try {
+raw = field.scope === "instance" ? this._getScopedSettingItem(key) : localStorage.getItem(key);
+} catch (e) {
+}
+if (field.type === "enum") {
+return field.choices.includes(raw) ? raw : field.default;
+}
+if (field.type === "text") {
+return typeof raw === "string" && raw.length <= field.max_length ? raw : field.default;
+}
+const n = parseInt(raw, 10);
+return Number.isInteger(n) && n >= field.min && n <= field.max ? n : field.default;
+}
+// `scope` narrows the snapshot to just "device" or "instance" fields -
+// used by _reportDeviceSettings below to build the two separate payloads
+// device_settings_websocket_api.py's ws_report expects. Omitted (the
+// original call shape), every field of both scopes is returned together,
+// which still reads correctly since each field is read through the
+// scope-aware _readDeviceSettingField above regardless of which subset
+// is asked for.
+_deviceSettingsSnapshot(scope) {
+const registry = this._deviceSettingsFieldRegistry();
+const snapshot = {};
+Object.keys(registry).forEach((key) => {
+const field = registry[key];
+if (scope && field.scope !== scope) return;
+snapshot[key] = this._readDeviceSettingField(key, field);
+});
+return snapshot;
+}
+// A best-effort, human-readable default label for this card instance
+// (see _getCardInstanceId's own comment) - the dashboard's own URL slug
+// (the first path segment), which is usually recognizable enough on its
+// own for the admin Devices tab's per-instance rows without asking the
+// household to type anything. Falls back to the raw path, then the
+// instance id itself, for a path with nothing segment-shaped in it.
+_getCardInstanceLabel() {
+const path = window.location.pathname || "";
+const segments = path.split("/").filter(Boolean);
+return segments[0] || path || this._getCardInstanceId();
+}
+// Uploads this device's current snapshot to the backend mirror - best-
+// effort/fire-and-forget (same convention as _syncRemindersEntity/
+// _syncDailyDigestConfig etc. in _initFirstLoad), since a failed report
+// just means the admin dashboard shows slightly stale data for this
+// device until the next one succeeds, never anything this device itself
+// notices. Called once per session from _initFirstLoad, and again
+// whenever Settings is actually saved (see the Save handler) so a change
+// made right here on this device shows up for the admin right away too,
+// not just on next reload.
+//
+// v1.139.0+: also reports this CARD INSTANCE's own view/layout settings
+// (instance_id/instance_settings/instance_label) alongside the device-
+// scoped settings/device_name this always sent - see const.py's own
+// "scope" comment and _getCardInstanceId's own comment for why these are
+// now two separate things.
+async _reportDeviceSettings() {
+if (!this._hass || !this._hass.connection) return;
+try {
+// Household ask: "a kiosk would default with participation in privacy
+// mode" - tells the backend whether the HA user currently logged in
+// (and reporting) is, per their own Family Hub profile, a Kiosk
+// account, so a brand new device can default privacy_participates to
+// true the first time this combination is seen - see
+// device_settings_websocket_api.py's own ws_report handling of this
+// field, and .notify-profile-kiosk-account-field's own hint.
+const currentUserId = this._hass.user && this._hass.user.id;
+const currentUserProfile = currentUserId ? (this._getSettings().userProfiles || {})[currentUserId] : null;
+const result = await this._hass.connection.sendMessagePromise({
+type: "family_hub/device_settings/report",
+device_id: this._getDeviceId(),
+settings: this._deviceSettingsSnapshot("device"),
+device_name: this._getDeviceName(),
+instance_id: this._getCardInstanceId(),
+instance_settings: this._deviceSettingsSnapshot("instance"),
+instance_label: this._getCardInstanceLabel(),
+is_kiosk_account: !!(currentUserProfile && currentUserProfile.isKioskAccount),
+});
+// Catch-up for the live per-device screensaver toggle - see
+// DEVICE_SETTINGS_EVENT_SCREENSAVER_TOGGLE's own comment in const.py.
+// This report happens on every load/reload, so a device that missed the
+// live event (page wasn't open yet, etc.) still picks up the current
+// value here instead of defaulting back to "enabled".
+if (result && typeof result === "object" && "screensaver_enabled" in result) {
+this._screenSaverDeviceEnabled = result.screensaver_enabled !== false;
+}
+// Catch-up for the live per-device Privacy Mode "participates" toggle -
+// see DEVICE_SETTINGS_EVENT_PRIVACY_PARTICIPATION_TOGGLE's own comment
+// in const.py. Same catch-up shape as screensaver_enabled just above:
+// a device that missed the live event still picks up the current value
+// here instead of defaulting back to "participates."
+if (result && typeof result === "object" && "privacy_participates" in result) {
+this._applyPrivacyParticipatesDeviceState(result.privacy_participates);
+}
+} catch (e) {
+// best-effort - see this function's own docstring.
+}
+}
+// Validates and writes one scope's worth of pushed settings into
+// localStorage - device-scoped fields straight to their plain key,
+// instance-scoped fields to THIS card instance's own scoped key (when
+// instanceId is given) via _setScopedSettingItem. A field whose scope
+// doesn't match the push it arrived on (a device-scope key inside an
+// instance push, or vice versa) is silently skipped rather than applied
+// to the wrong place - shared write-half of _applyPushedDeviceSettings
+// and _applyPushedDeviceSettingsCombined below.
+_writePushedScopeSettings(settings, instanceId) {
+const registry = this._deviceSettingsFieldRegistry();
+Object.keys(settings || {}).forEach((key) => {
+const field = registry[key];
+if (!field) return;
+const value = settings[key];
+const valid =
+field.type === "enum"
+? field.choices.includes(value)
+: field.type === "text"
+? typeof value === "string" && value.length <= field.max_length
+: Number.isInteger(value) && value >= field.min && value <= field.max;
+if (!valid) return;
+if (instanceId) {
+if (field.scope !== "instance") return;
+this._setScopedSettingItem(key, String(value));
+} else {
+if (field.scope !== "device") return;
+try {
+localStorage.setItem(key, String(value));
+} catch (e) {
+}
+}
+});
+}
+// Household ask, verbatim: "Can we make it so pushing settings to a device
+// does not force the page to reload it. Just updates the card." Every
+// field this can touch (_getWeekViewDayCount, _getWeekRows,
+// _getCurrentDayFirst, _getShowTimeline, _getSmallScreenMode, the week/
+// month view variants, _getDeviceName) already reads its own localStorage
+// key fresh on every call rather than caching it anywhere - confirmed by
+// _saveThisDeviceName/_populateThisDeviceField just above, which change
+// one of these same keys and only re-render, never reload, and by the
+// regular in-modal Settings Save flow, which writes these exact keys then
+// finishes with this same _fetchSettings()/_registerFabCoordinator()/
+// _renderGrid() sequence with no reload either. So a pushed value needs
+// nothing more than that one re-render pass, not a full page reload.
+// _fetchSettings() re-registers the fab coordinator (which is what
+// actually applies the small-screen-mode/fab-position host attributes -
+// see its own comment) and re-renders the grid/legend/nav/countdown; the
+// household settings it happens to also refetch are a no-op if nothing
+// there changed.
+async _applyPushedDeviceSettingsLive() {
+await this._fetchSettings();
+this._applySizeVars();
+this._fetchEvents();
+this._fetchCountdown();
+}
+// Applies an admin's pushed settings for ONE scope (from either the live
+// bus event or the get_pending catch-up check below) - instanceId
+// omitted for a device-scope push (unchanged shape/behavior from before
+// instances existed), given for a push targeting this card's own
+// instance. `seq` is remembered locally (under a scope-specific key - see
+// _writePushedScopeSettings/_instanceScopedStorageKey) so a device/
+// instance that was closed when the push happened, or that reconnects
+// after missing the live event, still catches up exactly once via
+// get_pending on its next load instead of re-applying forever.
+_applyPushedDeviceSettings(seq, settings, instanceId) {
+this._writePushedScopeSettings(settings, instanceId);
+const seqKey = instanceId ? this._instanceScopedStorageKey("familyHubDeviceSettingsAppliedSeqLocal") : "familyHubDeviceSettingsAppliedSeqLocal";
+try {
+localStorage.setItem(seqKey, String(seq));
+} catch (e) {
+}
+this._applyPushedDeviceSettingsLive();
+}
+// Applies a device-scope push and/or this card instance's own
+// instance-scope push discovered together by a single
+// _checkPendingDeviceSettings catch-up round trip, with exactly ONE live
+// re-render covering whichever scope(s) actually had something new.
+// `deviceNew`/`instanceNew` are each either null or {seq, settings}.
+_applyPushedDeviceSettingsCombined(deviceNew, instanceNew) {
+if (deviceNew) {
+this._writePushedScopeSettings(deviceNew.settings, null);
+try {
+localStorage.setItem("familyHubDeviceSettingsAppliedSeqLocal", String(deviceNew.seq));
+} catch (e) {
+}
+}
+if (instanceNew) {
+this._writePushedScopeSettings(instanceNew.settings, this._getCardInstanceId());
+try {
+localStorage.setItem(this._instanceScopedStorageKey("familyHubDeviceSettingsAppliedSeqLocal"), String(instanceNew.seq));
+} catch (e) {
+}
+}
+this._applyPushedDeviceSettingsLive();
+}
+// Catch-up check for a push that happened while this device/instance was
+// closed/asleep (the live bus event in _subscribeDeviceSettingsPush only
+// reaches a currently-open dashboard) - called once per session from
+// _initFirstLoad, same "best-effort, never blocks first render" shape as
+// _reportDeviceSettings just above. v1.139.0+: passes this card's own
+// instance_id so the single get_pending round trip can surface a pending
+// push for either scope (device_settings_websocket_api.py's own
+// ws_get_pending nests the instance's own {seq, settings} under an
+// "instance" key only when instance_id is given, alongside the
+// always-present flat device-scope {seq, settings}).
+async _checkPendingDeviceSettings() {
+if (!this._hass || !this._hass.connection) return;
+let deviceAppliedSeq = 0;
+try {
+deviceAppliedSeq = parseInt(localStorage.getItem("familyHubDeviceSettingsAppliedSeqLocal"), 10) || 0;
+} catch (e) {
+}
+let instanceAppliedSeq = 0;
+try {
+instanceAppliedSeq = parseInt(localStorage.getItem(this._instanceScopedStorageKey("familyHubDeviceSettingsAppliedSeqLocal")), 10) || 0;
+} catch (e) {
+}
+try {
+const result = await this._hass.connection.sendMessagePromise({
+type: "family_hub/device_settings/get_pending",
+device_id: this._getDeviceId(),
+instance_id: this._getCardInstanceId(),
+});
+const deviceNew = result && result.seq > deviceAppliedSeq && result.settings ? { seq: result.seq, settings: result.settings } : null;
+const instanceNew = result && result.instance && result.instance.seq > instanceAppliedSeq && result.instance.settings ? { seq: result.instance.seq, settings: result.instance.settings } : null;
+if (deviceNew || instanceNew) {
+this._applyPushedDeviceSettingsCombined(deviceNew, instanceNew);
+}
+} catch (e) {
+// best-effort - see this function's own docstring.
+}
+}
+// Live half of the sync (see _checkPendingDeviceSettings above for the
+// catch-up half). Uses connection.subscribeMessage against this
+// integration's OWN family_hub/device_settings/subscribe_push command
+// (device_settings_websocket_api.py) rather than the generic
+// connection.subscribeEvents(handler, "family_hub_device_settings_push")
+// - that generic command silently refuses (Unauthorized, swallowed by
+// this function's own try/catch below) any event type outside Home
+// Assistant's small built-in allowlist for a non-admin connection.user,
+// so a device signed in as a non-admin Home Assistant user (a
+// restricted account set up for a wall-mounted kiosk display, say)
+// could never subscribe at all - it only ever picked up a push on its
+// own next full page reload, via _checkPendingDeviceSettings' catch-up
+// check, never live while the dashboard stayed open. subscribeMessage
+// resubscribes after a reconnect exactly like subscribeEvents does.
+// The server forwards just the event's own data (device_id/seq/
+// settings, plus instance_id only for an instance-scope push - see
+// push_settings_to_target's own comment) as the message payload, so the
+// callback here receives that shape directly rather than needing to
+// unwrap an `event.data` layer.
+async _subscribeDeviceSettingsPush() {
+if (this._deviceSettingsUnsub || !this._hass || !this._hass.connection) return;
+try {
+const unsub = await this._hass.connection.subscribeMessage((data) => {
+if (!data || data.device_id !== this._getDeviceId()) return;
+if (data.instance_id) {
+if (data.instance_id !== this._getCardInstanceId()) return;
+let instanceAppliedSeq = 0;
+try {
+instanceAppliedSeq = parseInt(localStorage.getItem(this._instanceScopedStorageKey("familyHubDeviceSettingsAppliedSeqLocal")), 10) || 0;
+} catch (e) {
+}
+if (data.seq > instanceAppliedSeq) this._applyPushedDeviceSettings(data.seq, data.settings, data.instance_id);
+return;
+}
+let appliedSeq = 0;
+try {
+appliedSeq = parseInt(localStorage.getItem("familyHubDeviceSettingsAppliedSeqLocal"), 10) || 0;
+} catch (e) {
+}
+if (data.seq > appliedSeq) this._applyPushedDeviceSettings(data.seq, data.settings);
+}, { type: "family_hub/device_settings/subscribe_push" });
+this._deviceSettingsUnsub = unsub;
+} catch (e) {
+// best-effort - see _reportDeviceSettings's own docstring for why a
+// failed subscribe is never fatal to the rest of the card.
+}
+}
+// "Identify" (see DEVICE_SETTINGS_EVENT_IDENTIFY's own comment in
+// const.py and _renderDeviceSettingsList's Identify button below):
+// live-only, no catch-up/get_pending half like
+// _subscribeDeviceSettingsPush above has, since there's nothing to apply
+// later that would still make sense - identify is only ever useful in
+// the moment an admin clicks it, for whichever device happens to be open
+// right then. Same subscribeMessage-against-this-integration's-own-
+// command reasoning as _subscribeDeviceSettingsPush above (see its own
+// comment) - Identify has no catch-up counterpart at all, so on the
+// generic subscribeEvents this replaced, a non-admin-logged-in device
+// couldn't just wait for its next reload the way a missed push could:
+// it silently could never receive an Identify, full stop.
+async _subscribeDeviceIdentifyPush() {
+if (this._deviceIdentifyUnsub || !this._hass || !this._hass.connection) return;
+try {
+const unsub = await this._hass.connection.subscribeMessage((data) => {
+if (!data || data.device_id !== this._getDeviceId()) return;
+this._showIdentifyModal();
+}, { type: "family_hub/device_settings/subscribe_identify" });
+this._deviceIdentifyUnsub = unsub;
+} catch (e) {
+// best-effort - see _reportDeviceSettings's own docstring for why a
+// failed subscribe is never fatal to the rest of the card.
+}
+}
+// Household ask: "a toggle per device... so that automations can control
+// screen saver." Live counterpart to the screensaver_enabled value
+// _reportDeviceSettings's own response already carries for the catch-up
+// case - see DEVICE_SETTINGS_EVENT_SCREENSAVER_TOGGLE's own comment in
+// const.py. No get_pending-style catch-up for THIS event either (same as
+// Identify) - a device that misses it simply picks up the right value on
+// its own next report instead.
+async _subscribeScreenSaverTogglePush() {
+if (this._screenSaverToggleUnsub || !this._hass || !this._hass.connection) return;
+try {
+const unsub = await this._hass.connection.subscribeMessage((data) => {
+if (!data || data.device_id !== this._getDeviceId()) return;
+this._screenSaverDeviceEnabled = data.enabled !== false;
+if (!this._screenSaverDeviceEnabled) {
+this._hideScreenSaver();
+} else {
+// _maybeResetScreenSaverIdleTimer() is deliberately a no-op when the
+// household's screenSaver settings object itself hasn't changed (see
+// its own comment - it exists to stop the 60s settings poll from
+// clobbering an in-progress countdown). Re-enabling THIS device's own
+// toggle is a genuine state change that must always (re)arm the idle
+// countdown right now, with whatever settings are already current -
+// calling the guarded wrapper here would silently no-op whenever the
+// household settings happened not to have changed since last poll,
+// leaving the screensaver never actually re-armed after being flipped
+// back on.
+this._resetScreenSaverIdleTimer();
+}
+}, { type: "family_hub/device_settings/subscribe_screensaver_toggle" });
+this._screenSaverToggleUnsub = unsub;
+} catch (e) {
+// best-effort - see _reportDeviceSettings's own docstring.
+}
+}
+// Household ask: "a setting... if you want the device to participate in
+// privacy mode... so things like phones could have the calendar while
+// the fridge or the kiosk is hidden." Live counterpart to the
+// privacy_participates value _reportDeviceSettings's own response
+// already carries for the catch-up case - see
+// DEVICE_SETTINGS_EVENT_PRIVACY_PARTICIPATION_TOGGLE's own comment in
+// const.py. Same no-catch-up-event shape as the screensaver toggle just
+// above - a device that misses this live event picks up the right value
+// on its own next report instead.
+async _subscribePrivacyParticipationTogglePush() {
+if (this._privacyParticipationToggleUnsub || !this._hass || !this._hass.connection) return;
+try {
+const unsub = await this._hass.connection.subscribeMessage((data) => {
+if (!data || data.device_id !== this._getDeviceId()) return;
+this._applyPrivacyParticipatesDeviceState(data.enabled);
+}, { type: "family_hub/device_settings/subscribe_privacy_participation_toggle" });
+this._privacyParticipationToggleUnsub = unsub;
+} catch (e) {
+// best-effort - see _reportDeviceSettings's own docstring.
+}
+}
+// --- Privacy Mode --------------------------------------------------------
+// Household ask, verbatim: "When enabled all reminders and calendar events
+// on the calendar disappear and a lock symbol appears in the middle of the
+// screen." Taken literally: the calendar itself (day headers, navigation,
+// week/month grid) stays fully visible and usable - it just has nothing in
+// it, every day looking blank - with a small lock badge floating in the
+// middle of the screen on top of it (NOT a full opaque overlay blocking the
+// calendar - an earlier version of this wrongly covered the whole screen
+// with a black panel, which hid the blank-days look the household actually
+// asked for). The actual hiding happens at the data layer, in
+// _privacyEventsFor/_privacyReminders below - every render path that reads
+// this._events[entity] or this._reminders goes through one of those two
+// instead, so a day cell/column/agenda row simply has nothing to iterate
+// over, same as a genuinely empty day. `enabled` is a single household-wide
+// flag (PRIVACY_MODE_EVENT_CHANGED's own comment in const.py explains why
+// it's not per-device), so every Family Hub card in the house blanks out
+// and shows its own lock badge in lockstep as this event arrives.
+_applyPrivacyModeState(enabled) {
+this._privacyModeEnabled = !!enabled;
+this._syncPrivacyModeOverlay();
+}
+// Per-device "participates in Privacy Mode" opt-out - household ask,
+// verbatim: "I wanted to have a setting that you check if you want the
+// device to participate in privacy mode. This way things like phones
+// could have the calendar while the fridge or the kiosk is hidden."
+// Layered ON TOP OF the single household-wide this._privacyModeEnabled
+// flag above - never a replacement for it: Privacy Mode itself is still
+// one flag every device hears about, this just lets an individual device
+// opt out of OBEYING it. undefined (no report/push heard yet) is treated
+// as "participates," same default-true shape as
+// shared.privacy_participates_for on the backend, so a device that
+// hasn't caught up yet fails closed (still hides data) rather than
+// leaking it.
+_applyPrivacyParticipatesDeviceState(enabled) {
+this._privacyParticipatesDeviceEnabled = enabled !== false;
+this._syncPrivacyModeOverlay();
+}
+// The actual lock state this device should show/enforce right now - the
+// household-wide flag AND this device's own opt-in. Every place that used
+// to read this._privacyModeEnabled directly (the overlay toggle and the
+// two data-layer reads below) reads this instead, so a device with
+// privacy_participates=false simply never blanks out or shows the lock,
+// no matter what the household-wide flag is doing.
+_privacyModeEffectiveLocked() {
+if (this._privacyParticipatesDeviceEnabled === false) return false;
+return !!this._privacyModeEnabled;
+}
+// Shared apply/diff/re-render step for both inputs that feed
+// _privacyModeEffectiveLocked() (the household-wide flag and this
+// device's own participates toggle) - either one changing can flip the
+// effective lock state, so both _applyPrivacyModeState and
+// _applyPrivacyParticipatesDeviceState funnel through here rather than
+// each keeping their own separate "did it change" tracking.
+_syncPrivacyModeOverlay() {
+const next = this._privacyModeEffectiveLocked();
+// this._privacyModeEffectiveApplied is undefined until the very first
+// call (the catch-up _fetchPrivacyModeState()/_reportDeviceSettings()
+// every new card makes on its first load) - treat that as "was off"
+// rather than "unknown", so the common case (not locked at load)
+// correctly sees no change and skips the extra _renderGrid() below.
+// Without this, EVERY card instance paid for one spurious full
+// re-render on load (undefined !== false is always true), which is
+// harmless on its own but needlessly doubles render work for every card
+// on the dashboard.
+const prev = this._privacyModeEffectiveApplied === undefined ? false : this._privacyModeEffectiveApplied;
+const changed = next !== prev;
+this._privacyModeEffectiveApplied = next;
+const overlay = this._ensurePrivacyModeOverlay();
+overlay.classList.toggle("open", next);
+if (!next) this._closePrivacyModeUnlock();
+// Re-render so the grid picks up the now-filtered (or restored)
+// this._events/this._reminders - without this, flipping privacy mode
+// (or this device's own participates toggle) while the card is already
+// showing a day with events on it would leave those pills on screen
+// until the next unrelated re-render.
+if (changed && this._root) this._renderGrid();
+}
+// Privacy-mode-aware read of one person's fetched calendar events - every
+// render path that used to read this._events[entity] directly reads this
+// instead, so a day with real events on it renders exactly like a day with
+// none, rather than being covered by something separate. Never mutates
+// this._events itself, so turning privacy mode back off needs no refetch -
+// the real data was there the whole time.
+_privacyEventsFor(entity) {
+if (this._privacyModeEffectiveLocked()) return [];
+return this._events[entity] || [];
+}
+// Privacy-mode-aware read of the fetched reminders list - see
+// _privacyEventsFor above for why this exists instead of filtering
+// this._reminders in place.
+_privacyReminders() {
+if (this._privacyModeEffectiveLocked()) return [];
+return this._reminders || [];
+}
+// Catch-up fetch on load/reload - the live subscribe below only covers
+// changes that happen while this card is already open, same two-call shape
+// as _reportDeviceSettings (catch-up)/_subscribeDeviceSettingsPush (live).
+async _fetchPrivacyModeState() {
+if (!this._hass || !this._hass.connection) return;
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/privacy_mode/get_state" });
+this._applyPrivacyModeState(result && result.enabled);
+} catch (e) {
+// best-effort - see _reportDeviceSettings's own docstring.
+}
+}
+async _subscribePrivacyModeChanged() {
+if (this._privacyModeUnsub || !this._hass || !this._hass.connection) return;
+try {
+const unsub = await this._hass.connection.subscribeMessage((data) => {
+this._applyPrivacyModeState(data && data.enabled);
+}, { type: "family_hub/privacy_mode/subscribe" });
+this._privacyModeUnsub = unsub;
+} catch (e) {
+// best-effort - see _reportDeviceSettings's own docstring.
+}
+}
+// "More" menu item - see PERMISSION_TOGGLE_PRIVACY_MODE's own comment in
+// const.py: deliberately ungated, anyone can turn Privacy Mode ON. Applies
+// optimistically (same instant as the screensaver toggle's own live write)
+// rather than waiting on the subscribe echo, so the household member who
+// just tapped it sees the lock appear immediately even on a slow network;
+// the live event arriving a moment later just re-applies the same state.
+async _enablePrivacyMode() {
+this._applyPrivacyModeState(true);
+if (!this._hass || !this._hass.connection) return;
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/privacy_mode/set", enabled: true });
+} catch (e) {
+// best-effort - a failed write here just means the live subscribe
+// event never arrives to confirm it; the overlay stays up locally
+// until the next successful _fetchPrivacyModeState/subscribe tick
+// corrects it, same fail-open-to-"still private" shape the feature
+// wants rather than silently reverting to showing everyone's data.
+}
+}
+// Builds (once) the body-level lock badge - same escape-the-shadow-root/
+// escape-HA's-outer-shell reasoning as _ensureScreenSaverOverlay's own
+// comment, but unlike that overlay this one does NOT cover the viewport:
+// the wrapper is pointer-events:none and background:transparent (see the
+// injected stylesheet above), so the calendar underneath stays fully
+// visible and usable - genuinely blank, not hidden behind a panel - with
+// only the lock badge itself (pointer-events:auto) sitting on top,
+// centered.
+//
+// Household ask: the lock badge should only ever appear over THIS
+// calendar card, never float in the middle of the whole dashboard page -
+// a household running more than one Family Hub card on a view (calendar
+// + Today + Chores, say) was seeing the lock badge center itself on the
+// browser viewport as a whole, which could land it on top of an entirely
+// unrelated card whenever the calendar card wasn't the only, or the
+// visually centered, thing on the page. Still a body-level element (same
+// escape-the-shadow-root reasoning as above - a position:fixed element
+// inside this card's own shadow DOM/host would get clipped by any
+// ancestor's overflow:hidden or transform, which Home Assistant's own
+// dashboard chrome sets in enough places that this card can't rely on
+// avoiding it), but now explicitly sized/positioned to match THIS card's
+// own getBoundingClientRect() (see _syncPrivacyModeOverlayRect) rather
+// than the CSS inset:0 the earlier version used - kept in sync on
+// connect, on every _syncHeight() call (resize/orientation change), and
+// on scroll (see the window-level listeners near _boundSyncHeight).
+//
+// Tapping the lock opens the PIN-unlock flow; it never turns Privacy
+// Mode off by itself (see _openPrivacyModeUnlock/_submitPrivacyModeUnlock
+// for the only two ways it actually comes back off: a correct PIN there,
+// or the backend switch entity's own turn_off, which needs no UI at
+// all).
+_ensurePrivacyModeOverlay() {
+if (this._privacyModeOverlayEl && this._privacyModeOverlayEl.isConnected) {
+this._syncPrivacyOverlayThemeVars(this._privacyModeOverlayEl);
+this._syncPrivacyModeOverlayRect();
+return this._privacyModeOverlayEl;
+}
+const el = document.createElement("div");
+el.className = "fh-privacy-mode-overlay";
+document.body.appendChild(el);
+this._privacyModeOverlayEl = el;
+this._syncPrivacyOverlayThemeVars(el);
+this._syncPrivacyModeOverlayRect();
+this._renderPrivacyOverlayLockView();
+return el;
+}
+// Positions/sizes the body-level lock overlay to match THIS card's own
+// current on-screen rect, so the lock badge it centers only ever appears
+// over this calendar card - see _ensurePrivacyModeOverlay's own comment
+// for why a body-level element needs this instead of plain CSS. A
+// position:fixed element's top/left are already viewport-relative, same
+// coordinate space getBoundingClientRect() returns, so no scroll-offset
+// math is needed - just re-read and re-apply the rect whenever the card
+// might have moved on screen (connect, resize/orientation change via
+// _syncHeight, and scroll).
+_syncPrivacyModeOverlayRect() {
+const el = this._privacyModeOverlayEl;
+if (!el || !this.isConnected) return;
+const rect = this.getBoundingClientRect();
+el.style.top = `${Math.round(rect.top)}px`;
+el.style.left = `${Math.round(rect.left)}px`;
+el.style.width = `${Math.max(0, Math.round(rect.width))}px`;
+el.style.height = `${Math.max(0, Math.round(rect.height))}px`;
+}
+// A body-level element like this overlay sits outside this card's own
+// shadow DOM (same escape-the-shadow-root reasoning as the overlay
+// itself), so it can't inherit the --fc-* custom properties
+// _applySizeVars sets on the card's own host element (`this`) the normal
+// CSS-inheritance way - they're siblings, not ancestor/descendant. Copied
+// across by hand instead, every time the overlay is (re)ensured, so "I
+// want them visually identical [to the Chores card's kiosk-login modal]"
+// actually tracks this household's real theme colors rather than a
+// hardcoded guess - the CSS above's own var(--fc-x, fallback) pairs still
+// cover the brief window before this has ever run once.
+_syncPrivacyOverlayThemeVars(el) {
+["--fc-bg", "--fc-card", "--fc-border", "--fc-text", "--fc-text-secondary", "--fc-accent", "--fc-accent-text", "--fc-surface-alt"].forEach((name) => {
+const value = this.style.getPropertyValue(name);
+if (value) el.style.setProperty(name, value);
+});
+}
+// Household ask: "let's just make it not have a modal, just make it
+// present a pin login when you tap the screen" - renders the plain
+// locked-pill view into the overlay itself (same element
+// _openPrivacyModeUnlock below swaps to the PIN form and
+// _closePrivacyModeUnlock swaps back from) rather than a separate
+// element. Safe to call any time the overlay exists, including while
+// it's currently showing the PIN form (Cancel/Close route back here) -
+// also drops the "unlocking" dimmed-backdrop class the PIN form turns on
+// (see the CSS's own .fh-privacy-mode-overlay.unlocking rule), since the
+// plain lock pill never dims anything behind it.
+_renderPrivacyOverlayLockView() {
+const el = this._privacyModeOverlayEl;
+if (!el) return;
+el.classList.remove("unlocking");
+el.innerHTML = `<button type="button" class="fh-privacy-lock-btn"><span class="fh-privacy-lock-icon">&#128274;</span><span class="fh-privacy-lock-label">${this._t("privacy.locked_label", "Privacy Mode is on - tap to unlock")}</span></button>`;
+el.querySelector(".fh-privacy-lock-btn").addEventListener("click", () => this._openPrivacyModeUnlock());
+}
+// Swaps the overlay's own content back to the plain lock view - the
+// inline counterpart of what used to close a separate modal. Harmless
+// to call when the overlay is already showing the lock view (e.g. the
+// household-wide flag going off elsewhere routes through here too, via
+// _syncPrivacyModeOverlay).
+_closePrivacyModeUnlock() {
+this._renderPrivacyOverlayLockView();
+}
+// Fetches who's currently eligible to unlock - ws_privacy_mode_list_
+// eligible_users already does the actual filtering server-side (every
+// real admin, plus anyone explicitly granted
+// PERMISSION_TOGGLE_PRIVACY_MODE under the Users tab's Permissions
+// accordion - see that handler's own docstring in
+// chores_websocket_api.py); this just renders whatever comes back, same
+// as it always has, so "only show users with permission" was already
+// true before this visual rework and stays true after it. Renders
+// whichever of the three states below applies, swapped directly into the
+// SAME overlay element the lock pill was just tapped on and now
+// visually matching family-hub-chores-card.js's own kiosk-login-overlay/
+// kiosk-login-box modal pixel-for-pixel (dimmed backdrop via the
+// "unlocking" class, button-row user picker instead of a dropdown, same
+// PIN input/error/action-button styling) - "I want them visually
+// identical."
+async _openPrivacyModeUnlock() {
+const el = this._privacyModeOverlayEl;
+if (!el) return;
+el.classList.add("unlocking");
+this._privacyUnlockSelectedUserId = null;
+el.innerHTML = `<div class="fh-privacy-unlock-box"><button type="button" class="fh-privacy-unlock-close-btn" title="${this._t("common.close", "Close")}">&#10005;</button><h2>&#128274; ${this._t("privacy.unlock_title", "Turn off Privacy Mode")}</h2><div class="fh-privacy-unlock-msg">${this._t("privacy.unlock_loading", "Checking who can unlock Privacy Mode…")}</div></div>`;
+el.querySelector(".fh-privacy-unlock-close-btn").addEventListener("click", () => this._closePrivacyModeUnlock());
+if (!this._hass || !this._hass.connection) return;
+let users = [];
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/privacy_mode/list_eligible_users" });
+users = (result && result.users) || [];
+} catch (e) {
+if (!el.isConnected || !el.querySelector(".fh-privacy-unlock-box")) return;
+this._renderPrivacyUnlockError(el, this._t("privacy.unlock_error", "Couldn't check eligible users - try again."));
+return;
+}
+// The lock view (or household-wide unlock elsewhere) may have already
+// swapped this overlay's content back out from under this still-in-
+// flight fetch - bail rather than clobbering whatever it's showing now.
+if (!el.isConnected || !el.querySelector(".fh-privacy-unlock-box")) return;
+const eligibleWithPin = users.filter((u) => u.has_pin);
+if (!eligibleWithPin.length) {
+// Household's own literal wording, preserved verbatim.
+this._renderPrivacyUnlockError(el, this._t("privacy.no_pin_set", "No user has a pin. Please set one now."));
+return;
+}
+const pickerButtonsHtml = eligibleWithPin
+.map((u) => `<button type="button" class="fh-privacy-unlock-user-btn" data-user-id="${u.id}">${u.name}</button>`)
+.join("");
+el.innerHTML = `<div class="fh-privacy-unlock-box">
+<button type="button" class="fh-privacy-unlock-close-btn" title="${this._t("common.close", "Close")}">&#10005;</button>
+<h2>&#128274; ${this._t("privacy.unlock_title", "Turn off Privacy Mode")}</h2>
+<div class="fh-privacy-unlock-user-picker">${pickerButtonsHtml}</div>
+<input type="password" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="8" class="fh-privacy-unlock-pin-input" placeholder="${this._t("privacy.pin_placeholder", "PIN")}" />
+<div class="fh-privacy-unlock-error"></div>
+<div class="fh-privacy-unlock-actions">
+<button type="button" class="fh-privacy-unlock-cancel-btn">${this._t("common.cancel", "Cancel")}</button>
+<button type="button" class="fh-privacy-unlock-submit-btn">${this._t("privacy.unlock_submit", "Unlock")}</button>
+</div>
+</div>`;
+el.querySelector(".fh-privacy-unlock-close-btn").addEventListener("click", () => this._closePrivacyModeUnlock());
+el.querySelector(".fh-privacy-unlock-cancel-btn").addEventListener("click", () => this._closePrivacyModeUnlock());
+const pickerEl = el.querySelector(".fh-privacy-unlock-user-picker");
+const pinInput = el.querySelector(".fh-privacy-unlock-pin-input");
+pickerEl.querySelectorAll(".fh-privacy-unlock-user-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+pickerEl.querySelectorAll(".fh-privacy-unlock-user-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+this._privacyUnlockSelectedUserId = btn.dataset.userId;
+pinInput.focus();
+});
+});
+// A single eligible person is the common case (the one adult who holds
+// this permission) - pre-select them so there's one less tap, same
+// spirit as the Chores kiosk-login picker leaving a single option
+// unselected only because that modal supports several equally-likely
+// kiosk logins; here "who can turn this off" is usually just one person.
+if (eligibleWithPin.length === 1) {
+const onlyBtn = pickerEl.querySelector(".fh-privacy-unlock-user-btn");
+onlyBtn.classList.add("active");
+this._privacyUnlockSelectedUserId = onlyBtn.dataset.userId;
+}
+const submit = () => this._submitPrivacyModeUnlock(this._privacyUnlockSelectedUserId, pinInput.value);
+el.querySelector(".fh-privacy-unlock-submit-btn").addEventListener("click", submit);
+pinInput.addEventListener("keydown", (e) => {
+if (e.key === "Enter") submit();
+});
+pinInput.focus();
+}
+// Shared "just a message plus a Close button" state - the loading
+// failure and the "nobody has a PIN set yet" case both look like this,
+// same as the two matching early-return states in family-hub-chores-
+// card.js's own _openKioskLoginModal (an error there, or no kiosk-login
+// users at all).
+_renderPrivacyUnlockError(el, message) {
+const box = el.querySelector(".fh-privacy-unlock-box");
+if (!box) return;
+box.innerHTML = `<button type="button" class="fh-privacy-unlock-close-btn" title="${this._t("common.close", "Close")}">&#10005;</button><h2>&#128274; ${this._t("privacy.unlock_title", "Turn off Privacy Mode")}</h2><div class="fh-privacy-unlock-msg">${message}</div><div class="fh-privacy-unlock-actions"><button type="button" class="fh-privacy-unlock-cancel-btn fh-privacy-unlock-close-btn">${this._t("common.close", "Close")}</button></div>`;
+box.querySelectorAll(".fh-privacy-unlock-close-btn").forEach((btn) => btn.addEventListener("click", () => this._closePrivacyModeUnlock()));
+}
+// Generic "incorrect_pin" error on any failure - same anti-fishing shape
+// as ws_kiosk_elevate/ws_privacy_mode_disable_with_pin's own docstring
+// (never reveals whether the PIN was wrong vs. the user lacks the
+// permission). Success closes the modal; the lock overlay itself comes
+// down via the normal _subscribePrivacyModeChanged live event, not
+// directly here, so every other open Family Hub card in the house drops
+// its own overlay the same way.
+async _submitPrivacyModeUnlock(userId, pin) {
+const el = this._privacyModeOverlayEl;
+const errorEl = el && el.querySelector(".fh-privacy-unlock-error");
+if (!userId || !pin) {
+if (errorEl) errorEl.textContent = this._t("privacy.pin_required", "Enter a PIN.");
+return;
+}
+if (!this._hass || !this._hass.connection) return;
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/privacy_mode/disable_with_pin", user_id: userId, pin });
+this._closePrivacyModeUnlock();
+} catch (e) {
+if (errorEl) errorEl.textContent = this._t("privacy.incorrect_pin", "Incorrect PIN.");
+}
+}
+// Pops a brief full-screen modal naming THIS device (its own
+// _getDeviceName()/_getDeviceId(), via the shared _deviceLabel
+// formatter) so whoever is standing in front of the physical screen can
+// match it to the row they clicked Identify on in the admin tab. Same
+// window-level singleton shape as this file's own
+// window.__familyHubTimerAlarm above (see that block's own design note)
+// rather than something rendered into this card's own shadow root -
+// deliberately, so exactly one modal shows even when several Family Hub
+// cards share one dashboard and every one of them receives the same
+// bus event. Auto-dismisses on its own after a while as a safety net (an
+// admin testing this from across the room has no way to walk over and
+// tap "Got it"), but a tap dismisses it immediately too.
+_showIdentifyModal() {
+if (!window.__familyHubIdentifyModal) {
+  window.__familyHubIdentifyModal = (function () {
+    let modalEl = null;
+    let hideTimer = null;
+    function ensureModal() {
+      if (modalEl) return modalEl;
+      modalEl = document.createElement("div");
+      modalEl.id = "family-hub-identify-overlay";
+      Object.assign(modalEl.style, {
+        position: "fixed", inset: "0", zIndex: "2147483647", display: "none",
+        alignItems: "center", justifyContent: "center",
+        background: "rgba(20,16,8,0.78)",
+      });
+      modalEl.innerHTML =
+        '<div style="background:#fff8ea;color:#3a352c;border-radius:22px;padding:42px 32px;max-width:420px;width:88vw;text-align:center;box-shadow:0 14px 46px rgba(0,0,0,0.45);font-family:-apple-system,\'Segoe UI\',Roboto,sans-serif;">' +
+        '<div style="font-size:44px;margin-bottom:10px;">&#128375;</div>' +
+        '<div style="font-size:13px;color:#96877a;margin-bottom:8px;">This device is</div>' +
+        '<div class="fh-identify-label" style="font-size:1.5em;font-weight:800;word-break:break-word;margin-bottom:26px;"></div>' +
+        '<button type="button" class="fh-identify-close" style="min-height:54px;width:100%;border:none;border-radius:14px;background:#8f5a00;color:#fff8ea;font-size:19px;font-weight:800;cursor:pointer;">Got it</button>' +
+        "</div>";
+      document.body.appendChild(modalEl);
+      modalEl.querySelector(".fh-identify-close").addEventListener("click", () => hide());
+      return modalEl;
+    }
+    function hide() {
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      if (modalEl) modalEl.style.display = "none";
+    }
+    function show(label) {
+      const el = ensureModal();
+      el.querySelector(".fh-identify-label").textContent = label;
+      el.style.display = "flex";
+      if (hideTimer) clearTimeout(hideTimer);
+      hideTimer = setTimeout(hide, 15000);
+    }
+    return { show, hide };
+  })();
+}
+window.__familyHubIdentifyModal.show(this._deviceLabel(this._getDeviceName(), this._getDeviceId()));
+}
+// --- Devices tab (Settings > Devices, admin-only) ---------------------
+async _fetchDeviceSettingsAdmin() {
+if (!this._hass || !this._hass.connection) return;
+this._deviceSettingsAdminCache = null;
+this._deviceSettingsAdminError = false;
+this._renderDeviceSettingsList();
+this._renderDeviceSettingsPresets();
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/device_settings/list" });
+this._deviceSettingsAdminCache = result;
+} catch (e) {
+this._deviceSettingsAdminCache = { devices: {}, presets: {}, fields: {} };
+this._deviceSettingsAdminError = true;
+}
+this._renderDeviceSettingsList();
+this._renderDeviceSettingsPresets();
+}
+_deviceSettingsControlHtml(deviceId, key, field, value, instanceId) {
+const controlId = `dsf-${deviceId}-${instanceId || "d"}-${key}`;
+if (field.type === "enum") {
+const options = field.choices.map((c) => `<option value="${c}"${c === value ? " selected" : ""}>${c}</option>`).join("");
+return `<select class="device-settings-field-input" data-key="${key}" id="${controlId}">${options}</select>`;
+}
+if (field.type === "text") {
+// Unlike device_name elsewhere in this same list (text content in a
+// span - see _renderDeviceSettingsList's own comment on why that's
+// left unescaped there), this
+// value sits inside a double-quoted HTML attribute, where an
+// unescaped `"` could break out of it - cheap enough to escape
+// properly rather than lean on the same "trusted surface" reasoning.
+const escaped = String(value == null ? "" : value).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+return `<input type="text" class="device-settings-field-input device-settings-field-input-text" data-key="${key}" id="${controlId}" maxlength="${field.max_length}" placeholder="${this._t("settings.device_name_placeholder", "auto")}" value="${escaped}" />`;
+}
+return `<input type="number" class="device-settings-field-input" data-key="${key}" id="${controlId}" min="${field.min}" max="${field.max}" step="1" value="${value}" />`;
+}
+// Splits the "fields" registry the backend sent back (device_settings/
+// list's own authoritative copy - see this file's own comment on
+// _deviceSettingsFieldRegistry for why that copy, not this file's local
+// one, drives rendering) into its two scopes - device-scoped fields
+// render once per device card, instance-scoped fields once per known
+// dashboard/view instance of that device (see const.py's own "scope"
+// comment). A field with no "scope" at all (only possible if an older
+// backend that predates the scope split somehow sent this - never true
+// for this version) falls back to "device", the original single-scope
+// behavior.
+_splitDeviceSettingsFieldsByScope(fields) {
+const deviceFields = {};
+const instanceFields = {};
+Object.keys(fields).forEach((key) => {
+const field = fields[key];
+if (field.scope === "instance") instanceFields[key] = field;
+else deviceFields[key] = field;
+});
+return { deviceFields, instanceFields };
+}
+_renderDeviceSettingsList() {
+const root = this._root;
+if (!root) return;
+const listEl = root.querySelector(".device-settings-list");
+const emptyEl = root.querySelector(".device-settings-empty");
+if (!listEl) return;
+const cache = this._deviceSettingsAdminCache;
+if (cache === null || cache === undefined) {
+listEl.innerHTML = `<div class="notify-profiles-empty-state">${this._t("settings.devices_loading", "Checking devices…")}</div>`;
+if (emptyEl) emptyEl.style.display = "none";
+return;
+}
+const devices = cache.devices || {};
+const fields = Object.keys(cache.fields || {}).length ? cache.fields : this._deviceSettingsFieldRegistry();
+const { deviceFields, instanceFields } = this._splitDeviceSettingsFieldsByScope(fields);
+const deviceIds = Object.keys(devices);
+if (emptyEl) emptyEl.style.display = deviceIds.length ? "none" : "";
+const myId = this._getDeviceId();
+const myInstanceId = this._getCardInstanceId();
+listEl.innerHTML = deviceIds
+.map((deviceId) => {
+const record = devices[deviceId] || {};
+const settings = record.settings || {};
+const rowsHtml = Object.keys(deviceFields)
+.map((key) => {
+const field = deviceFields[key];
+const value = settings[key] !== undefined ? settings[key] : field.default;
+return `<div class="device-settings-field-row"><label>${field.label || key}</label>${this._deviceSettingsControlHtml(deviceId, key, field, value)}</div>`;
+})
+.join("");
+const isMe = deviceId === myId ? ` <span class="device-settings-you-tag">${this._t("settings.devices_this_device", "this device")}</span>` : "";
+const lastSeen = record.last_seen ? new Date(record.last_seen).toLocaleString() : this._t("settings.devices_never_reported", "never reported settings");
+// "<name>_<id>" via the same _deviceLabel formatter the
+// Identify modal uses on itself, so both surfaces always agree on the
+// format. record.device_name is free text another browser self-reported
+// (see ws_report's own comment) - not HTML-escaped here, same as this
+// same list's own preset.name a little further down in this file, which
+// has never escaped user-entered text either; this is an admin-only
+// local surface, not a multi-tenant one.
+const label = this._deviceLabel(record.device_name, deviceId);
+const isExpanded = !!(this._deviceSettingsExpandedIds && this._deviceSettingsExpandedIds.has(deviceId));
+// every dashboard/view CARD INSTANCE this device has ever
+// reported (see const.py's own "scope" comment and _getCardInstanceId's
+// own comment) gets its own nested row here, with its own copy of the
+// instance-scoped (Week/Month view/layout) fields and its own Push
+// button - this is the actual answer to "how do we allow different
+// views on all the dashboards on one device."
+// Live per-device screensaver toggle - see
+// DEVICE_SETTINGS_EVENT_SCREENSAVER_TOGGLE's own comment in const.py.
+// Deliberately NOT one of the deviceFields/DEVICE_SETTINGS_FIELDS rows
+// above - this writes and takes effect immediately (so automations can
+// drive it), with no separate Push step the way those staged fields work.
+const screenSaverEnabled = record.screensaver_enabled !== false;
+const privacyParticipates = record.privacy_participates !== false;
+const instances = record.instances || {};
+const instanceIds = Object.keys(instances);
+const instancesHtml = instanceIds.length
+? instanceIds
+.map((instanceId) => {
+const instanceRecord = instances[instanceId] || {};
+const instanceSettings = instanceRecord.settings || {};
+const instanceRowsHtml = Object.keys(instanceFields)
+.map((key) => {
+const field = instanceFields[key];
+const value = instanceSettings[key] !== undefined ? instanceSettings[key] : field.default;
+return `<div class="device-settings-field-row"><label>${field.label || key}</label>${this._deviceSettingsControlHtml(deviceId, key, field, value, instanceId)}</div>`;
+})
+.join("");
+const instanceLabel = instanceRecord.instance_label || instanceId;
+const instanceIsMe = deviceId === myId && instanceId === myInstanceId ? ` <span class="device-settings-you-tag">${this._t("settings.devices_this_device", "this device")}</span>` : "";
+const instanceLastSeen = instanceRecord.last_seen ? new Date(instanceRecord.last_seen).toLocaleString() : this._t("settings.devices_never_reported", "never reported settings");
+return `<div class="device-settings-instance-row" data-device-id="${deviceId}" data-instance-id="${instanceId}">
+<div class="device-settings-instance-header"><span class="device-settings-instance-label" title="${instanceId}">${instanceLabel}</span>${instanceIsMe}<span class="device-settings-last-seen">${instanceLastSeen}</span></div>
+<div class="device-settings-instance-fields">${instanceRowsHtml}</div>
+<div class="device-settings-instance-actions">
+<button type="button" class="btn-save device-settings-instance-push-btn" data-device-id="${deviceId}" data-instance-id="${instanceId}">${this._t("settings.devices_push", "Push to this device")}</button>
+<input type="text" class="device-settings-preset-name-input" placeholder="${this._t("settings.devices_preset_name_placeholder", "Preset name")}" />
+<button type="button" class="btn-cancel device-settings-instance-save-preset-btn" data-device-id="${deviceId}" data-instance-id="${instanceId}">${this._t("settings.devices_save_as_preset", "Save as preset")}</button>
+</div>
+</div>`;
+})
+.join("")
+: `<div class="device-settings-instance-empty">${this._t("settings.devices_no_instances", "No dashboards/views have reported yet")}</div>`;
+return `<div class="device-settings-card${isExpanded ? " expanded" : ""}" data-device-id="${deviceId}">
+<div class="device-settings-card-header">
+<button type="button" class="device-settings-card-toggle" data-device-id="${deviceId}" aria-expanded="${isExpanded}">
+<span class="device-settings-card-toggle-chevron" aria-hidden="true">›</span>
+<span class="device-settings-id" title="${deviceId}">${label}</span>
+</button>
+${isMe}<span class="device-settings-last-seen">${lastSeen}</span>
+</div>
+<div class="device-settings-card-body">
+<div class="device-settings-fields">${rowsHtml}</div>
+<div class="device-settings-card-actions">
+<label class="remind-check-opt device-settings-screensaver-opt" title="${this._t("settings.devices_screensaver_hint", "Takes effect immediately - no Push needed. Automations can also control this via the device's screensaver switch entity.")}"><input type="checkbox" class="device-settings-screensaver-check" data-device-id="${deviceId}" ${screenSaverEnabled ? "checked" : ""} /> <span>${this._t("settings.devices_screensaver_label", "Screensaver enabled")}</span></label>
+<label class="remind-check-opt device-settings-privacy-participates-opt" title="${this._t("settings.devices_privacy_participates_hint", "Takes effect immediately - no Push needed. Uncheck so this device keeps showing the calendar while Privacy Mode hides it everywhere else - for example a phone that should stay visible while the kitchen kiosk goes private.")}"><input type="checkbox" class="device-settings-privacy-participates-check" data-device-id="${deviceId}" ${privacyParticipates ? "checked" : ""} /> <span>${this._t("settings.devices_privacy_participates_label", "Participates in Privacy Mode")}</span></label>
+<button type="button" class="btn-save device-settings-push-btn" data-device-id="${deviceId}">${this._t("settings.devices_push", "Push to this device")}</button>
+<button type="button" class="btn-cancel device-settings-identify-btn" data-device-id="${deviceId}">${this._t("settings.devices_identify", "Identify")}</button>
+<input type="text" class="device-settings-preset-name-input" placeholder="${this._t("settings.devices_preset_name_placeholder", "Preset name")}" />
+<button type="button" class="btn-cancel device-settings-save-preset-btn" data-device-id="${deviceId}">${this._t("settings.devices_save_as_preset", "Save as preset")}</button>
+</div>
+<div class="device-settings-instances">
+<div class="device-settings-instances-label">${this._t("settings.devices_dashboards_label", "Dashboards/views on this device")}</div>
+${instancesHtml}
+</div>
+</div>
+</div>`;
+})
+.join("");
+listEl.querySelectorAll(".device-settings-card-toggle").forEach((btn) => {
+btn.addEventListener("click", () => this._toggleDeviceSettingsCardExpanded(btn.dataset.deviceId));
+});
+listEl.querySelectorAll(".device-settings-push-btn").forEach((btn) => {
+btn.addEventListener("click", () => this._pushDeviceSettings(btn.dataset.deviceId));
+});
+listEl.querySelectorAll(".device-settings-identify-btn").forEach((btn) => {
+btn.addEventListener("click", () => this._identifyDevice(btn.dataset.deviceId));
+});
+listEl.querySelectorAll(".device-settings-save-preset-btn").forEach((btn) => {
+btn.addEventListener("click", () => this._saveDeviceSettingsPreset(btn.dataset.deviceId));
+});
+listEl.querySelectorAll(".device-settings-instance-push-btn").forEach((btn) => {
+btn.addEventListener("click", () => this._pushInstanceSettings(btn.dataset.deviceId, btn.dataset.instanceId));
+});
+listEl.querySelectorAll(".device-settings-instance-save-preset-btn").forEach((btn) => {
+btn.addEventListener("click", () => this._saveInstanceSettingsPreset(btn.dataset.deviceId, btn.dataset.instanceId));
+});
+listEl.querySelectorAll(".device-settings-screensaver-check").forEach((checkbox) => {
+checkbox.addEventListener("change", () => this._setDeviceScreenSaverEnabled(checkbox.dataset.deviceId, checkbox.checked));
+});
+listEl.querySelectorAll(".device-settings-privacy-participates-check").forEach((checkbox) => {
+checkbox.addEventListener("change", () => this._setDevicePrivacyParticipates(checkbox.dataset.deviceId, checkbox.checked));
+});
+}
+_findDeviceSettingsCard(deviceId) {
+const root = this._root;
+if (!root) return null;
+return Array.from(root.querySelectorAll(".device-settings-card")).find((c) => c.dataset.deviceId === deviceId) || null;
+}
+// Tracks which device cards are expanded in the admin Devices tab, so a
+// device's card collapses down to just its name/last-seen line until
+// clicked open. Re-render uses this set to restore expand state (rather
+// than everything re-collapsing) whenever _renderDeviceSettingsList runs
+// again after an action like Push or a background settings refresh.
+_toggleDeviceSettingsCardExpanded(deviceId) {
+if (!this._deviceSettingsExpandedIds) this._deviceSettingsExpandedIds = new Set();
+if (this._deviceSettingsExpandedIds.has(deviceId)) {
+this._deviceSettingsExpandedIds.delete(deviceId);
+} else {
+this._deviceSettingsExpandedIds.add(deviceId);
+}
+this._renderDeviceSettingsList();
+}
+_findDeviceSettingsInstanceRow(deviceId, instanceId) {
+const root = this._root;
+if (!root) return null;
+return (
+Array.from(root.querySelectorAll(".device-settings-instance-row")).find(
+(r) => r.dataset.deviceId === deviceId && r.dataset.instanceId === instanceId
+) || null
+);
+}
+// Reads this device's own device-scoped fields ONLY - scoped to the
+// `.device-settings-fields` container so a nested instance row's own
+// inputs (same field-input class, but a different scope entirely) are
+// never accidentally swept up into a device-scope push/preset. See
+// _collectInstanceSettingsFormValues below for the instance-scoped
+// counterpart.
+_collectDeviceSettingsFormValues(deviceId) {
+const card = this._findDeviceSettingsCard(deviceId);
+if (!card) return null;
+const fieldsContainer = card.querySelector(".device-settings-fields");
+if (!fieldsContainer) return null;
+const fields = (this._deviceSettingsAdminCache && this._deviceSettingsAdminCache.fields) || this._deviceSettingsFieldRegistry();
+const values = {};
+fieldsContainer.querySelectorAll(".device-settings-field-input").forEach((input) => {
+const key = input.dataset.key;
+const field = fields[key];
+if (!field) return;
+values[key] = field.type === "int" ? parseInt(input.value, 10) : input.value;
+});
+return values;
+}
+// Instance-scoped counterpart of _collectDeviceSettingsFormValues above -
+// reads one dashboard/view instance's own nested row.
+_collectInstanceSettingsFormValues(deviceId, instanceId) {
+const row = this._findDeviceSettingsInstanceRow(deviceId, instanceId);
+if (!row) return null;
+const fields = (this._deviceSettingsAdminCache && this._deviceSettingsAdminCache.fields) || this._deviceSettingsFieldRegistry();
+const values = {};
+row.querySelectorAll(".device-settings-field-input").forEach((input) => {
+const key = input.dataset.key;
+const field = fields[key];
+if (!field) return;
+values[key] = field.type === "int" ? parseInt(input.value, 10) : input.value;
+});
+return values;
+}
+async _pushDeviceSettings(deviceId) {
+const values = this._collectDeviceSettingsFormValues(deviceId);
+if (!values || !this._hass || !this._hass.connection) return;
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/device_settings/push", device_id: deviceId, settings: values });
+this._showSettingsSaveStatus(this._t("settings.devices_pushed", "Pushed"));
+this._fetchDeviceSettingsAdmin();
+} catch (e) {
+this._showSettingsSaveStatus(this._t("settings.devices_push_failed", "Push failed"), true);
+}
+}
+// Pushes one dashboard/view instance's own edited settings - the
+// instance-scoped counterpart of _pushDeviceSettings above, carrying
+// instance_id so device_settings_websocket_api.py's own ws_push targets
+// that instance's own record rather than the device's.
+async _pushInstanceSettings(deviceId, instanceId) {
+const values = this._collectInstanceSettingsFormValues(deviceId, instanceId);
+if (!values || !this._hass || !this._hass.connection) return;
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/device_settings/push", device_id: deviceId, instance_id: instanceId, settings: values });
+this._showSettingsSaveStatus(this._t("settings.devices_pushed", "Pushed"));
+this._fetchDeviceSettingsAdmin();
+} catch (e) {
+this._showSettingsSaveStatus(this._t("settings.devices_push_failed", "Push failed"), true);
+}
+}
+// Fires the live-only DEVICE_SETTINGS_EVENT_IDENTIFY for one device - see
+// _subscribeDeviceIdentifyPush/_showIdentifyModal for the receiving side.
+// Deliberately does NOT call _fetchDeviceSettingsAdmin() afterward like
+// _pushDeviceSettings/_applyDeviceSettingsPreset do - identify changes
+// nothing in the device_settings store, so there's nothing new for the
+// admin list to re-fetch.
+async _identifyDevice(deviceId) {
+if (!this._hass || !this._hass.connection) return;
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/device_settings/identify", device_id: deviceId });
+this._showSettingsSaveStatus(this._t("settings.devices_identify_sent", "Sent - check that device's screen"));
+} catch (e) {
+this._showSettingsSaveStatus(this._t("settings.devices_identify_failed", "Identify failed"), true);
+}
+}
+// Live per-device screensaver toggle (ws_set_screensaver_enabled) - see
+// DEVICE_SETTINGS_EVENT_SCREENSAVER_TOGGLE's own comment in const.py.
+// Deliberately bypasses the whole staged settings/push model: this writes
+// and takes effect immediately (so automations driving the device's own
+// screensaver switch entity see the same live write path this checkbox
+// uses), with no Push step and nothing to re-collect from the form - it's
+// its own standalone field, not one of deviceFields/DEVICE_SETTINGS_FIELDS.
+// On failure, flips the checkbox back and re-fetches so the admin list
+// reflects whatever the backend's actual value still is.
+async _setDeviceScreenSaverEnabled(deviceId, enabled) {
+if (!this._hass || !this._hass.connection) return;
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/device_settings/set_screensaver_enabled", device_id: deviceId, enabled: !!enabled });
+this._showSettingsSaveStatus(enabled ? this._t("settings.devices_screensaver_on", "Screensaver enabled") : this._t("settings.devices_screensaver_off", "Screensaver disabled"));
+this._fetchDeviceSettingsAdmin();
+} catch (e) {
+this._showSettingsSaveStatus(this._t("settings.devices_screensaver_failed", "Couldn't update screensaver"), true);
+this._fetchDeviceSettingsAdmin();
+}
+}
+// Live per-device Privacy Mode "participates" toggle
+// (ws_set_privacy_participates) - see
+// DEVICE_SETTINGS_EVENT_PRIVACY_PARTICIPATION_TOGGLE's own comment in
+// const.py. Same standalone, bypass-the-staged-settings-model shape as
+// _setDeviceScreenSaverEnabled just above: writes and takes effect
+// immediately, no Push step, nothing to re-collect from the form. This
+// card instance applies the change to itself optimistically right away
+// via _applyPrivacyParticipatesDeviceState (see _enablePrivacyMode's own
+// comment on why - the live subscribe event this fires only reaches OTHER
+// connections, never the one that issued the write, so the admin's own
+// device wouldn't otherwise see its own change take effect until its next
+// unrelated report/reload). On failure, flips the checkbox back and
+// re-fetches so the admin list reflects whatever the backend's actual
+// value still is.
+async _setDevicePrivacyParticipates(deviceId, enabled) {
+if (!this._hass || !this._hass.connection) return;
+if (deviceId === this._getDeviceId()) this._applyPrivacyParticipatesDeviceState(enabled);
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/device_settings/set_privacy_participates", device_id: deviceId, enabled: !!enabled });
+this._showSettingsSaveStatus(enabled ? this._t("settings.devices_privacy_participates_on", "Participates in Privacy Mode") : this._t("settings.devices_privacy_participates_off", "Excluded from Privacy Mode"));
+this._fetchDeviceSettingsAdmin();
+} catch (e) {
+if (deviceId === this._getDeviceId()) this._applyPrivacyParticipatesDeviceState(!enabled);
+this._showSettingsSaveStatus(this._t("settings.devices_privacy_participates_failed", "Couldn't update Privacy Mode participation"), true);
+this._fetchDeviceSettingsAdmin();
+}
+}
+// No dedicated backend command for identifying every device at once -
+// just fires the exact same per-device
+// ws_identify call _identifyDevice already makes, once for every device
+// this admin's own list currently knows about, in parallel. Each call is
+// independently admin-gated/validated server-side exactly like a single
+// Identify click would be, so looping client-side is no less safe than
+// clicking every row's own button one at a time - just faster. A device
+// that's closed/asleep right now simply never shows a modal, same as a
+// single Identify always has (see DEVICE_SETTINGS_EVENT_IDENTIFY's own
+// comment in const.py - there's deliberately no catch-up for this).
+async _identifyAllDevices() {
+if (!this._hass || !this._hass.connection) return;
+const cache = this._deviceSettingsAdminCache;
+const deviceIds = Object.keys((cache && cache.devices) || {});
+if (!deviceIds.length) return;
+try {
+await Promise.all(
+deviceIds.map((deviceId) => this._hass.connection.sendMessagePromise({ type: "family_hub/device_settings/identify", device_id: deviceId }))
+);
+this._showSettingsSaveStatus(this._t("settings.devices_identify_all_sent", "Sent - check each device's screen"));
+} catch (e) {
+this._showSettingsSaveStatus(this._t("settings.devices_identify_failed", "Identify failed"), true);
+}
+}
+async _saveDeviceSettingsPreset(deviceId) {
+const card = this._findDeviceSettingsCard(deviceId);
+// .device-settings-card-actions only ever appears once per card now (the
+// nested per-instance actions row uses its own .device-settings-instance-
+// actions class instead - see _saveInstanceSettingsPreset below), so a
+// plain descendant lookup is unambiguous here.
+const nameInput = card && card.querySelector(".device-settings-card-actions > .device-settings-preset-name-input");
+const name = nameInput ? nameInput.value.trim() : "";
+const values = this._collectDeviceSettingsFormValues(deviceId);
+if (!name || !values || !this._hass || !this._hass.connection) return;
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/device_settings/save_preset", name, settings: values });
+if (nameInput) nameInput.value = "";
+this._fetchDeviceSettingsAdmin();
+} catch (e) {
+// best-effort UI action - the Presets list simply won't show the new
+// entry, which is discoverable enough without a separate error toast.
+}
+}
+// Instance-scoped counterpart of _saveDeviceSettingsPreset above - saves
+// one dashboard/view instance's own current values as a preset (a preset
+// built this way holds only instance-scoped keys, so device_settings_
+// websocket_api.py's own ws_apply_preset later applies it purely to
+// whichever instance it's applied to, leaving the target device's own
+// device-scoped fields untouched - see that function's own docstring).
+async _saveInstanceSettingsPreset(deviceId, instanceId) {
+const row = this._findDeviceSettingsInstanceRow(deviceId, instanceId);
+const nameInput = row && row.querySelector(".device-settings-preset-name-input");
+const name = nameInput ? nameInput.value.trim() : "";
+const values = this._collectInstanceSettingsFormValues(deviceId, instanceId);
+if (!name || !values || !this._hass || !this._hass.connection) return;
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/device_settings/save_preset", name, settings: values });
+if (nameInput) nameInput.value = "";
+this._fetchDeviceSettingsAdmin();
+} catch (e) {
+// best-effort UI action - see _saveDeviceSettingsPreset's own comment.
+}
+}
+_renderDeviceSettingsPresets() {
+const root = this._root;
+if (!root) return;
+const listEl = root.querySelector(".device-settings-presets-list");
+const emptyEl = root.querySelector(".device-settings-presets-empty");
+if (!listEl) return;
+const cache = this._deviceSettingsAdminCache;
+const presets = (cache && cache.presets) || {};
+const presetIds = Object.keys(presets);
+if (emptyEl) emptyEl.style.display = presetIds.length ? "none" : "";
+const devices = (cache && cache.devices) || {};
+// Same "<name>_<id>" label as each device's own card above (via
+// _deviceLabel) - an option list of bare ids would have the same "hard to
+// tell them apart" problem this whole feature was meant to fix. v1.139.0+:
+// also offers one option PER KNOWN INSTANCE of each device (value
+// "<deviceId>::<instanceId>", parsed back apart on Apply below) so a
+// preset that carries instance-scoped (Week/Month view/layout) keys can
+// be applied to one specific dashboard/view, not just the device as a
+// whole - device_settings_websocket_api.py's own ws_apply_preset already
+// accepts an optional instance_id for exactly this (splitting a mixed
+// preset's device-scoped part, always applied, from its instance-scoped
+// part, applied only when a target instance is given).
+const deviceOptions = Object.keys(devices)
+.map((id) => {
+const record = devices[id] || {};
+const deviceLabel = this._deviceLabel(record.device_name, id);
+const ownOption = `<option value="${id}">${deviceLabel}</option>`;
+const instanceOptions = Object.keys(record.instances || {})
+.map((instanceId) => {
+const instanceLabel = (record.instances[instanceId] || {}).instance_label || instanceId;
+return `<option value="${id}::${instanceId}">${deviceLabel} → ${instanceLabel}</option>`;
+})
+.join("");
+return ownOption + instanceOptions;
+})
+.join("");
+listEl.innerHTML = presetIds
+.map((presetId) => {
+const preset = presets[presetId];
+return `<div class="device-settings-preset-row" data-preset-id="${presetId}">
+<span class="device-settings-preset-name">${preset.name}</span>
+<select class="device-settings-preset-target-select">${deviceOptions}</select>
+<button type="button" class="btn-save device-settings-apply-preset-btn" data-preset-id="${presetId}">${this._t("settings.devices_apply", "Apply")}</button>
+<button type="button" class="btn-cancel device-settings-delete-preset-btn" data-preset-id="${presetId}">${this._t("chores.remove", "Remove")}</button>
+</div>`;
+})
+.join("");
+listEl.querySelectorAll(".device-settings-apply-preset-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+const row = btn.closest(".device-settings-preset-row");
+const targetSelect = row && row.querySelector(".device-settings-preset-target-select");
+const target = targetSelect && targetSelect.value;
+if (!target) return;
+const [deviceId, instanceId] = target.split("::");
+if (deviceId) this._applyDeviceSettingsPreset(btn.dataset.presetId, deviceId, instanceId || null);
+});
+});
+listEl.querySelectorAll(".device-settings-delete-preset-btn").forEach((btn) => {
+btn.addEventListener("click", () => this._deleteDeviceSettingsPreset(btn.dataset.presetId));
+});
+}
+async _applyDeviceSettingsPreset(presetId, deviceId, instanceId) {
+if (!this._hass || !this._hass.connection) return;
+try {
+const msg = { type: "family_hub/device_settings/apply_preset", preset_id: presetId, device_id: deviceId };
+if (instanceId) msg.instance_id = instanceId;
+await this._hass.connection.sendMessagePromise(msg);
+this._showSettingsSaveStatus(this._t("settings.devices_pushed", "Pushed"));
+this._fetchDeviceSettingsAdmin();
+} catch (e) {
+this._showSettingsSaveStatus(this._t("settings.devices_push_failed", "Push failed"), true);
+}
+}
+async _deleteDeviceSettingsPreset(presetId) {
+if (!this._hass || !this._hass.connection) return;
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/device_settings/delete_preset", preset_id: presetId });
+this._fetchDeviceSettingsAdmin();
+} catch (e) {
+// best-effort - see _saveDeviceSettingsPreset's own comment.
+}
+}
+// "Small screen mode" was originally a shared household
+// Settings field (v1.132.5) - Turning it on on one tablet was turning it on on every
 // Family Hub device in the household, which defeats the whole point (a
 // toggle for hiding the top bar on a physically small screen). Same
 // this-device-only localStorage pattern as _getWeekViewVariant/
@@ -2437,9 +5205,15 @@ return [3, 5, 7].includes(n) ? n : 7;
 // most installs) never sees anything seeded - defaults quietly to false,
 // same as `smallScreenMode: false`'s own household default always was.
 _getSmallScreenMode() {
+// v1.139.0+: static mode reuses the EXISTING settings.smallScreenMode
+// shared key directly (already kept mirrored on every save - see
+// _saveSettings' own settingsObj) rather than adding a redundant
+// "...Shared" twin like the other static-mode fields below have -
+// there's already exactly one shared field for this one.
+if (this._getStaticLayoutAcrossDevices()) return !!this._getSettings().smallScreenMode;
 let local = null;
 try {
-local = localStorage.getItem("familyCalendarSmallScreenModeLocal");
+local = this._getScopedSettingItem("familyCalendarSmallScreenModeLocal");
 } catch (e) {
 }
 if (local === "on") return true;
@@ -2457,35 +5231,44 @@ if (local === "off") return false;
 if (!this._settingsCache) return false;
 const legacyShared = !!this._settingsCache.smallScreenMode;
 try {
-localStorage.setItem("familyCalendarSmallScreenModeLocal", legacyShared ? "on" : "off");
+this._setScopedSettingItem("familyCalendarSmallScreenModeLocal", legacyShared ? "on" : "off");
 } catch (e) {
 }
 return legacyShared;
 }
-// v144+ task #28: same idea as _getWeekViewVariant, for the Month
+// same idea as _getWeekViewVariant, for the Month
 // family. Originally only "month" existed - the getter/localStorage key
 // were put in place ahead of time so a future month variant could slot
 // in without touching any of its call sites (_renderGrid, the click
-// handler, _initFirstLoad). v145+ adds "split" (see _renderMonthSplitGrid):
+// handler, _initFirstLoad). This also adds "split" (see _renderMonthSplitGrid):
 // classic month grid on one side, the selected day's full event list on
-// the other, with a button to jump to that week.
+// the other, with a button to jump to that week. The default month view
+// is "Month + Day" - a device that's never
+// touched this locally now falls back to "split" instead of "month".
+// Same this-device-only localStorage pattern as every other view-variant
+// setting here, so a device that HAS already saved an explicit "month"
+// choice keeps it - this default only changes what a brand-new device
+// (or one that's never opened the Month view before) starts on.
 _getMonthViewVariant() {
+if (this._getStaticLayoutAcrossDevices()) return this._getSettings().monthViewVariantShared;
 let local = null;
 try {
-local = localStorage.getItem("familyCalendarMonthViewVariantLocal");
+local = this._getScopedSettingItem("familyCalendarMonthViewVariantLocal");
 } catch (e) {
 }
-return ["month", "split"].includes(local) ? local : "month";
+return ["month", "split"].includes(local) ? local : "split";
 }
-// v144+ task #28: which button (Week vs Month) should show as active,
-// and which family a given rendered variant belongs to. v145+: "split"
+// which button (Week vs Month) should show as active,
+// and which family a given rendered variant belongs to. "split"
 // joins "month" in the Month family - every call site above that used
 // to compare `this._viewMode === "month"` directly now goes through
 // this helper instead, so month-family logic (date-range fetching, nav
 // arrows/swipe, the month/year label) treats "split" exactly like
 // "month" without needing its own copy of each of those checks.
 _viewFamily(mode) {
-return mode === "month" || mode === "split" ? "month" : "week";
+if (mode === "month" || mode === "split") return "month";
+if (mode === "day") return "day";
+return "week";
 }
 _defaultTheme() {
 return {
@@ -2523,7 +5306,32 @@ blockSize: "medium",
 showTimeline: false,
 timelineStartHour: 8,
 timelineEndHour: 23,
-defaultView: "week",
+// Household-wide mirrors of the Week/Month view/layout fields, read only
+// by a card placement whose own config has staticLayoutAcrossDevices set
+// (see setConfig's own comment and _getStaticLayoutAcrossDevices) -
+// otherwise ignored in favor of each device/instance's own local value.
+// Kept up to date on EVERY Settings save regardless of whether this
+// particular card placement is in static mode (same "always
+// read-and-resend, never conditionally omit" precedent showTimeline/
+// smallScreenMode already set - see _ws_set_settings's own "full
+// replace, not a merge" docstring for why skipping a field on some saves
+// would silently drop it forever), so turning static mode on for a
+// placement later starts from whatever was most recently saved
+// anywhere, not a stale/default value from whenever these were last
+// synced.
+weekViewVariantShared: "week",
+monthViewVariantShared: "split",
+weekDayCountShared: 7,
+weekRowsShared: 1,
+currentDayFirstShared: false,
+// Two separate settings combine to land on that view: this
+// defaultView flag (Week family vs Month family - was "week") and
+// _getMonthViewVariant()'s own device-local fallback (Month vs Month+Day
+// WITHIN the Month family), which already defaulted to "split" (Month+Day)
+// before this change - see its own comment. Only this one needed to move.
+// Only affects a card that has never had its own Settings saved yet -
+// anyone who already picked Week (or plain Month) keeps that choice.
+defaultView: "month",
 countdownEnabled: true,
 // countdownLabel/countdownDate (singular) are kept only so an older save
 // can be migrated into countdownItems below - new saves always go
@@ -2552,23 +5360,33 @@ grocyLowStockEnabled: false,
 // Morning/Afternoon/Night daily checklists rendered on the Chores board -
 // see family-hub-chores-card.js's _routinesBlockHtml). A single shared
 // switch, not per-person, per the household's own choice when this was
-// built - off by default so a household that never asked for Routines
-// never sees the accordions or pays for the extra family_hub/routines/list
-// poll (see that card's _routinesEnabled/_fetchRoutines).
-routinesEnabled: false,
-// v134+: household-wide on/off switches for embedding a Goals section into
+// built. - now true by default (was off, so a household that never
+// asked for Routines wouldn't see the accordions or pay for the extra
+// family_hub/routines/list poll - see that card's _routinesEnabled/
+// _fetchRoutines). Only affects a household whose Settings blob has never
+// set this key at all (a brand-new install, or one that skipped/predates
+// the setup wizard's own Chores-features step - see config_flow.py's
+// _build_chores_features_schema for the matching wizard-default change);
+// anyone who already saved Settings (on or off) keeps exactly that choice.
+routinesEnabled: true,
+// household-wide on/off switches for embedding a Goals section into
 // the Chores board and/or the Rewards page - two separate flags (not one
 // combined switch), same off-by-default reasoning as routinesEnabled just
 // above. See family-hub-chores-card.js's _goalsInChoresEnabled/
 // family-hub-rewards-card.js's _goalsInRewardsEnabled.
 goalsShowInChores: false,
 goalsShowInRewards: false,
-// v140+: the Chores board's own card-level "Due ..." label defaults to
+// the Chores board's own card-level "Due ..." label defaults to
 // date-only (matches the original behavior everyone's used to) - the
 // chore detail popup (_openChoreDetailModal in family-hub-chores-card.js)
 // always shows both regardless of this, so nothing is ever hidden, just
 // the compact card label.
-choreDueShowTime: false,
+// Household-wide, on by
+// default - unlike most opt-in cosmetic toggles here,
+// this one ships already turned on; still fully toggleable per household
+// from Settings -> General. See family-hub-chores-card.js's
+// _confettiOnCompleteEnabled/_fireConfetti for where it's actually used.
+choresConfettiOnComplete: true,
 // Optional relative path (e.g. "/lovelace-family/0") opened when someone
 // taps a reminder/event/Daily Digest push notification on their phone -
 // synced to the backend (family_hub/set_notification_click_path) since
@@ -2595,32 +5413,58 @@ userProfiles: {},
 // install. Mirrors the backend's SETTINGS_KEY_MEMBER_USER_IDS in
 // const.py exactly - keep the two in sync.
 memberUserIds: [],
-// v144+ task #29: nobody has kiosk PIN login enabled by default - see
+// nobody has kiosk PIN login enabled by default - see
 // const.py's own default for the backend twin of this field.
 kioskLoginEnabledUserIds: [],
+// household-wide "Alarm Devices" registry - speakers/Assist
+// satellites a widened ("kiosks"/"everyone") timer alarm rings on, picked
+// from Home Assistant's own entity list (see the Settings "Alarm Devices"
+// picker, backed by family_hub/settings/list_alarm_device_candidates) -
+// household's explicit choice, not manual entity-id typing. Each entry:
+// {id, entity_id, domain: "media_player"|"assist_satellite", name}. Empty
+// by default - nothing rings anywhere until a household actually registers
+// a device. See const.py's SETTINGS_KEY_ALARM_DEVICES and
+// chores_websocket_api.py's _dispatch_timer_alarm.
+alarmDevices: [],
+// which tts.* entity a registered media_player alarm device
+// speaks through (an assist_satellite entry needs none of this - announce
+// handles its own TTS). Empty = not configured, and a media_player device
+// is silently skipped at fire time until one is set - see const.py's
+// SETTINGS_KEY_ALARM_TTS_ENTITY.
+alarmTtsEntityId: "",
 people: [],
 weekendBreakfast: false,
 showMealsInMonth: false,
-// v141+ - purely a visual "where am I in the day" aid: greys out an
+// Empty = not set, meaning every meal-plan read/
+// write (_fetchMealPlan/_upsertMealPlan/etc.) falls back to whatever
+// meal_plan_entity is set in this card's own YAML config (or that
+// config's own "todo.meal_plan" default if the YAML doesn't set one
+// either) - see _mealPlanEntity(). Setting this here overrides the YAML
+// value household-wide, same as every other Menu Blocks field, without
+// needing to touch the dashboard config at all.
+mealPlanEntity: "",
+// Same idea as mealPlanEntity just above, for the whole-week meal
+// templates list (_fetchMealTemplates/_saveMealTemplate/
+// _deleteMealTemplate) - empty falls back to the YAML config's
+// meal_templates_entity (or its own "todo.meal_plan_templates" default).
+// Auto-created and filled in automatically the first time a household
+// hits Menu/Templates with nothing linked yet - see
+// _ensureHouseholdMealLists() - same as mealPlanEntity.
+mealTemplatesEntity: "",
+// Empty = not set, meaning _weatherEntity() falls back to this card's
+// own YAML config weather_entity (or its own "weather.forecast_home"
+// default if the YAML doesn't set one either) - same household-wide-
+// override-of-YAML pattern as mealPlanEntity above, moved into Settings
+// (General > Weather entity) so changing it never requires touching the
+// dashboard config.
+weatherEntity: "",
+// purely a visual "where am I in the day" aid: greys out an
 // event/reminder that's already passed on TODAY's column, still fully
 // interactable (see _buildDayColumnHtml's own comment) - never applied
 // to other days, since "past" only means something relative to today.
 // Off by default, opt-in like every other display toggle here.
 greyOutPastEvents: false,
-// v1.110.7: "dashboard" (default, unchanged) pins the + FAB to the
-// viewport's bottom-right corner like every other Family Hub FAB
-// (and stacks with them via the shared window.__familyHubFabCoordinator);
-// "card" instead anchors it to this card's OWN box (position: absolute
-// off the host element rather than position: fixed off the viewport),
-// for a multi-column/sections dashboard where a viewport-fixed FAB would
-// sit disconnected from a card that isn't in the bottom-right column. See
-// _registerFabCoordinator's own comment for why "card" opts all the way
-// out of the shared stacking instead of trying to stack in its own corner.
-fabPosition: "dashboard",
-// v1.132.5+: "Small screen mode" - household ask, verbatim: "Create a
-// small screen mode for small devices, this would hide the top bar on
-// the calendar, and moves the settings button to the fab, this only
-// happens when you turn on small screen mode." Off by default (the top
+// "Small screen mode" - Off by default (the top
 // bar - week-nav, with Settings/Week/Month/Edit Meals/Suggestions/Recipe
 // Box/More - keeps showing exactly as it always has) so nothing changes
 // for anyone until they opt in from a small device. See _build()'s
@@ -2628,9 +5472,26 @@ fabPosition: "dashboard",
 // add-fab-settings item (_openSettings moved there) for the other half.
 smallScreenMode: false,
 scrollLocked: false,
+// Manual bottom-padding override (px) - household ask, verbatim (after
+// trying a dynamic on-screen-keyboard height fix and asking to revert
+// it): "Let's just add an option to the card settings for the bottom
+// padding in px." Added as a plain CSS padding-bottom (--fh-bottom-
+// padding, see _applySizeVars/ha-card's own rule) on top of ha-card's
+// base padding - a plain, predictable manual knob for "leave room at
+// the bottom" (a keyboard, a dock, a taskbar) instead of trying to track
+// a keyboard's own open/close height automatically, or (later) this
+// card computing its own height via JS at all. 0 by default, so nothing
+// changes until a household dials it in.
+bottomPadding: 0,
 theme: this._defaultTheme(),
-useGlobalTheme: false,
-globalThemeId: "",
+useGlobalTheme: true,
+globalThemeId: "liquidglass",
+// Holiday & special-day backgrounds - see HOLIDAY_PREDEFINED_DEFS and
+// _migrateHolidayBackgrounds for the full shape of each entry. Empty by
+// default (an empty array), so installing this update changes nothing
+// visually until a household turns a predefined holiday on or adds a
+// custom date of their own from Settings.
+holidayBackgrounds: [],
 // Auto screensaver: shows a full-screen video or live camera feed after
 // the dashboard sits idle for a while - built for a wall-mounted "home
 // hub" tablet, where it's wanted, without also switching on for
@@ -2655,7 +5516,26 @@ usersEnabled: {},
 // browse/list view (.loved-overlay) - that's still "idle" for this
 // purpose, since nothing is actually being read there.
 disableWhileRecipeOpen: false,
+// The standalone
+// family-screensaver-card.js (a near-invisible companion card you place
+// on some OTHER dashboard to bring the auto screensaver there) already
+// had this as return_dashboard_path, a per-card yaml config field - see
+// its own _goToReturnDashboard. The MAIN screensaver here is a built-in
+// feature of this card itself, configured household-wide from Settings
+// (not per-card yaml), so this is the same idea/mechanism (a Home
+// Assistant dashboard path, navigated to via history.pushState + a
+// "location-changed" event on wake - see _goToReturnDashboard below)
+// but stored as a plain string on this same shared screenSaver settings
+// object alongside sourceType/videoUrl/etc. Blank (the default) means
+// "no change" - wake just hides the overlay in place, exactly like
+// before this existed.
+returnDashboardPath: "",
 },
+// Household-wide screensaver overlay widgets (see the normalization
+// block in _normalizeSettings for the shape of each entry) - empty by
+// default, so installing this update adds nothing until someone builds
+// a layout from Settings.
+screenSaverWidgets: [],
 };
 }
 // A brand new user - nothing subscribed, nothing enabled - so adding
@@ -2679,7 +5559,7 @@ digestSections: { calendar: true, reminders: true, meals: true, chores: true, gr
 // with despite the comment above this function - see const.py's
 // SETTINGS_KEY_USER_PROFILES docstring if that ever changes.
 color: "",
-// v121+: defaults true (included) - see const.py's own "v121+" docstring
+// defaults true (included) - see const.py's own "v121+" docstring
 // right after SETTINGS_KEY_MEMBER_USER_IDS for the full picture. Unlike
 // color this DOES have real backend meaning (chores_websocket_api.py's
 // _is_chores_eligible) - explicitly setting this false is how a household
@@ -2688,18 +5568,45 @@ color: "",
 // and new-assignment eligibility - built for a shared kiosk/wall-tablet
 // login, but works for anyone.
 includeInChores: true,
-// v123+: instant, one-shot push notifications (NOT digest-batched, NOT
+// A second, narrower notch below "ordinary non-admin" - everything
+// a plain non-admin already can't see in Settings (see
+// .admin-only-setting/_openSettings) PLUS the whole Users tab itself,
+// including their own notification profile row. Purely a per-person flag
+// an admin sets from inside THIS SAME profile modal (see the admin-only
+// .notify-profile-child-field toggle, gated the same isAdminForPin way as
+// the Kiosk/Permissions accordions right below) - never self-service, and
+// never true for an actual admin (an admin viewer is never gated by this
+// at all, see _openSettings's own isChildAccount check). Defaults false so
+// nobody is ever silently locked out of the Users tab by an upgrade.
+isChildAccount: false,
+// A sibling flag to isChildAccount above, same admin-only/never-self-
+// service mechanism, for the OTHER kind of login that isn't really "a
+// person": a shared wall-mounted tablet/kiosk display. Checking it in
+// the profile modal (see .notify-profile-kiosk-account-field) restricts
+// that login the same way isChildAccount does (loses the Users tab -
+// see the shared isChildViewer-style check in _openSettings), AND, as a
+// one-time convenience default rather than a locked link, auto-turns-on
+// isAlarmKiosk and this profile's own Kiosk PIN login enrollment so an
+// admin doesn't have to separately remember all three for a device
+// that's obviously a kiosk. Also reported alongside this device's own
+// _reportDeviceSettings() call so a brand new device logged in as a
+// Kiosk account can default to participating in Privacy Mode (see
+// device_settings_websocket_api.py's own ws_report handling of
+// is_kiosk_account). Defaults false, same "opt in to nothing" as every
+// other flag on a brand new profile.
+isKioskAccount: false,
+// instant, one-shot push notifications (NOT digest-batched, NOT
 // gated by digestEnabled above) - see const.py's own SETTINGS_KEY_USER_
 // PROFILES docstring for the full "who gets notified about what" picture.
 // Both default false, same "opt in to nothing" convention as everything
 // else on a brand new profile.
 notifyRewardClaimed: false,
 notifyChoreApproved: false,
-// v128+: same instant-push shape as notifyChoreApproved just above, but
+// same instant-push shape as notifyChoreApproved just above, but
 // for the OTHER half of the verification gate - see const.py's
 // CHORE_KEY_REJECT_REASON docstring and chore_engine.reject_chore.
 notifyChoreRejected: false,
-// v131+: also instant/one-shot in spirit, but sent from a poll-tick sweep
+// also instant/one-shot in spirit, but sent from a poll-tick sweep
 // rather than synchronously from a websocket handler like the three above
 // - see const.py's own notifyChoreDue docstring and __init__.py's
 // _poll_chore_due_reminders. Sent only to a chore's own assignee, once per
@@ -2708,15 +5615,24 @@ notifyChoreRejected: false,
 // chores-card.js), same "opt in to nothing" default as everything else
 // here.
 notifyChoreDue: false,
-// v1.119.0+: doesn't add a new notification - changes HOW the three
+// doesn't add a new notification - changes HOW the three
 // existing end-of-timer pushes (chore/reward/assigned-standalone timer)
 // reach THIS person when one of THEIR OWN timers goes off: alarm-style
 // (Android alarm-stream/iOS critical, bypasses silent mode and DND)
 // instead of the plain quiet push. See const.py's own notifyTimerAlarm
-// docstring. Household ask: "route this through alarm notifications for
-// the person the timer is for."
+// docstring.
 notifyTimerAlarm: false,
-// v124+: which calendar entity (an id from settings.people - see
+// / "if a kid starts a clean room for 30 minutes task
+// they should get an alarm at the main kiosk." This is the OTHER half of
+// that - flags THIS login as an always-on alarm kiosk, so a "kiosks"- or
+// "everyone"-tier chore/reward alarm rings on every open dashboard logged
+// in as this account, not just the timer's own owner. Set from the admin-
+// only Users tab (mirrors isChildAccount's own admin-only field just
+// above), never self-service. Defaults false, same "opt in to nothing" as
+// every other flag on a brand new profile - see const.py's
+// SETTINGS_KEY_PROFILE_IS_ALARM_KIOSK.
+isAlarmKiosk: false,
+// which calendar entity (an id from settings.people - see
 // _getPeople) this person's events should visually follow their own
 // `color` above, instead of that calendar's own separately-configured
 // color. Empty string = none set (that calendar's own color is used, same
@@ -2724,7 +5640,7 @@ notifyTimerAlarm: false,
 // by any backend logic, and a stale reference to a since-removed calendar
 // just harmlessly matches nothing at render time (see _getPeople).
 primaryCalendar: "",
-// v130+: which of OTHER people's individual reminders lists (settings.
+// which of OTHER people's individual reminders lists (settings.
 // people[i].remindersEntity) this person can see/be alerted about -
 // {personEntity: "calendar" | "calendar_alert"}. A person key that's
 // missing here means "not subscribed at all" - same empty-by-default
@@ -2738,11 +5654,9 @@ primaryCalendar: "",
 // above) - the owner always sees/can add to their own list regardless of
 // this map, which only ever governs access to OTHER people's lists.
 remindersSubscriptions: {},
-// v1.131.0+: see SETTINGS_KEY_USER_PROFILES's own comment in const.py
+// see SETTINGS_KEY_USER_PROFILES's own comment in const.py
 // (backend) for the full "why does this exist alongside primaryCalendar/
-// people[]" picture - household ask, verbatim: *"I would like to be able
-// to set a user calendar, a user reminder todo list and a user wish list
-// all under their settings."* Mirrors the backend's _default_user_
+// people[]" picture - Mirrors the backend's _default_user_
 // profile() exactly - keep the two in sync.
 //
 // This profile's own individual Reminders list, set/created directly from
@@ -2765,7 +5679,103 @@ wishlistEntity: "",
 // calendars"), the profile's own badges win for that entity rather than
 // needing the two configs kept in sync by hand.
 badges: [],
+// Household ask: "multi reminder list" - a person can have more than one
+// individual Reminders list (e.g. a personal one plus a shared project
+// list), with remindersEntity above always staying the PRIMARY list -
+// every existing "what's this profile's one reminders list" call site
+// (polling/notifications, Daily Digest, _primaryCalendarRemindersByEntity,
+// _getPeople, the Add Reminder tab's default target) keeps reading
+// remindersEntity unchanged and keeps working exactly as before. This
+// array only ever holds EXTRA lists alongside that primary - each one
+// gets polled/notified/digested/shown alongside the primary (see
+// _poll_reminders_todo and the Daily Digest section in __init__.py, and
+// _fetchReminders/_addableRemindersLists here), but a brand new reminder
+// (from the Family Calendar's "+ Add a reminder" or anywhere else) always
+// goes to the primary list only - deliberately NOT configurable per-list,
+// per the household's own answer when asked which list new reminders
+// should default to. Mirrors the backend's _default_user_profile()
+// exactly - keep the two in sync.
+additionalRemindersEntities: [],
 };
+}
+// Small helper for the auto-created-lists work below: is this a real,
+// currently-existing entity, not just a non-empty string? (an unset
+// remindersEntity/wishlistEntity is "" here, never a stale default the way
+// meal_plan_entity's YAML config default is - see _mealPlanEntityExists's
+// own comment for why THAT one needs this same check.)
+_listEntityExists(entityId) {
+return !!(entityId && this._hass && this._hass.states && this._hass.states[entityId]);
+}
+// Household ask, verbatim: "we need to make the to-do list and wish list
+// auto generate when a user is added to family hub... We're not going to
+// give the option to have them or not. They're just going to be default."
+// Runs every time the Users tab's list of Home Assistant users is
+// (re)fetched (_fetchNotifyProfileUsers) - covers both a brand new HA user
+// showing up there for the first time (nothing to back off from a manual
+// "+ Add list" click any more) and backfilling any existing person who
+// never had one. _userTodoListsEnsuredFor keys by user id so a person is
+// only ever checked once per session - once their lists exist,
+// _listEntityExists keeps this a safe no-op on every later refresh anyway,
+// same reasoning as _ensureHouseholdMealLists's own guard.
+//
+// This also answers "what list do reminders added from Family Calendar
+// use" - their own auto-created remindersEntity, same as if they'd typed
+// it in by hand.
+async _ensureUserTodoLists() {
+if (!this._hass || !Array.isArray(this._notifyProfileUsersCache)) return;
+for (const user of this._notifyProfileUsersCache) {
+const userId = user && user.id;
+if (!userId || this._userTodoListsEnsuredFor.has(userId)) continue;
+this._userTodoListsEnsuredFor.add(userId);
+const profiles = this._getSettings().userProfiles || {};
+const profile = Object.assign({}, this._defaultUserProfile(), profiles[userId] || {});
+// Only ever auto-create a list the profile has NEVER been pointed at -
+// a non-empty profile.remindersEntity/wishlistEntity is a deliberate
+// choice (made by this very auto-create the first time, or by hand in
+// Settings/Users) and is trusted outright, even when this._hass.states
+// doesn't happen to show it yet in this particular render pass. See
+// _ensureHouseholdMealLists's own comment for the exact same race this
+// mirrors (a restart or a second card instance loading before entity
+// states finish syncing making an already-configured list look
+// momentarily missing) and the household-visible bug it caused there
+// ("it keeps wanting to change the menu todo") before this same
+// "configured wins outright" check was added to guard it too.
+const needsReminders = !(profile.remindersEntity || "").trim() && !this._listEntityExists(profile.remindersEntity);
+const needsWishlist = !(profile.wishlistEntity || "").trim() && !this._listEntityExists(profile.wishlistEntity);
+if (!needsReminders && !needsWishlist) continue;
+const personName = user.name || "Family Hub";
+let changed = false;
+if (needsReminders) {
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/create_todo_list", name: `${personName}_Reminders` });
+if (result && result.entity_id) {
+profile.remindersEntity = result.entity_id;
+changed = true;
+}
+} catch (e) {
+}
+}
+if (needsWishlist) {
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/create_todo_list", name: `${personName}_Wish List` });
+if (result && result.entity_id) {
+profile.wishlistEntity = result.entity_id;
+changed = true;
+}
+} catch (e) {
+}
+}
+if (!changed) continue;
+const freshProfiles = Object.assign({}, this._getSettings().userProfiles || {}, { [userId]: profile });
+await this._persistSettingsPatch({ userProfiles: freshProfiles });
+// Keep an already-open editor for this same person (rare, but possible
+// if Settings is open while this runs) showing the freshly-created
+// entity ids instead of stale blanks, same as the manual "+ Add list"
+// button already does for its own draft.
+if (!this._settingsUserProfilesDraft) this._settingsUserProfilesDraft = {};
+this._settingsUserProfilesDraft[userId] = Object.assign({}, this._settingsUserProfilesDraft[userId] || {}, profile);
+}
+this._renderNotifyProfilesList();
 }
 // Strips a name down to lowercase alphanumerics-and-single-spaces so
 // "Beef Stew!", "beef  stew", and "Beef-Stew" all compare equal - a
@@ -2796,6 +5806,10 @@ return p.badges
 text: (b.text || "").toString().trim(),
 match: (b.match || "").toString().trim(),
 hideMatch: (b.hideMatch || "").toString().trim(),
+// Off by default (existing badges never suddenly
+// vanish from the digest on upgrade) - see _build_daily_digest_message
+// on the backend, the only place this is actually read.
+digestHide: !!b.digestHide,
 }))
 .filter((b) => b.text || b.match || b.hideMatch);
 }
@@ -2805,10 +5819,68 @@ return [
 text: (p.badgeText || "").toString().trim(),
 match: (p.badgeMatch || "").toString().trim(),
 hideMatch: (p.badgeHideMatch || "").toString().trim(),
+digestHide: false,
 },
 ];
 }
 return [];
+}
+// Defensive, field-by-field normalization of settings.holidayBackgrounds -
+// same "a malformed/missing entry degrades to a safe default rather than
+// raising" pattern as _normalizeUserProfiles/_normalizeBadges. Deliberately
+// returns one row for EVERY entry in HOLIDAY_PREDEFINED_DEFS regardless of
+// what was actually saved (defaulting to disabled/no image for one this
+// household has never touched) so Settings' own list is always complete,
+// not just whichever predefined holidays happen to already be in the
+// saved array - see _saveSettings, which always writes back exactly this
+// shape (every predefined row plus every surviving custom row) on save.
+_normalizeHolidayBackgrounds(raw) {
+const list = Array.isArray(raw) ? raw : [];
+const byPredefinedKey = {};
+const custom = [];
+list.forEach((entry) => {
+if (!entry || typeof entry !== "object") return;
+const source = entry.source === "custom" ? "custom" : "predefined";
+const name = typeof entry.name === "string" ? entry.name.trim().slice(0, 60) : "";
+const enabled = !!entry.enabled;
+const imageUrl = typeof entry.imageUrl === "string" ? entry.imageUrl.trim().slice(0, 500) : "";
+const expandFullDay = !!entry.expandFullDay;
+// "day" (todays existing exact-match behavior) is the default/fallback for
+// anything saved before this field existed, or any unrecognized value - an
+// old households already-saved expandFullDay:true rows keep behaving
+// exactly as before (full-screen just on the day itself).
+const expandScope = ["day", "week", "month"].includes(entry.expandScope) ? entry.expandScope : "day";
+if (source === "predefined") {
+const predefinedKey = typeof entry.predefinedKey === "string" ? entry.predefinedKey : "";
+const def = HOLIDAY_PREDEFINED_DEFS.find((d) => d.key === predefinedKey);
+// An unrecognized predefinedKey (an older/newer version's holiday this
+// build doesn't know about) is dropped rather than kept around as a
+// row Settings could never render correctly.
+if (!def) return;
+byPredefinedKey[predefinedKey] = { id: `predefined-${predefinedKey}`, source: "predefined", predefinedKey, name: name || def.name, enabled, imageUrl, expandFullDay, expandScope };
+} else {
+if (!name) return; // a custom date with no name is meaningless - drop it rather than showing a blank row forever
+let month = parseInt(entry.month, 10);
+let day = parseInt(entry.day, 10);
+if (!Number.isFinite(month) || month < 1 || month > 12) month = 1;
+if (!Number.isFinite(day) || day < 1 || day > 31) day = 1;
+const recurring = entry.recurring !== false; // default true (yearly) - only an explicit false opts into one-time
+let year = null;
+if (!recurring) {
+const y = parseInt(entry.year, 10);
+year = Number.isFinite(y) && y >= 2000 && y <= 2100 ? y : new Date().getFullYear();
+}
+const id = typeof entry.id === "string" && entry.id ? entry.id : `custom-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+custom.push({ id, source: "custom", predefinedKey: null, name, enabled, month, day, year, recurring, imageUrl, expandFullDay, expandScope });
+}
+});
+const predefined = HOLIDAY_PREDEFINED_DEFS.map(
+(def) => byPredefinedKey[def.key] || { id: `predefined-${def.key}`, source: "predefined", predefinedKey: def.key, name: def.name, enabled: false, imageUrl: "", expandFullDay: false, expandScope: "day" }
+);
+// Custom entries capped at a generous but bounded 50 - a household's own
+// picked special days, not meant to become an unbounded list; keeps one
+// corrupted/scripted save from blowing up Settings' own render.
+return predefined.concat(custom.slice(0, 50));
 }
 _normalizeSettings(parsed) {
 const defaults = this._defaultSettings();
@@ -2820,12 +5892,19 @@ Array.isArray(parsed.blocks) && parsed.blocks.length >= 0
 const fontSize = ["small", "medium", "large"].includes(parsed.fontSize) ? parsed.fontSize : defaults.fontSize;
 const blockSize = ["small", "medium", "large"].includes(parsed.blockSize) ? parsed.blockSize : defaults.blockSize;
 const showTimeline = typeof parsed.showTimeline === "boolean" ? parsed.showTimeline : defaults.showTimeline;
+const weekViewVariantShared = ["week", "planner"].includes(parsed.weekViewVariantShared) ? parsed.weekViewVariantShared : defaults.weekViewVariantShared;
+const monthViewVariantShared = ["month", "split"].includes(parsed.monthViewVariantShared) ? parsed.monthViewVariantShared : defaults.monthViewVariantShared;
+const weekDayCountSharedRaw = parseInt(parsed.weekDayCountShared, 10);
+const weekDayCountShared = Number.isInteger(weekDayCountSharedRaw) && weekDayCountSharedRaw >= 1 && weekDayCountSharedRaw <= 36 ? weekDayCountSharedRaw : defaults.weekDayCountShared;
+const weekRowsSharedRaw = parseInt(parsed.weekRowsShared, 10);
+const weekRowsShared = Number.isInteger(weekRowsSharedRaw) && weekRowsSharedRaw >= 1 && weekRowsSharedRaw <= 7 ? weekRowsSharedRaw : defaults.weekRowsShared;
+const currentDayFirstShared = typeof parsed.currentDayFirstShared === "boolean" ? parsed.currentDayFirstShared : defaults.currentDayFirstShared;
 let timelineStartHour = Number.isInteger(parsed.timelineStartHour) ? parsed.timelineStartHour : defaults.timelineStartHour;
 let timelineEndHour = Number.isInteger(parsed.timelineEndHour) ? parsed.timelineEndHour : defaults.timelineEndHour;
 timelineStartHour = Math.min(23, Math.max(0, timelineStartHour));
 timelineEndHour = Math.min(24, Math.max(0, timelineEndHour));
 if (timelineEndHour <= timelineStartHour) timelineEndHour = Math.min(24, timelineStartHour + 1);
-// v144+ task #28: the shared "Default view" setting only ever chooses
+// the shared "Default view" setting only ever chooses
 // between the two view FAMILIES now (Week vs Month) - which specific
 // variant within a family (Week/Planner/Portrait, and any future Month
 // variants) is a per-device choice, see _getWeekViewVariant/
@@ -2833,7 +5912,18 @@ if (timelineEndHour <= timelineStartHour) timelineEndHour = Math.min(24, timelin
 // may still have "planner" or "portrait" saved here from the old 4-way
 // picker - those both belong to the Week family, so they fold into
 // "week" rather than being lost.
-const defaultView = parsed.defaultView === "month" ? "month" : "week";
+// v1.132.54+ bugfix: this used to hardcode "week" as the fallback for
+// anything that wasn't literally "month" or a known legacy Week-family
+// value, which silently ignored defaults.defaultView (now "month" - see
+// _defaultSettings' own comment) for a brand-new install's empty settings
+// blob. Explicit legacy Week-family markers still fold to "week"; anything
+// else missing/invalid now genuinely falls through to the real default.
+const defaultView =
+  parsed.defaultView === "month"
+    ? "month"
+    : ["week", "planner", "portrait"].includes(parsed.defaultView)
+    ? "week"
+    : defaults.defaultView;
 const countdownEnabled = typeof parsed.countdownEnabled === "boolean" ? parsed.countdownEnabled : defaults.countdownEnabled;
 const countdownLabel = typeof parsed.countdownLabel === "string" ? parsed.countdownLabel : defaults.countdownLabel;
 const countdownDate = typeof parsed.countdownDate === "string" ? parsed.countdownDate : defaults.countdownDate;
@@ -2860,7 +5950,7 @@ const grocyLowStockEnabled = typeof parsed.grocyLowStockEnabled === "boolean" ? 
 const routinesEnabled = typeof parsed.routinesEnabled === "boolean" ? parsed.routinesEnabled : defaults.routinesEnabled;
 const goalsShowInChores = typeof parsed.goalsShowInChores === "boolean" ? parsed.goalsShowInChores : defaults.goalsShowInChores;
 const goalsShowInRewards = typeof parsed.goalsShowInRewards === "boolean" ? parsed.goalsShowInRewards : defaults.goalsShowInRewards;
-const choreDueShowTime = typeof parsed.choreDueShowTime === "boolean" ? parsed.choreDueShowTime : defaults.choreDueShowTime;
+const choresConfettiOnComplete = typeof parsed.choresConfettiOnComplete === "boolean" ? parsed.choresConfettiOnComplete : defaults.choresConfettiOnComplete;
 const notificationClickPath = typeof parsed.notificationClickPath === "string" ? parsed.notificationClickPath.trim() : defaults.notificationClickPath;
 let people =
 Array.isArray(parsed.people) && parsed.people.length
@@ -2872,7 +5962,7 @@ name: (p.name || "").toString().trim() || p.entity.trim(),
 color: p.color || "#d9bf7e",
 countdown: !!p.countdown,
 badges: this._normalizeBadges(p),
-// v130+: that person's own individual Reminders to-do list, kept
+// that person's own individual Reminders to-do list, kept
 // fully separate from the household's single shared reminders_entity
 // - see const.py's own docstring. Optional/blank by default, same
 // "missing degrades to no value" convention as every other optional
@@ -2885,10 +5975,14 @@ people = this._config.people.map((p) => ({ ...p, countdown: p.entity === this._c
 }
 const weekendBreakfast = typeof parsed.weekendBreakfast === "boolean" ? parsed.weekendBreakfast : defaults.weekendBreakfast;
 const showMealsInMonth = typeof parsed.showMealsInMonth === "boolean" ? parsed.showMealsInMonth : defaults.showMealsInMonth;
+const mealPlanEntity = typeof parsed.mealPlanEntity === "string" ? parsed.mealPlanEntity.trim() : defaults.mealPlanEntity;
+const mealTemplatesEntity = typeof parsed.mealTemplatesEntity === "string" ? parsed.mealTemplatesEntity.trim() : defaults.mealTemplatesEntity;
+const weatherEntity = typeof parsed.weatherEntity === "string" ? parsed.weatherEntity.trim() : defaults.weatherEntity;
 const greyOutPastEvents = typeof parsed.greyOutPastEvents === "boolean" ? parsed.greyOutPastEvents : defaults.greyOutPastEvents;
-const fabPosition = parsed.fabPosition === "card" ? "card" : defaults.fabPosition;
 const smallScreenMode = typeof parsed.smallScreenMode === "boolean" ? parsed.smallScreenMode : defaults.smallScreenMode;
 const scrollLocked = typeof parsed.scrollLocked === "boolean" ? parsed.scrollLocked : defaults.scrollLocked;
+const parsedBottomPadding = typeof parsed.bottomPadding === "number" ? parsed.bottomPadding : parseInt(parsed.bottomPadding, 10);
+const bottomPadding = Number.isFinite(parsedBottomPadding) ? Math.max(0, Math.min(2000, Math.round(parsedBottomPadding))) : defaults.bottomPadding;
 const defaultTheme = defaults.theme;
 const parsedTheme = parsed.theme && typeof parsed.theme === "object" ? parsed.theme : {};
 if (parsedTheme.colors && typeof parsedTheme.colors === "object") {
@@ -2932,6 +6026,15 @@ if (parsedScreenSaver.usersEnabled[userId]) screenSaverUsersEnabled[userId] = tr
 }
 const screenSaverDisableWhileRecipeOpen =
 typeof parsedScreenSaver.disableWhileRecipeOpen === "boolean" ? parsedScreenSaver.disableWhileRecipeOpen : defaults.screenSaver.disableWhileRecipeOpen;
+// normalized here (not just trimmed) so a value already
+// saved without its leading "/" - see _normalizeDashboardPath's own
+// comment for the full "tapping doesn't send you back" bug this fixes -
+// self-heals the moment settings are next fetched, without the household
+// needing to open Settings or retype anything.
+const screenSaverReturnDashboardPath =
+typeof parsedScreenSaver.returnDashboardPath === "string"
+? this._normalizeDashboardPath(parsedScreenSaver.returnDashboardPath)
+: defaults.screenSaver.returnDashboardPath;
 const screenSaver = {
 sourceType: screenSaverSourceType,
 videoUrl: screenSaverVideoUrl,
@@ -2939,10 +6042,46 @@ cameraEntity: screenSaverCameraEntity,
 idleSeconds: screenSaverIdleSeconds,
 usersEnabled: screenSaverUsersEnabled,
 disableWhileRecipeOpen: screenSaverDisableWhileRecipeOpen,
+returnDashboardPath: screenSaverReturnDashboardPath,
 };
+// Household-wide screensaver overlay widgets (clock/weather/todo/any
+// other Lovelace card, positioned and sized as a percentage of the
+// screen) - shared across every device the same way `people`/
+// `alarmDevices` are, with a per-device "hide this one here" list kept
+// separately in localStorage (see _getScreenSaverHiddenWidgetIds) so one
+// tablet can opt a widget out without affecting anyone else's screen.
+// Same "malformed/missing entry degrades to being dropped, not raising"
+// treatment as alarmDevices above - one bad widget entry never takes
+// down the whole layout.
+const screenSaverWidgets = Array.isArray(parsed.screenSaverWidgets)
+? parsed.screenSaverWidgets
+.filter((w) => w && typeof w === "object" && w.config && typeof w.config === "object" && typeof w.config.type === "string" && w.config.type)
+.map((w) => {
+const clampPct = (v, fallback) => {
+const n = typeof v === "number" ? v : parseFloat(v);
+return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : fallback;
+};
+return {
+id: typeof w.id === "string" && w.id ? w.id : `sw-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+config: w.config,
+x: clampPct(w.x, 5),
+y: clampPct(w.y, 5),
+w: clampPct(w.w, 30),
+h: clampPct(w.h, 20),
+// v1.135.x+ "make this full size and no BG" ask - a per-widget flag
+// (kept alongside x/y/w/h, NOT inside `config`, since config is
+// handed to the real Lovelace card verbatim) that strips that card's
+// own background/shadow so it blends into the screensaver instead of
+// showing as a boxed card - see _widgetHostStyle's own comment for
+// how. Defaults false so every widget already saved before this
+// existed keeps its current boxed look exactly as-is.
+transparent: !!w.transparent,
+};
+})
+: [];
 const userProfiles = this._normalizeUserProfiles(parsed.userProfiles);
 const memberUserIds = this._normalizeMemberUserIds(parsed.memberUserIds);
-// v144+ task #29: same "a malformed/missing value degrades to a safe
+// same "a malformed/missing value degrades to a safe
 // empty default" treatment as memberUserIds right above - only actually
 // meaningful for ids that are ALSO in memberUserIds, but deliberately not
 // filtered down to that intersection here (kept as whatever was saved) so
@@ -2951,11 +6090,31 @@ const memberUserIds = this._normalizeMemberUserIds(parsed.memberUserIds);
 const kioskLoginEnabledUserIds = Array.isArray(parsed.kioskLoginEnabledUserIds)
 ? parsed.kioskLoginEnabledUserIds.filter((id) => typeof id === "string" && id)
 : [];
+// same "malformed/missing degrades to a safe empty default"
+// treatment as everything else in this function - see const.py's
+// SETTINGS_KEY_ALARM_DEVICES/SETTINGS_KEY_ALARM_TTS_ENTITY.
+const alarmDevices = Array.isArray(parsed.alarmDevices)
+? parsed.alarmDevices
+.filter((d) => d && typeof d === "object" && typeof d.entity_id === "string" && d.entity_id && (d.domain === "media_player" || d.domain === "assist_satellite"))
+.map((d) => ({
+id: typeof d.id === "string" && d.id ? d.id : d.entity_id,
+entity_id: d.entity_id,
+domain: d.domain,
+name: typeof d.name === "string" && d.name ? d.name : d.entity_id,
+}))
+: [];
+const alarmTtsEntityId = typeof parsed.alarmTtsEntityId === "string" ? parsed.alarmTtsEntityId.trim() : "";
+const holidayBackgrounds = this._normalizeHolidayBackgrounds(parsed.holidayBackgrounds);
 return {
 blocks,
 fontSize,
 blockSize,
 showTimeline,
+weekViewVariantShared,
+monthViewVariantShared,
+weekDayCountShared,
+weekRowsShared,
+currentDayFirstShared,
 timelineStartHour,
 timelineEndHour,
 defaultView,
@@ -2971,22 +6130,29 @@ grocyLowStockEnabled,
 routinesEnabled,
 goalsShowInChores,
 goalsShowInRewards,
-choreDueShowTime,
+choresConfettiOnComplete,
 notificationClickPath,
 people,
 weekendBreakfast,
 showMealsInMonth,
+mealPlanEntity,
+mealTemplatesEntity,
+weatherEntity,
 greyOutPastEvents,
-fabPosition,
 smallScreenMode,
 scrollLocked,
+bottomPadding,
 theme,
 useGlobalTheme,
 globalThemeId,
 screenSaver,
+screenSaverWidgets,
 userProfiles,
 memberUserIds,
 kioskLoginEnabledUserIds,
+alarmDevices,
+alarmTtsEntityId,
+holidayBackgrounds,
 };
 }
 // Defensive, field-by-field normalization of settings.userProfiles - same
@@ -3022,10 +6188,26 @@ remindersSubscriptions[personEntity] = level;
 }
 });
 }
-// v1.131.0+: see _defaultUserProfile's own comment for what these three
+// see _defaultUserProfile's own comment for what these three
 // are/why they exist alongside primaryCalendar/people[] above.
 const remindersEntity = typeof p.remindersEntity === "string" ? p.remindersEntity.trim() : "";
 const wishlistEntity = typeof p.wishlistEntity === "string" ? p.wishlistEntity.trim() : "";
+// see _defaultUserProfile's own comment - extra reminders lists
+// alongside the primary (remindersEntity) above. Defensive filter:
+// strings only, trimmed, non-empty, de-duplicated, and never includes
+// the primary itself (a list can't be both primary and "additional" -
+// if a stale save has it in both, the primary wins and it's dropped
+// here rather than showing the same list twice everywhere this is read).
+const additionalRemindersEntities = [];
+if (Array.isArray(p.additionalRemindersEntities)) {
+const seenAdditional = new Set();
+p.additionalRemindersEntities.forEach((e) => {
+const entity = typeof e === "string" ? e.trim() : "";
+if (!entity || entity === remindersEntity || seenAdditional.has(entity)) return;
+seenAdditional.add(entity);
+additionalRemindersEntities.push(entity);
+});
+}
 const badges = Array.isArray(p.badges)
 ? p.badges
 .filter((b) => b && typeof b === "object")
@@ -3033,6 +6215,7 @@ const badges = Array.isArray(p.badges)
 text: (b.text ? String(b.text) : "").trim(),
 match: (b.match ? String(b.match) : "").trim(),
 hideMatch: (b.hideMatch ? String(b.hideMatch) : "").trim(),
+digestHide: !!b.digestHide,
 }))
 : [];
 result[userId] = {
@@ -3043,14 +6226,26 @@ digestEnabled: !!p.digestEnabled,
 digestSections,
 color,
 includeInChores,
+// see _defaultUserProfile's own comment for the full picture
+// - default false (missing/malformed never silently locks someone out of
+// the Users tab), only an explicit `true` turns Child mode on.
+isChildAccount: !!p.isChildAccount,
+// see _defaultUserProfile's own comment for the full picture -
+// same "default false, only an explicit true turns it on" convention.
+isKioskAccount: !!p.isKioskAccount,
 notifyRewardClaimed: !!p.notifyRewardClaimed,
 notifyChoreApproved: !!p.notifyChoreApproved,
 notifyChoreRejected: !!p.notifyChoreRejected,
 notifyChoreDue: !!p.notifyChoreDue,
 notifyTimerAlarm: !!p.notifyTimerAlarm,
+// see _defaultUserProfile's own comment - default false, only
+// an explicit `true` (set from the admin-only Users tab) flags this login
+// as an always-on alarm kiosk.
+isAlarmKiosk: !!p.isAlarmKiosk,
 primaryCalendar,
 remindersSubscriptions,
 remindersEntity,
+additionalRemindersEntities,
 wishlistEntity,
 badges,
 };
@@ -3111,6 +6306,7 @@ this._updateNavLabel();
 this._renderCountdown();
 }
 this._maybeResetScreenSaverIdleTimer();
+this._ensureHouseholdMealLists();
 return;
 }
 // Store came back empty (not migrated yet) or family_hub/get_settings
@@ -3157,6 +6353,7 @@ this._updateNavLabel();
 this._renderCountdown();
 }
 this._maybeResetScreenSaverIdleTimer();
+this._ensureHouseholdMealLists();
 }
 _getSettings() {
 return this._settingsCache || this._defaultSettings();
@@ -3174,7 +6371,185 @@ blocks.unshift("Breakfast");
 }
 return blocks;
 }
-// v124+: a person's own custom color (userProfiles[id].color) wins over a
+// Every meal-plan read/write call site below used to
+// go straight to this._config.meal_plan_entity (a card YAML config value,
+// only ever settable by hand-editing the dashboard) - this getter is now
+// the single place that decides which entity actually backs the menu, so
+// the rest of the card never has to know there are two possible sources.
+// settings.mealPlanEntity (household-wide, set from the Menu Blocks
+// section of Settings, empty string until someone sets it) wins when
+// present; otherwise this falls back to the YAML config value exactly as
+// before, so an existing install that has never touched this new field
+// keeps working unchanged.
+_mealPlanEntity() {
+const fromSettings = (this._getSettings().mealPlanEntity || "").trim();
+return fromSettings || this._config.meal_plan_entity;
+}
+// _mealPlanEntity() above always returns SOME string - the card's own
+// YAML config defaults meal_plan_entity to "todo.meal_plan" even when the
+// household has never actually created a to-do list for it (see
+// setConfig) - so it's never actually empty/falsy on its own. That means
+// "is there really a linked to-do list" has to be answered by checking
+// whether an entity with that id actually exists in Home Assistant right
+// now, not by checking the string itself. Used by _upsertMealPlan/
+// _upsertMealPlanByUid before attempting to write, so a household that's
+// never set up (or auto-created) a Menu to-do list gets a clear,
+// immediate error instead of a false "added" toast and a save that
+// silently never lands - see those two methods' own comments for the bug
+// this fixes.
+_mealPlanEntityExists() {
+const entityId = this._mealPlanEntity();
+return !!(entityId && this._hass && this._hass.states && this._hass.states[entityId]);
+}
+// Same pattern as _mealPlanEntity()/_mealPlanEntityExists() just above,
+// for the whole-week meal templates list.
+_mealTemplatesEntity() {
+const fromSettings = (this._getSettings().mealTemplatesEntity || "").trim();
+return fromSettings || this._config.meal_templates_entity;
+}
+// Same pattern as _mealPlanEntity() above, for the weather entity shown
+// in each day-column's forecast - settings.weatherEntity (household-
+// wide, set from Settings > General > Weather entity, empty string
+// until someone sets it) wins when present; otherwise this falls back
+// to the YAML config's weather_entity (or that config's own
+// "weather.forecast_home" default), exactly as before this field
+// existed in Settings - an existing install that never touches the new
+// field keeps working unchanged.
+_weatherEntity() {
+const fromSettings = (this._getSettings().weatherEntity || "").trim();
+return fromSettings || this._config.weather_entity;
+}
+_mealTemplatesEntityExists() {
+const entityId = this._mealTemplatesEntity();
+return !!(entityId && this._hass && this._hass.states && this._hass.states[entityId]);
+}
+// Household ask, verbatim: "we need to make the to-do list and wish list
+// auto generate when a user is added to family hub. Same thing with the
+// meal planning to-do lists. They just need to be auto added into family
+// hub. We're not going to give the option to have them or not." - this is
+// the meal-planning half of that: auto-creates the Menu (mealPlanEntity)
+// and Meal Templates (mealTemplatesEntity) to-do lists the first time this
+// card finds either one missing/pointing at a nonexistent entity, using
+// the exact same family_hub/create_todo_list command (and Menu list name,
+// "Family Meal Plan") the manual "+ Add list" button already used - a
+// household never has to click that button by hand any more, but the
+// field itself stays visible/editable in Settings (Menu Blocks) for
+// anyone who wants to point it at a different existing list instead. Runs
+// once per connected session (_householdMealListsEnsureAttempted guards
+// re-entry); the entity-existence checks are what keep it safe to run
+// again on a later reconnect or from a second card instance on the same
+// dashboard - once a list exists there's nothing left to create, so this
+// is also what backfills any household that already has people/menus set
+// up from before this existed.
+// Keeps the "Home Assistant is starting up" banner (see its own HTML/CSS
+// comments) in sync with _isHomeAssistantFullyLoaded() on every hass
+// assignment - cheap (one querySelector + one attribute toggle) and
+// idempotent, so calling it unconditionally from the hass setter below
+// (every single state-bus update, same as every other hass-driven bit of
+// this card) is never wasteful. Guarded on this._root existing since
+// _build() always runs (in connectedCallback) before `hass` is ever
+// assigned, but this stays defensive against any future call-order change.
+_updateHaStartingBanner() {
+if (!this._root) return;
+const banner = this._root.querySelector(".ha-starting-banner");
+if (!banner) return;
+banner.hidden = this._isHomeAssistantFullyLoaded();
+}
+_isHomeAssistantFullyLoaded() {
+// Home Assistant's own hass.config.state (standard across every
+// integration/card, not something this one invented) goes
+// NOT_RUNNING -> STARTING -> RUNNING as core boots, then STOPPING/
+// FINAL_WRITE on shutdown. Right after a Home Assistant restart, THIS
+// card's own hass setter can start firing again (the dashboard
+// reconnects quickly) well before every integration has finished
+// registering its entities - a todo.* list the household genuinely
+// already configured can still be completely absent from
+// this._hass.states for a few seconds. Treat "unknown" (hass.config
+// missing entirely, e.g. an older HA core or a test harness that
+// never bothered mocking it) as loaded, same as always - this guard
+// only ever actively WITHHOLDS trust during an explicit, confirmed
+// "still starting" state, never because of a missing/unfamiliar
+// field it can't interpret.
+const state = this._hass && this._hass.config && this._hass.config.state;
+return state === undefined || state === null || state === "RUNNING";
+}
+async _ensureHouseholdMealLists() {
+if (this._householdMealListsEnsureAttempted || !this._hass) return;
+// Household report, verbatim (after _mealPlanEntityExists()'s own
+// settings.mealPlanEntity/this._hass.states race was fixed and this
+// STILL kept happening on an update): "when I updated it changed my
+// menu to-do list to the default one that it is looking for rather
+// than the one that was already set" - and, verbatim, the actual fix:
+// "we should wait until home assistant is fully loaded to check to do
+// lists." Confirmed root cause: a household whose Menu entity was only
+// ever set via this card's own YAML config (meal_plan_entity:), never
+// through Settings itself, has settings.mealPlanEntity genuinely empty
+// - the FIRST guard below (settings.mealPlanEntity itself) can't catch
+// that case, so it was resting entirely on _mealPlanEntityExists()
+// correctly seeing the YAML-configured entity in this._hass.states.
+// Right after a Home Assistant restart that's exactly the window where
+// it can't yet - so this ran, found "nothing", created a brand new
+// default-named "Family Meal Plan" list, and permanently overwrote
+// settings.mealPlanEntity with it, shadowing the household's real list
+// forever (settings.mealPlanEntity wins over the YAML fallback once
+// it's ever set - see _mealPlanEntity()). Deliberately does NOT set
+// _householdMealListsEnsureAttempted here - skipping this cleanly
+// (not consuming the one-shot attempt) means the existing 60s poll
+// (_startPolling -> _fetchSettings -> this) just tries again a few
+// ticks later once Home Assistant genuinely finishes starting, rather
+// than this household having to reload the dashboard by hand to get
+// another chance.
+if (!this._isHomeAssistantFullyLoaded()) return;
+this._householdMealListsEnsureAttempted = true;
+const patch = {};
+const settings = this._getSettings();
+// Only ever auto-create when the household has NEVER set an explicit
+// override (Settings > Menu Blocks > Menu entity / Meal Templates
+// entity) - checking settings.mealPlanEntity/mealTemplatesEntity
+// directly here, rather than only _mealPlanEntityExists()/
+// _mealTemplatesEntityExists() (which only ever answer "does
+// _mealPlanEntity()'s RESOLVED result currently exist in
+// this._hass.states"), is what makes that distinction. Household ask,
+// verbatim, after the auto-create kept firing again and silently
+// swapping their own chosen list back out: "it keeps wanting to change
+// the menu todo." The bug: this._hass.states is whatever this one
+// render pass's hass object happens to have synced so far - right after
+// a Home Assistant restart, or when a second card instance on another
+// dashboard loads before entity states finish syncing, a todo.* entity
+// the household genuinely already pointed this at (manually, or from an
+// earlier run of this very auto-create) can briefly look like it
+// doesn't exist yet even though it's really there. The old code only
+// ever asked "does _mealPlanEntity()'s result exist right now" - so
+// every one of those timing races created a brand new "Family Meal
+// Plan" list and overwrote the household's own setting with it,
+// forever, on seemingly no schedule. Once settings.mealPlanEntity (or
+// mealTemplatesEntity) holds ANY value - even one this particular
+// render pass can't yet see in this._hass.states - that's a deliberate
+// choice and is trusted outright; auto-create only ever runs for the
+// genuinely-never-configured case (a fresh install, or a household that
+// deliberately cleared the field back to empty), matching the original
+// household ask ("auto generate when a user is added... we're not
+// going to give the option to have them or not") without ever fighting
+// a choice that's already been made.
+if (!(settings.mealPlanEntity || "").trim() && !this._mealPlanEntityExists()) {
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/create_todo_list", name: "Family Meal Plan" });
+if (result && result.entity_id) patch.mealPlanEntity = result.entity_id;
+} catch (e) {
+}
+}
+if (!(settings.mealTemplatesEntity || "").trim() && !this._mealTemplatesEntityExists()) {
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/create_todo_list", name: "Family Meal Templates" });
+if (result && result.entity_id) patch.mealTemplatesEntity = result.entity_id;
+} catch (e) {
+}
+}
+if (Object.keys(patch).length) {
+await this._persistSettingsPatch(patch);
+}
+}
+// a person's own custom color (userProfiles[id].color) wins over a
 // calendar's own configured color for whichever ONE calendar that person
 // marked as their `primaryCalendar` (see the Users tab profile editor's
 // card-style calendar picker) - built once per _getPeople() call rather
@@ -3194,7 +6569,7 @@ if (entity && color) map[entity] = color;
 });
 return map;
 }
-// v1.131.0+: sibling of _primaryCalendarColorByEntity above, same "only
+// sibling of _primaryCalendarColorByEntity above, same "only
 // overrides when the profile actually has something set" rule - a
 // profile with an empty badges array (the default - nobody's touched
 // this section of their profile yet) never blanks out badges someone
@@ -3211,7 +6586,7 @@ if (entity && Array.isArray(badges) && badges.length) map[entity] = badges;
 });
 return map;
 }
-// v1.132.0+: sibling of _primaryCalendarColorByEntity/_primaryCalendarBadgesByEntity
+// sibling of _primaryCalendarColorByEntity/_primaryCalendarBadgesByEntity
 // above, same override rule. Needed now that the Calendars tab no longer
 // has its own "their own Reminders list" field - a people[] row's OWN
 // remindersEntity is "" for any calendar that's someone's primaryCalendar
@@ -3232,12 +6607,31 @@ if (entity && typeof remindersEntity === "string" && remindersEntity.trim()) map
 });
 return map;
 }
+// sibling of _primaryCalendarRemindersByEntity just above, for the
+// "multi reminder list" additional lists (see _defaultUserProfile's own
+// comment on additionalRemindersEntities) - a people[] row's own shape
+// has no equivalent field at all (these only ever live on a profile), so
+// unlike the other _primaryCalendarXByEntity maps there's no "row's own
+// value" to override; this is the ONLY source for a calendar's additional
+// lists.
+_primaryCalendarAdditionalRemindersByEntity() {
+const profiles = (this._settingsCache && this._settingsCache.userProfiles) || {};
+const map = {};
+Object.keys(profiles).forEach((uid) => {
+const profile = profiles[uid];
+const entity = profile && profile.primaryCalendar;
+const additional = profile && profile.additionalRemindersEntities;
+if (entity && Array.isArray(additional) && additional.length) map[entity] = additional.filter((e) => typeof e === "string" && e.trim());
+});
+return map;
+}
 _getPeople() {
 const settings = this._getSettings();
 const palette = ["#a9c6c2", "#dba99c", "#d9bf7e", "#a8bd93", "#b9a7c9", "#cf8f6c", "#a89a83"];
 const primaryColors = this._primaryCalendarColorByEntity();
 const primaryBadges = this._primaryCalendarBadgesByEntity();
 const primaryReminders = this._primaryCalendarRemindersByEntity();
+const primaryAdditionalReminders = this._primaryCalendarAdditionalRemindersByEntity();
 let people;
 if (Array.isArray(settings.people) && settings.people.length) {
 people = settings.people.map((p, i) => ({
@@ -3246,16 +6640,20 @@ name: p.name || p.entity,
 color: primaryColors[p.entity] || p.color || palette[i % palette.length],
 countdown: !!p.countdown,
 badges: primaryBadges[p.entity] || (Array.isArray(p.badges) ? p.badges : []),
-// v130+: that person's own individual Reminders to-do list entity
+// that person's own individual Reminders to-do list entity
 // (separate from the shared family list) - carried through here so
 // the Users tab's per-list subscription picker
 // (_renderNotifyProfileRemindersLists) sees it after a fresh
 // Settings-modal open, not just right after editing it in the same
-// session. v1.132.0+: prefers the owning profile's own remindersEntity
+// session. prefers the owning profile's own remindersEntity
 // (see _primaryCalendarRemindersByEntity) over this row's own field,
 // same override order as color/badges just above - the Calendars tab
 // no longer has a field to set this row's own value at all.
 remindersEntity: primaryReminders[p.entity] || (typeof p.remindersEntity === "string" ? p.remindersEntity : ""),
+// see _primaryCalendarAdditionalRemindersByEntity - only ever comes
+// from a profile, so a people[] row that isn't anyone's
+// primaryCalendar simply gets none.
+additionalRemindersEntities: primaryAdditionalReminders[p.entity] || [],
 }));
 } else {
 // A household still running off the static Lovelace config (never
@@ -3267,11 +6665,11 @@ people = this._config.people.map((p) => ({
 color: primaryColors[p.entity] || p.color,
 badges: primaryBadges[p.entity] || p.badges,
 remindersEntity: primaryReminders[p.entity] || p.remindersEntity,
+additionalRemindersEntities: primaryAdditionalReminders[p.entity] || [],
 countdown: !!p.countdown,
 }));
 }
-// v1.131.0+: household ask, verbatim: *"include a user's calendars under
-// their name on the calendar."* Every profile whose OWN primaryCalendar
+// Every profile whose OWN primaryCalendar
 // isn't already one of the entities above (a household that set it up
 // straight from the Users tab, never also adding it under the General
 // tab's Calendars section) gets synthesized as its own extra column here
@@ -3302,6 +6700,7 @@ color: profile.color || palette[people.length % palette.length],
 countdown: false,
 badges: Array.isArray(profile.badges) ? profile.badges : [],
 remindersEntity: typeof profile.remindersEntity === "string" ? profile.remindersEntity : "",
+additionalRemindersEntities: Array.isArray(profile.additionalRemindersEntities) ? profile.additionalRemindersEntities : [],
 });
 });
 return people;
@@ -3518,7 +6917,7 @@ large: { minHeight: "56px", padding: "9px 24px" },
 const b = blockMap[settings.blockSize] || blockMap.medium;
 return { minHeight: b.minHeight, padding: b.padding };
 }
-// v144.6+: "theme should be per device" - this device may override the
+// "theme should be per device" - this device may override the
 // household's shared Settings > Appearance theme choice entirely, the same
 // this-device-only localStorage pattern _getShowTimeline/_getWeekViewVariant
 // already use for other per-device preferences. "" (nothing saved, the
@@ -3747,6 +7146,7 @@ this._notifyProfileUsersCache = [];
 this._notifyProfileUsersError = true;
 }
 this._renderNotifyProfilesList();
+this._ensureUserTodoLists();
 }
 // One row per Home Assistant user in the Users tab, each showing
 // a plain-language summary of their profile and an Edit button that opens
@@ -3780,17 +7180,28 @@ return;
 }
 if (!this._settingsUserProfilesDraft) this._settingsUserProfilesDraft = {};
 const memberIds = Array.isArray(this._settingsMemberIdsDraft) ? this._settingsMemberIdsDraft : [];
-const members = users.filter((u) => memberIds.includes(u.id));
+const currentUserId = this._hass && this._hass.user && this._hass.user.id;
+const isAdminUser = !!(this._hass && this._hass.user && this._hass.user.is_admin);
+// That's this
+// list's own per-person profile - a non-admin only ever gets to see (and
+// tap Edit into) their OWN row, never anyone else's. An admin still sees
+// everyone, unchanged.
+const members = users.filter((u) => memberIds.includes(u.id) && (isAdminUser || u.id === currentUserId));
 if (!members.length) {
 listEl.innerHTML = "";
 if (emptyEl) emptyEl.style.display = "";
 return;
 }
 if (emptyEl) emptyEl.style.display = "none";
-const currentUserId = this._hass && this._hass.user && this._hass.user.id;
 listEl.innerHTML = members
 .map((u) => {
 const profile = this._settingsUserProfilesDraft[u.id] || this._defaultUserProfile();
+// Removing yourself from Family Hub (and, for an admin viewing someone
+// else, removing them) isn't part of the non-admin whitelist above, so
+// the ✕ only renders for an admin - a non-admin's own row is Edit-only.
+const removeBtnHtml = isAdminUser
+? `<button type="button" class="notify-profile-row-remove-btn" data-user-id="${u.id}" title="Remove from Family Hub">&#10005;</button>`
+: "";
 return `
 <div class="notify-profile-row" data-user-id="${u.id}">
 <div>
@@ -3799,7 +7210,7 @@ return `
 </div>
 <div class="notify-profile-row-actions">
 <button type="button" class="notify-profile-row-edit-btn" data-user-id="${u.id}">Edit</button>
-<button type="button" class="notify-profile-row-remove-btn" data-user-id="${u.id}" title="Remove from Family Hub">&#10005;</button>
+${removeBtnHtml}
 </div>
 </div>
 `;
@@ -3870,6 +7281,11 @@ this._renderNotifyProfilesList();
 // household's settings that couldn't be matched to them automatically).
 _userProfileSummaryText(profile) {
 const parts = [];
+// surfaced first so an admin scanning the Users list can spot
+// a Child account at a glance, same reasoning as leading with calendar
+// count - this is the one flag that changes what THEY see in Settings.
+if (profile.isChildAccount) parts.push("Child account");
+if (profile.isKioskAccount) parts.push("Kiosk account");
 const calCount = (profile.subscribedCalendars || []).length;
 if (calCount) parts.push(`${calCount} calendar${calCount === 1 ? "" : "s"}`);
 if (profile.remindersEnabled) parts.push("Reminders on");
@@ -3885,17 +7301,16 @@ return parts.join(" • ");
 // --- Permissions (admin-only) - who besides an admin can assign a
 // chore to someone else, approve/verify a completed chore, override a
 // reward's star cost, add a new reward straight to the catalog with a
-// price (v127+ - see const.py's PERMISSION_REWARD_ADD; without this,
+// price (see const.py's PERMISSION_REWARD_ADD; without this,
 // family-hub-rewards-card.js's own + button still lets someone suggest a
 // reward, it just can't be priced by them, so it waits in a suggestions
 // bin for someone who has this or can_override_rewards to approve it), or
-// see who's claimed what on a wish list (v1.132.5+ - see const.py's
+// see who's claimed what on a wish list (see const.py's
 // PERMISSION_SEE_WISHLIST_CLAIMS).
 //
-// v1.132.5+: this used to be its own standalone Permissions tab showing
+// this used to be its own standalone Permissions tab showing
 // every member's grants at once, as a whole grid. Household ask,
-// verbatim: "lets also move permissions for each user to an accordian
-// under their user account. keep it as admin only though." Each person's
+// Each person's
 // own grants now live in an accordion inside THEIR OWN Notification
 // Profile modal (see _renderNotifyProfilePermissions/_openNotifyProfile
 // Modal) instead of one combined grid - _permissionDefs()/
@@ -3939,7 +7354,7 @@ if (this._notifyProfileOpenUserId) this._renderNotifyProfilePermissions(this._no
 // tab is reflected here immediately within the same Settings session,
 // even though Permissions itself still saves each checkbox independently.
 //
-// v1.109.6+: the grantable permissions, as DATA rather than eight-plus
+// the grantable permissions, as DATA rather than eight-plus
 // hardcoded full-sentence <label> rows per person - "we need to make the
 // permissions cleaner, and more compact the UI is quite long." Every row
 // below used to be its own literal line of markup repeated inside the
@@ -3967,9 +7382,23 @@ return [
 { key: "can_add_rewards", group: "Rewards", label: "Add to catalog", hint: "Can add rewards to the catalog with a star cost. Without this, what they add is a suggestion that needs approval." },
 { key: "can_edit_menu", group: "Menu", label: "Edit the menu", hint: "Can edit the weekly meal plan. Without this they can still suggest a meal for any day - someone with this permission decides whether it goes on the menu." },
 { key: "can_see_wishlist_claims", group: "Wish Lists", label: "See claim status", hint: "Can see who's claimed what on a wish list they don't own themselves (the list's own owner never sees this regardless). Off by default for anyone not already using Family Hub when this permission was introduced - see PERMISSION_SEE_WISHLIST_CLAIMS in const.py - so an unidentified shared kiosk login can't spoil a surprise." },
+{ key: "can_delete_event", group: "Calendar", label: "Delete calendar events", hint: "Can delete an event from the calendar (when the calendar integration supports it - otherwise the Delete button is greyed out with an explanation for everyone, regardless of this permission)." },
+// Before these, every routine-item write was gated on the single, broad
+// can_assign, so a non-admin without that grant couldn't even touch their
+// OWN routine checklist. These two are a narrower, ownership-aware
+// alternative, purely additive on top of can_assign (unchanged) - see
+// chores_websocket_api.py's _can_write_routine_items and this card's own
+// _canManageRoutinesFor for the shared rule both ends enforce.
+{ key: "can_manage_own_routines", group: "Routines", label: "Manage own routine items", hint: "Can add/edit/delete/reorder items in their OWN Morning/Afternoon/Night routine section, without needing the broader chore-assignment permission." },
+{ key: "can_manage_any_routines", group: "Routines", label: "Manage everyone's routine items", hint: "Can add/edit/delete/reorder ANY person's routine items, not just their own - same reach as Assign to others, scoped to just Routines." },
+// v1.147.0+ Privacy mode - see PERMISSION_TOGGLE_PRIVACY_MODE's own
+// docstring in const.py. Only gates turning privacy mode OFF via the
+// on-screen lock's PIN unlock flow - anyone can turn it ON from the
+// "more" menu with no permission needed at all.
+{ key: "can_toggle_privacy_mode", group: "Privacy", label: "Turn off Privacy mode", hint: "Can enter their kiosk PIN on the lock screen to turn Privacy mode back off. Anyone can turn it ON from the \"more\" menu - this only gates turning it back off." },
 ];
 }
-// v1.132.5+: replaces the old whole-grid _renderPermissionsList - renders
+// replaces the old whole-grid _renderPermissionsList - renders
 // just ONE person's own grants (the userId whose Notification Profile
 // modal is currently open) into that modal's own Permissions accordion
 // (.notify-profile-perm-rows-list - see _openNotifyProfileModal). Reuses
@@ -4066,7 +7495,7 @@ select.innerHTML = list.map(optionHtml).join("");
 const hasCurrent = list.some((t) => t.id === settings.globalThemeId);
 select.value = hasCurrent ? settings.globalThemeId : list[0].id;
 }
-// v144.6+: "This device's theme" (see _getDeviceThemeOverride's own
+// "This device's theme" (see _getDeviceThemeOverride's own
 // comment) - a separate select from .global-theme-select above, always
 // visible regardless of whether the household has a global theme turned
 // on at all, since a device can override to a specific theme (or force
@@ -4094,6 +7523,119 @@ select.innerHTML =
 const current = this._getDeviceThemeOverride();
 const hasCurrent = current === "" || current === "__default__" || list.some((t) => t.id === current);
 select.value = hasCurrent ? current : "";
+}
+// for the Alarm Devices registry, not manual entity-id typing. Renders the
+// currently-registered devices (from this._settingsAlarmDevicesDraft, the
+// household-level twin of _settingsUserProfilesDraft above) with a Remove
+// button each, the "add a device" select (candidates fetched lazily below,
+// filtered to exclude ones already registered), and the TTS-entity select
+// a registered media_player device speaks through. Re-called after every
+// add/remove so the list and the add-select's own remaining options both
+// stay in sync without a full Settings re-render.
+_renderAlarmDevicesSection(root) {
+if (!root.querySelector(".alarm-devices-list")) return;
+const draft = this._settingsAlarmDevicesDraft || [];
+const listEl = root.querySelector(".alarm-devices-list");
+if (listEl) {
+listEl.innerHTML = draft.length
+  ? draft
+      .map(
+        (d, i) =>
+          `<div class="alarm-device-row">` +
+          `<span class="alarm-device-row-name">${d.name || d.entity_id} <span class="alarm-device-row-domain">(${d.domain === "assist_satellite" ? "Assist satellite" : "Speaker"})</span></span>` +
+          `<button type="button" class="alarm-device-remove-btn" data-index="${i}" title="Remove">&#10005;</button>` +
+          `</div>`
+      )
+      .join("")
+  : `<div class="remind-hint" data-i18n="settings.no_alarm_devices">No alarm devices registered yet.</div>`;
+listEl.querySelectorAll(".alarm-device-remove-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const idx = parseInt(btn.dataset.index, 10);
+    if (Number.isFinite(idx)) this._settingsAlarmDevicesDraft.splice(idx, 1);
+    this._renderAlarmDevicesSection(root);
+  });
+});
+// this list's own empty-state hint carries a data-i18n key
+// (see just above) that only ever exists in the DOM once this .innerHTML
+// runs - the one-time sweep from _ensureTranslationsLoaded() can't have
+// covered it, since it fires long before Settings is ever opened. Sweep
+// again right here so it (and nothing else, since _applyTranslations()
+// is a cheap, idempotent, root-wide no-op for every already-translated
+// element) picks up its translation immediately.
+this._applyTranslations();
+}
+const ttsSelect = root.querySelector(".alarm-tts-entity-select");
+if (ttsSelect && ttsSelect.dataset.populated === "true") {
+ttsSelect.value = this._settingsAlarmTtsEntityDraft || "";
+}
+// Replaces the old <select> + Add button with the same pill-button
+// idiom the rest of Settings already uses (.size-btn/.approval-toggle-btn)
+// - one tap on a candidate's own button adds it immediately, no separate
+// Add step. A device disappears from this row the moment it's added
+// (re-rendered from the now-shorter candidate list below), so there's
+// never a stale "already added" button left sitting around to tap twice.
+this._fetchAlarmDeviceCandidates().then((candidates) => {
+if (!candidates) return;
+const candidatesEl = root.querySelector(".alarm-devices-candidates");
+if (candidatesEl) {
+  const registeredIds = new Set(draft.map((d) => d.entity_id));
+  const remaining = [...(candidates.media_players || []), ...(candidates.assist_satellites || [])].filter(
+    (c) => !registeredIds.has(c.entity_id)
+  );
+  candidatesEl.innerHTML = remaining.length
+    ? remaining
+        .map(
+          (c) =>
+            `<button type="button" class="alarm-device-candidate-btn" data-entity-id="${c.entity_id}" data-domain="${c.domain}" data-name="${c.name}">` +
+            `${c.name} <span class="alarm-device-row-domain">(${c.domain === "assist_satellite" ? "Assist satellite" : "Speaker"})</span>` +
+            `</button>`
+        )
+        .join("")
+    : `<div class="remind-hint" data-i18n="settings.no_more_alarm_devices">No more devices found.</div>`;
+  candidatesEl.querySelectorAll(".alarm-device-candidate-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      this._settingsAlarmDevicesDraft = this._settingsAlarmDevicesDraft || [];
+      if (this._settingsAlarmDevicesDraft.some((d) => d.entity_id === btn.dataset.entityId)) return;
+      this._settingsAlarmDevicesDraft.push({
+        id: btn.dataset.entityId,
+        entity_id: btn.dataset.entityId,
+        domain: btn.dataset.domain,
+        name: btn.dataset.name || btn.dataset.entityId,
+      });
+      this._renderAlarmDevicesSection(root);
+    });
+  });
+  // same reasoning as the sync .alarm-devices-list sweep
+  // above - this candidates list's own empty-state hint is rebuilt fresh
+  // on every async round trip, well after the one-time page-load sweep,
+  // so it needs its own re-sweep right here to ever get translated.
+  this._applyTranslations();
+}
+if (ttsSelect && ttsSelect.dataset.populated !== "true") {
+  ttsSelect.dataset.populated = "true";
+  const ttsOptions = (candidates.tts_entities || [])
+    .map((c) => `<option value="${c.entity_id}">${c.name}</option>`)
+    .join("");
+  ttsSelect.innerHTML = `<option value="">Not set</option>${ttsOptions}`;
+  ttsSelect.value = this._settingsAlarmTtsEntityDraft || "";
+}
+});
+}
+// Fetched once per Settings-open and cached on this._alarmDeviceCandidates
+// (cleared each time Settings opens fresh via _openSettings, same "ask
+// again next time, not on every keystroke" idea as _fetchGlobalThemes) -
+// best-effort: a failed fetch just leaves the add-select showing whatever
+// it already had (empty on first open), never blocks the rest of Settings.
+async _fetchAlarmDeviceCandidates() {
+if (this._alarmDeviceCandidates) return this._alarmDeviceCandidates;
+if (!this._hass || !this._hass.connection || !this._hass.connection.sendMessagePromise) return null;
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/settings/list_alarm_device_candidates" });
+this._alarmDeviceCandidates = result;
+return result;
+} catch (e) {
+return null;
+}
 }
 _updateGlobalThemeVisibility(isOn) {
 const root = this._root;
@@ -4124,7 +7666,295 @@ _isHalloweenToday() {
 const now = new Date();
 return now.getMonth() === 9 && now.getDate() === 31;
 }
-// v1.126.0+ - see window.__familyHubThemeCache's own comment above the
+// Resolves one holidayBackgrounds entry's {month, day} for a given year -
+// predefined floating holidays (Easter, Thanksgiving) are computed fresh
+// per year via their def's own compute(year); every predefined fixed-date
+// holiday and every custom entry just reuses its own saved month/day
+// every year.
+_holidayEntryDateForYear(entry, year) {
+if (entry.source === "predefined") {
+const def = HOLIDAY_PREDEFINED_DEFS.find((d) => d.key === entry.predefinedKey);
+if (!def) return null;
+return typeof def.compute === "function" ? def.compute(year) : { month: def.month, day: def.day };
+}
+return { month: entry.month, day: entry.day };
+}
+// First ENABLED holidayBackgrounds entry (predefined or custom) with an
+// uploaded image whose date matches the given Date (compared as a local
+// calendar day, same convention as _isHalloweenToday/_dateKey elsewhere
+// in this file - never UTC, so this lines up with what "today" actually
+// looks like on the tablet). A one-time custom entry (recurring: false)
+// only ever matches its own saved year; every other entry (every
+// predefined holiday, and a recurring custom entry) matches that
+// month/day every year. "First match wins" when more than one entry
+// happens to land on the same day (rare, but simpler and more
+// predictable than trying to stack two background images) - predefined
+// holidays are checked in HOLIDAY_PREDEFINED_DEFS order, then custom
+// entries in the order they were added, matching _normalizeHolidayBack-
+// grounds' own predefined-then-custom ordering of the list it returns.
+//
+// `isRenderingToday` is accepted but unused (kept as a 3rd parameter only
+// so every existing call site's `isToday` argument stays harmless to
+// pass) - see _matchExpandedHolidayForCurrentView's own comment for why
+// "is this column today" stopped being the right question: the whole
+// card's own background can now take over for an entire displayed WEEK
+// or MONTH, not just the literal "today" cell. Instead, this looks up
+// whichever entry (if any) is currently taking over the WHOLE card
+// (_matchExpandedHolidayForCurrentView, same call _applySizeVars itself
+// makes - deliberately re-derived here rather than cached from that
+// call, so this function keeps working correctly even if it's ever
+// invoked outside _renderGrid's own render path, e.g. directly from a
+// test) and skips painting a column's own small background only when
+// that column's matched entry is that SAME entry - the one column whose
+// own exact date matches it would otherwise show the exact same photo
+// twice: once here as its own small per-column background, and again as
+// the whole card's own background via
+// _matchExpandedHolidayForCurrentView/_applySizeVars. Every OTHER day
+// this same entry's date lands on in a Week/Month/Planner grid (a past
+// or future year's instance of a recurring holiday) is unaffected and
+// keeps showing its own small background exactly as before.
+_matchHolidayBackgroundForDate(settings, dateObj, isRenderingToday) {
+const list = settings && settings.holidayBackgrounds;
+if (!Array.isArray(list) || !list.length) return null;
+const expandedEntry = this._matchExpandedHolidayForCurrentView(settings);
+const year = dateObj.getFullYear();
+const month = dateObj.getMonth() + 1;
+const day = dateObj.getDate();
+for (const entry of list) {
+if (!entry || !entry.enabled || !entry.imageUrl) continue;
+if (entry.expandFullDay && expandedEntry && expandedEntry.id === entry.id) continue;
+if (entry.source === "custom" && entry.recurring === false && entry.year !== year) continue;
+const resolved = this._holidayEntryDateForYear(entry, year);
+if (resolved && resolved.month === month && resolved.day === day) return entry;
+}
+return null;
+}
+// Sunday-through-Saturday calendar week containing `date`, as plain local
+// midnight Date objects - deliberately NOT the same thing as _weekStart()
+// above, which follows each device\u2019s own Week-view navigation state
+// (3/5/7/14-day windows, current-day-first, forward/back offset...). A
+// holiday\u2019s "expand for the whole week" scope needs one fixed,
+// predictable week definition shared by every device looking at the same
+// calendar date, not something that shifts with each tablet\u2019s own
+// display settings.
+_calendarWeekRangeForDate(date) {
+const start = new Date(date);
+start.setHours(0, 0, 0, 0);
+start.setDate(start.getDate() - start.getDay());
+const end = new Date(start);
+end.setDate(start.getDate() + 6);
+return { start, end };
+}
+// Whether `entry`'s "expand to full screen" scope, anchored on
+// `anchorDate` (that entry's resolved holiday date for a given year - see
+// _holidayEntryDateForYear), OVERLAPS the date range currently on screen
+// (`rangeStart`\u2013`rangeEnd` inclusive, both local midnight - see
+// _currentViewDateRange). "day" is an exact calendar-day match; "week"
+// is the whole Sun-Sat calendar week containing anchorDate
+// (_calendarWeekRangeForDate); "month" is every day in anchorDate's
+// calendar month/year. Using overlap rather than "is anchorDate's scope
+// touching one single day" is what lets navigating the calendar itself -
+// not just the real wall-clock date - bring up a holiday's full-card
+// background: household ask was "if I navigate to Thanksgiving week [in
+// Week view] and it's set for week view, I get the full Thanksgiving
+// background", which only a range/range overlap (rather than a single
+// "today" point) can express.
+_holidayExpandScopeMatchesRange(scope, anchorDate, rangeStart, rangeEnd) {
+let scopeStart;
+let scopeEnd;
+if (scope === "month") {
+scopeStart = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), 1);
+scopeEnd = new Date(anchorDate.getFullYear(), anchorDate.getMonth() + 1, 0);
+} else if (scope === "week") {
+const range = this._calendarWeekRangeForDate(anchorDate);
+scopeStart = range.start;
+scopeEnd = range.end;
+} else {
+scopeStart = new Date(anchorDate);
+scopeEnd = new Date(anchorDate);
+}
+scopeStart.setHours(0, 0, 0, 0);
+scopeEnd.setHours(0, 0, 0, 0);
+const rs = new Date(rangeStart);
+rs.setHours(0, 0, 0, 0);
+const re = new Date(rangeEnd);
+re.setHours(0, 0, 0, 0);
+return rs <= scopeEnd && re >= scopeStart;
+}
+// The date range currently on screen, local-midnight Date objects
+// inclusive on both ends - "whatever the household is looking at right
+// now", regardless of whether that's the real wall-clock "today" at all
+// (Week/Month navigation, _weekOffset/_monthOffset, can put any other
+// week or month on screen). Mirrors each view's own render logic
+// (_weekStart/_weekViewDayCount for Week and Planner, _monthAnchor for
+// Month/split, _dayAnchor for Day) rather than introducing a second,
+// possibly-drifting notion of "what's showing" - see
+// _matchExpandedHolidayForCurrentView's own comment for where this feeds
+// in.
+_currentViewDateRange() {
+const family = this._viewFamily(this._viewMode);
+if (family === "day") {
+const d = this._dayAnchor();
+return { start: d, end: d };
+}
+if (family === "month") {
+const anchor = this._monthAnchor();
+const start = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+const end = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0);
+end.setHours(0, 0, 0, 0);
+return { start, end };
+}
+const dayCount = this._weekViewDayCount();
+const start = this._weekStart();
+const end = new Date(start);
+end.setDate(start.getDate() + dayCount - 1);
+return { start, end };
+}
+// Finds which (if any) enabled, "Expand to full screen"-checked holiday
+// background should take over the WHOLE card\u2019s background for whatever
+// is currently on screen - see _applySizeVars\u2019s own comment on where this
+// feeds in. "week"/"month" scope entries are navigation-aware: a
+// different displayed week/month (_currentViewDateRange - navigating,
+// not only the real wall-clock "today", can bring one up) is checked for
+// overlap against that scope's own range via
+// _holidayExpandScopeMatchesRange, since more than one can plausibly
+// want the screen at once once "whole week"/"whole month" scopes exist
+// (e.g. a one-day holiday landing inside a month-long background\u2019s own
+// month, or a displayed week straddling two entries). "day" scope is
+// deliberately handled separately below and is NOT navigation-aware - see
+// its own inline comment for why a Month view's much wider displayed
+// range makes range-overlap the wrong check for it specifically.
+// Unlike _matchHolidayBackgroundForDate (one exact-day match, used for
+// each day column/cell\u2019s own small background), this checks every
+// candidate at once since more than one can plausibly want the screen on
+// the same day/week/month.
+//
+// Tiebreaker, most to least specific: (1) a narrower scope wins over a
+// broader one (day beats week, week beats month) - the household\u2019s
+// intent in checking "day" for one holiday and "month" for another is
+// almost always "show the month backdrop generally, but let the specific
+// day take over on its own day"; (2) among same-scope ties, whichever
+// entry\u2019s own resolved date is fewest calendar days from the real
+// wall-clock "today" (or, when today itself isn\u2019t inside the displayed
+// range, from the start of whatever range IS on screen) wins - the more
+// "currently relevant" one; (3) still tied (identical scope and
+// distance) falls back to list order (predefined-before-custom, then
+// insertion order), the same deterministic "first match wins" rule
+// _matchHolidayBackgroundForDate itself already documents above.
+_matchExpandedHolidayForCurrentView(settings) {
+const list = settings && settings.holidayBackgrounds;
+if (!Array.isArray(list) || !list.length) return null;
+const { start: rangeStart, end: rangeEnd } = this._currentViewDateRange();
+const today = new Date();
+today.setHours(0, 0, 0, 0);
+const referenceDate = today >= rangeStart && today <= rangeEnd ? today : rangeStart;
+// "day" scope is deliberately NOT navigation-aware, unlike "week"/
+// "month" - it only ever takes over the whole card on the real, literal
+// wall-clock today, exactly as it always did before Week/Month
+// navigation started feeding into this function at all (see this
+// function's own header comment). This matters because a Month view's
+// own _currentViewDateRange spans the WHOLE displayed month - comparing
+// a single-day scope against a range that wide via
+// _holidayExpandScopeMatchesRange would make a "day"-scope entry match
+// on every single day you're simply viewing that month on (the
+// household-reported regression: the day-column's own small background
+// went missing because every cell thought IT was the one driving the
+// full-card background), not just the one day it's actually for. Only
+// today's own year is relevant here, so this is resolved separately from
+// the week/month candidates below rather than folded into their shared
+// `years` loop.
+const todayYear = today.getFullYear();
+const scopeRank = { day: 0, week: 1, month: 2 };
+const candidates = [];
+const years = new Set([rangeStart.getFullYear(), rangeEnd.getFullYear()]);
+list.forEach((entry, order) => {
+if (!entry || !entry.enabled || !entry.imageUrl || !entry.expandFullDay) return;
+const scope = ["day", "week", "month"].includes(entry.expandScope) ? entry.expandScope : "day";
+if (scope === "day") {
+if (entry.source === "custom" && entry.recurring === false && entry.year !== todayYear) return;
+const resolved = this._holidayEntryDateForYear(entry, todayYear);
+if (!resolved) return;
+const anchorDate = new Date(todayYear, resolved.month - 1, resolved.day);
+anchorDate.setHours(0, 0, 0, 0);
+if (anchorDate.getTime() !== today.getTime()) return;
+candidates.push({ entry, order, scopeRank: scopeRank.day, distanceDays: 0 });
+return;
+}
+years.forEach((year) => {
+if (entry.source === "custom" && entry.recurring === false && entry.year !== year) return;
+const resolved = this._holidayEntryDateForYear(entry, year);
+if (!resolved) return;
+const anchorDate = new Date(year, resolved.month - 1, resolved.day);
+anchorDate.setHours(0, 0, 0, 0);
+if (!this._holidayExpandScopeMatchesRange(scope, anchorDate, rangeStart, rangeEnd)) return;
+const distanceDays = Math.round(Math.abs((anchorDate.getTime() - referenceDate.getTime()) / 86400000));
+candidates.push({ entry, order, scopeRank: scopeRank[scope], distanceDays });
+});
+});
+if (!candidates.length) return null;
+candidates.sort((a, b) => a.scopeRank - b.scopeRank || a.distanceDays - b.distanceDays || a.order - b.order);
+return candidates[0].entry;
+}
+// Household ask: "if the background is dark we make the header text
+// light" - so the day name/number (or person name, for Day view) painted
+// over one of these uploaded holiday photos stays readable regardless of
+// how dark or light that particular photo happens to be, rather than
+// guessing from the fixed rgba(0,0,0,0.32) overlay alone. Same canvas-
+// sampling idea as _sampleScreenSaverBackgroundIsDark's own docstring,
+// but against a plain <img> loaded from the URL (there's no already-on-
+// screen media element to piggyback on here), and memoized per URL in
+// this._holidayBgDarkCache - the SAME holiday photo repeats across every
+// day column/cell showing it (Week alone can have up to 36 columns all
+// asking about the identical image on one render), so it's sampled once
+// per image, not once per column.
+//
+// Returns false (today's look: dark header text) until the sample
+// resolves - the moment it does, a _renderGrid() re-run picks up the
+// real answer, same "best-effort, correct itself a moment later" shape
+// as every other async-then-re-render path in this file (theme fetch,
+// privacy mode catch-up, etc.). A failed load/sample (tainted canvas, a
+// 404, a cross-origin image Home Assistant proxies without CORS headers)
+// caches as false and is never retried - matches
+// _sampleScreenSaverBackgroundIsDark's own tainted-canvas caveat.
+_isHolidayBackgroundDark(imageUrl) {
+if (!imageUrl) return false;
+if (!this._holidayBgDarkCache) this._holidayBgDarkCache = {};
+const cached = this._holidayBgDarkCache[imageUrl];
+if (cached === true || cached === false) return cached;
+if (cached === "pending") return false;
+this._holidayBgDarkCache[imageUrl] = "pending";
+try {
+const img = new Image();
+img.crossOrigin = "anonymous";
+img.onload = () => {
+try {
+const canvas = document.createElement("canvas");
+canvas.width = 8;
+canvas.height = 8;
+const ctx = canvas.getContext("2d");
+ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+let total = 0;
+for (let i = 0; i < data.length; i += 4) {
+total += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+}
+const avg = total / (data.length / 4);
+this._holidayBgDarkCache[imageUrl] = avg < 128;
+} catch (e) {
+this._holidayBgDarkCache[imageUrl] = false;
+}
+if (this._root) this._renderGrid();
+};
+img.onerror = () => {
+this._holidayBgDarkCache[imageUrl] = false;
+};
+img.src = imageUrl;
+} catch (e) {
+this._holidayBgDarkCache[imageUrl] = false;
+}
+return false;
+}
+// see window.__familyHubThemeCache's own comment above the
 // class for the full "why a key, not one shared blob" reasoning. This
 // card (the source-of-truth Settings card) has no per-card-placement
 // theme_override concept of its own, so the key is only ever this
@@ -4135,7 +7965,7 @@ const deviceOverride = this._getDeviceThemeOverride();
 if (deviceOverride) return `device:${deviceOverride}`;
 return "household";
 }
-// v1.126.0+: applies whatever theme this device last actually resolved
+// applies whatever theme this device last actually resolved
 // to, SYNCHRONOUSLY, before the real fetches that would otherwise be the
 // only way to know it - see window.__familyHubThemeCache's own comment
 // above the class. Called once from `_build()`, before the very first
@@ -4160,6 +7990,14 @@ const settings = this._getSettings();
 const v = this._sizeVars(settings);
 this.style.setProperty("--menu-block-min-height", v.minHeight);
 this.style.setProperty("--menu-block-padding", v.padding);
+// Manual "Bottom padding" setting (Settings > General, px, 0 by default) -
+// a plain CSS bottom-padding knob (added on top of ha-card's own base
+// padding, see the ha-card rule above) for "leave room at the bottom" (an
+// on-screen keyboard, a taskbar, a dock) - a static value applied here
+// whenever settings/theme are (re)applied, not something recalculated on
+// every resize/keyboard-open the way this card's own height used to be.
+const bottomPadding = Math.max(0, Math.min(2000, Math.round(settings.bottomPadding || 0)));
+this.style.setProperty("--fh-bottom-padding", `${bottomPadding}px`);
 const theme = this._resolveTheme(settings);
 // "Card / chip transparency" (Theme Builder's cardOpacity slider) and the
 // new "glass blur" field only ever existed as Theme Builder preview-only
@@ -4199,13 +8037,43 @@ this.style.setProperty("--fc-shadow", shadowCss);
 } else {
 this.style.removeProperty("--fc-shadow");
 }
-// Halloween override: takes over whatever background the theme is
-// otherwise configured with for just the one day, then gets out of the
-// way again on its own the next time this runs (nothing is saved to
-// settings, so there's nothing to revert).
-const bg = this._isHalloweenToday()
+// Holiday Background override (Settings > General > Holiday Backgrounds):
+// a household-uploaded photo for a predefined or custom date with
+// "Expand to full screen" checked takes over the whole card's background
+// for whatever's currently on screen - the exact day (scope "day"), the
+// whole displayed week ("week"), or the whole displayed month ("month") -
+// same mechanism/precedence spot as the hardcoded Halloween easter egg
+// right below it (which only fires when nothing more specific is already
+// covering the view). Recomputed on every _applySizeVars() call, which
+// _renderGrid() always makes right before actually rendering the grid
+// (see _renderGrid's own call order), so navigating to a different
+// week/month (_setWeekOffset/_setMonthOffset/_goToWeekFromDate) picks
+// this back up on its own, not just the real wall-clock date rolling
+// over. _currentExpandedHolidayEntryId is stashed here (null when
+// nothing matched) so _matchHolidayBackgroundForDate - called per day
+// column/cell right after this, during the same render - knows which
+// entry (if any) is already covering the WHOLE card and should skip
+// painting its own small per-column copy of that same photo.
+const matchedFullDayHoliday = this._matchExpandedHolidayForCurrentView(settings);
+this._currentExpandedHolidayEntryId = matchedFullDayHoliday ? matchedFullDayHoliday.id : null;
+const bg =
+matchedFullDayHoliday
+? { image: matchedFullDayHoliday.imageUrl, size: "cover", position: "center", blur: 0, opacity: 1, overlayColor: "#000000", overlayOpacity: 0.18 }
+: this._isHalloweenToday()
 ? { image: HALLOWEEN_BG_IMAGE, size: "cover", position: "center", blur: 0, opacity: 1, overlayColor: "#000000", overlayOpacity: 0 }
 : theme.background;
+// Household ask: the plain date-range text up in the header ("This
+// Week" / "Jan 1 - Jan 7" / the month name) sits directly on top of
+// this same full-card background with no opaque box behind it (unlike
+// the nav buttons around it, which already paint their own solid
+// --fc-card surface) - so it needs the exact same "flip to white text
+// over a dark photo" treatment _buildDayColumnHtml already gives each
+// day column's own header via .holiday-bg-dark. Only ever relevant
+// when the full-card background is an actual photo (a holiday's
+// expand-to-full-screen image, or the Halloween easter egg) - a plain
+// theme color never sets this, since every theme's own --fc-text was
+// already chosen to read against its own --fc-bg color.
+this.classList.toggle("fh-bg-dark", !!(bg && bg.image && this._isHolidayBackgroundDark(bg.image)));
 if (bg && bg.image) {
 this.style.setProperty("--fc-bg-image", `url("${bg.image.replace(/"/g, '\\"')}")`);
 this.style.setProperty("--fc-bg-size", bg.size === "repeat" ? "auto" : bg.size || "cover");
@@ -4221,7 +8089,7 @@ this.style.removeProperty("--fc-bg-blur");
 this.style.removeProperty("--fc-bg-image-opacity");
 this.style.removeProperty("--fc-bg-overlay-image");
 }
-// v1.126.0+: snapshot exactly what was just set/removed above into the
+// snapshot exactly what was just set/removed above into the
 // shared cache under this device's key, so a future _build() can apply
 // the same values before the real fetches resolve - see
 // window.__familyHubThemeCache's own comment for the full reasoning. A
@@ -4279,10 +8147,24 @@ if (this._viewFamily(this._viewMode) === "month") {
 const range = this._monthGridRange();
 start = range.gridStart;
 end = range.gridEnd;
+} else if (this._viewFamily(this._viewMode) === "day") {
+start = this._dayAnchor();
+end = new Date(start);
+end.setDate(start.getDate() + 1);
 } else {
+// This always fetched a fixed 7-day window
+// from the calendar API no matter how many day columns were actually
+// on screen, so Two-Week Ahead (or any custom day count above 7 - see
+// the raw day-count field this Layout ideas preset just fills in)
+// rendered its 8th-14th columns with events that were simply never
+// fetched. _weekViewDayCount() (already used by _weekStart() itself,
+// right above, and by _renderWeekGrid) is the one place that knows
+// the real day count for whatever's on screen right now - Planner
+// still gets its hardcoded 7 back from it unchanged (see that
+// function's own comment for why).
 start = this._weekStart();
 end = new Date(start);
-end.setDate(start.getDate() + 7);
+end.setDate(start.getDate() + this._weekViewDayCount());
 }
 const startIso = start.toISOString();
 const endIso = end.toISOString();
@@ -4314,18 +8196,44 @@ this._renderLegend();
 this._updateNavLabel();
 if (this._root.querySelector(".debug-overlay.open")) this._renderDebug();
 }
+// Whether entityId's calendar integration can delete an
+// event at all is a property of the CALENDAR (its platform, whether it
+// implements CalendarEntityFeature.DELETE_EVENT) - not of any one event -
+// so it never changes between one event-info popup and the next for the
+// same person's calendar. Cached per entity_id for the life of the card
+// rather than re-fetched every time _openEventInfo is opened.
+async _getCalendarDeleteSupport(entityId) {
+if (!this._calendarDeleteSupport) this._calendarDeleteSupport = {};
+if (this._calendarDeleteSupport[entityId]) return this._calendarDeleteSupport[entityId];
+if (!this._hass) return { supported: false, integrationName: "your calendar's own app" };
+let result;
+try {
+const res = await this._hass.connection.sendMessagePromise({
+type: "family_hub/calendar/delete_support",
+entity_id: entityId,
+});
+result = { supported: !!res.supported, integrationName: res.integration_name || "your calendar's own app" };
+} catch (e) {
+// An older backend (or a transient failure) means "assume unsupported"
+// - never silently offer a Delete button that might not actually work.
+result = { supported: false, integrationName: "your calendar's own app" };
+}
+this._calendarDeleteSupport[entityId] = result;
+return result;
+}
 async _fetchWeather() {
-if (!this._hass || !this._config.weather_entity) return;
+const weatherEntityId = this._weatherEntity();
+if (!this._hass || !weatherEntityId) return;
 try {
 const result = await this._hass.connection.sendMessagePromise({
 type: "call_service",
 domain: "weather",
 service: "get_forecasts",
 service_data: { type: "daily" },
-target: { entity_id: this._config.weather_entity },
+target: { entity_id: weatherEntityId },
 return_response: true,
 });
-const bucket = result && result.response && result.response[this._config.weather_entity];
+const bucket = result && result.response && result.response[weatherEntityId];
 const forecasts = (bucket && bucket.forecast) || [];
 const map = {};
 for (const f of forecasts) {
@@ -4385,18 +8293,47 @@ candidates.push({ date: dd, label, icon: isBirthday ? "\u{1F382}" : "\u{1F4C5}" 
 }
 // Every custom "use as countdown" pick is its own list entry (not one
 // shared slot), which is what actually gives the ticker more than one
-// thing to cycle through.
+// thing to cycle through. A passed item is dropped from the candidate
+// list here (same as it always was) AND queued for removal from the
+// saved settings.countdownItems list itself below, via
+// _pruneExpiredCountdownItems - so a countdown that's come and gone
+// doesn't just stop showing, it stops being stored at all, and the
+// Settings modal's "Custom countdown items" list and the event-info
+// popup's "Use as countdown"/"Remove from countdown" toggle both self-
+// clean the next time this runs (every poll tick - see _refreshAllData)
+// instead of sitting there forever until someone deletes it by hand.
+const expiredItemIds = [];
 for (const item of settings.countdownItems || []) {
 const d = new Date(item.date + "T00:00:00");
 if (isNaN(d.getTime())) continue;
 d.setHours(0, 0, 0, 0);
-if (d < today) continue;
+if (d < today) {
+expiredItemIds.push(item.id);
+continue;
+}
 candidates.push({ icon: "\u{1F389}", label: item.label, date: d, id: item.id });
 }
 candidates.sort((a, b) => a.date - b.date);
 this._countdown = candidates[0] || null;
 this._countdownList = candidates;
 this._renderCountdown();
+if (expiredItemIds.length) {
+this._pruneExpiredCountdownItems(expiredItemIds);
+}
+}
+// Removes items whose date has already passed from the saved
+// settings.countdownItems list (see the expiredItemIds collection in
+// _fetchCountdown just above - that's the only caller). Fire-and-forget
+// from there, on purpose: a slow or failed save here should never block
+// or flicker the countdown line itself, and since this is plain filter-
+// by-id, it's harmless and idempotent if it runs again before an earlier
+// call has landed (a second device's own poll tick, a retry after a
+// dropped connection) - either one still converges on the same list with
+// every expired id gone.
+async _pruneExpiredCountdownItems(expiredIds) {
+const expired = new Set(expiredIds);
+const items = (this._getSettings().countdownItems || []).filter((it) => !expired.has(it.id));
+await this._persistSettingsPatch({ countdownItems: items });
 }
 _renderCountdown() {
 if (!this._root) return;
@@ -4480,7 +8417,7 @@ return map[condition] || "\u{1F321}\u{FE0F}";
 // it stays that way even if the item gets renamed or rescheduled directly
 // in Home Assistant's own To-do UI.
 //
-// v130+: this pulls from more than just the one shared family list
+// this pulls from more than just the one shared family list
 // (reminders_entity). Every logged-in profile also sees, folded into the
 // same this._reminders array:
 //   - their OWN individual list (settings.people[i].remindersEntity for
@@ -4519,6 +8456,16 @@ const visible = isOwn || subLevel === "calendar" || subLevel === "calendar_alert
 if (!visible) continue;
 seenEntities.add(person.remindersEntity);
 lists.push({ entity: person.remindersEntity, color: person.color, personName: person.name, isFamily: false });
+// "multi reminder list" - the same person's additional lists (see
+// _defaultUserProfile's own comment) are visible to exactly the same
+// audience as their primary list above (own list unconditionally,
+// otherwise the same subscription check) - deliberately not a
+// separate, finer-grained permission.
+for (const extraEntity of person.additionalRemindersEntities || []) {
+if (!extraEntity || seenEntities.has(extraEntity)) continue;
+seenEntities.add(extraEntity);
+lists.push({ entity: extraEntity, color: person.color, personName: person.name, isFamily: false });
+}
 }
 }
 } catch (e) {
@@ -4541,6 +8488,7 @@ summary: it.summary || "(untitled)",
 due,
 description: parsed.description,
 rollover: parsed.rollover,
+rolloverDays: parsed.rolloverDays,
 listEntity: list.entity,
 color: list.color,
 personName: list.personName,
@@ -4560,7 +8508,7 @@ this._reminders = fetchedLists.flat();
 this._renderGrid();
 this._renderLegend();
 }
-// v130+: which Reminders lists the CURRENT user is allowed to add items
+// which Reminders lists the CURRENT user is allowed to add items
 // to - powers the Add Reminder tab's "List" picker. Always starts with
 // the shared family list, then their own individual list (if they have
 // one configured) and every other list they're subscribed to at EITHER
@@ -4570,6 +8518,20 @@ this._renderLegend();
 // deliberately the same "which lists am I allowed to see" set _fetchReminders
 // computes for the current user - add-rights and visibility are the same
 // list of lists, just described from a different angle.
+//
+// Small helper for telling a person's own multiple lists apart in a
+// picker - the primary list keeps its plain "My list (Name)"/"Name"
+// label (unchanged, so nobody's existing muscle memory breaks), but an
+// ADDITIONAL list needs something to distinguish it from the primary and
+// from any other additional lists the same person has, so this appends
+// that to-do entity's own friendly name (whatever the household already
+// named it when they created/renamed it in Home Assistant) in
+// parentheses - falls back to the raw entity id if Home Assistant
+// doesn't know about it yet.
+_remindersListFriendlyName(entity) {
+const st = this._hass && this._hass.states && this._hass.states[entity];
+return (st && st.attributes && st.attributes.friendly_name) || entity;
+}
 _addableRemindersLists() {
 const familyEntity = this._config.reminders_entity;
 const lists = [{ entity: familyEntity, label: "Family", color: null }];
@@ -4591,6 +8553,16 @@ const canAdd = isOwn || subLevel === "calendar" || subLevel === "calendar_alert"
 if (!canAdd) continue;
 seenEntities.add(person.remindersEntity);
 lists.push({ entity: person.remindersEntity, label: isOwn ? `My list (${person.name})` : person.name, color: person.color });
+for (const extraEntity of person.additionalRemindersEntities || []) {
+if (!extraEntity || seenEntities.has(extraEntity)) continue;
+seenEntities.add(extraEntity);
+const friendly = this._remindersListFriendlyName(extraEntity);
+lists.push({
+entity: extraEntity,
+label: isOwn ? `My list (${person.name} - ${friendly})` : `${person.name} (${friendly})`,
+color: person.color,
+});
+}
 }
 }
 } catch (e) {
@@ -4599,7 +8571,7 @@ lists.push({ entity: person.remindersEntity, label: isOwn ? `My list (${person.n
 }
 return lists;
 }
-// v130+: entityId defaults to the shared family list for back-compat with
+// entityId defaults to the shared family list for back-compat with
 // any older call sites, but a reminder from one of the individual lists
 // (this._reminders[i].listEntity) MUST pass its own list's entity here -
 // marking it done against the wrong to-do entity would silently no-op
@@ -4648,7 +8620,7 @@ await this._hass.connection.sendMessagePromise({
 type: "family_hub/set_daily_digest",
 enabled: !!settings.dailyDigestEnabled,
 time: settings.dailyDigestTime || "07:00",
-meal_plan_entity: this._config.meal_plan_entity || "",
+meal_plan_entity: this._mealPlanEntity() || "",
 });
 } catch (e) {
 }
@@ -4732,7 +8704,7 @@ path: settings.notificationClickPath || "",
 // gets a confirm() instead of a silent block, since a fuzzy match can
 // occasionally be wrong and the household should get the final say.
 // -------------------------------------------------------------------------
-// Permissions (v1.109.6+) - "need a permission to edit menu, prevents kids
+// Permissions - "need a permission to edit menu, prevents kids
 // from messing with the menu, anyone can suggest but only ones with edit
 // menu permission can edit."
 //
@@ -4749,7 +8721,7 @@ path: settings.notificationClickPath || "",
 // purpose - see that file's long design note above _encode_dish_description
 // for why, and what that does and doesn't buy.
 // -------------------------------------------------------------------------
-// Menu suggestions (v1.109.6+) - the "anyone can suggest" half. Backed by
+// Menu suggestions - the "anyone can suggest" half. Backed by
 // its own Store-and-websocket-commands pair on the backend
 // (family_hub/get_menu_suggestions + add/apply/remove_menu_suggestion),
 // NOT by the flat recipe-idea wishlist _fetchSuggestions above handles:
@@ -4840,7 +8812,7 @@ await this._fetchMenuSuggestions();
 async _fetchMealPlan() {
 if (!this._hass) return;
 try {
-const items = await this._getItems(this._config.meal_plan_entity);
+const items = await this._getItems(this._mealPlanEntity());
 const map = {};
 const recurring = [];
 const leftovers = [];
@@ -4863,7 +8835,7 @@ spanDays: parsed.spanDays,
 leftoverDates: parsed.leftoverDates,
 additionalRecipes: parsed.additionalRecipes,
 };
-// v144.10+: an explicit leftoverDates list (any day(s), not necessarily
+// an explicit leftoverDates list (any day(s), not necessarily
 // contiguous with the cooked day or each other) takes over from the
 // legacy spanDays "next N days in a row" behavior. Pre-v144.10 data
 // never has leftoverDates, so it keeps projecting the same contiguous
@@ -4999,7 +8971,24 @@ anchorDateKey: best.anchorDateKey,
 // recipe" entry points (_saveDishEditor, the Recipe Box's "Add from
 // Grocy" picker) opt in explicitly instead, since that's where a near-
 // duplicate is actually likely and a nudge is welcome, not disruptive.
+// Returns true on success, false on failure - callers (_saveEditor,
+// _applyMealTemplate, the event-info "Use as meal" button) use this to
+// show a real error instead of claiming success when nothing was
+// actually saved. Previously this swallowed every failure silently
+// (empty catch, no return value at all) - the most common real-world
+// trigger being a household that's never linked/created a Menu to-do
+// list at all: _mealPlanEntity() always returns SOME entity id string
+// (it defaults to "todo.meal_plan" even with nothing actually set up -
+// see that getter's own comment), so the add/update call below was
+// firing against an entity that doesn't exist, HA rejected it, the catch
+// here swallowed that rejection, and the caller had already shown its own
+// "added"/"updated" toast with no idea anything went wrong - the meal
+// then never actually appeared in its block. Checking
+// _mealPlanEntityExists() up front catches this immediately, with no
+// round trip needed, rather than waiting to see whether HA happens to
+// reject the service call.
 async _upsertMealPlan(dateKey, blockIndex, name, description, link, color, recur, grocyRecipeId, servings, spanDays, additionalRecipes, leftoverDates) {
+if (!this._mealPlanEntityExists()) return false;
 const payload = JSON.stringify({ description, link, color, block: blockIndex, recur: recur || null, grocyRecipeId: grocyRecipeId || null, servings: typeof servings === "number" ? servings : null, spanDays: typeof spanDays === "number" && spanDays > 1 ? spanDays : 1, additionalRecipes: Array.isArray(additionalRecipes) ? additionalRecipes : [], leftoverDates: Array.isArray(leftoverDates) ? leftoverDates : [] });
 // Deliberately keyed off the EXPLICIT entry for this exact date, not
 // _getMealForDay's projection - if this date only has a projected
@@ -5008,6 +8997,7 @@ const payload = JSON.stringify({ description, link, color, block: blockIndex, re
 // leaving the original weekly repeat (and every other week it still
 // projects onto) untouched.
 const existing = this._mealPlan[dateKey] && this._mealPlan[dateKey][blockIndex];
+let ok = true;
 try {
 if (existing) {
 await this._hass.callService("todo", "update_item", {
@@ -5015,34 +9005,42 @@ item: existing.uid,
 rename: name,
 description: payload,
 due_date: dateKey,
-}, { entity_id: this._config.meal_plan_entity });
+}, { entity_id: this._mealPlanEntity() });
 } else {
 await this._hass.callService("todo", "add_item", {
 item: name,
 due_date: dateKey,
 description: payload,
-}, { entity_id: this._config.meal_plan_entity });
+}, { entity_id: this._mealPlanEntity() });
 }
 } catch (e) {
+ok = false;
 }
 this._fetchMealPlan();
+return ok;
 }
 // Updates a meal-plan entry by its to-do uid directly, WITHOUT touching
 // due_date - used to edit a "repeat weekly" meal's anchor item itself (so
 // the change applies to every future week it projects onto) as opposed to
-// _upsertMealPlan, which always targets one specific date.
+// _upsertMealPlan, which always targets one specific date. Same
+// return-true/false-instead-of-swallowing-failures contract as
+// _upsertMealPlan above - see its comment for why.
 async _upsertMealPlanByUid(uid, blockIndex, name, description, link, color, recur, grocyRecipeId, servings, additionalRecipes) {
-if (!uid) return;
+if (!uid) return false;
+if (!this._mealPlanEntityExists()) return false;
 const payload = JSON.stringify({ description, link, color, block: blockIndex, recur: recur || null, grocyRecipeId: grocyRecipeId || null, servings: typeof servings === "number" ? servings : null, additionalRecipes: Array.isArray(additionalRecipes) ? additionalRecipes : [] });
+let ok = true;
 try {
 await this._hass.callService("todo", "update_item", {
 item: uid,
 rename: name,
 description: payload,
-}, { entity_id: this._config.meal_plan_entity });
+}, { entity_id: this._mealPlanEntity() });
 } catch (e) {
+ok = false;
 }
 this._fetchMealPlan();
+return ok;
 }
 // Whole-week meal templates: each saved template is one to-do item on
 // meal_templates_entity, its description JSON-encoding every populated
@@ -5052,7 +9050,7 @@ this._fetchMealPlan();
 async _fetchMealTemplates() {
 if (!this._hass) return;
 try {
-const items = await this._getItems(this._config.meal_templates_entity);
+const items = await this._getItems(this._mealTemplatesEntity());
 this._mealTemplates = items.map((it) => {
 let blocks = [];
 try {
@@ -5102,27 +9100,36 @@ try {
 await this._hass.callService("todo", "add_item", {
 item: name,
 description: JSON.stringify({ blocks }),
-}, { entity_id: this._config.meal_templates_entity });
+}, { entity_id: this._mealTemplatesEntity() });
 } catch (e) {
 }
 this._fetchMealTemplates();
 }
+// Returns true only if every block in the template actually saved - see
+// _upsertMealPlan's own comment for why that write can fail (most
+// commonly: no Menu to-do list linked at all) and why it's no longer
+// silently swallowed. The caller (the Templates modal's Apply button)
+// shows an error instead of treating a template apply as successful when
+// nothing actually landed.
 async _applyMealTemplate(template) {
-if (!template || !Array.isArray(template.blocks)) return;
+if (!template || !Array.isArray(template.blocks)) return true;
 const start = this._weekStart();
+let ok = true;
 for (const b of template.blocks) {
 const dayDate = new Date(start);
 dayDate.setDate(start.getDate() + b.dayIndex);
 const dateKey = this._dateKey(dayDate);
-await this._upsertMealPlan(dateKey, b.blockIndex, b.name, b.description || "", b.link || "", b.color || "", null, b.grocyRecipeId || null, typeof b.servings === "number" ? b.servings : null, 1, b.additionalRecipes || []);
+const saved = await this._upsertMealPlan(dateKey, b.blockIndex, b.name, b.description || "", b.link || "", b.color || "", null, b.grocyRecipeId || null, typeof b.servings === "number" ? b.servings : null, 1, b.additionalRecipes || []);
+if (!saved) ok = false;
 }
+return ok;
 }
 async _deleteMealTemplate(uid) {
 if (!uid) return;
 try {
 await this._hass.callService("todo", "remove_item", {
 item: uid,
-}, { entity_id: this._config.meal_templates_entity });
+}, { entity_id: this._mealTemplatesEntity() });
 } catch (e) {
 }
 this._fetchMealTemplates();
@@ -5133,7 +9140,7 @@ if (!existing) return;
 try {
 await this._hass.callService("todo", "remove_item", {
 item: existing.uid,
-}, { entity_id: this._config.meal_plan_entity });
+}, { entity_id: this._mealPlanEntity() });
 } catch (e) {
 }
 this._fetchMealPlan();
@@ -5156,7 +9163,7 @@ item: source.uid,
 rename: source.name,
 description: sourcePayload,
 due_date: toDateKey,
-}, { entity_id: this._config.meal_plan_entity });
+}, { entity_id: this._mealPlanEntity() });
 if (dest) {
 const destPayload = JSON.stringify({ description: dest.description, link: dest.link, color: dest.color, block: fromBlockIndex, recur: dest.recur || null, grocyRecipeId: dest.grocyRecipeId || null, servings: typeof dest.servings === "number" ? dest.servings : null, spanDays: typeof dest.spanDays === "number" ? dest.spanDays : 1, additionalRecipes: dest.additionalRecipes || [], leftoverDates: Array.isArray(dest.leftoverDates) ? dest.leftoverDates : [] });
 await this._hass.callService("todo", "update_item", {
@@ -5164,13 +9171,13 @@ item: dest.uid,
 rename: dest.name,
 description: destPayload,
 due_date: fromDateKey,
-}, { entity_id: this._config.meal_plan_entity });
+}, { entity_id: this._mealPlanEntity() });
 }
 } catch (e) {
 }
 this._fetchMealPlan();
 }
-// "Move to another week" (v141+) - the day/menu editor's own entry point
+// "Move to another week" - the day/menu editor's own entry point
 // into the same _moveMealPlan primitive the in-week drag-and-drop already
 // uses (see _dragMoveMeal). That function works by date key, not by a
 // week-relative day index, so it already generalizes to an arbitrary
@@ -5196,8 +9203,8 @@ if (part.date) return new Date(part.date + "T00:00:00");
 return null;
 }
 // Opens a separate, minimal print window containing just the currently
-// visible grid (week, month, or portrait, whichever mode is active) - not
-// the whole dashboard page, since that would print every other card too. Theme
+// visible grid (week or month, whichever mode is active) - not the whole
+// dashboard page, since that would print every other card too. Theme
 // colors are carried over by copying this card's own inline custom
 // properties (set via this.style.setProperty in _applyTheme) onto the new
 // document's body, and the card's own <style> rules are reused as-is so
@@ -5209,8 +9216,7 @@ if (!this._root) return;
 const gridEl = this._root.querySelector(".grid");
 if (!gridEl) return;
 const isMonth = gridEl.classList.contains("mode-month");
-const isPortrait = gridEl.classList.contains("mode-portrait");
-const title = isMonth ? "Month view" : isPortrait ? "Portrait view" : "Week view";
+const title = isMonth ? "Month view" : "Week view";
 let printWindow;
 try {
 printWindow = window.open("", "_blank");
@@ -5232,7 +9238,7 @@ doc.write(
 body { margin: 0; padding: 16px; background: var(--fc-bg, #fff); }
 .add-event-fab, .week-nav-side, .week-shortcuts, .nav-arrow { display: none !important; }
 .grid { max-height: none !important; overflow: visible !important; }
-</style></head><body style="${hostStyle}"><div class="grid ${isMonth ? "mode-month" : isPortrait ? "mode-portrait" : "mode-week"}">${gridEl.innerHTML}</div></body></html>`
+</style></head><body style="${hostStyle}"><div class="${gridEl.className}" style="${gridEl.style.cssText || ""}">${gridEl.innerHTML}</div></body></html>`
 );
 doc.close();
 printWindow.onload = () => {
@@ -5255,7 +9261,7 @@ return luminance > 0.6 ? "#3a2f00" : "#ffffff";
 }
 _build() {
 this._built = true;
-// v1.126.0+: applied BEFORE attachShadow/the first innerHTML paint - see
+// applied BEFORE attachShadow/the first innerHTML paint - see
 // _applyCachedThemeVarsIfAny's own comment and window.__familyHubTheme
 // Cache's above the class for why this is what actually fixes the
 // household's reported "loads the default theme first" flash. The
@@ -5276,14 +9282,20 @@ root.innerHTML = `
 <style>
 :host {
 display: block;
-/* v1.110.7+: needed as the containing block for .add-event-fab when
+/* needed as the containing block for .add-event-fab when
    [fab-position="card"] switches it from position:fixed (viewport
    corner) to position:absolute (this card's own corner) - see
    _registerFabCoordinator's own comment. Harmless when unused (the
    default position:fixed doesn't care about its containing block). */
 position: relative;
-height: 100vh;
-height: 100dvh;
+/* Fills whatever box Home Assistant's own layout gives this card -
+   household ask, verbatim: "make the calendar fill the card that it
+   has" instead of this card computing its own height via JS (see
+   _syncHeight's own comment). Relies on ha-card below also being
+   height:100% and on whatever actually contains this card (Home
+   Assistant's view/grid-cell/panel wrapper) having a real height of its
+   own to fill, same as any other ordinary custom card. */
+height: 100%;
 box-sizing: border-box;
 overflow: hidden;
 font-family: "Arial Rounded MT Std", "Arial Rounded MT", "Varela Round", -apple-system, "Segoe UI Rounded", "Segoe UI", Roboto, sans-serif;
@@ -5310,7 +9322,7 @@ font-family: "Arial Rounded MT Std", "Arial Rounded MT", "Varela Round", -apple-
 ha-card {
 height: 100%;
 box-sizing: border-box;
-padding: 12px 12px 16px;
+padding: 12px 12px calc(16px + var(--fh-bottom-padding, 0px));
 display: flex;
 flex-direction: column;
 border-radius: 0;
@@ -5358,7 +9370,7 @@ pointer-events: none;
    theme - blur(0px) is a no-op, and Safari/iOS webviews need the
    -webkit- prefix for backdrop-filter to apply at all. */
 .day-col, .month-cell, .planner-grid, .planner-header-cell, .planner-day-cell,
-.menu-banner, .modal-box, .settings-btn, .view-btn, .edit-meals-btn, .nav-arrow,
+.menu-banner, .modal-box, .settings-btn, .view-select-btn, .edit-meals-btn, .nav-arrow,
 .week-shortcut, .more-menu-btn, .add-fab-item, .shopping-tab-btn, .chip {
 backdrop-filter: blur(var(--fc-glass-blur, 0px));
 -webkit-backdrop-filter: blur(var(--fc-glass-blur, 0px));
@@ -5506,21 +9518,28 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .recipe-import-debug-btn { display: block; width: 100%; margin-top: 6px; border: none; background: none; color: var(--fc-text-secondary); font-size: 12px; cursor: pointer; padding: 6px 2px; text-align: center; }
 .recipe-import-instructions-input { width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(0,0,0,0.15); font-size: 13px; line-height: 1.6; font-family: inherit; resize: vertical; background: var(--fc-surface-alt, #fff); color: var(--fc-text); }
 .recipe-import-ingredient-select { max-width: 45%; background: var(--fc-surface-alt, #fff); color: var(--fc-text); border: 1px solid rgba(0,0,0,0.12); border-radius: 6px; padding: 4px 6px; font-size: 13px; }
-/* v1.110.4+: bottom offset by --fh-fab-offset, set by the shared window.__familyHubFabCoordinator (see the singleton block near the top of this file) so this FAB stacks above any other Family Hub card's FAB sharing the same dashboard view instead of overlapping it. */
+/* bottom offset by --fh-fab-offset, set by the shared window.__familyHubFabCoordinator (see the singleton block near the top of this file) so this FAB stacks above any other Family Hub card's FAB sharing the same dashboard view instead of overlapping it. */
 .add-event-fab { position: fixed; right: 18px; bottom: calc(18px + var(--fh-fab-offset, 0px)); z-index: 900; width: 56px; height: 56px; border-radius: 50%; border: none; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 28px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(58,53,44,0.35); transition: transform 0.15s ease, bottom 0.15s ease; }
 .add-event-fab:active { transform: scale(0.94); }
-/* v1.110.7+: settings.fabPosition "card" - anchors to THIS card's own
+/* Hidden (not just z-indexed behind) while ANY Family Hub card on this
+   dashboard has a full-screen modal open - see _registerFabCoordinator's
+   own comment on state.hideForModal for why fab.hidden is used instead of
+   relying on z-index across cards. Author-stylesheet [hidden] override,
+   since the plain browser default [hidden]{display:none} UA rule alone
+   would lose to the display:flex set above it. */
+.add-event-fab[hidden] { display: none; }
+/* settings.fabPosition "card" - anchors to THIS card's own
    box (position:absolute off :host, now position:relative above)
    instead of the viewport (position:fixed). Opts out of the shared
    coordinator's stacking offset entirely (see _registerFabCoordinator),
    so this is a flat 18px/18px corner, no --fh-fab-offset involved. */
 :host([fab-position="card"]) .add-event-fab { position: absolute; bottom: 18px; }
-/* v1.132.5+: Small screen mode - hides the top bar (.week-nav: Settings/
+/* Small screen mode - hides the top bar (.week-nav: Settings/
    Week/Month/Edit Meals/nav arrows/week label/Suggestions/Recipe Box/
    More) entirely, since Settings moves into the + button's own menu
    instead (see the add-fab-settings item in _build's add-menu-list and
    its click handler) - see _registerFabCoordinator for where this host
-   attribute gets set from _getSmallScreenMode() (v1.132.7+: this-device-
+   attribute gets set from _getSmallScreenMode() (this-device-
    only localStorage, not the shared settings blob - see that method's own
    comment). */
 :host([small-screen-mode]) .week-nav { display: none; }
@@ -5529,7 +9548,7 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
    button (⚙️) still handles it otherwise (no duplicate entry point). */
 .add-fab-settings { display: none; }
 :host([small-screen-mode]) .add-fab-settings { display: block; }
-/* v1.110.5+: a small reusable "it worked" confirmation - "adding a
+/* a small reusable "it worked" confirmation - "adding a
    recipe/meal gives no save confirmation, modal stays open." Used by
    _showToast wherever a save used to just silently close the modal (or,
    for the day/menu editor and Recipe Box editor, close it with no visible
@@ -5545,6 +9564,7 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .fh-toast { position: fixed; left: 50%; bottom: calc(24px + var(--fh-fab-offset, 0px)); transform: translate(-50%, 12px); z-index: 1300; max-width: min(90vw, 360px); background: var(--fc-accent2); color: var(--fc-accent-text); font-size: 13px; font-weight: 700; text-align: center; padding: 10px 18px; border-radius: 20px; box-shadow: 0 4px 16px rgba(0,0,0,0.25); opacity: 0; pointer-events: none; transition: opacity 0.2s ease, transform 0.2s ease; }
 .fh-toast.show { opacity: 1; transform: translate(-50%, 0); }
 .fh-toast[hidden] { display: none; }
+.fh-toast.is-error { background: #c0392b; color: #fff; }
 /* The + button's 4 choices (Calendar Entry / Reminder / Meal Suggestion /
    Recipe) open in a real modal like everything else in the card, rather
    than a floating pill list next to the FAB - a stacked list of full-width
@@ -5552,8 +9572,19 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .add-menu-list { display: flex; flex-direction: column; gap: 8px; }
 .add-fab-item { width: 100%; box-sizing: border-box; text-align: left; border: none; border-radius: 10px; padding: 14px 16px; font-size: 15px; font-weight: 700; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; box-shadow: var(--fc-shadow); }
 .add-fab-item:active { transform: scale(0.98); }
-.settings-btn, .view-btn, .edit-meals-btn { border: none; border-radius: 16px; padding: 8px 10px; font-size: 12px; font-weight: 700; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; box-shadow: var(--fc-shadow); }
-.view-btn.active, .edit-meals-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); }
+.settings-btn, .view-select-btn, .edit-meals-btn { border: none; border-radius: 16px; padding: 8px 10px; font-size: 12px; font-weight: 700; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; box-shadow: var(--fc-shadow); }
+.edit-meals-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); }
+/* Week/Month/Day used to be two always-visible buttons (a third, Day,
+   would have made three) - collapsed into one dropdown, same open/close/
+   outside-click pattern as .more-menu-wrap/.more-menu-dropdown, so adding
+   further view families later doesn't mean adding further permanent
+   buttons to an already-crowded nav bar. */
+.view-select-wrap { position: relative; }
+.view-select-btn { display: inline-flex; align-items: center; gap: 4px; }
+.view-select-dropdown { display: none; position: absolute; top: calc(100% + 6px); left: 0; z-index: 950; background: var(--fc-card); border-radius: 12px; box-shadow: 0 6px 20px rgba(0,0,0,0.25); padding: 6px; min-width: 140px; flex-direction: column; gap: 4px; }
+.view-select-dropdown.open { display: flex; }
+.view-select-item { border: none; border-radius: 8px; padding: 8px 10px; font-size: 13px; font-weight: 700; background: none; color: var(--fc-text); cursor: pointer; text-align: left; }
+.view-select-item.active { background: var(--fc-accent); color: var(--fc-accent-text); }
 .week-nav { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; margin-bottom: 8px; flex: 0 0 auto; }
 .week-nav-side { display: flex; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .week-nav-side.left { justify-content: flex-start; justify-self: start; }
@@ -5562,6 +9593,7 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .nav-arrow { border: none; background: var(--fc-surface-alt); color: var(--fc-text); width: 40px; height: 40px; border-radius: 50%; font-size: 16px; cursor: pointer; flex: 0 0 auto; box-shadow: var(--fc-shadow); }
 .week-label-wrap { display: flex; flex-direction: column; align-items: center; min-width: 180px; }
 .week-label { font-size: var(--fs-header-title, 15px); font-weight: 700; cursor: pointer; text-align: center; color: var(--fc-text); }
+:host(.fh-bg-dark) .week-label, :host(.fh-bg-dark) .countdown-line { color: #fff; }
 .countdown-line { font-size: var(--fs-countdown, 11px); font-weight: 700; color: var(--fc-text-secondary); margin-top: 1px; min-height: 13px; }
 /* Desktop/tablet keeps the always-visible This Week/Next Week/In 2 Weeks
    row (see .week-shortcuts) - this toggle button only does anything on
@@ -5585,32 +9617,38 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .chip .avatar { width: 20px; height: 20px; border-radius: 50%; background: rgba(0,0,0,0.2); display: flex; align-items: center; justify-content: center; font-size: 11px; color: #fff; }
 .chip.type-chip { background: var(--fc-surface-alt); color: var(--fc-text); border: 2px solid var(--fc-border); margin-left: 4px; }
 .grid { flex: 1 1 auto; min-height: 0; overflow: hidden; touch-action: pan-y; }
-.grid.mode-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); gap: 8px; }
-/* v1.110.5+: "Display X days for smaller displays" - a 3/5-day window is
-   just today's exact Week layout (same day-column markup, meal blocks,
-   timeline, drag-and-drop, print - see _weekStart/_renderWeekGrid's own
-   comments) with fewer, correspondingly WIDER columns - a modifier on
-   .mode-week rather than a real fourth view family/mode, since nothing
-   else about how a day column renders changes. */
-.grid.mode-week.day-count-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.grid.mode-week.day-count-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+/* Day view: one lane per family member instead of one column per day -
+   see _renderDayGrid/_buildPersonLaneHtml. Reuses .day-col/.timeline/
+   .hour-row/.tl-event/.all-day-row exactly as Week's day-columns do (same
+   markup shape, just one person's own events instead of one day's events
+   from everyone), so a household member's lane looks and behaves like any
+   other day-column - same click-to-open, same past-graying, same
+   drag-free hourly grid - with only the header swapped for an avatar. */
+.grid.mode-day { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 8px; }
+.person-lane-header { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-bottom: 4px; flex: 0 0 auto; }
+.person-lane-avatar { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; }
+.person-lane-name { font-size: 12px; font-weight: 700; color: var(--fc-text); text-transform: uppercase; letter-spacing: 0.3px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .grid.mode-month { display: flex; flex-direction: column; gap: 4px; }
 /* Planner: days down the side, one column per person - unlike week/month
    above, the grid itself scrolls (both directions) rather than the page,
    since a household with a lot of people can end up wider than the card. */
 .grid.mode-planner { display: block; overflow: auto; }
-/* Portrait 4+3: two stacked flex rows (not a second grid-template-
-   columns count) so a 3-day bottom row still spans the full width
-   instead of leaving a dead column-4 gap the way a plain 4-column CSS
-   grid would - see _renderPortraitGrid's own docstring for why this
-   reuses Week's day-column content unchanged. */
-/* v144.10+: the gap BETWEEN the top (4-day) and bottom (3-day) rows needs
-   to read as a clear, deliberate break, not the same tight spacing used
-   between day columns within a row - hence its own larger value here
-   instead of reusing .portrait-row's 8px column gap below. */
-.grid.mode-portrait { display: flex; flex-direction: column; gap: 24px; }
-.portrait-row { display: flex; gap: 8px; flex: 1 1 0; min-height: 0; }
-.portrait-row .day-col { flex: 1 1 0; }
+/* Week: stacked flex rows (not a CSS grid-template-columns count) so a
+   shorter last row (e.g. the "4 then 3" split of a plain 7-day week)
+   still spans the full width instead of leaving a dead trailing-column
+   gap the way a plain N-column CSS grid would - see _renderWeekGrid's
+   own docstring. v1.134.0+: this is the ONE layout Week always uses now,
+   for any row count from 1 (today's plain Week look, unchanged pixel-
+   for-pixel) up - the old separate "Portrait" mode and its own
+   .grid.mode-portrait/.portrait-row CSS merged into this exact rule
+   rather than staying a second, parallel layout. */
+/* the gap BETWEEN rows needs to read as a clear, deliberate break,
+   not the same tight spacing used between day columns within a row -
+   hence its own larger value here instead of reusing .week-row's 8px
+   column gap below. Only visible at all once there's more than one row. */
+.grid.mode-week { display: flex; flex-direction: column; gap: 24px; }
+.week-row { display: flex; gap: 8px; flex: 1 1 0; min-height: 0; }
+.week-row .day-col { flex: 1 1 0; }
 .planner-grid { display: grid; min-width: 100%; border: 1px solid var(--fc-border); border-radius: 10px; overflow: hidden; background: var(--fc-card); box-shadow: var(--fc-shadow); }
 .planner-header-cell { position: sticky; top: 0; z-index: 1; background: var(--fc-surface-alt); padding: 8px 6px; text-align: center; font-size: 12px; font-weight: 800; color: var(--fc-text); border-bottom: 3px solid var(--fc-border); border-left: 1px solid var(--fc-border); display: flex; align-items: center; justify-content: center; gap: 6px; }
 .planner-header-cell.planner-corner-cell { border-left: none; background: var(--fc-card); }
@@ -5656,16 +9694,27 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .mc-pill { font-size: 10px; border-radius: 3px; padding: 1px 4px; color: #3a352c; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mc-meal-pill { cursor: pointer; font-weight: 700; }
 .mc-more { font-size: 9px; color: var(--fc-text-secondary); }
+/* a multi-day event's pill on the day(s) it carries over into: pull
+   it flush against the continuing edge (cancel the cell's own 4px padding)
+   and square off that corner instead of rounding it, so consecutive days'
+   pills for the same event read as one continuous bar bridging the gap
+   between cells rather than a set of separate, disconnected chips. See the
+   "v182+" comment at this markup's build site (_buildMonthCellsHtml) for
+   why a literal cross-cell-border bar isn't possible without a much bigger
+   layout rewrite - each day is still its own bordered/shadowed card. */
+.mc-pill.mc-continue-prev { margin-left: -4px; padding-left: 4px; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.mc-pill.mc-continue-next { margin-right: -4px; padding-right: 4px; border-top-right-radius: 0; border-bottom-right-radius: 0; }
 /* v145+ task: the "split" Month variant - month calendar on one side,
    selected day's events on the other. Landscape/tablet default: the two
    panes sit side by side, calendar first (left) then detail (right) -
    this is a plain flex row so either pane's width can be tuned later
    without touching the other. Portrait flips to a column, calendar ON
    TOP and detail pane BELOW it, per the household's explicit ask - see
-   the @media (orientation: portrait) block further down. Not to be
-   confused with the unrelated manually-selected "portrait" WEEK variant
-   (.grid.mode-portrait, elsewhere in this file), which stacks week
-   day-columns - this stacks the split Month view's two panes. */
+   the @media (orientation: portrait) block further down. This "portrait"
+   is purely a description of the SCREEN's orientation at the moment - not
+   the old Week-family "Portrait" mode, which no longer exists as a
+   separate name at all (see .grid.mode-week/_renderWeekGrid's own
+   comment - it merged into Week itself). */
 .grid.mode-month-split { display: flex; flex-direction: row; gap: 10px; min-height: 0; }
 .month-split-cal { flex: 1 1 55%; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .month-split-detail { flex: 1 1 45%; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--fc-card); border: 1px solid var(--fc-border); border-radius: 10px; box-shadow: var(--fc-shadow); overflow: hidden; }
@@ -5687,7 +9736,11 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 }
 .day-col { background: var(--fc-card); border: 1px solid var(--fc-border); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; min-height: 0; min-width: 0; height: 100%; overflow: hidden; box-shadow: var(--fc-shadow); }
 .day-col.today { border: 2px solid var(--fc-accent); }
-.day-header { text-align: center; margin-bottom: 4px; flex: 0 0 auto; }
+.day-header { text-align: center; margin-bottom: 4px; flex: 0 0 auto; cursor: pointer; border-radius: 6px; }
+/* Same border+inset-shadow treatment as .month-cell.selected
+   just above, applied to the header instead of the whole column so the
+   meal blocks/events below it don't visually shift. */
+.day-header.selected { border: 2px solid var(--fc-accent); box-shadow: 0 0 0 2px var(--fc-accent) inset; }
 .name-row { display: flex; align-items: center; justify-content: center; gap: 5px; }
 .day-header .name { font-size: var(--fs-day-name, 13px); text-transform: uppercase; color: var(--fc-text-secondary); }
 .wx-icon { font-size: 19px; line-height: 1; }
@@ -5695,6 +9748,21 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .wx-temp { font-size: var(--fs-wx-temp, 14px); font-weight: 800; opacity: 0.9; white-space: nowrap; color: var(--fc-accent2); }
 .custody-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: #cf8f9c; color: #3a352c; font-size: 11px; font-weight: 800; box-shadow: var(--fc-shadow); margin-left: 2px; }
 .today .day-header .num { color: var(--fc-accent); }
+/* Household ask: "if the background is dark we make the header text
+   light" - .holiday-bg-dark is added alongside the holiday photo's own
+   inline background-image (see _isHolidayBackgroundDark) once that one
+   photo samples as dark, overriding whatever this header text would
+   otherwise be (including the .today accent-color case just above,
+   which is why these need the extra .holiday-bg-dark class for higher
+   specificity rather than relying on source order). */
+.day-col.holiday-bg-dark .day-header .name,
+.day-col.holiday-bg-dark .day-header .num { color: #fff; }
+.month-cell.holiday-bg-dark .mc-date { color: #fff; }
+.planner-day-cell.holiday-bg-dark .planner-day-name,
+.planner-day-cell.holiday-bg-dark .planner-day-number { color: #fff; }
+.planner-mobile-day-header.holiday-bg-dark .planner-day-name,
+.planner-mobile-day-header.holiday-bg-dark .planner-day-number { color: #fff; }
+.day-col.person-lane.holiday-bg-dark .person-lane-name { color: #fff; }
 .menu-blocks { flex: 0 0 auto; display: flex; flex-direction: column; gap: 3px; margin-bottom: 4px; min-height: 0; }
 .menu-banner { position: relative; padding: var(--menu-block-padding, 6px 20px); border-radius: 6px; background: var(--fc-surface2, #f0e6c4); color: #5c4a22; cursor: pointer; min-height: var(--menu-block-min-height, 42px); display: flex; flex-direction: column; align-items: center; justify-content: center; box-sizing: border-box; box-shadow: var(--fc-shadow); }
 .menu-banner .block-label { font-size: var(--menu-label-font-size, 9px); font-weight: 800; text-transform: uppercase; opacity: 0.65; line-height: 1.2; }
@@ -5723,16 +9791,16 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .tl-event { position: absolute; border-radius: 6px; padding: 2px 5px; font-size: 11px; color: #3a352c; overflow: hidden; box-sizing: border-box; cursor: pointer; box-shadow: var(--fc-shadow); }
 .tl-event .tl-time { display: block; font-weight: 700; opacity: 0.85; font-size: 9px; line-height: 1.2; }
 .tl-event .tl-summary { font-weight: 700; white-space: normal; overflow-wrap: break-word; word-break: break-word; line-height: 1.2; }
-.tl-event.reminder-event, .event.reminder-event { border: 2px dashed rgba(0,0,0,0.35); }
-/* v141+ - "grey out already-passed events/reminders" setting (opt-in - see
+.tl-event.reminder-event, .event.reminder-event { border: 2px dashed rgba(128,128,128,0.55); }
+/* "dim already-passed events/reminders" setting (opt-in - see
    _buildDayColumnHtml's isPastEvent). Today's column greys out event by
    event as each one ends; v144.9+, any earlier day greys out entirely.
    Purely visual: opacity only, cursor/pointer-events untouched, so a
    greyed-out pill is still fully tappable/interactable, same as before
    this existed. */
-.event.past, .tl-event.past, .all-day-chip.past { opacity: 0.45; }
-.mc-pill.mc-reminder-pill { border: 2px dashed rgba(0,0,0,0.35); }
-/* v144.16+: small-tablet header declutter tier (household report: a 7"
+.event.past, .tl-event.past, .all-day-chip.past, .mc-pill.past { opacity: 0.45; }
+.mc-pill.mc-reminder-pill { border: 2px dashed rgba(128,128,128,0.55); }
+/* small-tablet header declutter tier (a 7"
    kiosk panel like a Lenovo Smart Display is well wider than a phone, so
    none of the phone-width decluttering below ever applied to it - yet a
    7"/5" panel is exactly where Settings/Week/Month/Edit + the nav arrows/
@@ -5780,7 +9848,7 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .week-shortcuts { display: none; }
 .week-shortcuts.open { display: flex; }
 }
-/* v144.19+: household follow-up, again, on the 960px tier above - v144.18
+/* household follow-up, again, on the 960px tier above - v144.18
    put the date range on its own top row with Settings/Week/Month/Edit and
    More sharing a second row under it (two rows total), but what was
    actually wanted is everything back on ONE row, same shape as the
@@ -5804,7 +9872,7 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
    960/700 in-between range (a 7"/5" kiosk panel's usual width) gets the
    single-row treatment. */
 @media (min-width: 701px) and (max-width: 960px) {
-/* v144.20+: household follow-up, again - the date range needs to be
+/* household follow-up, again - the date range needs to be
    centered on the screen, not just centered in whatever space happens to
    be left between the two button groups. auto 1fr auto (this tier's
    original v144.19 attempt) sized the outer columns to their own content,
@@ -5823,7 +9891,7 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .week-nav-center { justify-content: center; }
 }
 @media (max-width: 700px) {
-:host { height: auto !important; min-height: 100vh; min-height: 100dvh; overflow: hidden; }
+:host { height: 100%; overflow: hidden; }
 ha-card { height: auto; min-height: 100%; overflow: hidden; }
 /* The :host(.modal-open)/ha-card overflow:visible override that undoes
    the overflow:hidden above while a modal is open now lives unscoped by
@@ -5832,22 +9900,41 @@ ha-card { height: auto; min-height: 100%; overflow: hidden; }
    mobile media query, which meant the tablet dashboard (anything wider
    than 700px) never got it and could still show the same clipped-modal
    bug this comment used to describe. */
-.grid.mode-week { grid-template-columns: 1fr; grid-template-rows: none; gap: 10px; overflow-y: auto; }
-/* Below phone width, Portrait collapses the same way Week does above -
-   two 3-4-wide flex rows would be too narrow to read at that size, so
-   just stack all 7 day-cols in one scrolling column instead (the two
-   row-groups become invisible, which is fine - a genuinely
-   portrait-shaped *tablet* is comfortably wider than this breakpoint;
-   this only matters for someone opening Portrait on an actual phone).
-   The generic .day-col { min-height: unset; height: auto; } override
-   right below already applies to both views' day-cols unscoped. */
-/* gap reset to match .portrait-row's own 10px below - this width stacks
-   every day in one continuous column (the two row-groups become
-   invisible, per the comment above), so the wider 24px row-to-row gap
-   from the unscoped .grid.mode-portrait rule would read as an odd, out
-   of place break between two of the otherwise-evenly-spaced day-cols. */
-.grid.mode-portrait { flex-direction: column; overflow-y: auto; gap: 10px; }
-.portrait-row { flex-direction: column; flex: 0 0 auto; gap: 10px; }
+/* Below phone width, Week collapses regardless of row count - even a
+   multi-row layout (the old "Portrait" mode this merged with) would be
+   too narrow to read as several side-by-side flex rows at that size, so
+   every row's day-cols stack into one continuous scrolling column
+   instead (the row groups become invisible - which is fine, since a
+   genuinely portrait-shaped *tablet* is comfortably wider than this
+   breakpoint; this only matters on an actual phone). Gap reset to match
+   .week-row's own 10px below, so the wider 24px row-to-row gap from the
+   unscoped .grid.mode-week rule doesn't read as an odd, out-of-place
+   break between two of the otherwise-evenly-spaced day-cols. The generic
+   .day-col { min-height: unset; height: auto; } override right below
+   already applies to every view's day-cols unscoped. */
+.grid.mode-week { flex-direction: column; overflow-y: auto; gap: 10px; }
+.week-row { flex-direction: column; flex: 0 0 auto; gap: 10px; }
+/* .week-row's own children still carried the unscoped desktop rule
+   .week-row .day-col { flex: 1 1 0; } (see the base .mode-week rules
+   above), meaning "grow/shrink from a flex-basis of 0" along whatever
+   .week-row's main axis is. That's fine on the wide/desktop layout,
+   where .week-row is a row (flex-direction: row) with a real height to
+   distribute - but the instant this phone breakpoint flips .week-row to
+   flex-direction: column just above, the SAME flex:1 1 0 now means
+   "flex-basis 0 along the vertical axis" inside a .week-row that is
+   itself flex: 0 0 auto (sized to its own content, not a fixed height) -
+   a circular sizing case with nothing to grow into, so every day-col
+   collapsed down to a sliver instead of its own natural content height,
+   pushing a big empty gap below. Each day-col needs to size to its own
+   content at this width instead of flex-negotiating a share of a
+   height nothing is providing. */
+.week-row .day-col { flex: 0 0 auto; }
+/* Day view collapses the same way Week does above - a phone-width screen
+   has no room for several side-by-side person lanes, so they stack into
+   one scrolling column instead (the .day-col { min-height: unset; height:
+   auto; } override further below already applies to person lanes too,
+   since they share the .day-col class). */
+.grid.mode-day { grid-auto-flow: row; grid-template-columns: 1fr; grid-template-rows: none; gap: 10px; overflow-y: auto; }
 .day-col { min-height: unset; height: auto; }
 /* Unlike Week's single-column phone stacking above, Planner keeps its
    day-rows/person-columns shape at any width - collapsing it would lose
@@ -5922,7 +10009,7 @@ the full width (see .grocy-recipe-viewer-columns). */
 .grocy-recipe-viewer-photo { display: none; flex: 1 1 260px; min-width: 220px; max-width: 100%; max-height: 320px; object-fit: cover; border-radius: 12px; align-self: flex-start; }
 .grocy-recipe-viewer-status { font-size: 12px; color: var(--fc-text-secondary); padding: 2px 2px 10px; text-align: center; }
 .grocy-recipe-viewer-status.is-error { color: #b5583c; }
-/* Prep/Cook/Total stat pills (task #250) - only ever populated with real
+/* Prep/Cook/Total stat pills () - only ever populated with real
 values parsed off the recipe (see _renderGrocyRecipeDetail); a recipe with
 none of the three published stays an empty, invisible row via :empty
 rather than showing a blank card, same treatment as every other optional
@@ -5932,7 +10019,7 @@ field on this page. */
 .grocy-recipe-stat { background: var(--fc-surface-alt); border: 1px solid var(--fc-border); border-radius: 10px; padding: 8px 18px; text-align: center; min-width: 78px; }
 .grocy-recipe-stat-label { display: block; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fc-text-secondary); margin-bottom: 2px; }
 .grocy-recipe-stat-value { display: block; font-size: 15px; font-weight: 800; color: var(--fc-text); }
-/* Two-column reading layout (task #251) - ingredients (with their own
+/* Two-column reading layout () - ingredients (with their own
 scaler) on one side, hero photo on the other; wraps to a single stacked
 column on narrow widths via flex-wrap, and the photo simply isn't in the
 DOM's visible flow at all when the recipe has none (display:none above),
@@ -5949,14 +10036,14 @@ leaving an empty gap next to it. */
 .grocy-recipe-ingredient-group { font-size: 12px; font-weight: 700; color: var(--fc-text-secondary); text-transform: uppercase; letter-spacing: 0.03em; margin: 10px 0 4px; }
 .grocy-recipe-ingredient-group:first-child { margin-top: 0; }
 .grocy-recipe-ingredient-row { display: flex; align-items: flex-start; gap: 10px; padding: 6px 0; font-size: 14px; color: var(--fc-text); border-bottom: 1px solid var(--fc-border); }
-/* Numbered circular badge (task #251/mockup) standing in for the plain
+/* Numbered circular badge (/mockup) standing in for the plain
 amount text that used to lead each row - the amount itself moved into the
 row's second line/span alongside the product name so nothing that used to
 be shown is lost, just restyled. */
 .grocy-recipe-ingredient-badge { flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
 .grocy-recipe-ingredient-amount { font-weight: 600; color: var(--fc-text-secondary); }
 .grocy-recipe-ingredient-note { font-size: 12px; color: var(--fc-text-secondary); font-style: italic; }
-/* Numbered Instructions steps (task #252) - parsed from the recipe's own
+/* Numbered Instructions steps () - parsed from the recipe's own
 "Preparation" block when it has one (see _renderGrocyRecipeDescription);
 recipes without that exact structure never populate this element at all,
 so it stays empty/invisible via :empty and the raw description below
@@ -6069,7 +10156,7 @@ comes later in paint order. */
    line, which is what made the tab several screens tall. auto-fit/minmax
    keeps two columns in a tablet-width Settings modal and collapses to one
    on a phone with no media query needed. */
-/* Menu suggestions strip inside the meal editor (v1.109.6+) - a compact
+/* Menu suggestions strip inside the meal editor - a compact
    name + "suggested by" + Add/dismiss row, styled off the same surface/
    shadow tokens the rest of the editor's fields use. */
 .menu-suggestions-list { display: flex; flex-direction: column; gap: 6px; }
@@ -6112,17 +10199,25 @@ comes later in paint order. */
 .notify-profile-reminders-sub-btn { border: 2px solid var(--fc-border); background: var(--fc-surface-alt); color: var(--fc-text-secondary); font-size: 11px; font-weight: 700; border-radius: 8px; padding: 5px 7px; cursor: pointer; white-space: nowrap; }
 .notify-profile-reminders-sub-btn.active { border-color: var(--sub-list-color, var(--fc-accent)); background: color-mix(in srgb, var(--sub-list-color, var(--fc-accent)) 18%, var(--fc-card)); color: var(--fc-text); }
 .notify-devices-autodetect-btn { display: block; width: 100%; box-sizing: border-box; border: none; border-radius: 10px; padding: 10px; margin-bottom: 10px; font-size: 13px; font-weight: 700; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; box-shadow: var(--fc-shadow); }
-/* v1.131.0+: a person's own calendar/reminders/wish list, set directly on
+/* a person's own calendar/reminders/wish list, set directly on
    their Users tab profile - see SETTINGS_KEY_USER_PROFILES's comment in
    const.py for the full picture. */
 .notify-profile-calendar-entity { width: 100%; box-sizing: border-box; }
 .notify-profile-own-calendar-badges { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
-.notify-profile-list-row { display: flex; align-items: center; gap: 6px; }
-.notify-profile-list-entity { flex: 1 1 0; min-width: 0; }
-.notify-profile-list-add-btn { flex: 0 0 auto; border: none; border-radius: 10px; padding: 8px 12px; font-size: 12px; font-weight: 700; background: var(--fc-accent); color: var(--fc-accent-text); cursor: pointer; white-space: nowrap; }
-.notify-profile-list-add-btn:disabled { opacity: 0.6; cursor: default; }
-.notify-profile-list-status { font-size: 12px; color: var(--fc-text-secondary); padding: 4px 2px 0; min-height: 14px; }
-.notify-profile-list-status.is-error { color: #b5583c; }
+.notify-profile-list-row, .meal-plan-entity-row { display: flex; align-items: center; gap: 6px; }
+.notify-profile-list-entity, .meal-plan-entity-input { flex: 1 1 0; min-width: 0; }
+.notify-profile-list-add-btn, .meal-plan-entity-add-btn { flex: 0 0 auto; border: none; border-radius: 10px; padding: 8px 12px; font-size: 12px; font-weight: 700; background: var(--fc-accent); color: var(--fc-accent-text); cursor: pointer; white-space: nowrap; }
+.notify-profile-list-add-btn:disabled, .meal-plan-entity-add-btn:disabled { opacity: 0.6; cursor: default; }
+.notify-profile-list-status, .meal-plan-entity-status { font-size: 12px; color: var(--fc-text-secondary); padding: 4px 2px 0; min-height: 14px; }
+.notify-profile-list-status.is-error, .meal-plan-entity-status.is-error { color: #b5583c; }
+.notify-profile-additional-reminders-list { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.notify-profile-additional-reminders-item { display: flex; align-items: center; gap: 6px; }
+.notify-profile-additional-reminders-entity { flex: 1 1 0; min-width: 0; }
+.notify-profile-additional-reminders-make-primary-btn, .notify-profile-additional-reminders-remove-btn { flex: 0 0 auto; border: none; border-radius: 10px; padding: 6px 10px; font-size: 12px; font-weight: 700; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; white-space: nowrap; }
+.notify-profile-additional-reminders-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.notify-profile-additional-reminders-add-btn, .notify-profile-additional-reminders-create-btn { border: none; border-radius: 10px; padding: 8px 12px; font-size: 12px; font-weight: 700; background: var(--fc-accent); color: var(--fc-accent-text); cursor: pointer; }
+.notify-profile-additional-reminders-status { font-size: 12px; color: var(--fc-text-secondary); padding: 4px 2px 0; min-height: 14px; }
+.notify-profile-additional-reminders-status.is-error { color: #b5583c; }
 .modal-close { position: absolute; top: 10px; right: 10px; width: 36px; height: 36px; border-radius: 50%; border: none; background: var(--fc-surface-alt); color: var(--fc-text); font-size: 18px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: var(--fc-shadow); }
 .modal-box h2 { margin: 0 26px 14px 0; font-size: 1.2em; color: var(--fc-text); }
 .field { margin-bottom: 14px; }
@@ -6146,13 +10241,34 @@ comes later in paint order. */
 .pick-recipe-btn { border: none; border-radius: 14px; padding: 8px 10px; font-size: 12px; font-weight: 700; background: #f2ddd4; color: #7a4436; cursor: pointer; white-space: nowrap; box-shadow: var(--fc-shadow); width: 100%; }
 .field input, .field textarea { width: 100%; box-sizing: border-box; font-size: 16px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-family: inherit; }
 .field textarea { resize: vertical; min-height: 60px; }
-/* "Move to another week" (v141+) - a plain date input plus its own Move
+/* "Suggestive meal line": a live hint under the Dish
+   name/meal name field (shared by the day/menu editor and the Recipe Box
+   Add/Edit Recipe editor - see .input-name) when what's being typed looks
+   like a near-duplicate of something already in the Recipe Box catalog
+   ("Cilli dogs" -> "Similar to: Chilli Cheese Dogs"), so a household
+   catches the typo/near-miss before it becomes a second, separate entry
+   for the same dish - see _updateMealNameSuggestion. This is a live,
+   lighter-weight cousin of the existing Save-time fuzzy-duplicate confirm
+   (_findFuzzyDuplicate, used by _upsertDish/_addSuggestion) - same
+   matching logic, surfaced earlier and non-blocking instead of a confirm
+   dialog. v1.132.41+ ):
+   up to 3 candidates now, each its own row with its own "Use this
+   instead?" button - see _findMealNameSuggestionMatches - and both fuzzy
+   thresholds were loosened (whole-name 20%->30%, word-level 34%->45%) so
+   more near-misses surface. */
+.meal-name-suggestion { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; padding: 6px 10px; border-radius: 8px; background: var(--fc-surface-alt); font-size: 12.5px; color: var(--fc-text-secondary); }
+.meal-name-suggestion-label { font-size: 11.5px; }
+.meal-name-suggestion-list { display: flex; flex-direction: column; gap: 4px; }
+.meal-name-suggestion-item { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.meal-name-suggestion-match { color: var(--fc-text); font-weight: 600; }
+.meal-name-suggestion-use { border: none; border-radius: 12px; padding: 4px 9px; font-size: 12px; font-weight: 700; background: #f2ddd4; color: #7a4436; cursor: pointer; white-space: nowrap; }
+/* "Move to another week" - a plain date input plus its own Move
    button, rather than the usual full-width .field input, since the
    button needs to sit right next to the date picker on the same row. */
 .move-meal-row { display: flex; gap: 8px; align-items: center; }
 .move-meal-row .input-move-date { flex: 1; }
 .btn-move-meal { flex: none; border: none; border-radius: 8px; padding: 10px 14px; font-size: 14px; font-weight: 700; background: var(--fc-accent); color: var(--fc-accent-text); cursor: pointer; }
-/* "Additional recipes" (v142+) - a day/menu editor field holding any number
+/* "Additional recipes" - a day/menu editor field holding any number
    of side/dessert/sauce recipes alongside the one main recipe the card
    itself summarizes (name/description/prep-cook-serves/color all still come
    from the main recipe only) - see _editingAdditionalRecipes and
@@ -6186,6 +10302,31 @@ comes later in paint order. */
 .size-btn-row { display: flex; gap: 8px; }
 .size-btn { flex: 1 1 auto; min-height: 44px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
 .size-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
+/* The Alarm Devices "add a device" picker (see
+   _renderAlarmDevicesSection) now renders each not-yet-registered device
+   as its own tap-to-add button, styled like .size-btn above instead of a
+   <select>, wrapping onto multiple lines instead of stretching edge to
+   edge like a toggle pair. */
+.alarm-devices-candidates { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 10px; }
+.alarm-device-candidate-btn { min-height: 40px; padding: 8px 14px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
+.alarm-device-candidate-btn:active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
+.alarm-devices-add-label { margin: 2px 0 0; }
+.alarm-device-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+.alarm-device-row-name { flex: 1; }
+.alarm-device-row-domain { opacity: 0.6; font-size: 11px; }
+.alarm-device-remove-btn { min-width: 32px; min-height: 32px; border-radius: 8px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
+/* attachable checklists - reuses the alarm-device-row/remove-
+   btn shape above (a name, then a small square remove button) for both the
+   Add Event modal's item-builder rows and the event-info popup's checkable
+   items, since the visual idiom is identical either way. */
+.checklist-item-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+.checklist-item-row-text { flex: 1; }
+.checklist-item-row-text.done { text-decoration: line-through; opacity: 0.55; }
+.checklist-item-check { width: 22px; height: 22px; flex: 0 0 auto; }
+.checklist-item-remove-btn { min-width: 32px; min-height: 32px; border-radius: 8px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
+.checklist-add-row { display: flex; gap: 8px; margin-top: 6px; }
+.checklist-add-row input { flex: 1; min-height: 40px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 13px; padding: 0 10px; box-shadow: var(--fc-shadow); }
+.checklist-mode-btn-row { display: flex; gap: 8px; margin-bottom: 8px; }
 .hour-select { flex: 1 1 auto; min-height: 44px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 14px; font-weight: 700; padding: 0 8px; box-shadow: var(--fc-shadow); }
 .range-sep { display: flex; align-items: center; font-size: 13px; font-weight: 700; color: var(--fc-text-secondary); }
 .color-swatches { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -6205,6 +10346,9 @@ comes later in paint order. */
 .btn-clear { background: var(--fc-accent3); color: #fff8ea; }
 .btn-cancel { background: var(--fc-surface-alt); color: var(--fc-text); }
 .settings-debug-btn { width: 100%; min-height: 40px; border-radius: 10px; border: none; background: var(--fc-surface-alt); color: var(--fc-text); font-size: 13px; font-weight: 700; cursor: pointer; margin-bottom: 14px; box-shadow: var(--fc-shadow); }
+.settings-backup-now-btn { width: 100%; min-height: 40px; border-radius: 10px; border: none; background: var(--fc-surface-alt); color: var(--fc-text); font-size: 13px; font-weight: 700; cursor: pointer; margin-bottom: 6px; box-shadow: var(--fc-shadow); }
+.settings-backup-now-status { font-size: 12px; color: var(--fc-text-secondary); margin-bottom: 14px; min-height: 14px; }
+.settings-backup-now-status.is-error { color: #b5583c; font-weight: 600; }
 .loved-box { width: min(92vw, 480px); }
 /* Wider than the other loved-box-based modals - each ingredient row here
    packs a raw-text input, amount field, unit select, product select, and a
@@ -6294,12 +10438,50 @@ comes later in paint order. */
 .screensaver-users-list { display: flex; flex-direction: column; gap: 6px; max-height: 40vh; overflow-y: auto; }
 .screensaver-user-row { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--fc-text); padding: 8px 10px; border-radius: 10px; background: var(--fc-surface-alt); }
 .screensaver-users-empty { font-size: 13px; color: var(--fc-text-secondary); font-style: italic; }
+.screensaver-widgets-edit-btn { width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border-radius: 12px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); text-align: left; }
+.screensaver-widgets-hide-list { display: flex; flex-direction: column; gap: 6px; }
+.screensaver-widgets-hide-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--fc-text); padding: 6px 10px; border-radius: 10px; background: var(--fc-surface-alt); }
+.screensaver-widgets-box { width: min(94vw, 640px); }
+.screensaver-widgets-canvas-wrap { width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 12px; overflow: hidden; margin: 10px 0; position: relative; }
+.screensaver-widgets-canvas { position: absolute; inset: 0; }
+.screensaver-widget-box { position: absolute; box-sizing: border-box; border: 2px dashed rgba(255,255,255,0.7); background: rgba(255,255,255,0.12); border-radius: 6px; color: #fff; font-size: 11px; cursor: move; touch-action: none; display: flex; flex-direction: column; overflow: hidden; }
+.screensaver-widget-box-label { padding: 3px 6px; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+.screensaver-widget-box-label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.screensaver-widget-box-actions { display: flex; gap: 4px; flex: 0 0 auto; }
+.screensaver-widget-box-actions button { border: none; background: rgba(255,255,255,0.25); color: #fff; border-radius: 4px; width: 18px; height: 18px; font-size: 11px; line-height: 1; cursor: pointer; }
+.screensaver-widget-box-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; background: rgba(255,255,255,0.7); border-top-left-radius: 6px; touch-action: none; }
+.screensaver-widget-form { margin-top: 8px; padding: 10px; border-radius: 10px; border: 1px solid var(--fc-border); background: var(--fc-surface-alt); }
+.screensaver-widget-config-input { width: 100%; box-sizing: border-box; font-family: monospace; font-size: 12px; }
+.screensaver-widget-config-error { color: var(--fc-danger, #c62828); font-size: 12px; margin-top: 4px; }
+.screensaver-widget-transparent-label { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.screensaver-widget-transparent-label input { flex: 0 0 auto; width: 18px; height: 18px; }
+.screensaver-widget-editor-toggle-row { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+.screensaver-widget-yaml-toggle-btn, .screensaver-widget-visual-toggle-btn { border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.screensaver-widget-native-editor { margin-bottom: 8px; }
+.screensaver-widget-native-editor:empty { display: none; }
+.screensaver-widget-native-editor-error { font-size: 12px; color: var(--fc-text-secondary); font-style: italic; padding: 6px 0; }
+/* Add-widget gallery (household ask: "a UI similar to what is used to
+   build dashboards") - same tile-card treatment as the Layout ideas
+   picker (.layout-preset-btn) elsewhere on this tab, for a consistent
+   "pick a card" feel across the two pickers this app now has. */
+.screensaver-widget-gallery-grid { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.screensaver-widget-type-tile { flex: 1 1 110px; min-width: 100px; max-width: 160px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 8px; border-radius: 12px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); cursor: pointer; text-align: center; font-family: inherit; }
+.screensaver-widget-type-tile:hover { border-color: var(--fc-accent); }
+.screensaver-widget-type-tile-custom { border-style: dashed; opacity: 0.85; }
+.screensaver-widget-type-icon { font-size: 22px; }
+.screensaver-widget-type-name { font-size: 12px; font-weight: 700; }
+.screensaver-widget-type-desc { font-size: 10px; color: var(--fc-text-secondary); line-height: 1.3; }
+.screensaver-widget-guided { margin-top: 4px; }
+.screensaver-widget-back-btn { background: none; border: none; color: var(--fc-accent); font-size: 12px; font-weight: 700; cursor: pointer; padding: 0 0 8px; }
+.screensaver-widget-type-chosen-label { font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+.screensaver-widget-entity-input { width: 100%; box-sizing: border-box; }
+.screensaver-widget-content-input { width: 100%; box-sizing: border-box; }
 .link-picker-row { display: flex; align-items: center; gap: 8px; }
 .link-picker-row input { flex: 1 1 auto; }
 .menu-link-open-btn { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); font-size: 18px; cursor: pointer; box-shadow: var(--fc-shadow); }
 .menu-link-open-btn:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
 /* The Recipe link field's "Open link" button stays visible outside the
-More options accordion (task #172) even though the editable URL input
+More options accordion () even though the editable URL input
 moved inside it, so this row lays the label and button out side-by-side
 instead of the usual stacked field layout. */
 .menu-link-quick-field { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -6309,6 +10491,10 @@ instead of the usual stacked field layout. */
 .add-event-tab-btn { flex: 1 1 0; min-height: 40px; padding: 8px 10px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
 .add-event-tab-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
 .add-event-tab-panel { display: flex; flex-direction: column; gap: 12px; }
+.debug-actions { display: flex; gap: 8px; margin-bottom: 8px; }
+.debug-copy-btn, .debug-export-btn { flex: 1 1 0; min-height: 40px; border-radius: 10px; border: none; background: var(--fc-surface-alt); color: var(--fc-text); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
+.debug-status { font-size: 12px; color: var(--fc-text-secondary); margin-bottom: 8px; min-height: 14px; }
+.debug-status.is-error { color: #b5583c; font-weight: 600; }
 .debug-content { font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 .debug-content .dbg-cal { margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed var(--fc-border); }
 .debug-content .dbg-err { color: #b5583c; font-weight: 700; }
@@ -6331,6 +10517,11 @@ instead of the usual stacked field layout. */
 .event-info-countdown-btn:active { opacity: 0.7; }
 .event-info-countdown-btn.done { border-color: var(--fc-accent); background: #f0e6c4; }
 .event-info-countdown-btn:disabled { opacity: 0.6; cursor: default; }
+.event-info-delete-row { margin-top: 4px; }
+.event-info-delete-btn { min-height: 40px; padding: 6px 14px; border-radius: 10px; border: 2px solid #c0392b; background: #fdecea; color: #a5281b; font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
+.event-info-delete-btn:active { opacity: 0.7; }
+.event-info-delete-btn:disabled { opacity: 0.6; cursor: default; }
+.event-info-delete-btn.unsupported { border: 2px dashed var(--fc-border); background: var(--fc-card); color: var(--fc-text-secondary); opacity: 0.7; cursor: pointer; }
 .people-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
 .person-row { display: flex; align-items: center; gap: 6px; }
 .person-row input[type="text"] { width: auto; }
@@ -6350,9 +10541,16 @@ instead of the usual stacked field layout. */
 .notify-devices-add-btn { flex: 0 0 auto; min-height: 40px; padding: 6px 14px; border-radius: 10px; border: none; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
 .notify-devices-add-btn:disabled { opacity: 0.4; cursor: default; }
 .person-badges { display: flex; flex-direction: column; gap: 6px; margin: -2px 0 10px; }
-.person-badge-row { display: flex; align-items: center; gap: 6px; }
-.person-badge-row input { flex: 1 1 0; min-width: 0; font-size: 12px !important; padding: 6px 8px !important; }
+.person-badge-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.person-badge-row input[type="text"] { flex: 1 1 0; min-width: 0; font-size: 12px !important; padding: 6px 8px !important; }
 .person-badge-row .person-badge-text { flex: 0 0 64px; }
+/* "Hide from digest" checkbox next to each badge row (see
+   _build_daily_digest_message on the backend for what it actually
+   drives). A plain checkbox+label, not another flex:1 text input, so it
+   sits at its own natural width instead of stretching like the text
+   fields above it. */
+.person-badge-digest-label { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--fc-text-secondary); white-space: nowrap; cursor: pointer; }
+.person-badge-digest-label input[type="checkbox"] { flex: 0 0 auto; width: 14px; height: 14px; margin: 0; }
 .person-badge-remove-btn { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 8px; border: none; background: var(--fc-surface-alt); color: #b5583c; font-size: 13px; cursor: pointer; }
 .person-badge-add-btn { align-self: flex-start; border: none; border-radius: 12px; padding: 5px 10px; font-size: 11px; font-weight: 700; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; box-shadow: var(--fc-shadow); }
 .person-countdown-btn.active { opacity: 1; border-color: var(--fc-accent); background: #f0e6c4; }
@@ -6377,16 +10575,26 @@ instead of the usual stacked field layout. */
 .remind-check-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .remind-check-opt { display: flex; align-items: center; gap: 4px; padding: 5px 9px; border-radius: 12px; background: var(--fc-surface-alt); color: var(--fc-text); font-size: 12px; font-weight: 600; cursor: pointer; user-select: none; }
 .remind-check-opt input { margin: 0; }
-/* v144.10+: leftovers day-picker (replaces the old single "next N days"
+/* leftovers day-picker (replaces the old single "next N days"
    number input) - same pill-checkbox look as .remind-check-row/-opt just
    above, reused here rather than inventing a second checkbox style. */
 .leftover-days-picker { display: flex; flex-wrap: wrap; gap: 6px; }
 .leftover-day-opt { display: flex; align-items: center; gap: 4px; padding: 5px 9px; border-radius: 12px; background: var(--fc-surface-alt); color: var(--fc-text); font-size: 12px; font-weight: 600; cursor: pointer; user-select: none; }
 .leftover-day-opt input { margin: 0; }
+/* "Roll over to next day if not completed" reminders can now be
+   restricted to specific days of the week (see _rolldaysBtnsHtml) - a
+   Mon-Sun toggle-button row, same visual language as the Chores card's own
+   weekday-btn-row (this file has no shared module with that one, so it's
+   its own independent copy of the same look). */
+.rolldays-field { display: none; margin: 6px 0 0 0; }
+.rolldays-hint { font-size: 11px; color: var(--fc-text-secondary); font-style: italic; margin: 0 0 4px; }
+.rolldays-btn-row { display: flex; gap: 4px; flex-wrap: wrap; }
+.rolldays-btn { border: 1px solid var(--fc-border); border-radius: 8px; padding: 6px 8px; font-size: 12px; font-weight: 700; background: var(--fc-card); color: var(--fc-text); cursor: pointer; }
+.rolldays-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
 .event-info-remind-row { align-items: flex-start; }
 .event-info-remind-content { display: flex; flex-direction: column; gap: 4px; }
 .event-info-remind-status { font-size: 11px; color: var(--fc-text-secondary); min-height: 14px; }
-/* v129+: multi-person events - the "Also for" checkbox row on the
+/* multi-person events - the "Also for" checkbox row on the
    event-info popup reuses .remind-check-opt's own pill styling, just with
    a small colored dot per person added in front of the checkbox. */
 .event-info-people-row { align-items: flex-start; }
@@ -6450,44 +10658,159 @@ instead of the usual stacked field layout. */
 .theme-color-row input[type="color"] { width: 40px; height: 34px; padding: 0; border: 2px solid transparent; border-radius: 8px; cursor: pointer; background: none; flex: 0 0 auto; box-shadow: var(--fc-shadow); }
 .theme-font-row input[type="number"] { width: 70px; text-align: center; font-size: 14px; padding: 6px 4px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); flex: 0 0 auto; }
 .theme-reset-btn { width: 100%; min-height: 40px; border-radius: 10px; border: 2px dashed var(--fc-border); background: none; color: var(--fc-text-secondary); font-size: 13px; font-weight: 700; cursor: pointer; margin-top: 4px; }
+.number-input-row { display: flex; align-items: center; gap: 8px; }
+.field-row { display: flex; gap: 16px; flex-wrap: wrap; }
+.field-row-item { flex: 1 1 160px; min-width: 0; }
+/* Holiday Backgrounds (Settings > General) - see
+   _renderHolidayBackgroundsSettings/_syncHolidayBackgroundsDraftFromDom.
+   One .holiday-bg-row per predefined holiday (HOLIDAY_PREDEFINED_DEFS) or
+   custom date, same "boxed row on --fc-surface-alt" look as every other
+   settings list row (.person-row's own container, .daily-digest-item-row,
+   etc.) in this card. */
+.holiday-bg-subheading { font-size: 12px; font-weight: 700; color: var(--fc-text-secondary); text-transform: uppercase; letter-spacing: 0.02em; margin: 14px 0 6px; }
+.holiday-bg-subheading:first-of-type { margin-top: 2px; }
+.holiday-bg-row { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 10px; background: var(--fc-surface-alt); margin-bottom: 8px; }
+.holiday-bg-row-top { display: flex; align-items: center; gap: 8px; }
+.holiday-bg-row-top input[type="checkbox"] { width: 20px; height: 20px; flex: 0 0 auto; cursor: pointer; }
+.holiday-bg-name { flex: 1 1 auto; min-width: 0; font-size: 13px !important; padding: 8px 10px !important; }
+.holiday-bg-date-label { flex: 0 0 auto; font-size: 12px; color: var(--fc-text-secondary); font-style: italic; white-space: nowrap; }
+.holiday-bg-remove-btn { flex: 0 0 auto; min-height: 32px; min-width: 32px; border-radius: 8px; border: none; background: var(--fc-card); color: #b5583c; font-size: 14px; cursor: pointer; box-shadow: var(--fc-shadow); }
+.holiday-bg-date-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.holiday-bg-date-row input[type="number"] { width: 56px; text-align: center; font-size: 13px; padding: 6px 4px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); flex: 0 0 auto; }
+.holiday-bg-recurring-label, .holiday-bg-expand-label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fc-text); cursor: pointer; }
+.holiday-bg-recurring-label input, .holiday-bg-expand-label input { width: 18px; height: 18px; flex: 0 0 auto; cursor: pointer; }
+.holiday-bg-scope-row { gap: 6px; margin-top: 2px; margin-left: 24px; flex-wrap: wrap; }
+.holiday-bg-scope-btn { flex: 1 1 0; min-height: 30px; padding: 4px 8px; border-radius: 8px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text-secondary); font-size: 11px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.holiday-bg-scope-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
+.holiday-bg-image-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.holiday-bg-preview { width: 48px; height: 48px; object-fit: cover; border-radius: 8px; border: 1px solid var(--fc-border); flex: 0 0 auto; }
+.holiday-bg-upload-status { font-size: 11px; color: var(--fc-text-secondary); font-style: italic; }
+.number-input-row input[type="number"] { width: 70px; text-align: center; font-size: 14px; padding: 6px 4px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); flex: 0 0 auto; }
+.number-input-hint { font-size: 12px; color: var(--fc-text-secondary); }
+/* "Layout ideas" quick-pick row (household ask, v1.134.x+) - a card per
+   preset with a tiny CSS-only row/column diagram, a name, and a one-line
+   description. .active mirrors the same accent-fill treatment
+   .size-btn.active uses elsewhere on this tab, so a selected preset reads
+   consistently with every other picker on the page. */
+.layout-preset-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+.layout-preset-btn { flex: 1 1 130px; min-width: 120px; max-width: 220px; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 10px; border-radius: 12px; border: 2px solid var(--fc-border); background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; text-align: center; font-family: inherit; }
+.layout-preset-btn:hover { border-color: var(--fc-accent); }
+.layout-preset-btn.active { border-color: var(--fc-accent); background: var(--fc-accent); color: var(--fc-accent-text); }
+.layout-preset-icon { display: flex; flex-direction: column; gap: 3px; width: 64px; }
+.layout-preset-icon .lp-row { display: flex; gap: 2px; }
+.layout-preset-icon .lp-cell { flex: 1 1 0; height: 10px; border-radius: 2px; background: var(--fc-border); }
+.layout-preset-btn.active .lp-cell { background: var(--fc-accent-text); opacity: 0.85; }
+.layout-preset-icon.lp-agenda { gap: 5px; }
+.layout-preset-icon.lp-agenda .lp-line { height: 6px; border-radius: 2px; background: var(--fc-border); }
+.layout-preset-icon.lp-agenda .lp-line:nth-child(1) { width: 100%; }
+.layout-preset-icon.lp-agenda .lp-line:nth-child(2) { width: 78%; }
+.layout-preset-icon.lp-agenda .lp-line:nth-child(3) { width: 90%; }
+.layout-preset-icon.lp-agenda .lp-line:nth-child(4) { width: 62%; }
+.layout-preset-btn.active .lp-line { background: var(--fc-accent-text); opacity: 0.85; }
+.layout-preset-name { font-size: 13px; font-weight: 700; }
+.layout-preset-desc { font-size: 11px; color: var(--fc-text-secondary); line-height: 1.35; }
+.layout-preset-btn.active .layout-preset-desc { color: var(--fc-accent-text); opacity: 0.85; }
+.device-settings-card { border: 1px solid var(--fc-border); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; background: var(--fc-surface-alt); box-shadow: var(--fc-shadow); }
+.device-settings-card-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.device-settings-card.expanded > .device-settings-card-header { margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--fc-border); }
+.device-settings-card-toggle { display: flex; align-items: center; gap: 6px; background: none; border: none; padding: 0; margin: 0; cursor: pointer; font: inherit; color: inherit; text-align: left; min-height: 36px; }
+.device-settings-card-toggle-chevron { display: inline-block; font-size: 16px; line-height: 1; color: var(--fc-text-secondary); transition: transform 0.15s ease; transform: rotate(0deg); }
+.device-settings-card.expanded .device-settings-card-toggle-chevron { transform: rotate(90deg); }
+/* Full label is "<name>_<id>" (see _deviceLabel), which reads fine as
+   plain text unlike a bare generated id - the raw id is still available
+   via this element's title attribute. */
+.device-settings-id { font-size: 13px; font-weight: 700; color: var(--fc-text); word-break: break-word; }
+.device-settings-you-tag { font-size: 11px; font-weight: 700; padding: 2px 6px; border-radius: 6px; background: var(--fc-accent); color: var(--fc-accent-text); }
+.device-settings-last-seen { margin-left: auto; font-size: 11px; color: var(--fc-text-secondary); }
+.device-settings-card-body { display: none; }
+.device-settings-card.expanded .device-settings-card-body { display: block; }
+.device-settings-field-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.device-settings-field-row label { font-size: 13px; color: var(--fc-text); flex: 1 1 auto; }
+.device-settings-card input.device-settings-field-input { flex: 0 0 auto; width: 92px; box-sizing: border-box; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 13px; }
+.device-settings-card input.device-settings-field-input-text { width: 160px; }
+.device-settings-card-actions, .device-settings-instance-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--fc-border); }
+.device-settings-card-actions button, .device-settings-instance-actions button { flex: 0 0 auto; min-height: 36px; padding: 6px 10px; font-size: 12px; }
+.device-settings-card input.device-settings-preset-name-input { flex: 1 1 120px; min-width: 100px; box-sizing: border-box; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 12px; }
+.device-settings-instances { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--fc-border); }
+.device-settings-instances-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--fc-text-secondary); margin-bottom: 6px; }
+.device-settings-instance-row { border: 1px solid var(--fc-border); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; background: var(--fc-card); }
+.device-settings-instance-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--fc-border); }
+.device-settings-instance-label { font-size: 12px; font-weight: 700; color: var(--fc-text); word-break: break-word; }
+.device-settings-instance-empty { font-size: 12px; color: var(--fc-text-secondary); }
+.device-settings-preset-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.device-settings-preset-name { flex: 1 1 auto; font-size: 13px; font-weight: 600; color: var(--fc-text); }
+.device-settings-preset-row select { flex: 0 0 auto; padding: 6px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 12px; }
+.device-settings-preset-row button { flex: 0 0 auto; min-height: 34px; padding: 6px 10px; font-size: 12px; }
+.this-device-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.this-device-row input.this-device-name-input { flex: 1 1 160px; width: auto; min-width: 120px; box-sizing: border-box; }
+.this-device-row button { flex: 0 0 auto; }
+/* Daily Digest modal - see _openDailyDigest/_renderDailyDigest.
+   Same "list of labeled sections" shape as .grocy-expiring-sections above,
+   reused deliberately rather than inventing a new look for what's visually
+   the same kind of content (a scrollable list of small header+bullets
+   blocks inside a modal). .daily-digest-flat-section (grocyLowStock's own
+   single bare-sentence shape - see _build_daily_digest_sections' own
+   "flat" doc) skips the header/bullet treatment entirely. */
+.daily-digest-sections { display: flex; flex-direction: column; gap: 16px; max-height: 420px; overflow-y: auto; padding: 2px; }
+.daily-digest-section-title { font-weight: 800; font-size: 13px; color: var(--fc-text); margin-bottom: 6px; }
+.daily-digest-section-items { display: flex; flex-direction: column; gap: 6px; }
+.daily-digest-item-row { padding: 8px 10px; border-radius: 10px; background: var(--fc-surface-alt); font-size: 13px; color: var(--fc-text); }
+.daily-digest-flat-section .daily-digest-item-row { background: none; padding: 2px 2px 4px; font-weight: 700; }
+.daily-digest-empty { font-size: 13px; color: var(--fc-text-secondary); font-style: italic; padding: 2px 2px 4px; }
+/* Shown above the top nav bar whenever Home Assistant's own
+   hass.config.state isn't "RUNNING" yet (see _isHomeAssistantFullyLoaded/
+   _updateHaStartingBanner) - a fixed warning color on purpose, same
+   reasoning as .event-info-delete-btn's own fixed red, so it reads as "a
+   real heads-up" regardless of which household theme is active. */
+.ha-starting-banner { padding: 8px 14px; background: #fff3cd; color: #7a5c00; font-size: 13px; font-weight: 600; text-align: center; }
+.ha-starting-banner[hidden] { display: none; }
 </style>
 <ha-card>
+<div class="ha-starting-banner" role="status" hidden data-i18n="common.ha_starting_banner">Home Assistant is starting up - not everything may be available yet.</div>
 <div class="week-nav">
 <div class="week-nav-side left">
-<button class="settings-btn" title="Settings">&#9881;&#65039;</button>
-<button class="view-btn" data-view="week" title="Week view">Week</button>
-<button class="view-btn" data-view="month" title="Month view">Month</button>
-<button class="edit-meals-btn" title="Rearrange meals">&#9999;&#65039;<span class="edit-meals-label"> Edit</span></button>
+<button class="settings-btn" title="Settings" data-i18n-title="nav.settings">&#9881;&#65039;</button>
+<div class="view-select-wrap">
+<button type="button" class="view-select-btn" aria-haspopup="true" aria-expanded="false" title="Switch view" data-i18n-title="nav.switch_view_title"><span class="view-select-label" data-i18n="nav.week">Week</span> &#9662;</button>
+<div class="view-select-dropdown">
+<button type="button" class="view-select-item" data-view="week"><span data-i18n="nav.week">Week</span></button>
+<button type="button" class="view-select-item" data-view="day"><span data-i18n="nav.day">Day</span></button>
+<button type="button" class="view-select-item" data-view="month"><span data-i18n="nav.month">Month</span></button>
+</div>
+</div>
+<button class="edit-meals-btn" title="Rearrange meals" data-i18n-title="nav.edit_meals_title">&#9999;&#65039;<span class="edit-meals-label" data-i18n="nav.edit_suffix"> Edit</span></button>
 </div>
 <div class="week-nav-center">
-<button class="nav-arrow nav-prev" aria-label="Previous">&#9664;</button>
+<button class="nav-arrow nav-prev" aria-label="Previous" data-i18n-title="nav.previous">&#9664;</button>
 <div class="week-label-wrap">
 <div class="week-label">This Week</div>
 <div class="countdown-line"></div>
-<button type="button" class="week-shortcuts-toggle" aria-haspopup="true" aria-expanded="false" aria-label="Jump to a week">&#9660;</button>
+<button type="button" class="week-shortcuts-toggle" aria-haspopup="true" aria-expanded="false" aria-label="Jump to a week" data-i18n-title="nav.jump_to_week">&#9660;</button>
 </div>
-<button class="nav-arrow nav-next" aria-label="Next">&#9654;</button>
+<button class="nav-arrow nav-next" aria-label="Next" data-i18n-title="nav.next">&#9654;</button>
 </div>
 <div class="week-nav-side right">
-<button class="suggestions-btn">&#128161; Suggestions</button>
-<button class="loved-btn">&#127869;&#65039; Recipe Box</button>
+<button class="suggestions-btn">&#128161; <span data-i18n="nav.suggestions">Suggestions</span></button>
+<button class="loved-btn">&#127869;&#65039; <span data-i18n="nav.recipe_box">Recipe Box</span></button>
 <div class="more-menu-wrap">
-<button class="more-menu-btn" title="More" aria-haspopup="true" aria-expanded="false">&#8942; More</button>
+<button class="more-menu-btn" title="More" aria-haspopup="true" aria-expanded="false" data-i18n-title="nav.more">&#8942; <span data-i18n="nav.more">More</span></button>
 <div class="more-menu-dropdown">
-<button type="button" class="more-menu-item loved-menu-item">&#127869;&#65039; Recipe Box</button>
-<button type="button" class="more-menu-item templates-btn">&#128203; Templates</button>
-<button type="button" class="more-menu-item print-btn" title="Print or save as PDF">&#128424;&#65039; Print</button>
-<button type="button" class="more-menu-item grocy-shopping-list-btn" title="View and add to your Grocy shopping list">&#128717; Shopping List</button>
-<button type="button" class="more-menu-item grocy-expiring-btn" title="Items in Grocy stock expiring within 30 days">&#8987; Expiring Soon</button>
-<button type="button" class="more-menu-item grocy-low-stock-btn" title="Items in Grocy stock below their minimum amount">&#128230; Low Stock</button>
+<button type="button" class="more-menu-item loved-menu-item">&#127869;&#65039; <span data-i18n="nav.recipe_box">Recipe Box</span></button>
+<button type="button" class="more-menu-item templates-btn">&#128203; <span data-i18n="nav.templates">Templates</span></button>
+<button type="button" class="more-menu-item print-btn" title="Print or save as PDF" data-i18n-title="nav.print_title">&#128424;&#65039; <span data-i18n="nav.print">Print</span></button>
+<button type="button" class="more-menu-item grocy-shopping-list-btn" title="View and add to your Grocy shopping list" data-i18n-title="nav.shopping_list_title">&#128717; <span data-i18n="nav.shopping_list">Shopping List</span></button>
+<button type="button" class="more-menu-item grocy-expiring-btn" title="Items in Grocy stock expiring within 30 days" data-i18n-title="nav.expiring_soon_title">&#8987; <span data-i18n="nav.expiring_soon">Expiring Soon</span></button>
+<button type="button" class="more-menu-item grocy-low-stock-btn" title="Items in Grocy stock below their minimum amount" data-i18n-title="nav.low_stock_title">&#128230; <span data-i18n="nav.low_stock">Low Stock</span></button>
+<button type="button" class="more-menu-item daily-digest-menu-item" title="Your own Daily Digest, any time" data-i18n-title="nav.daily_digest_title">&#128240; <span data-i18n="nav.daily_digest">Daily Digest</span></button>
+<button type="button" class="more-menu-item privacy-mode-menu-item" title="Hide reminders and calendar events until someone with the privacy mode privilege unlocks it" data-i18n-title="nav.privacy_mode_title">&#128274; <span data-i18n="nav.privacy_mode">Enable Privacy Mode</span></button>
 </div>
 </div>
 </div>
 </div>
 <div class="week-shortcuts">
-<button class="week-shortcut" data-weeks="0">This Week</button>
-<button class="week-shortcut" data-weeks="1">Next Week</button>
-<button class="week-shortcut" data-weeks="2">In 2 Weeks</button>
+<button class="week-shortcut" data-weeks="0" data-i18n="nav.this_week_shortcut">This Week</button>
+<button class="week-shortcut" data-weeks="1" data-i18n="nav.next_week">Next Week</button>
+<button class="week-shortcut" data-weeks="2" data-i18n="nav.in_2_weeks">In 2 Weeks</button>
 </div>
 <div class="legend"></div>
 <div class="grid mode-week"></div>
@@ -6517,6 +10840,10 @@ instead of the usual stacked field layout. */
 <button class="pick-recipe-btn" type="button">&#127869;&#65039; Pick a Recipe</button>
 </div>
 <input type="text" class="input-name" placeholder="e.g. Taco night" maxlength="120" />
+<div class="meal-name-suggestion" style="display:none;">
+<div class="meal-name-suggestion-label">Similar to:</div>
+<div class="meal-name-suggestion-list"></div>
+</div>
 </div>
 <div class="field">
 <label>Description</label>
@@ -6840,6 +11167,14 @@ instead of the usual stacked field layout. */
 <div class="grocy-low-stock-items"></div>
 </div>
 </div>
+<div class="modal-overlay daily-digest-overlay">
+<div class="modal-box loved-box">
+<button class="modal-close daily-digest-close" aria-label="Close">&#10005;</button>
+<h2>&#128240; <span data-i18n="daily_digest.title">Daily Digest</span></h2>
+<div class="daily-digest-status"></div>
+<div class="daily-digest-sections" style="display:none;"></div>
+</div>
+</div>
 <div class="modal-overlay templates-overlay">
 <div class="modal-box loved-box">
 <button class="modal-close templates-close" aria-label="Close">&#10005;</button>
@@ -6852,8 +11187,13 @@ instead of the usual stacked field layout. */
 </div>
 <div class="modal-overlay debug-overlay">
 <div class="modal-box debug-box">
-<button class="modal-close debug-close" aria-label="Close">&#10005;</button>
-<h2>Debug Info</h2>
+<button class="modal-close debug-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
+<h2 data-i18n="settings.debug_info">Debug Info</h2>
+<div class="debug-actions">
+<button type="button" class="debug-copy-btn">&#128203; <span data-i18n="settings.debug_copy">Copy</span></button>
+<button type="button" class="debug-export-btn">&#128190; <span data-i18n="settings.debug_export">Export to file</span></button>
+</div>
+<div class="debug-status"></div>
 <div class="debug-content"></div>
 </div>
 </div>
@@ -6866,595 +11206,817 @@ instead of the usual stacked field layout. */
 </div>
 <div class="modal-overlay settings-overlay">
 <div class="modal-box settings-box">
-<button class="modal-close settings-close" aria-label="Close">&#10005;</button>
-<h2>&#9881;&#65039; Settings</h2>
-<button type="button" class="settings-debug-btn">&#128027; Debug Info</button>
+<button class="modal-close settings-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
+<h2>&#9881;&#65039; <span data-i18n="settings.heading">Settings</span></h2>
+<button type="button" class="settings-debug-btn">&#128027; <span data-i18n="settings.debug_info">Debug Info</span></button>
+<button type="button" class="settings-backup-now-btn admin-only-setting">&#128190; <span data-i18n="settings.backup_now">Back up now</span></button>
+<div class="settings-backup-now-status admin-only-setting"></div>
 <div class="settings-tabs">
-<button type="button" class="settings-tab-btn active" data-settings-tab="general">General</button>
-<button type="button" class="settings-tab-btn" data-settings-tab="notifications">Users</button>
+<button type="button" class="settings-tab-btn active" data-settings-tab="general" data-i18n="settings.tab_general">General</button>
+<button type="button" class="settings-tab-btn" data-settings-tab="notifications" data-i18n="settings.tab_users">Users</button>
+<button type="button" class="settings-tab-btn admin-only-setting" data-settings-tab="devices" data-i18n="settings.tab_devices">Devices</button>
 </div>
 <div class="settings-tab-panel" data-settings-tab-panel="general">
+<div class="field this-device-field">
+<label data-i18n="settings.this_device_label">This device</label>
+<div class="this-device-row">
+<input type="text" class="this-device-name-input" maxlength="60" data-i18n-placeholder="settings.device_name_placeholder" placeholder="auto" />
+<button type="button" class="btn-cancel this-device-identify-btn" data-i18n="settings.devices_identify">Identify</button>
+<button type="button" class="btn-save this-device-save-btn" data-i18n="common.save">Save</button>
+</div>
+<div class="remind-hint this-device-current-label"></div>
+</div>
+<div class="field admin-only-setting">
+<label data-i18n="settings.weather_entity_label">Weather entity</label>
+<input type="text" class="weather-entity-input" list="weather-entity-datalist" placeholder="weather.forecast_home" />
+<datalist id="weather-entity-datalist"></datalist>
+<div class="remind-hint" data-i18n="settings.weather_entity_hint">The weather entity each day-column's forecast is pulled from. Leave blank to use the dashboard's own config (or Home Assistant's weather.forecast_home default).</div>
+</div>
 <div class="field">
 <button type="button" class="accordion-toggle" data-target="calendars-body">
-<span class="theme-section-label">Calendars</span>
+<span class="theme-section-label" data-i18n="settings.section_calendars">Calendars</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="calendars-body">
-<div class="people-hint">Tap &#9203; on a calendar to include its events in the countdown banner. Use &#10133; Add badge to show a small bubble (like "N", in that calendar's color) on days with events matching a keyword, and optionally hide events matching another keyword. Who gets notified about a calendar's events/reminders is set per-person under the Users tab, not here.</div>
-<div class="people-list"></div>
-<button type="button" class="add-person-btn">+ Add calendar</button>
+<div class="people-hint admin-only-setting" data-i18n="settings.calendars_hint">Tap &#9203; on a calendar to include its events in the countdown banner. Use &#10133; Add badge to show a small bubble (like "N", in that calendar's color) on days with events matching a keyword, and optionally hide events matching another keyword. Who gets notified about a calendar's events/reminders is set per-person under the Users tab, not here.</div>
+<div class="people-list admin-only-setting"></div>
+<button type="button" class="add-person-btn admin-only-setting" data-i18n="settings.add_calendar">+ Add calendar</button>
 <div class="field">
-<label>Default view</label>
+<label data-i18n="settings.default_view_label">Default view</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn default-view-btn" data-value="week">Week</button>
-<button type="button" class="size-btn default-view-btn" data-value="month">Month</button>
+<button type="button" class="size-btn default-view-btn" data-value="week" data-i18n="nav.week">Week</button>
+<button type="button" class="size-btn default-view-btn" data-value="month" data-i18n="nav.month">Month</button>
 </div>
 </div>
 <div class="field">
-<label>Week button shows — this device only</label>
+<label data-i18n="settings.layout_presets_label">Layout ideas — this device only (tap one to fill in the fields below, then Save)</label>
+<div class="layout-preset-row">
+<button type="button" class="layout-preset-btn" data-preset="week">
+<span class="layout-preset-icon"><span class="lp-row"><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span></span></span>
+<span class="layout-preset-name" data-i18n="settings.layout_preset_week_name">Week</span>
+<span class="layout-preset-desc" data-i18n="settings.layout_preset_week_desc">One row, all 7 days at a glance — the classic view</span>
+</button>
+<button type="button" class="layout-preset-btn" data-preset="portrait">
+<span class="layout-preset-icon"><span class="lp-row"><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span></span><span class="lp-row"><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span></span></span>
+<span class="layout-preset-name" data-i18n="settings.layout_preset_portrait_name">Portrait</span>
+<span class="layout-preset-desc" data-i18n="settings.layout_preset_portrait_desc">Same 7 days split into 2 rows — bigger text for a tall or portrait-mounted screen</span>
+</button>
+<button type="button" class="layout-preset-btn" data-preset="agenda">
+<span class="layout-preset-icon lp-agenda"><span class="lp-line"></span><span class="lp-line"></span><span class="lp-line"></span><span class="lp-line"></span></span>
+<span class="layout-preset-name" data-i18n="settings.layout_preset_agenda_name">Agenda</span>
+<span class="layout-preset-desc" data-i18n="settings.layout_preset_agenda_desc">A scrolling list instead of a grid — best for small screens or a quick glance</span>
+</button>
+<button type="button" class="layout-preset-btn" data-preset="two_week">
+<span class="layout-preset-icon"><span class="lp-row"><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span></span><span class="lp-row"><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span></span></span>
+<span class="layout-preset-name" data-i18n="settings.layout_preset_two_week_name">Two-Week Ahead</span>
+<span class="layout-preset-desc" data-i18n="settings.layout_preset_two_week_desc">14 days across 2 rows — plan meals and activities further out</span>
+</button>
+</div>
+</div>
+<div class="field">
+<label data-i18n="settings.week_button_shows_label">Week button shows — this device only</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn week-variant-btn" data-value="week">Week</button>
-<button type="button" class="size-btn week-variant-btn" data-value="planner">Planner</button>
-<button type="button" class="size-btn week-variant-btn" data-value="portrait">Portrait</button>
+<button type="button" class="size-btn week-variant-btn" data-value="week" data-i18n="nav.week">Week</button>
+<button type="button" class="size-btn week-variant-btn" data-value="planner" data-i18n="settings.planner">Planner</button>
 </div>
 </div>
 <div class="field">
-<label>Days shown in Week view — this device only (smaller displays: fewer columns)</label>
+<div class="field-row">
+<div class="field-row-item">
+<label data-i18n="settings.days_shown_label">Days shown in Week view — this device only (smaller displays: fewer columns)</label>
+<div class="number-input-row">
+<input type="number" class="week-day-count-input" min="1" max="36" step="1" />
+<span class="number-input-hint" data-i18n="settings.days_shown_hint">days (1–36)</span>
+</div>
+</div>
+<div class="field-row-item week-rows-field">
+<label data-i18n="settings.week_rows_label">Rows shown at once in Week view — this device only</label>
+<div class="number-input-row">
+<input type="number" class="week-rows-input" min="1" max="7" step="1" />
+<span class="number-input-hint" data-i18n="settings.week_rows_hint">rows (1–7)</span>
+</div>
+</div>
+</div>
+</div>
+<div class="field">
+<label data-i18n="settings.current_day_first_label">Current day always first — this device only</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn week-day-count-btn" data-value="3">3 days</button>
-<button type="button" class="size-btn week-day-count-btn" data-value="5">5 days</button>
-<button type="button" class="size-btn week-day-count-btn" data-value="7">7 days</button>
+<button type="button" class="size-btn current-day-first-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn current-day-first-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 </div>
 <div class="field">
-<label>Month button shows — this device only</label>
+<label data-i18n="settings.month_button_shows_label">Month button shows — this device only</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn month-variant-btn" data-value="month">Month</button>
-<button type="button" class="size-btn month-variant-btn" data-value="split">Month + Day</button>
+<button type="button" class="size-btn month-variant-btn" data-value="month" data-i18n="nav.month">Month</button>
+<button type="button" class="size-btn month-variant-btn" data-value="split" data-i18n="settings.month_plus_day">Month + Day</button>
 </div>
 </div>
 <div class="field">
-<label>Show hours of the day (timeline) — this device only</label>
+<label data-i18n="settings.show_hours_label">Show hours of the day (timeline) — this device only</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn timeline-btn" data-value="off">Off</button>
-<button type="button" class="size-btn timeline-btn" data-value="on">On</button>
+<button type="button" class="size-btn timeline-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn timeline-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 </div>
-<div class="field">
-<label>Timeline range</label>
+<div class="field timeline-range-field">
+<label data-i18n="settings.timeline_range_label">Timeline range</label>
 <div class="size-btn-row">
 <select class="hour-select timeline-start-select">${hourOptionsHtml}</select>
-<div class="range-sep">to</div>
+<div class="range-sep" data-i18n="add_event.to">to</div>
 <select class="hour-select timeline-end-select">${endHourOptionsHtml}</select>
 </div>
 </div>
-<div class="field">
-<label>Grey out events/reminders that have already passed</label>
+<div class="field admin-only-setting">
+<label data-i18n="settings.grey_out_label">Dim events/reminders that have already passed</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn grey-out-past-btn" data-value="off">Off</button>
-<button type="button" class="size-btn grey-out-past-btn" data-value="on">On</button>
+<button type="button" class="size-btn grey-out-past-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn grey-out-past-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
-<div class="remind-hint">Today's events grey out one by one as they end; any earlier day is greyed out entirely, since the whole day is already over.</div>
+<div class="remind-hint" data-i18n="settings.grey_out_hint">Today's events dim one by one as they end; any earlier day is dimmed entirely, since the whole day is already over.</div>
 </div>
 <div class="field">
-<label>+ button position</label>
+<label data-i18n="settings.top_bar_style_label">Calendar top bar style — this device only</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn fab-position-btn" data-value="dashboard">Dashboard corner</button>
-<button type="button" class="size-btn fab-position-btn" data-value="card">This card's corner</button>
+<button type="button" class="size-btn top-bar-style-btn" data-value="normal" data-i18n="settings.top_bar_style_normal">Normal</button>
+<button type="button" class="size-btn top-bar-style-btn" data-value="minimal" data-i18n="settings.top_bar_style_minimal">Minimal</button>
 </div>
-<div class="remind-hint">"Dashboard corner" pins the + button to the bottom-right of the whole screen (today's behavior). "This card's corner" anchors it to the bottom-right of THIS card instead - useful when this card shares a dashboard row/column with other cards, so the button doesn't float off in a corner unrelated to it.</div>
-</div>
-<div class="field">
-<label class="remind-check-opt"><input type="checkbox" class="small-screen-mode-check" /> Small screen mode — this device only</label>
-<div class="remind-hint">Hides the top bar (Settings/Week/Month/Edit Meals/Suggestions/Recipe Box/More) to save space on a small device - Settings moves into the + button's menu instead, right alongside Calendar Entry/Reminder/Meal Suggestion/Recipe. Saved to THIS device/browser only, like the Days shown/Month button settings above - turning it on here won't affect any other Family Hub tablet or screen in the household.</div>
+<div class="remind-hint" data-i18n="settings.top_bar_style_hint">Minimal hides the top bar (Settings/Week/Month/Edit Meals/Suggestions/Recipe Box/More) to save space on a small device - Settings moves into the + button's menu instead, right alongside Calendar Entry/Reminder/Meal Suggestion/Recipe. Saved to THIS device/browser only, like the Days shown/Month button settings above - choosing Minimal here won't affect any other Family Hub tablet or screen in the household. (Becomes shared household-wide instead if this card's own "Static layout" config option, set from its Edit Card screen, is on.)</div>
 </div>
 </div>
 </div>
-<div class="field">
-<button type="button" class="accordion-toggle" data-target="reminders-body">
-<span class="theme-section-label">Reminders</span>
-<span class="accordion-chevron">&#9660;</span>
-</button>
-<div class="accordion-body" id="reminders-body">
-<div class="people-hint">Reminders (from the &#128276; tab of the Add Event modal) are saved as Home Assistant to-do items in <code class="reminders-entity-label"></code> - not events on your calendar. Mark them done, edit them, or reschedule them anytime from Home Assistant's own To-do UI (or the &#9989; Mark done button in the event-info popup), independent of Google Calendar or whatever your other calendars are backed by. Who gets notified about them is set per-person under the Users tab.</div>
-<div class="add-event-warn reminders-entity-missing-warn" style="display:none"></div>
-</div>
-</div>
-<div class="field">
-<label>Lock vertical scrolling</label>
+<div class="field admin-only-setting">
+<label data-i18n="settings.lock_scroll_label">Lock vertical scrolling</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn scroll-lock-btn" data-value="off">Unlocked</button>
-<button type="button" class="size-btn scroll-lock-btn" data-value="on">Locked</button>
+<button type="button" class="size-btn scroll-lock-btn" data-value="off" data-i18n="settings.unlocked">Unlocked</button>
+<button type="button" class="size-btn scroll-lock-btn" data-value="on" data-i18n="settings.locked">Locked</button>
 </div>
 </div>
-<div class="field">
+<div class="field admin-only-setting">
+<label data-i18n="settings.bottom_padding_label">Bottom padding</label>
+<div class="number-input-row">
+<input type="number" class="bottom-padding-input" min="0" max="2000" step="1" />
+<span class="number-input-hint" data-i18n="settings.bottom_padding_hint">px - reserves extra space at the bottom of the card (e.g. for a dock, taskbar, or on-screen keyboard)</span>
+</div>
+</div>
+<div class="field admin-only-setting">
 <button type="button" class="accordion-toggle" data-target="menu-blocks-body">
-<span class="theme-section-label">Menu Blocks</span>
+<span class="theme-section-label" data-i18n="settings.section_menu_blocks">Menu Blocks</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="menu-blocks-body">
 <div class="field">
-<label>Menu blocks per day</label>
+<label data-i18n="settings.meal_plan_list_label">Menu to-do list</label>
+<div class="meal-plan-entity-row">
+<input type="text" class="meal-plan-entity-input" placeholder="todo.meal_plan" />
+<button type="button" class="meal-plan-entity-add-btn" data-i18n="settings.add_list">+ Add list</button>
+</div>
+<div class="meal-plan-entity-status"></div>
+<div class="remind-hint" data-i18n="settings.meal_plan_list_hint">The to-do list the weekly menu is stored on. Leave blank and tap "+ Add list" to create one automatically.</div>
+</div>
+<div class="field">
+<label data-i18n="settings.blocks_per_day_label">Menu blocks per day</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn block-count-btn" data-count="0">None</button>
+<button type="button" class="size-btn block-count-btn" data-count="0" data-i18n="common.none">None</button>
 <button type="button" class="size-btn block-count-btn" data-count="1">1</button>
 <button type="button" class="size-btn block-count-btn" data-count="2">2</button>
 <button type="button" class="size-btn block-count-btn" data-count="3">3</button>
 </div>
 </div>
 <div class="field">
-<label>Breakfast on weekends</label>
+<label data-i18n="settings.breakfast_weekends_label">Breakfast on weekends</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn weekend-breakfast-btn" data-value="off">Off</button>
-<button type="button" class="size-btn weekend-breakfast-btn" data-value="on">On</button>
+<button type="button" class="size-btn weekend-breakfast-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn weekend-breakfast-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 </div>
 <div class="field">
-<label>Block size</label>
+<label data-i18n="settings.block_size_label">Block size</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn block-size-btn" data-size="small">Small</button>
-<button type="button" class="size-btn block-size-btn" data-size="medium">Medium</button>
-<button type="button" class="size-btn block-size-btn" data-size="large">Large</button>
+<button type="button" class="size-btn block-size-btn" data-size="small" data-i18n="settings.small">Small</button>
+<button type="button" class="size-btn block-size-btn" data-size="medium" data-i18n="settings.medium">Medium</button>
+<button type="button" class="size-btn block-size-btn" data-size="large" data-i18n="settings.large">Large</button>
 </div>
 </div>
 <div class="field">
-<label>Show meal plan in month view</label>
+<label data-i18n="settings.show_meal_plan_month_label">Show meal plan in month view</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn meals-in-month-btn" data-value="off">Off</button>
-<button type="button" class="size-btn meals-in-month-btn" data-value="on">On</button>
+<button type="button" class="size-btn meals-in-month-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn meals-in-month-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 </div>
 <div class="field block-name-field" data-index="0">
-<label>Block 1 name</label>
+<label data-i18n="settings.block_1_name">Block 1 name</label>
 <input type="text" class="block-name-input" data-index="0" placeholder="Breakfast" maxlength="30" />
 </div>
 <div class="field block-name-field" data-index="1">
-<label>Block 2 name</label>
+<label data-i18n="settings.block_2_name">Block 2 name</label>
 <input type="text" class="block-name-input" data-index="1" placeholder="Lunch" maxlength="30" />
 </div>
 <div class="field block-name-field" data-index="2">
-<label>Block 3 name</label>
+<label data-i18n="settings.block_3_name">Block 3 name</label>
 <input type="text" class="block-name-input" data-index="2" placeholder="Dinner" maxlength="30" />
 </div>
 </div>
 </div>
-<div class="field">
+<div class="field admin-only-setting">
 <button type="button" class="accordion-toggle" data-target="chores-rewards-body">
-<span class="theme-section-label">Chores, Rewards &amp; Routines</span>
+<span class="theme-section-label" data-i18n="settings.section_chores_rewards">Chores, Rewards &amp; Routines</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="chores-rewards-body">
 <div class="field">
-<label>Routines (per-person daily checklists on the Chores board)</label>
+<label data-i18n="settings.routines_label">Routines (per-person daily checklists on the Chores board)</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn routines-enabled-btn" data-value="off">Off</button>
-<button type="button" class="size-btn routines-enabled-btn" data-value="on">On</button>
+<button type="button" class="size-btn routines-enabled-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn routines-enabled-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
-<div class="remind-hint">One household-wide switch - once on, everyone gets Morning/Afternoon/Night checklist accordions on their own column of the Chores board.</div>
+<div class="remind-hint" data-i18n="settings.routines_hint">One household-wide switch - once on, everyone gets Morning/Afternoon/Night checklist accordions on their own column of the Chores board.</div>
 </div>
 <div class="field">
-<label>Show Goals on the Chores board</label>
+<label data-i18n="settings.goals_show_on_label">Show Goals on</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn goals-in-chores-btn" data-value="off">Off</button>
-<button type="button" class="size-btn goals-in-chores-btn" data-value="on">On</button>
+<button type="button" class="size-btn goals-show-on-btn" data-value="none" data-i18n="settings.goals_show_on_none">None</button>
+<button type="button" class="size-btn goals-show-on-btn" data-value="chores" data-i18n="settings.goals_show_on_chores">Chores page</button>
+<button type="button" class="size-btn goals-show-on-btn" data-value="rewards" data-i18n="settings.goals_show_on_rewards">Rewards page</button>
+<button type="button" class="size-btn goals-show-on-btn" data-value="both" data-i18n="settings.goals_show_on_both">Both</button>
 </div>
-<div class="remind-hint">Adds each person's goals to their own column of the Chores board, with Log Progress/Approve/Send Back actions right there.</div>
+<div class="remind-hint" data-i18n="settings.goals_show_on_hint">Chores page adds each person's goals to their own column of the Chores board, with Log Progress/Approve/Send Back actions right there. Rewards page adds a Goals section to the Rewards page alongside the star catalog.</div>
 </div>
 <div class="field">
-<label>Show Goals on the Rewards page</label>
+<label data-i18n="settings.confetti_label">Confetti when a chore is completed</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn goals-in-rewards-btn" data-value="off">Off</button>
-<button type="button" class="size-btn goals-in-rewards-btn" data-value="on">On</button>
+<button type="button" class="size-btn chores-confetti-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn chores-confetti-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
-<div class="remind-hint">Adds a Goals section to the Rewards page alongside the star catalog.</div>
-</div>
-<div class="field">
-<label>Chore due dates on the board show</label>
-<div class="size-btn-row">
-<button type="button" class="size-btn chore-due-time-btn" data-value="off">Date only</button>
-<button type="button" class="size-btn chore-due-time-btn" data-value="on">Date &amp; time</button>
-</div>
-<div class="remind-hint">The chore detail popup always shows both - this only controls the short "Due ..." label on each card in the Chores board columns.</div>
+<div class="remind-hint" data-i18n="settings.confetti_hint">Pops a quick confetti animation across the screen whenever someone marks a chore done on the Chores board.</div>
 </div>
 <div class="field chores-danger-zone" style="display:none">
-<label>Danger Zone (admin only)</label>
+<label data-i18n="settings.danger_zone_label">Danger Zone (admin only)</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn danger-btn clear-all-chores-btn">Clear all chores</button>
-<button type="button" class="size-btn danger-btn clear-all-goals-btn">Clear all goals</button>
+<button type="button" class="size-btn danger-btn clear-all-chores-btn" data-i18n="settings.clear_all_chores">Clear all chores</button>
+<button type="button" class="size-btn danger-btn clear-all-goals-btn" data-i18n="settings.clear_all_goals">Clear all goals</button>
 </div>
-<div class="remind-hint">Permanently deletes every chore (or goal) regardless of status - open, awaiting approval, or already done. There's no undo. Only visible to real Home Assistant admin accounts.</div>
+<div class="remind-hint" data-i18n="settings.danger_zone_hint">Permanently deletes every chore (or goal) regardless of status - open, awaiting approval, or already done. There's no undo. Only visible to real Home Assistant admin accounts.</div>
 </div>
 </div>
 </div>
-<div class="field">
+<div class="field admin-only-setting">
 <button type="button" class="accordion-toggle" data-target="countdown-body">
-<span class="theme-section-label">Countdown</span>
+<span class="theme-section-label" data-i18n="settings.section_countdown">Countdown</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="countdown-body">
 <div class="field">
-<label>Countdown banner</label>
+<label data-i18n="settings.countdown_banner_label">Countdown banner</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn countdown-enabled-btn" data-value="off">Off</button>
-<button type="button" class="size-btn countdown-enabled-btn" data-value="on">On</button>
+<button type="button" class="size-btn countdown-enabled-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn countdown-enabled-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 </div>
 <div class="field">
-<label>Custom countdown items</label>
+<label data-i18n="settings.custom_countdown_label">Custom countdown items</label>
 <div class="countdown-items-list"></div>
 <div class="countdown-add-row">
 <input type="text" class="countdown-add-label-input" placeholder="e.g. Disney Trip" maxlength="40" />
 <input type="date" class="countdown-add-date-input" />
-<button type="button" class="template-apply-btn countdown-add-btn">+ Add</button>
+<button type="button" class="template-apply-btn countdown-add-btn" data-i18n="settings.add_btn">+ Add</button>
 </div>
 </div>
 <div class="field">
-<label class="remind-check-opt"><input type="checkbox" class="countdown-ticker-check" /> Cycle through all upcoming countdown items</label>
-<div class="remind-hint">Add more than one item above (or mark events/reminders "Use as countdown") to see this in action — with only one item there's nothing to cycle through.</div>
+<label class="remind-check-opt"><input type="checkbox" class="countdown-ticker-check" /> <span data-i18n="settings.cycle_countdown_label">Cycle through all upcoming countdown items</span></label>
+<div class="remind-hint" data-i18n="settings.cycle_countdown_hint">Add more than one item above (or mark events/reminders "Use as countdown") to see this in action — with only one item there's nothing to cycle through.</div>
 </div>
 </div>
 </div>
-<div class="field">
+<div class="field admin-only-setting">
 <button type="button" class="accordion-toggle" data-target="digest-body">
-<span class="theme-section-label">Daily Digest</span>
+<span class="theme-section-label" data-i18n="settings.section_daily_digest">Daily Digest</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="digest-body">
-<div class="remind-hint">Sends one notification each morning summarizing today's events, meals, and due reminders — independent of anyone having the dashboard open. Who gets a digest, and what's in theirs, is set per-person under the Users tab; this just turns the feature on and picks the household's send time.</div>
+<div class="remind-hint" data-i18n="settings.digest_hint">Sends one notification each morning summarizing today's events, meals, and due reminders — independent of anyone having the dashboard open. Who gets a digest, and what's in theirs, is set per-person under the Users tab; this just turns the feature on and picks the household's send time.</div>
 <div class="field">
-<label>Send daily digest</label>
+<label data-i18n="settings.send_digest_label">Send daily digest</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn digest-enabled-btn" data-value="off">Off</button>
-<button type="button" class="size-btn digest-enabled-btn" data-value="on">On</button>
+<button type="button" class="size-btn digest-enabled-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn digest-enabled-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 </div>
 <div class="field">
-<label>Send at</label>
+<label data-i18n="settings.send_at_label">Send at</label>
 <input type="time" class="digest-time-input" />
 </div>
 </div>
 </div>
-<div class="field">
+<div class="field admin-only-setting">
 <button type="button" class="accordion-toggle" data-target="grocy-settings-body">
-<span class="theme-section-label">Grocy</span>
+<span class="theme-section-label" data-i18n="settings.section_grocy">Grocy</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="grocy-settings-body">
-<div class="remind-hint">Connect Grocy itself under Settings → Devices & Services → Family Hub → Configure → Grocy - the toggles below only control which optional Grocy-powered features show up on the card once it's connected. Everything here is off by default.</div>
+<div class="remind-hint" data-i18n="settings.grocy_hint">Connect Grocy itself under Settings → Devices & Services → Family Hub → Configure → Grocy - the toggles below only control which optional Grocy-powered features show up on the card once it's connected. Everything here is off by default.</div>
 <div class="field">
-<label>Track expiring items</label>
+<label data-i18n="settings.track_expiring_label">Track expiring items</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn grocy-expiring-enabled-btn" data-value="off">Off</button>
-<button type="button" class="size-btn grocy-expiring-enabled-btn" data-value="on">On</button>
+<button type="button" class="size-btn grocy-expiring-enabled-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn grocy-expiring-enabled-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
-<div class="remind-hint">Adds an "Expiring Soon" list under the More menu. Whether it's also offered in anyone's Daily Digest is set under the Users tab once this is on.</div>
+<div class="remind-hint" data-i18n="settings.track_expiring_hint">Adds an "Expiring Soon" list under the More menu. Whether it's also offered in anyone's Daily Digest is set under the Users tab once this is on.</div>
 </div>
 <div class="field">
-<label>Track low stock</label>
+<label data-i18n="settings.track_low_stock_label">Track low stock</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn grocy-low-stock-enabled-btn" data-value="off">Off</button>
-<button type="button" class="size-btn grocy-low-stock-enabled-btn" data-value="on">On</button>
+<button type="button" class="size-btn grocy-low-stock-enabled-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn grocy-low-stock-enabled-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
-<div class="remind-hint">Adds a "Low Stock" list under the More menu (products below their own minimum stock amount, with a one-tap button to add them all to the shopping list). Whether it's also offered in anyone's Daily Digest is set under the Users tab once this is on.</div>
+<div class="remind-hint" data-i18n="settings.track_low_stock_hint">Adds a "Low Stock" list under the More menu (products below their own minimum stock amount, with a one-tap button to add them all to the shopping list). Whether it's also offered in anyone's Daily Digest is set under the Users tab once this is on.</div>
 </div>
 </div>
 </div>
-<div class="field">
+<div class="field admin-only-setting">
 <button type="button" class="accordion-toggle" data-target="screensaver-body">
-<span class="theme-section-label">Screen Saver</span>
+<span class="theme-section-label" data-i18n="settings.section_screensaver">Screen Saver</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="screensaver-body">
-<div class="remind-hint">Shows a full-screen video or live camera feed after the dashboard sits idle for a while - built for a wall-mounted display. The source and idle time below are shared by the whole household; which logins actually see it is controlled per Home Assistant user further down, so a tablet's own login can have it on while a phone's stays off.</div>
+<div class="remind-hint" data-i18n="settings.screensaver_hint">Shows a full-screen video or live camera feed after the dashboard sits idle for a while - built for a wall-mounted display. The source and idle time below are shared by the whole household; which logins actually see it is controlled per Home Assistant user further down, so a tablet's own login can have it on while a phone's stays off.</div>
 <div class="field">
-<label>Source</label>
+<label data-i18n="settings.source_label">Source</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn screensaver-source-type-btn" data-value="video">Video</button>
-<button type="button" class="size-btn screensaver-source-type-btn" data-value="camera">Camera</button>
+<button type="button" class="size-btn screensaver-source-type-btn" data-value="video" data-i18n="settings.video">Video</button>
+<button type="button" class="size-btn screensaver-source-type-btn" data-value="camera" data-i18n="settings.camera">Camera</button>
 </div>
 </div>
 <div class="field screensaver-video-field">
-<label>Video URL</label>
+<label data-i18n="settings.video_url_label">Video URL</label>
 <input type="text" class="screensaver-video-url-input" placeholder="https://example.com/video.mp4 or /local/screensaver.mp4" />
-<div class="remind-hint">A direct link to a video file, or a path under Home Assistant's own <code>/local/</code> media folder. Loops muted and silently while showing.</div>
+<div class="remind-hint" data-i18n="settings.video_url_hint">A direct link to a video file, or a path under Home Assistant's own <code>/local/</code> media folder. Loops muted and silently while showing.</div>
 </div>
 <div class="field screensaver-camera-field">
-<label>Camera entity</label>
+<label data-i18n="settings.camera_entity_label">Camera entity</label>
 <input type="text" class="screensaver-camera-entity-input" placeholder="camera.front_door" list="screensaver-camera-options" />
 <datalist id="screensaver-camera-options"></datalist>
 </div>
 <div class="field">
-<label>Idle time before it shows</label>
+<label data-i18n="settings.idle_time_label">Idle time before it shows</label>
 <div class="screensaver-idle-row">
 <input type="number" class="screensaver-idle-seconds-input" min="10" max="3600" step="5" />
-<span>seconds</span>
+<span data-i18n="settings.seconds">seconds</span>
 </div>
-<div class="remind-hint">Any tap on the screen dismisses it and starts the countdown over.</div>
+<div class="remind-hint" data-i18n="settings.idle_hint">Any tap on the screen dismisses it and starts the countdown over.</div>
 </div>
 <div class="field">
-<label>Enable for these logins</label>
+<label data-i18n="settings.enable_logins_label">Enable for these logins</label>
 <button type="button" class="screensaver-users-btn">&#128100; <span class="screensaver-users-summary">None selected</span></button>
 </div>
 <div class="field">
-<label>Disable while a recipe is open</label>
+<label data-i18n="settings.disable_recipe_open_label">Disable while a recipe is open</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn screensaver-recipe-disable-btn" data-value="off">Off</button>
-<button type="button" class="size-btn screensaver-recipe-disable-btn" data-value="on">On</button>
+<button type="button" class="size-btn screensaver-recipe-disable-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn screensaver-recipe-disable-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
-<div class="remind-hint">Pauses the idle countdown while a single recipe's detail view is open (Recipe Box or the Grocy recipe viewer) - browsing the recipe list itself still counts as idle.</div>
+<div class="remind-hint" data-i18n="settings.disable_recipe_open_hint">Pauses the idle countdown while a single recipe's detail view is open (Recipe Box or the Grocy recipe viewer) - browsing the recipe list itself still counts as idle.</div>
+</div>
+<div class="field">
+<label data-i18n="settings.return_dashboard_label">Return to this dashboard on wake</label>
+<input type="text" class="screensaver-return-dashboard-input" placeholder="/lovelace-family/0" />
+<div class="remind-hint" data-i18n="settings.return_dashboard_hint">Optional. If the screensaver falls asleep here and gets tapped awake, it jumps to this dashboard/view instead of staying on this one - handy if the wall tablet gets left on some other view during the day. Leave blank to just stay put.</div>
+</div>
+<div class="field">
+<label data-i18n="settings.screensaver_widgets_label">Widgets on the screensaver</label>
+<button type="button" class="screensaver-widgets-edit-btn"><span class="screensaver-widgets-summary">No widgets yet</span> &#8250;</button>
+<div class="remind-hint" data-i18n="settings.screensaver_widgets_hint">Layer weather, a clock, a todo list, or any other Lovelace card on top of the screensaver. The layout is shared by the whole household; below it you can hide individual widgets on just this device.</div>
+</div>
+<div class="field screensaver-widgets-hide-field" style="display:none">
+<label data-i18n="settings.screensaver_widgets_hide_label">Hide widgets on this device</label>
+<div class="screensaver-widgets-hide-list"></div>
 </div>
 </div>
 </div>
 <div class="field">
-<label>Use global theme (Theme Builder)</label>
+<label data-i18n="settings.use_global_theme_label">Use global theme (Theme Builder)</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn global-theme-btn" data-value="off">Off</button>
-<button type="button" class="size-btn global-theme-btn" data-value="on">On</button>
+<button type="button" class="size-btn global-theme-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn global-theme-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 <select class="global-theme-select" style="display:none;margin-top:8px;width:100%;box-sizing:border-box;font-size:16px;padding:10px 12px;border-radius:8px;border:1px solid var(--fc-border);background:var(--fc-card);color:var(--fc-text);font-family:inherit;"></select>
 <div class="global-theme-status" style="display:none;font-size:12px;color:var(--fc-text-secondary);font-style:italic;margin-top:6px;"></div>
 </div>
 <div class="field">
-<label>This device's theme</label>
+<label data-i18n="settings.device_theme_label">This device's theme</label>
 <select class="device-theme-override-select" style="width:100%;box-sizing:border-box;font-size:16px;padding:10px 12px;border-radius:8px;border:1px solid var(--fc-border);background:var(--fc-card);color:var(--fc-text);font-family:inherit;"></select>
-<div class="remind-hint">Overrides the shared theme above for just this device/tablet - every other Family Hub card here (Chores, Rewards, Goals, My Pantry, My Chores) picks it up too, but no other device is affected. Takes effect immediately, with no Save needed.</div>
+<div class="remind-hint" data-i18n="settings.device_theme_hint">Overrides the shared theme above for just this device/tablet - every other Family Hub card here (Chores, Rewards, Goals, My Pantry, My Chores) picks it up too, but no other device is affected. Takes effect immediately, with no Save needed.</div>
 </div>
 <div class="field theme-local-fields">
 <button type="button" class="accordion-toggle" data-target="theme-colors-body">
-<span class="theme-section-label">Theme colors</span>
+<span class="theme-section-label" data-i18n="settings.section_theme_colors">Theme colors</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="theme-colors-body">
-<div class="theme-color-row"><div class="theme-row-label">Background</div><input type="color" class="theme-color-input" data-key="bg" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Card background</div><input type="color" class="theme-color-input" data-key="card" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Border</div><input type="color" class="theme-color-input" data-key="border" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Text</div><input type="color" class="theme-color-input" data-key="text" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Secondary text</div><input type="color" class="theme-color-input" data-key="textSecondary" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Accent</div><input type="color" class="theme-color-input" data-key="accent" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Text on accent</div><input type="color" class="theme-color-input" data-key="accentText" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Accent 2</div><input type="color" class="theme-color-input" data-key="accent2" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Accent 3</div><input type="color" class="theme-color-input" data-key="accent3" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Surface (alt)</div><input type="color" class="theme-color-input" data-key="surfaceAlt" /></div>
-<div class="theme-color-row"><div class="theme-row-label">Surface 2</div><input type="color" class="theme-color-input" data-key="surface2" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_background">Background</div><input type="color" class="theme-color-input" data-key="bg" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_card_background">Card background</div><input type="color" class="theme-color-input" data-key="card" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_border">Border</div><input type="color" class="theme-color-input" data-key="border" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_text">Text</div><input type="color" class="theme-color-input" data-key="text" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_secondary_text">Secondary text</div><input type="color" class="theme-color-input" data-key="textSecondary" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_accent">Accent</div><input type="color" class="theme-color-input" data-key="accent" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_text_on_accent">Text on accent</div><input type="color" class="theme-color-input" data-key="accentText" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_accent2">Accent 2</div><input type="color" class="theme-color-input" data-key="accent2" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_accent3">Accent 3</div><input type="color" class="theme-color-input" data-key="accent3" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_surface_alt">Surface (alt)</div><input type="color" class="theme-color-input" data-key="surfaceAlt" /></div>
+<div class="theme-color-row"><div class="theme-row-label" data-i18n="settings.theme_surface2">Surface 2</div><input type="color" class="theme-color-input" data-key="surface2" /></div>
 </div>
 </div>
 <div class="field theme-local-fields">
 <button type="button" class="accordion-toggle" data-target="theme-fonts-body">
-<span class="theme-section-label">Theme font sizes (px)</span>
+<span class="theme-section-label" data-i18n="settings.section_theme_fonts">Theme font sizes (px)</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="theme-fonts-body">
-<div class="theme-font-row"><div class="theme-row-label">Day name</div><input type="number" class="theme-font-input" data-key="dayName" min="6" max="72" /></div>
-<div class="theme-font-row"><div class="theme-row-label">Day number</div><input type="number" class="theme-font-input" data-key="dayNumber" min="6" max="72" /></div>
-<div class="theme-font-row"><div class="theme-row-label">Weather temp</div><input type="number" class="theme-font-input" data-key="wxTemp" min="6" max="72" /></div>
-<div class="theme-font-row"><div class="theme-row-label">Event text</div><input type="number" class="theme-font-input" data-key="event" min="6" max="72" /></div>
-<div class="theme-font-row"><div class="theme-row-label">Chip text</div><input type="number" class="theme-font-input" data-key="chip" min="6" max="72" /></div>
-<div class="theme-font-row"><div class="theme-row-label">Header title</div><input type="number" class="theme-font-input" data-key="headerTitle" min="6" max="72" /></div>
-<div class="theme-font-row"><div class="theme-row-label">Countdown text</div><input type="number" class="theme-font-input" data-key="countdown" min="6" max="72" /></div>
-<div class="theme-font-row"><div class="theme-row-label">Block heading (label)</div><input type="number" class="theme-font-input" data-key="blockLabel" min="6" max="72" /></div>
-<div class="theme-font-row"><div class="theme-row-label">Block meal text</div><input type="number" class="theme-font-input" data-key="blockMeal" min="6" max="72" /></div>
-<button type="button" class="theme-reset-btn">Reset theme to default</button>
+<div class="theme-font-row"><div class="theme-row-label" data-i18n="settings.font_day_name">Day name</div><input type="number" class="theme-font-input" data-key="dayName" min="6" max="72" /></div>
+<div class="theme-font-row"><div class="theme-row-label" data-i18n="settings.font_day_number">Day number</div><input type="number" class="theme-font-input" data-key="dayNumber" min="6" max="72" /></div>
+<div class="theme-font-row"><div class="theme-row-label" data-i18n="settings.font_weather_temp">Weather temp</div><input type="number" class="theme-font-input" data-key="wxTemp" min="6" max="72" /></div>
+<div class="theme-font-row"><div class="theme-row-label" data-i18n="settings.font_event_text">Event text</div><input type="number" class="theme-font-input" data-key="event" min="6" max="72" /></div>
+<div class="theme-font-row"><div class="theme-row-label" data-i18n="settings.font_chip_text">Chip text</div><input type="number" class="theme-font-input" data-key="chip" min="6" max="72" /></div>
+<div class="theme-font-row"><div class="theme-row-label" data-i18n="settings.font_header_title">Header title</div><input type="number" class="theme-font-input" data-key="headerTitle" min="6" max="72" /></div>
+<div class="theme-font-row"><div class="theme-row-label" data-i18n="settings.font_countdown_text">Countdown text</div><input type="number" class="theme-font-input" data-key="countdown" min="6" max="72" /></div>
+<div class="theme-font-row"><div class="theme-row-label" data-i18n="settings.font_block_heading">Block heading (label)</div><input type="number" class="theme-font-input" data-key="blockLabel" min="6" max="72" /></div>
+<div class="theme-font-row"><div class="theme-row-label" data-i18n="settings.font_block_meal_text">Block meal text</div><input type="number" class="theme-font-input" data-key="blockMeal" min="6" max="72" /></div>
+<button type="button" class="theme-reset-btn" data-i18n="settings.reset_theme">Reset theme to default</button>
+</div>
+</div>
+<div class="field admin-only-setting">
+<button type="button" class="accordion-toggle" data-target="holiday-backgrounds-body">
+<span class="theme-section-label" data-i18n="settings.section_holiday_backgrounds">Holiday Backgrounds</span>
+<span class="accordion-chevron">&#9660;</span>
+</button>
+<div class="accordion-body" id="holiday-backgrounds-body">
+<div class="remind-hint" data-i18n="settings.holiday_backgrounds_hint">Show a photo on a holiday or special day - normally just behind that day's own column, or check "Expand to full screen" to take over the whole card for just that day, the whole week, or the whole month. If two enabled holidays would both want the screen on the same day, the more specific one wins (a day beats a week, a week beats a month), and if it's still a tie, whichever's own date is closest to today wins. Turn on any of the holidays below, or add a date of your own.</div>
+<div class="holiday-bg-subheading" data-i18n="settings.holiday_backgrounds_predefined_heading">Holidays</div>
+<div class="holiday-bg-predefined-list"></div>
+<div class="holiday-bg-subheading" data-i18n="settings.holiday_backgrounds_custom_heading">Custom dates</div>
+<div class="holiday-bg-custom-list"></div>
+<button type="button" class="add-person-btn holiday-bg-add-btn" data-i18n="settings.add_holiday_background">+ Add custom date</button>
 </div>
 </div>
 </div>
 <div class="settings-tab-panel" data-settings-tab-panel="notifications" style="display:none">
-<div class="field">
-<label>Notification tap destination</label>
+<div class="field admin-only-setting">
+<label data-i18n="settings.notify_click_path_label">Notification tap destination</label>
 <input type="text" class="notify-click-path-input" placeholder="/lovelace-family/0" maxlength="255" />
-<div class="remind-hint">Optional. When set, tapping a reminder, event, or Daily Digest push notification opens this Home Assistant dashboard/view instead of just launching the app - use a relative path like /lovelace-family/0 (dashboard + view) or /lovelace/calendar (a view's own path). Applies to every notification this backend sends. Needs the Home Assistant Companion app.</div>
+<div class="remind-hint" data-i18n="settings.notify_click_path_hint">Optional. When set, tapping a reminder, event, or Daily Digest push notification opens this Home Assistant dashboard/view instead of just launching the app - use a relative path like /lovelace-family/0 (dashboard + view) or /lovelace/calendar (a view's own path). Applies to every notification this backend sends. Needs the Home Assistant Companion app.</div>
 </div>
-<div class="field">
-<div class="people-hint">Add a Home Assistant login to make them part of Family Hub - only people added here show up on this list, on the Permissions tab, and on the Chores board.</div>
+<div class="field admin-only-setting">
+<div class="people-hint" data-i18n="settings.add_member_hint">Add a Home Assistant login to make them part of Family Hub - only people added here show up on this list, on the Permissions tab, and on the Chores board.</div>
 <div class="member-add-row">
 <select class="member-add-select"></select>
-<button type="button" class="member-add-btn">&#10133; Add a person</button>
+<button type="button" class="member-add-btn" data-i18n="settings.add_a_person">&#10133; Add a person</button>
 </div>
 </div>
 <div class="field">
-<div class="people-hint">Each Home Assistant login has its own profile here - which calendars they get reminders from, whether they want standalone Reminders, and whether/what they want in the Daily Digest. Tap a person below to set theirs up, or Remove to take them out of Family Hub - nothing about them is deleted, and re-adding them brings everything right back.</div>
+<div class="people-hint" data-i18n="settings.profiles_hint">Each Home Assistant login has its own profile here - which calendars they get reminders from, whether they want standalone Reminders, and whether/what they want in the Daily Digest. Tap a person below to set theirs up, or Remove to take them out of Family Hub - nothing about them is deleted, and re-adding them brings everything right back.</div>
 <div class="notify-profiles-list"></div>
-<div class="remind-hint notify-profiles-empty" style="display:none">Nobody's been added to Family Hub yet. Use "Add a person" above to get started.</div>
+<div class="remind-hint notify-profiles-empty" style="display:none" data-i18n="settings.no_members_yet">Nobody's been added to Family Hub yet. Use "Add a person" above to get started.</div>
+</div>
+<div class="field admin-only-setting">
+<button type="button" class="accordion-toggle" data-target="alarm-devices-body">
+<span class="theme-section-label" data-i18n="settings.alarm_devices_heading">Alarm Devices</span>
+<span class="accordion-chevron">&#9660;</span>
+</button>
+<div class="accordion-body" id="alarm-devices-body">
+<div class="people-hint" data-i18n="settings.alarm_devices_hint">Speakers and Assist satellites a widened ("Them + kiosks" or "Everyone") chore/reward timer alarm rings on - picked from Home Assistant's own entity list, not typed by hand. Set per chore/reward from its own "Who hears this alarm" option.</div>
+<div class="alarm-devices-list"></div>
+<div class="alarm-devices-add-label remind-hint" data-i18n="settings.alarm_devices_add_label">Tap a device to add it:</div>
+<div class="alarm-devices-candidates"></div>
+<div class="field">
+<label data-i18n="settings.alarm_tts_entity_label">Text-to-speech voice (for speakers - not needed for Assist satellites)</label>
+<select class="alarm-tts-entity-select"><option value="">Not set</option></select>
+</div>
+</div>
+</div>
+</div>
+<div class="settings-tab-panel" data-settings-tab-panel="devices" style="display:none">
+<div class="field">
+<div class="people-hint" data-i18n="settings.devices_hint">Every dashboard reports its own display settings (Week day count, Current day first, Rows shown in Week view, etc. - see the General tab) here once it's opened at least once. Change a device's values below and hit Push to update it right away - an open dashboard updates instantly, a closed one picks it up the next time it's opened.</div>
+<button type="button" class="btn-cancel device-settings-identify-all-btn">&#128375; <span data-i18n="settings.devices_identify_all">Identify all</span></button>
+<div class="device-settings-list"></div>
+<div class="remind-hint device-settings-empty" style="display:none" data-i18n="settings.devices_empty">No devices have reported in yet - open this dashboard's Settings on another device once to have it show up here.</div>
+</div>
+<div class="field">
+<button type="button" class="accordion-toggle" data-target="device-settings-presets-body">
+<span class="theme-section-label" data-i18n="settings.section_presets">Presets</span>
+<span class="accordion-chevron">&#9660;</span>
+</button>
+<div class="accordion-body" id="device-settings-presets-body">
+<div class="people-hint" data-i18n="settings.presets_hint">Save any device's current values above as a named preset, then apply that preset to any other device below.</div>
+<div class="device-settings-presets-list"></div>
+<div class="remind-hint device-settings-presets-empty" style="display:none" data-i18n="settings.presets_empty">No presets saved yet - use "Save as preset" under any device above.</div>
+</div>
 </div>
 </div>
 <div class="modal-actions">
 <span class="settings-save-status"></span>
-<button class="btn-cancel settings-cancel">Cancel</button>
-<button class="btn-save settings-save">Save</button>
+<button class="btn-cancel settings-cancel" data-i18n="common.cancel">Cancel</button>
+<button class="btn-save settings-save" data-i18n="common.save">Save</button>
 </div>
 </div>
 </div>
 <div class="modal-overlay notify-devices-overlay">
 <div class="modal-box notify-devices-box">
-<button class="modal-close notify-devices-close" aria-label="Close">&#10005;</button>
-<h2>&#128276; Notify targets</h2>
+<button class="modal-close notify-devices-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
+<h2>&#128276; <span data-i18n="settings.notify_targets_heading">Notify targets</span></h2>
 <div class="notify-devices-subtitle"></div>
-<button type="button" class="notify-devices-autodetect-btn" style="display:none">&#128269; Auto-detect this device</button>
+<button type="button" class="notify-devices-autodetect-btn" style="display:none">&#128269; <span data-i18n="settings.autodetect_device">Auto-detect this device</span></button>
 <div class="notify-devices-list"></div>
 <div class="notify-devices-add-row">
 <select class="notify-devices-add-select"></select>
-<button type="button" class="notify-devices-add-btn">&#10133; Add</button>
+<button type="button" class="notify-devices-add-btn">&#10133; <span data-i18n="common.add">Add</span></button>
 </div>
 <div class="modal-actions">
-<button class="btn-save notify-devices-done">Done</button>
+<button class="btn-save notify-devices-done" data-i18n="common.done">Done</button>
 </div>
 </div>
 </div>
 <div class="modal-overlay notify-profile-overlay">
 <div class="modal-box notify-profile-box">
-<button class="modal-close notify-profile-close" aria-label="Close">&#10005;</button>
+<button class="modal-close notify-profile-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
 <h2>&#128100; <span class="notify-profile-name">Notification profile</span></h2>
 <div class="field">
-<label>Chores &amp; Rewards color</label>
+<label data-i18n="settings.chores_rewards_color_label">Chores &amp; Rewards color</label>
 <div class="notify-profile-color-row">
 <input type="color" class="notify-profile-color-input" value="#c9c2b3" />
-<button type="button" class="notify-profile-color-reset-btn">Use default</button>
+<button type="button" class="notify-profile-color-reset-btn" data-i18n="common.use_default">Use default</button>
 </div>
-<div class="remind-hint">Their color on the Chores board columns and Rewards balances. Leave unset to use the automatically assigned color.</div>
+<div class="remind-hint" data-i18n="settings.chores_rewards_color_hint">Their color on the Chores board columns and Rewards balances. Leave unset to use the automatically assigned color.</div>
 </div>
 <div class="field">
-<label>Include in Chores &amp; Rewards</label>
+<label data-i18n="settings.include_chores_rewards_label">Include in Chores &amp; Rewards</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn notify-profile-chores-btn" data-value="on">On</button>
-<button type="button" class="size-btn notify-profile-chores-btn" data-value="off">Off</button>
+<button type="button" class="size-btn notify-profile-chores-btn" data-value="on" data-i18n="common.on">On</button>
+<button type="button" class="size-btn notify-profile-chores-btn" data-value="off" data-i18n="common.off">Off</button>
 </div>
-<div class="remind-hint">Turn this off to keep them a full Family Hub member (still shown here, on the Permissions tab, and in Routines) without a Chores board column or Rewards balance, and without offering them as a new chore assignee. Handy for a shared login - a wall-mounted tablet, say - that needs Permissions granted but isn't an actual person. Existing chores/rewards history is never affected.</div>
+<div class="remind-hint" data-i18n="settings.include_chores_rewards_hint">Turn this off to keep them a full Family Hub member (still shown here, on the Permissions tab, and in Routines) without a Chores board column or Rewards balance, and without offering them as a new chore assignee. Handy for a shared login - a wall-mounted tablet, say - that needs Permissions granted but isn't an actual person. Existing chores/rewards history is never affected.</div>
+</div>
+<div class="field notify-profile-child-field">
+<label data-i18n="settings.child_account_label">Child account</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn notify-profile-child-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn notify-profile-child-btn" data-value="on" data-i18n="common.on">On</button>
+</div>
+<div class="remind-hint" data-i18n="settings.child_account_hint">When they log into Home Assistant and open this card's own Settings, they'll see even less than an ordinary non-admin does - everything a non-admin already can't see, PLUS the whole Users tab (including this very profile). Admin-only, same as Kiosk PIN login and Permissions below - a child can never turn this off for themselves.</div>
+</div>
+<div class="field notify-profile-kiosk-account-field">
+<label data-i18n="settings.kiosk_account_label">Kiosk account</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn notify-profile-kiosk-account-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn notify-profile-kiosk-account-btn" data-value="on" data-i18n="common.on">On</button>
+</div>
+<div class="remind-hint" data-i18n="settings.kiosk_account_hint">For a shared wall-mounted tablet/kiosk login, not a real person. Restricts Settings the same way Child account does (loses the Users tab), and turning it on also turns on Always-on alarm kiosk and this person's own Kiosk PIN login below as a starting point - you can still flip either back off afterward. New devices reporting in while logged in as a Kiosk account default to participating in Privacy Mode. Admin-only, same as Child account above.</div>
+</div>
+<div class="field admin-only-setting">
+<label data-i18n="settings.alarm_kiosk_label">Always-on alarm kiosk</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn notify-profile-alarm-kiosk-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn notify-profile-alarm-kiosk-btn" data-value="on" data-i18n="common.on">On</button>
+</div>
+<div class="remind-hint" data-i18n="settings.alarm_kiosk_hint">A "kiosks"- or "everyone"-tier chore/reward alarm (set per chore/reward, see its own "Who hears this alarm" option) rings on every open Family Hub dashboard logged in as this account, not just the timer's own owner - built for a shared kiosk/wall-tablet login. Admin-only, same as Child account above.</div>
 </div>
 <div class="field">
-<button type="button" class="notify-profile-targets-btn">&#128276; Notify targets <span class="notify-profile-targets-count">0</span></button>
+<button type="button" class="notify-profile-targets-btn">&#128276; <span data-i18n="settings.notify_targets_label_full">Notify targets</span> <span class="notify-profile-targets-count">0</span></button>
 </div>
 <div class="field">
 <button type="button" class="accordion-toggle" data-target="notify-profile-calendar-body">
-<span class="theme-section-label">Calendar</span>
+<span class="theme-section-label" data-i18n="settings.section_calendar_single">Calendar</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="notify-profile-calendar-body">
 <div class="field">
-<label>Calendars</label>
+<label data-i18n="settings.calendars_field_label">Calendars</label>
 <div class="notify-profile-calendars-list"></div>
-<div class="remind-hint notify-profile-calendars-empty" style="display:none">No calendars added yet - add one under the General tab's Calendars section first.</div>
-<div class="remind-hint">Tap a card to subscribe them to reminders from that calendar. Tap the star to make it their primary calendar - that calendar's events follow their own color above instead of its own configured color, everywhere it's shown on the dashboard.</div>
+<div class="remind-hint notify-profile-calendars-empty" style="display:none" data-i18n="settings.no_calendars_added">No calendars added yet - add one under the General tab's Calendars section first.</div>
+<div class="remind-hint" data-i18n="settings.calendars_tap_hint">Tap a card to subscribe them to reminders from that calendar. Tap the star to make it their primary calendar - that calendar's events follow their own color above instead of its own configured color, everywhere it's shown on the dashboard.</div>
 </div>
 <div class="field">
-<label>Their own calendar</label>
-<input type="text" class="notify-profile-calendar-entity" placeholder="calendar.jaret (optional)" />
-<div class="remind-hint">Set this directly here if their calendar isn't already added under the General tab's Calendars section - it'll show up as its own column on the calendar, labeled with their name and their color above, without needing to also add it under Calendars. If it's ALSO added there, this profile's own color/badges win for it.</div>
+<label data-i18n="settings.own_calendar_label">Their own calendar</label>
+<input type="text" class="notify-profile-calendar-entity" placeholder="calendar.user (optional)" />
+<div class="remind-hint" data-i18n="settings.own_calendar_hint">Set this directly here if their calendar isn't already added under the General tab's Calendars section - it'll show up as its own column on the calendar, labeled with their name and their color above, without needing to also add it under Calendars. If it's ALSO added there, this profile's own color/badges win for it.</div>
 <div class="notify-profile-own-calendar-badges"></div>
-<button type="button" class="notify-profile-own-calendar-badge-add-btn">&#10133; Add badge</button>
+<button type="button" class="notify-profile-own-calendar-badge-add-btn" data-i18n="settings.add_badge">&#10133; Add badge</button>
 </div>
 </div>
 </div>
 <div class="field">
 <button type="button" class="accordion-toggle" data-target="notify-profile-lists-body">
-<span class="theme-section-label">Lists</span>
+<span class="theme-section-label" data-i18n="settings.section_lists">Lists</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="notify-profile-lists-body">
 <div class="field">
-<label>Their reminders list</label>
+<label data-i18n="settings.their_reminders_list_label">Their reminders list</label>
 <div class="notify-profile-list-row">
-<input type="text" class="notify-profile-list-entity" data-list-kind="remindersEntity" placeholder="todo.jaret_reminders" />
-<button type="button" class="notify-profile-list-add-btn" data-list-kind="remindersEntity">+ Add list</button>
+<input type="text" class="notify-profile-list-entity" data-list-kind="remindersEntity" placeholder="todo.user_reminders" />
+<button type="button" class="notify-profile-list-add-btn" data-list-kind="remindersEntity" data-i18n="settings.add_list">+ Add list</button>
 </div>
 <div class="notify-profile-list-status" data-list-kind="remindersEntity"></div>
-<div class="remind-hint">Their own individual Reminders list, separate from the shared family Reminders list. Leave blank and tap "+ Add list" to create one automatically.</div>
+<div class="remind-hint" data-i18n="settings.their_reminders_list_hint">Their own individual Reminders list, separate from the shared family Reminders list. Leave blank and tap "+ Add list" to create one automatically.</div>
 </div>
 <div class="field">
-<label>Their wish list</label>
+<label data-i18n="settings.additional_reminders_lists_label">Their other reminders lists</label>
+<div class="notify-profile-additional-reminders-list"></div>
+<div class="notify-profile-additional-reminders-row">
+<button type="button" class="notify-profile-additional-reminders-add-btn" data-i18n="settings.add_another_list">&#10133; Add another list</button>
+<button type="button" class="notify-profile-additional-reminders-create-btn" data-i18n="settings.create_another_list">+ Create new</button>
+</div>
+<div class="notify-profile-additional-reminders-status"></div>
+<div class="remind-hint" data-i18n="settings.additional_reminders_lists_hint">Extra individual Reminders lists for this person, alongside the one above. The list above always stays their PRIMARY list - it's the only one new reminders (including ones added from the Family Calendar) ever get added to. Tap &#9733; on any list below to make IT the primary instead.</div>
+</div>
+<div class="field">
+<label data-i18n="settings.their_wishlist_label">Their wish list</label>
 <div class="notify-profile-list-row">
-<input type="text" class="notify-profile-list-entity" data-list-kind="wishlistEntity" placeholder="todo.jaret_wishlist" />
-<button type="button" class="notify-profile-list-add-btn" data-list-kind="wishlistEntity">+ Add list</button>
+<input type="text" class="notify-profile-list-entity" data-list-kind="wishlistEntity" placeholder="todo.user_wishlist" />
+<button type="button" class="notify-profile-list-add-btn" data-list-kind="wishlistEntity" data-i18n="settings.add_list">+ Add list</button>
 </div>
 <div class="notify-profile-list-status" data-list-kind="wishlistEntity"></div>
-<div class="remind-hint">A to-do list just for their own wish list - saving automatically flags it, same as the To-Do Lists card's own Wish List toggle. Leave blank and tap "+ Add list" to create one automatically.</div>
+<div class="remind-hint" data-i18n="settings.their_wishlist_hint">A to-do list just for their own wish list - saving automatically flags it, same as the To-Do Lists card's own Wish List toggle. Leave blank and tap "+ Add list" to create one automatically.</div>
 </div>
 <div class="field">
-<label>Other people's reminder lists</label>
+<label data-i18n="settings.other_reminder_lists_label">Other people's reminder lists</label>
 <div class="notify-profile-reminders-lists"></div>
-<div class="remind-hint notify-profile-reminders-lists-empty" style="display:none">Nobody else has their own individual Reminders list set up yet - add one to a person under the General tab's Calendars section first.</div>
-<div class="remind-hint">Everyone always sees their own list. For anyone else's: "None" keeps it fully out of sight, "Add to calendar" shows it on this person's own calendar (colored with its owner's color) with no push, and "...+ alert" also sends a notification the moment one of its reminders comes due. Anyone subscribed at either level can add new reminders to that list too.</div>
+<div class="remind-hint notify-profile-reminders-lists-empty" style="display:none" data-i18n="settings.no_other_reminder_lists">Nobody else has their own individual Reminders list set up yet - add one to a person under the General tab's Calendars section first.</div>
+<div class="remind-hint" data-i18n="settings.other_reminder_lists_hint">Everyone always sees their own list. For anyone else's: "None" keeps it fully out of sight, "Add to calendar" shows it on this person's own calendar (colored with its owner's color) with no push, and "...+ alert" also sends a notification the moment one of its reminders comes due. Anyone subscribed at either level can add new reminders to that list too.</div>
 </div>
 </div>
 </div>
 <div class="field">
-<label>Reminders</label>
+<label data-i18n="settings.reminders_field_label">Reminders</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn notify-profile-reminders-btn" data-value="off">Off</button>
-<button type="button" class="size-btn notify-profile-reminders-btn" data-value="on">On</button>
+<button type="button" class="size-btn notify-profile-reminders-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn notify-profile-reminders-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 </div>
 <div class="field">
 <button type="button" class="accordion-toggle" data-target="notify-profile-instant-body">
-<span class="theme-section-label">Instant notifications</span>
+<span class="theme-section-label" data-i18n="settings.section_instant">Instant notifications</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="notify-profile-instant-body">
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-reward-claimed-check" /> A reward is claimed (anyone in the household)</label>
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-chore-approved-check" /> One of my chores is approved</label>
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-chore-rejected-check" /> One of my chores is sent back (not approved)</label>
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-chore-due-check" /> One of my chores is due soon (uses that chore's own "remind me" times)</label>
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-timer-alarm-check" /> One of my timers goes off (alarm-style: bypasses silent mode/DND on your phone)</label>
-<div class="remind-hint">Sent right away, separate from the Daily Digest below - not folded into tomorrow morning's summary.</div>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-reward-claimed-check" /> <span data-i18n="settings.instant_reward_claimed">A reward is claimed (anyone in the household)</span></label>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-chore-approved-check" /> <span data-i18n="settings.instant_chore_approved">One of my chores is approved</span></label>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-chore-rejected-check" /> <span data-i18n="settings.instant_chore_rejected">One of my chores is sent back (not approved)</span></label>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-chore-due-check" /> <span data-i18n="settings.instant_chore_due">One of my chores is due soon (uses that chore's own "remind me" times)</span></label>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-timer-alarm-check" /> <span data-i18n="settings.instant_timer_alarm">One of my timers goes off (alarm-style: bypasses silent mode/DND on your phone)</span></label>
+<div class="remind-hint" data-i18n="settings.instant_hint">Sent right away, separate from the Daily Digest below - not folded into tomorrow morning's summary.</div>
 </div>
 </div>
 <div class="field">
 <button type="button" class="accordion-toggle" data-target="notify-profile-digest-body">
-<span class="theme-section-label">Daily Digest</span>
+<span class="theme-section-label" data-i18n="settings.section_daily_digest">Daily Digest</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="notify-profile-digest-body">
 <div class="field">
-<label>Daily Digest</label>
+<label data-i18n="settings.section_daily_digest">Daily Digest</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn notify-profile-digest-btn" data-value="off">Off</button>
-<button type="button" class="size-btn notify-profile-digest-btn" data-value="on">On</button>
+<button type="button" class="size-btn notify-profile-digest-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn notify-profile-digest-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 </div>
 <div class="field notify-profile-digest-sections">
-<label>In their digest</label>
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-section-check" data-section="calendar" /> Today's calendar events</label>
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-section-check" data-section="reminders" /> Today's due reminders</label>
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-section-check" data-section="meals" /> Today's planned meals</label>
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-section-check" data-section="chores" /> Their own pending chores</label>
-<label class="remind-check-opt notify-profile-section-grocy-expiring" style="display:none"><input type="checkbox" class="notify-profile-section-check" data-section="grocyExpiring" /> Grocy items expiring soon</label>
-<label class="remind-check-opt notify-profile-section-grocy-low-stock" style="display:none"><input type="checkbox" class="notify-profile-section-check" data-section="grocyLowStock" /> Grocy items running low</label>
+<label data-i18n="settings.in_their_digest_label">In their digest</label>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-section-check" data-section="calendar" /> <span data-i18n="settings.digest_calendar_events">Today's calendar events</span></label>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-section-check" data-section="reminders" /> <span data-i18n="settings.digest_due_reminders">Today's due reminders</span></label>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-section-check" data-section="meals" /> <span data-i18n="settings.digest_planned_meals">Today's planned meals</span></label>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-section-check" data-section="chores" /> <span data-i18n="settings.digest_pending_chores">Their own pending chores</span></label>
+<label class="remind-check-opt notify-profile-section-grocy-expiring" style="display:none"><input type="checkbox" class="notify-profile-section-check" data-section="grocyExpiring" /> <span data-i18n="settings.digest_grocy_expiring">Grocy items expiring soon</span></label>
+<label class="remind-check-opt notify-profile-section-grocy-low-stock" style="display:none"><input type="checkbox" class="notify-profile-section-check" data-section="grocyLowStock" /> <span data-i18n="settings.digest_grocy_low_stock">Grocy items running low</span></label>
 </div>
 <div class="field">
-<button type="button" class="notify-profile-send-digest-btn">&#128228; Send test digest now</button>
-<div class="remind-hint">Sends what's currently checked above (even if not Saved yet) to this person's notify targets, right now - handy for checking a device actually gets it and previewing today's content.</div>
+<button type="button" class="notify-profile-send-digest-btn" data-i18n="settings.send_test_digest">&#128228; Send test digest now</button>
+<div class="remind-hint" data-i18n="settings.send_test_digest_hint">Sends what's currently checked above (even if not Saved yet) to this person's notify targets, right now - handy for checking a device actually gets it and previewing today's content.</div>
 <div class="notify-profile-send-digest-status"></div>
 </div>
 </div>
 </div>
-<div class="notify-profile-kiosk-accordion admin-only-block" style="display:none">
+<div class="field notify-profile-kiosk-accordion admin-only-block" style="display:none">
 <button type="button" class="accordion-toggle" data-target="notify-profile-kiosk-body">
-<span class="theme-section-label">Kiosk PIN login</span>
+<span class="theme-section-label" data-i18n="settings.section_kiosk_pin">Kiosk PIN login</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="notify-profile-kiosk-body">
 <div class="field">
-<label class="remind-check-opt"><input type="checkbox" class="notify-profile-kiosk-login-check" /> Enable logging in as this person on a shared kiosk display</label>
-<div class="remind-hint">Once enabled, a &#128274; Login button appears on the Chores and Rewards boards - typing this person's PIN there runs those boards as them for a bit (auto logs out after 45 seconds idle) to claim their own rewards, mark their own chores done, or (if they have approval permission) approve/reject others'.</div>
-<button type="button" class="notify-profile-kiosk-set-pin-btn admin-only-btn" style="display:none">&#128272; Set / change PIN&hellip;</button>
+<label class="remind-check-opt"><input type="checkbox" class="notify-profile-kiosk-login-check" /> <span data-i18n="settings.kiosk_enable_login">Enable logging in as this person on a shared kiosk display</span></label>
+<div class="remind-hint" data-i18n="settings.kiosk_login_hint">Once enabled, a &#128274; Login button appears on the Chores and Rewards boards - typing this person's PIN there runs those boards as them for a bit (auto logs out after 45 seconds idle) to claim their own rewards, mark their own chores done, or (if they have approval permission) approve/reject others'.</div>
+<button type="button" class="notify-profile-kiosk-set-pin-btn admin-only-btn" style="display:none" data-i18n="settings.kiosk_set_pin">&#128272; Set / change PIN&hellip;</button>
 <div class="notify-profile-kiosk-pin-status"></div>
 </div>
 </div>
 </div>
-<div class="notify-profile-permissions-accordion admin-only-block" style="display:none">
+<div class="field notify-profile-permissions-accordion admin-only-block" style="display:none">
 <button type="button" class="accordion-toggle" data-target="notify-profile-permissions-body">
-<span class="theme-section-label">Permissions</span>
+<span class="theme-section-label" data-i18n="settings.section_permissions">Permissions</span>
 <span class="accordion-chevron">&#9660;</span>
 </button>
 <div class="accordion-body" id="notify-profile-permissions-body">
-<div class="remind-hint">Only visible to a Home Assistant admin account - everyone can still do their own chores and claim anything from the Chore Bin regardless of these. Changes here save immediately, not on the Done button below.</div>
+<div class="remind-hint" data-i18n="settings.permissions_admin_hint">Only visible to a Home Assistant admin account - everyone can still do their own chores and claim anything from the Chore Bin regardless of these. Changes here save immediately, not on the Done button below.</div>
 <div class="notify-profile-perm-rows-list"></div>
 </div>
 </div>
 <div class="modal-actions">
-<button class="btn-save notify-profile-done">Done</button>
+<button class="btn-save notify-profile-done" data-i18n="common.done">Done</button>
 </div>
 </div>
 </div>
 <div class="modal-overlay kiosk-pin-modal">
 <div class="modal-box kiosk-pin-box">
-<h3 class="kiosk-pin-title">Set kiosk PIN</h3>
-<div class="remind-hint">4-8 digits. Leave blank and save to clear this person's PIN instead.</div>
-<label>PIN<input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" class="kiosk-pin-input" placeholder="e.g. 4821"></label>
+<h3 class="kiosk-pin-title" data-i18n="settings.set_kiosk_pin_title">Set kiosk PIN</h3>
+<div class="remind-hint" data-i18n="settings.kiosk_pin_digits_hint">4-8 digits. Leave blank and save to clear this person's PIN instead.</div>
+<label><span class="pin-label-text" data-i18n="settings.pin_label">PIN</span><input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" class="kiosk-pin-input" placeholder="e.g. 4821"></label>
 <div class="kiosk-pin-error" style="display:none"></div>
 <div class="modal-actions">
-<button class="btn-cancel kiosk-pin-cancel-btn">Cancel</button>
-<button class="btn-save kiosk-pin-save-btn">Save PIN</button>
+<button class="btn-cancel kiosk-pin-cancel-btn" data-i18n="common.cancel">Cancel</button>
+<button class="btn-save kiosk-pin-save-btn" data-i18n="settings.save_pin">Save PIN</button>
 </div>
 </div>
 </div>
 <div class="modal-overlay screensaver-users-overlay">
 <div class="modal-box screensaver-users-box">
-<button class="modal-close screensaver-users-close" aria-label="Close">&#10005;</button>
-<h2>&#128100; Screen Saver logins</h2>
-<div class="remind-hint">Check every Home Assistant login that should show the screensaver - everyone else keeps browsing without it, even though Settings itself is shared by the whole household.</div>
+<button class="modal-close screensaver-users-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
+<h2>&#128100; <span data-i18n="settings.screensaver_logins_heading">Screen Saver logins</span></h2>
+<div class="remind-hint" data-i18n="settings.screensaver_logins_hint">Check every Home Assistant login that should show the screensaver - everyone else keeps browsing without it, even though Settings itself is shared by the whole household.</div>
 <div class="screensaver-users-list"></div>
-<div class="remind-hint screensaver-users-hint" style="display:none">No other Home Assistant user accounts found besides yours - create one for the wall-mounted device (Settings → People → Users) if you want the screensaver on there but not on your own phone.</div>
+<div class="remind-hint screensaver-users-hint" style="display:none" data-i18n="settings.screensaver_logins_empty">No other Home Assistant user accounts found besides yours - create one for the wall-mounted device (Settings → People → Users) if you want the screensaver on there but not on your own phone.</div>
 <div class="modal-actions">
-<button class="btn-save screensaver-users-done">Done</button>
+<button class="btn-save screensaver-users-done" data-i18n="common.done">Done</button>
+</div>
+</div>
+</div>
+<div class="modal-overlay screensaver-widgets-overlay">
+<div class="modal-box screensaver-widgets-box">
+<button class="modal-close screensaver-widgets-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
+<h2>&#128433;&#65039; <span data-i18n="settings.screensaver_widgets_heading">Screensaver widgets</span></h2>
+<div class="remind-hint" data-i18n="settings.screensaver_widgets_edit_hint">Drag a widget to move it, drag its bottom-right corner to resize it. This layout is shared by the whole household.</div>
+<div class="screensaver-widgets-canvas-wrap">
+<div class="screensaver-widgets-canvas"></div>
+</div>
+<button type="button" class="screensaver-widgets-add-btn">&#10133; <span data-i18n="settings.screensaver_widgets_add">Add widget</span></button>
+<div class="screensaver-widget-form" style="display:none">
+<div class="screensaver-widget-gallery">
+<div class="remind-hint" data-i18n="settings.screensaver_widget_gallery_hint">Pick a kind of widget, same as adding a card to a dashboard.</div>
+<div class="screensaver-widget-gallery-grid"></div>
+</div>
+<div class="screensaver-widget-guided" style="display:none">
+<button type="button" class="screensaver-widget-back-btn">&#8592; <span data-i18n="settings.screensaver_widget_back">Choose a different type</span></button>
+<div class="screensaver-widget-type-chosen-label"></div>
+<div class="screensaver-widget-editor-toggle-row">
+<button type="button" class="screensaver-widget-yaml-toggle-btn" data-i18n="settings.screensaver_widget_edit_yaml">&#128221; Edit as YAML</button>
+</div>
+<div class="screensaver-widget-native-editor"></div>
+<div class="field screensaver-widget-entity-field" style="display:none">
+<label data-i18n="settings.screensaver_widget_entity_label">Entity</label>
+<input type="text" class="screensaver-widget-entity-input" list="screensaver-widget-entity-datalist" placeholder="e.g. weather.home" />
+<datalist id="screensaver-widget-entity-datalist"></datalist>
+</div>
+<div class="field screensaver-widget-content-field" style="display:none">
+<label data-i18n="settings.screensaver_widget_content_label">Text</label>
+<textarea class="screensaver-widget-content-input" rows="3"></textarea>
+</div>
+<div class="field screensaver-widget-clock-style-field" style="display:none">
+<label data-i18n="settings.screensaver_widget_clock_style_label">Clock style</label>
+<select class="screensaver-widget-clock-style-select">
+<option value="card" data-i18n="settings.screensaver_widget_clock_style_card">Card (Home Assistant's default clock)</option>
+<option value="digits" data-i18n="settings.screensaver_widget_clock_style_digits">Digits only (no border or background)</option>
+</select>
+</div>
+<div class="field screensaver-widget-clock-adaptive-field" style="display:none">
+<label class="screensaver-widget-transparent-label">
+<input type="checkbox" class="screensaver-widget-clock-adaptive-input" />
+<span data-i18n="settings.screensaver_widget_clock_adaptive_label">Automatic color (light digits on a dark background, dark digits on a light one)</span>
+</label>
+</div>
+</div>
+<div class="field screensaver-widget-json-field" style="display:none">
+<div class="screensaver-widget-editor-toggle-row">
+<button type="button" class="screensaver-widget-visual-toggle-btn" data-i18n="settings.screensaver_widget_edit_visually">&#127912; Edit visually</button>
+</div>
+<label data-i18n="settings.screensaver_widget_config_label">Card config (JSON)</label>
+<textarea class="screensaver-widget-config-input" rows="6" placeholder='{"type": "weather-forecast", "entity": "weather.home"}'></textarea>
+<div class="remind-hint" data-i18n="settings.screensaver_widget_config_hint">Any Lovelace card's YAML config, written as JSON - the same "type" and other keys you'd use in a dashboard.</div>
+</div>
+
+<div class="field screensaver-widget-transparent-field" style="display:none">
+<label class="screensaver-widget-transparent-label">
+<input type="checkbox" class="screensaver-widget-transparent-input" />
+<span data-i18n="settings.screensaver_widget_transparent_label">Transparent background (fill the card, no card background)</span>
+</label>
+</div>
+<div class="screensaver-widget-config-error" style="display:none"></div>
+<div class="modal-actions">
+<button class="btn-cancel screensaver-widget-form-cancel" data-i18n="common.cancel">Cancel</button>
+<button class="btn-save screensaver-widget-form-save" data-i18n="common.save">Save widget</button>
+</div>
+</div>
+<div class="modal-actions">
+<button class="btn-save screensaver-widgets-done" data-i18n="common.done">Done</button>
 </div>
 </div>
 </div>
@@ -7473,56 +12035,56 @@ instead of the usual stacked field layout. */
 </div>
 <div class="modal-overlay add-event-overlay">
 <div class="modal-box add-event-box">
-<button class="modal-close add-event-close" aria-label="Close">&#10005;</button>
+<button class="modal-close add-event-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
 <h2 class="add-event-heading">&#10133; New Event</h2>
 <div class="add-event-tabs">
-<button type="button" class="add-event-tab-btn active" data-tab="calendar">&#128197; Calendar Event</button>
-<button type="button" class="add-event-tab-btn" data-tab="reminder">&#128276; Reminder</button>
+<button type="button" class="add-event-tab-btn active" data-tab="calendar">&#128197; <span data-i18n="add_event.tab_calendar">Calendar Event</span></button>
+<button type="button" class="add-event-tab-btn" data-tab="reminder">&#128276; <span data-i18n="add_event.tab_reminder">Reminder</span></button>
 </div>
 <div class="field add-event-calendar-field">
-<label>Calendar</label>
+<label data-i18n="add_event.calendar_label">Calendar</label>
 <select class="hour-select add-event-calendar-select"></select>
 </div>
 <div class="field">
-<label>Title</label>
+<label data-i18n="add_event.title_label">Title</label>
 <input type="text" class="add-event-title" placeholder="e.g. Dentist appointment" maxlength="120" />
 </div>
 <div class="add-event-tab-panel" data-tab-panel="calendar">
 <div class="field">
-<label>All day</label>
+<label data-i18n="add_event.allday_label">All day</label>
 <div class="size-btn-row">
-<button type="button" class="size-btn add-event-allday-btn" data-value="off">Timed</button>
-<button type="button" class="size-btn add-event-allday-btn" data-value="on">All day</button>
+<button type="button" class="size-btn add-event-allday-btn" data-value="off" data-i18n="add_event.timed">Timed</button>
+<button type="button" class="size-btn add-event-allday-btn" data-value="on" data-i18n="add_event.allday">All day</button>
 </div>
 </div>
 <div class="field">
-<label>Date</label>
+<label data-i18n="add_event.date_label">Date</label>
 <div class="date-picker-row">
 <input type="date" class="add-event-date" />
-<button type="button" class="add-event-date-btn" title="Pick a date">&#128197;</button>
+<button type="button" class="add-event-date-btn" title="Pick a date" data-i18n-title="add_event.pick_date">&#128197;</button>
 </div>
 </div>
 <div class="field add-event-enddate-field">
-<label>End date (optional - for multi-day events)</label>
+<label data-i18n="add_event.enddate_label">End date (optional - for multi-day events)</label>
 <div class="date-picker-row">
 <input type="date" class="add-event-end-date" />
-<button type="button" class="add-event-end-date-btn" title="Pick a date">&#128197;</button>
+<button type="button" class="add-event-end-date-btn" title="Pick a date" data-i18n-title="add_event.pick_date">&#128197;</button>
 </div>
 </div>
 <div class="field add-event-time-field">
-<label>Start / End time</label>
+<label data-i18n="add_event.time_label">Start / End time</label>
 <div class="size-btn-row">
 <input type="time" class="hour-select add-event-start-time" />
-<div class="range-sep">to</div>
+<div class="range-sep" data-i18n="add_event.to">to</div>
 <input type="time" class="hour-select add-event-end-time" />
 </div>
 </div>
 <div class="field">
-<label>Location (optional)</label>
+<label data-i18n="add_event.location_label">Location (optional)</label>
 <input type="text" class="add-event-location" placeholder="Optional" maxlength="120" />
 </div>
 <div class="field add-event-remind-field">
-<label>Remind me</label>
+<label data-i18n="add_event.remind_label">Remind me</label>
 <div class="remind-check-row">
 <label class="remind-check-opt"><input type="checkbox" class="remind-check" value="5" />5m</label>
 <label class="remind-check-opt"><input type="checkbox" class="remind-check" value="10" />10m</label>
@@ -7532,43 +12094,67 @@ instead of the usual stacked field layout. */
 <label class="remind-check-opt"><input type="checkbox" class="remind-check" value="120" />2h</label>
 <label class="remind-check-opt"><input type="checkbox" class="remind-check" value="1440" />1d</label>
 </div>
-<div class="remind-hint">Needs the Family Hub integration installed to actually notify.</div>
+<div class="remind-hint" data-i18n="add_event.remind_hint">Needs the Family Hub integration installed to actually notify.</div>
 </div>
 <div class="field add-event-people-field">
-<label>Also for</label>
+<label data-i18n="add_event.also_for_label">Also for</label>
 <div class="add-event-people-content"></div>
 </div>
 </div>
 <div class="add-event-tab-panel" data-tab-panel="reminder" style="display:none">
 <div class="field add-event-reminder-list-field">
-<label>List</label>
+<label data-i18n="add_event.list_label">List</label>
 <select class="hour-select add-event-reminder-list-select"></select>
 </div>
 <div class="field">
-<label>Date</label>
+<label data-i18n="add_event.date_label">Date</label>
 <div class="date-picker-row">
 <input type="date" class="add-event-reminder-date" />
-<button type="button" class="add-event-reminder-date-btn" title="Pick a date">&#128197;</button>
+<button type="button" class="add-event-reminder-date-btn" title="Pick a date" data-i18n-title="add_event.pick_date">&#128197;</button>
 </div>
 </div>
 <div class="field">
-<label>Notify at</label>
+<label data-i18n="add_event.notify_at_label">Notify at</label>
 <input type="time" class="hour-select add-event-reminder-time" />
 </div>
 <div class="field">
-<label class="remind-check-opt"><input type="checkbox" class="add-event-reminder-rollover" />&#128257; Roll over to next day if not completed</label>
+<label class="remind-check-opt"><input type="checkbox" class="add-event-reminder-rollover" />&#128257; <span data-i18n="add_event.rollover_label">Roll over to next day if not completed</span></label>
+<div class="field rolldays-field add-event-reminder-rolldays-field">
+<div class="rolldays-hint" data-i18n="add_event.rolldays_hint">Applies only on these days (leave every day selected to roll over daily, same as before)</div>
+<div class="rolldays-btn-row add-event-reminder-rolldays">${this._rolldaysBtnsHtml([])}</div>
 </div>
-<div class="remind-hint">Saved as a to-do in Home Assistant, not an event on your calendar - fires once at this exact time, and you can mark it done, edit it, or reschedule it anytime from the event-info popup or Home Assistant's own To-do UI. Needs the Family Hub integration installed to actually notify; set reminder notify devices under Settings.</div>
+</div>
+<div class="remind-hint" data-i18n="add_event.reminder_hint">Saved as a to-do in Home Assistant, not an event on your calendar - fires once at this exact time, and you can mark it done, edit it, or reschedule it anytime from the event-info popup or Home Assistant's own To-do UI. Needs the Family Hub integration installed to actually notify; set reminder notify devices under Settings.</div>
 <div class="add-event-warn add-event-reminder-missing-warn" style="display:none"></div>
 </div>
+<div class="field add-event-checklist-field">
+<label class="remind-check-opt"><input type="checkbox" class="add-event-checklist-toggle" />&#128203; <span data-i18n="add_event.checklist_toggle_label">Attach a checklist</span></label>
+<div class="add-event-checklist-body" style="display:none">
+<div class="checklist-mode-btn-row">
+<button type="button" class="size-btn add-event-checklist-mode-btn active" data-value="custom" data-i18n="add_event.checklist_mode_custom">Just for this</button>
+<button type="button" class="size-btn add-event-checklist-mode-btn" data-value="existing" data-i18n="add_event.checklist_mode_existing">Use an existing list</button>
+</div>
+<div class="field add-event-checklist-existing-field" style="display:none">
+<select class="hour-select add-event-checklist-existing-select"></select>
+</div>
+<div class="add-event-checklist-custom-field">
+<div class="add-event-checklist-items"></div>
+<div class="checklist-add-row">
+<input type="text" class="add-event-checklist-add-input" placeholder="e.g. Cleats" maxlength="200" />
+<button type="button" class="btn-cancel add-event-checklist-add-btn" data-i18n="common.add">Add</button>
+</div>
+</div>
+<div class="remind-hint" data-i18n="add_event.checklist_hint">A "just for this" list is deleted automatically once this happens (plus a grace window, so it doesn't vanish mid-use) - an existing list you attach is only ever unlinked, never touched or deleted itself.</div>
+</div>
+</div>
 <div class="field">
-<label>Notes (optional)</label>
+<label data-i18n="add_event.notes_label">Notes (optional)</label>
 <textarea class="add-event-description" placeholder="Optional details" maxlength="255"></textarea>
 </div>
 <div class="add-event-error" style="display:none"></div>
 <div class="modal-actions">
-<button class="btn-cancel add-event-cancel">Cancel</button>
-<button class="btn-save add-event-save">Save</button>
+<button class="btn-cancel add-event-cancel" data-i18n="common.cancel">Cancel</button>
+<button class="btn-save add-event-save" data-i18n="common.save">Save</button>
 </div>
 </div>
 </div>
@@ -7600,7 +12186,7 @@ this._modalOpenObserver.observe(el, { attributes: true, attributeFilter: ["class
 });
 }
 this._setupScreenSaverActivityListeners();
-// v1.126.0+: skipped when the top of this same _build() already applied a
+// skipped when the top of this same _build() already applied a
 // cached theme (see this._familyHubUsedCachedThemeVars there) - this call
 // runs the REAL theme resolution against whatever's in _settingsCache/
 // _globalThemes right now, which for a just-built card is still nothing
@@ -7639,6 +12225,16 @@ this._renderGrid();
 return;
 }
 this._goToWeekFromDate(new Date(cell.dataset.date + "T00:00:00"));
+return;
+}
+// Same select-a-day idiom as the split Month
+// variant's own .month-cell branch above - clicking again deselects
+// (there's no other affordance to clear it back to defaulting on
+// today, unlike Month, which always has SOME day selected).
+const dayHeader = e.target.closest(".day-header");
+if (dayHeader && dayHeader.dataset.date) {
+this._weekSelectedDate = this._weekSelectedDate === dayHeader.dataset.date ? null : dayHeader.dataset.date;
+this._renderGrid();
 return;
 }
 const evCard = e.target.closest(".event, .tl-event, .all-day-chip");
@@ -7680,11 +12276,14 @@ this._swipeStartX = null;
 const absDx = Math.abs(dx);
 const absDy = Math.abs(dy);
 if (absDx > 60 && absDx > absDy * 1.5 && dt < 800) {
+const family = this._viewFamily(this._viewMode);
 if (dx < 0) {
-if (this._viewFamily(this._viewMode) === "month") this._setMonthOffset((this._monthOffset || 0) + 1);
+if (family === "month") this._setMonthOffset((this._monthOffset || 0) + 1);
+else if (family === "day") this._setDayOffset((this._dayOffset || 0) + 1);
 else this._setWeekOffset((this._weekOffset || 0) + 1);
 } else {
-if (this._viewFamily(this._viewMode) === "month") this._setMonthOffset((this._monthOffset || 0) - 1);
+if (family === "month") this._setMonthOffset((this._monthOffset || 0) - 1);
+else if (family === "day") this._setDayOffset((this._dayOffset || 0) - 1);
 else this._setWeekOffset((this._weekOffset || 0) - 1);
 }
 }
@@ -7692,15 +12291,21 @@ else this._setWeekOffset((this._weekOffset || 0) - 1);
 { passive: true }
 );
 root.querySelector(".nav-prev").addEventListener("click", () => {
-if (this._viewFamily(this._viewMode) === "month") this._setMonthOffset((this._monthOffset || 0) - 1);
+const family = this._viewFamily(this._viewMode);
+if (family === "month") this._setMonthOffset((this._monthOffset || 0) - 1);
+else if (family === "day") this._setDayOffset((this._dayOffset || 0) - 1);
 else this._setWeekOffset((this._weekOffset || 0) - 1);
 });
 root.querySelector(".nav-next").addEventListener("click", () => {
-if (this._viewFamily(this._viewMode) === "month") this._setMonthOffset((this._monthOffset || 0) + 1);
+const family = this._viewFamily(this._viewMode);
+if (family === "month") this._setMonthOffset((this._monthOffset || 0) + 1);
+else if (family === "day") this._setDayOffset((this._dayOffset || 0) + 1);
 else this._setWeekOffset((this._weekOffset || 0) + 1);
 });
 root.querySelector(".week-label").addEventListener("click", () => {
-if (this._viewFamily(this._viewMode) === "month") this._setMonthOffset(0);
+const family = this._viewFamily(this._viewMode);
+if (family === "month") this._setMonthOffset(0);
+else if (family === "day") this._setDayOffset(0);
 else this._setWeekOffset(0);
 });
 root.querySelector(".week-shortcuts-toggle").addEventListener("click", (e) => {
@@ -7713,12 +12318,19 @@ this._setWeekOffset(parseInt(btn.dataset.weeks, 10));
 this._closeWeekShortcuts();
 });
 });
-root.querySelectorAll(".view-btn").forEach((btn) => {
+root.querySelector(".view-select-btn").addEventListener("click", (e) => {
+e.stopPropagation();
+this._toggleViewSelectMenu();
+});
+root.querySelectorAll(".view-select-item").forEach((btn) => {
 btn.addEventListener("click", () => {
-// v144+ task #28: the button only picks the family - which variant
-// within it actually renders is this device's own choice.
+// the button only picks the family - which variant
+// within it actually renders is this device's own choice. Day has no
+// sub-variants (no equivalent of Week's planner or Month's split), so
+// it's just "day" itself.
 const family = btn.dataset.view;
-const mode = family === "month" ? this._getMonthViewVariant() : this._getWeekViewVariant();
+const mode = family === "month" ? this._getMonthViewVariant() : family === "day" ? "day" : this._getWeekViewVariant();
+this._closeViewSelectMenu();
 if (mode === this._viewMode) return;
 this._viewMode = mode;
 if (mode !== "week" && this._mealEditMode) {
@@ -7729,10 +12341,23 @@ editBtn.classList.remove("active");
 editBtn.innerHTML = "&#9999;&#65039; Edit";
 }
 }
+// a Week-view day selection means nothing once Month or Day is
+// showing instead (and _addEventDefaultDate only ever consults it while
+// _viewFamily is "week" anyway) - clear it so switching back to Week
+// later doesn't resurrect a highlight from a previous visit.
+if (this._viewFamily(mode) !== "week") this._weekSelectedDate = null;
+// See _setWeekOffset's own comment - this dropdown is the most direct
+// way to hit the "shows month view but says its week view" bug, since
+// picking Week/Month/Day here changes this._viewMode itself, and
+// _updateNavLabel() right below would otherwise update the dropdown's
+// own label a full network round-trip before _fetchEvents() got around
+// to repainting the grid to match it.
+this._renderGrid();
 this._fetchEvents();
 this._updateNavLabel();
 });
 });
+root.querySelector(".view-select-dropdown").addEventListener("click", () => this._closeViewSelectMenu());
 root.querySelector(".edit-meals-btn").addEventListener("click", () => {
 this._mealEditMode = !this._mealEditMode;
 const btn = root.querySelector(".edit-meals-btn");
@@ -7743,7 +12368,7 @@ this._renderGrid();
 root.querySelector(".edit-overlay .modal-close").addEventListener("click", () => this._closeEditor());
 root.querySelector(".btn-cancel:not(.settings-cancel)").addEventListener("click", () => this._closeEditor());
 root.querySelector(".btn-save:not(.settings-save)").addEventListener("click", () => this._saveEditor());
-// v1.109.6+: the can_edit_menu-less alternative to Save (see
+// the can_edit_menu-less alternative to Save (see
 // _applyMenuEditPermissionUi) - only ever visible when Save isn't.
 root.querySelector(".btn-suggest-meal").addEventListener("click", () => this._suggestMealFromEditor());
 root.querySelector(".btn-clear").addEventListener("click", () => {
@@ -7815,7 +12440,7 @@ root.querySelector(".meal-view-edit-btn").addEventListener("click", () => this._
 root.querySelector(".btn-move-meal").addEventListener("click", () => this._moveMealToDate());
 root.querySelector(".btn-add-additional-recipe-box").addEventListener("click", () => this._openLoved("additional"));
 root.querySelector(".btn-add-additional-recipe-link").addEventListener("click", () => this._addAdditionalRecipeFromLink());
-// v1.109.8+: the inline "From a link" add/edit form that replaced the old
+// the inline "From a link" add/edit form that replaced the old
 // pair of window.prompt() dialogs - see _openAdditionalRecipeForm.
 const addlNameEl = root.querySelector(".input-additional-recipe-name");
 const addlLinkEl = root.querySelector(".input-additional-recipe-link");
@@ -7865,10 +12490,12 @@ window.open(entry.link, "_blank", "noopener");
 root.querySelector(".btn-heart").addEventListener("click", () => {
 this._currentRating = this._currentRating === "up" ? null : "up";
 this._updateRatingButtons();
+this._maybeAutoSaveMealEditorRating();
 });
 root.querySelector(".btn-thumbsdown").addEventListener("click", () => {
 this._currentRating = this._currentRating === "down" ? null : "down";
 this._updateRatingButtons();
+this._maybeAutoSaveMealEditorRating();
 });
 root.querySelectorAll(".swatch").forEach((sw) => {
 sw.addEventListener("click", () => {
@@ -7887,6 +12514,15 @@ this._closeMoreMenu();
 this._openLoved(false);
 });
 root.querySelector(".pick-recipe-btn").addEventListener("click", () => this._openLoved(true));
+root.querySelector(".input-name").addEventListener("input", () => this._updateMealNameSuggestion());
+// up to 3 suggestion rows now, rebuilt on every keystroke
+// (see _updateMealNameSuggestion) - delegated so it keeps working after
+// the list's innerHTML is replaced, instead of wiring a single static
+// button once.
+root.querySelector(".meal-name-suggestion-list").addEventListener("click", (e) => {
+const btn = e.target.closest(".meal-name-suggestion-use");
+if (btn) this._applyMealNameSuggestion(btn.dataset.uid || "");
+});
 root.querySelector(".loved-close").addEventListener("click", () => this._closeLoved());
 root.querySelector(".suggestions-btn").addEventListener("click", () => this._openSuggestedRecipes());
 // There's no standalone Suggestions box left at all now - both places
@@ -7964,7 +12600,7 @@ if (this._grocyRecipeViewerFallbackLink) window.open(this._grocyRecipeViewerFall
 root.querySelector(".grocy-recipe-viewer-consume-btn").addEventListener("click", () => this._consumeGrocyRecipeIngredients());
 root.querySelector(".grocy-recipe-viewer-scale-down").addEventListener("click", () => this._adjustGrocyRecipeViewerServings(-1));
 root.querySelector(".grocy-recipe-viewer-scale-up").addEventListener("click", () => this._adjustGrocyRecipeViewerServings(1));
-// v1.129.0+: Suggest/Edit/Delete for whichever Recipe Box entry this
+// Suggest/Edit/Delete for whichever Recipe Box entry this
 // viewer was opened FROM (see _openGrocyRecipeViewer's own comment on
 // _grocyRecipeViewerSourceRecipe) - only ever visible when there IS
 // one, i.e. when the viewer was opened by tapping a recipe straight
@@ -8027,6 +12663,14 @@ root.querySelector(".grocy-low-stock-btn").addEventListener("click", () => this.
 root.querySelector(".grocy-low-stock-close").addEventListener("click", () => this._closeGrocyLowStock());
 root.querySelector(".grocy-low-stock-add-all-btn").addEventListener("click", () => this._addMissingGrocyProductsToShoppingList());
 root.querySelector(".grocy-expiring-close").addEventListener("click", () => this._closeGrocyExpiringSoon());
+root.querySelector(".daily-digest-menu-item").addEventListener("click", () => this._openDailyDigest());
+// Household ask, verbatim: "Enabling this mode can be done from the more
+// menu" - deliberately no permission check here at all (see
+// PERMISSION_TOGGLE_PRIVACY_MODE's own comment in const.py and
+// ws_privacy_mode_set's own docstring) - anyone can turn Privacy Mode ON.
+// Only turning it back OFF via the on-screen lock is gated.
+root.querySelector(".privacy-mode-menu-item").addEventListener("click", () => this._enablePrivacyMode());
+root.querySelector(".daily-digest-close").addEventListener("click", () => this._closeDailyDigest());
 root.querySelector(".grocy-shopping-list-add-btn").addEventListener("click", () => this._addGrocyShoppingListItem());
 root.querySelector(".grocy-shopping-list-add-input").addEventListener("keydown", (e) => {
 if (e.key === "Enter") this._addGrocyShoppingListItem();
@@ -8049,6 +12693,14 @@ if (!root.querySelector(".more-menu-wrap").contains(e.target)) this._closeMoreMe
 document.addEventListener("keydown", (e) => {
 if (e.key === "Escape") this._closeMoreMenu();
 });
+// Week/Month/Day view switcher - same outside-click/Escape-to-close
+// pattern as the More menu just above.
+document.addEventListener("click", (e) => {
+if (!root.querySelector(".view-select-wrap").contains(e.target)) this._closeViewSelectMenu();
+});
+document.addEventListener("keydown", (e) => {
+if (e.key === "Escape") this._closeViewSelectMenu();
+});
 root.querySelector(".add-event-fab").addEventListener("click", () => {
 this._openModal(root.querySelector(".add-menu-overlay"));
 });
@@ -8069,7 +12721,7 @@ root.querySelector(".add-fab-recipe").addEventListener("click", () => {
 this._closeAddMenu();
 this._openRecipeImport();
 });
-// v1.132.5+: Small screen mode's own entry point to Settings - only
+// Small screen mode's own entry point to Settings - only
 // visible at all once smallScreenMode is on (see the CSS above), since
 // that's also when the top bar's own Settings button is hidden.
 root.querySelector(".add-fab-settings").addEventListener("click", () => {
@@ -8079,6 +12731,41 @@ this._openSettings();
 root.querySelector(".add-event-close").addEventListener("click", () => this._closeAddEvent());
 root.querySelector(".add-event-cancel").addEventListener("click", () => this._closeAddEvent());
 root.querySelector(".add-event-save").addEventListener("click", () => this._saveAddEvent());
+// attachable checklists - toggle show/hide, mode switch
+// (custom vs existing), add-item input, same wiring shape as the rest of
+// this modal's own listeners right around it.
+root.querySelector(".add-event-checklist-toggle").addEventListener("change", (e) => {
+root.querySelector(".add-event-checklist-body").style.display = e.target.checked ? "" : "none";
+if (e.target.checked && root.querySelector(".add-event-checklist-mode-btn.active").dataset.value === "existing") {
+  this._renderAddEventChecklistExistingSelect();
+}
+});
+root.querySelectorAll(".add-event-checklist-mode-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+  root.querySelectorAll(".add-event-checklist-mode-btn").forEach((b) => b.classList.toggle("active", b === btn));
+  const isExisting = btn.dataset.value === "existing";
+  root.querySelector(".add-event-checklist-existing-field").style.display = isExisting ? "" : "none";
+  root.querySelector(".add-event-checklist-custom-field").style.display = isExisting ? "none" : "";
+  if (isExisting) this._renderAddEventChecklistExistingSelect();
+});
+});
+const addChecklistItem = () => {
+const input = root.querySelector(".add-event-checklist-add-input");
+const text = (input.value || "").trim();
+if (!text) return;
+this._addEventChecklistItems = this._addEventChecklistItems || [];
+this._addEventChecklistItems.push({ text: text.slice(0, 200) });
+input.value = "";
+this._renderAddEventChecklistItems();
+input.focus();
+};
+root.querySelector(".add-event-checklist-add-btn").addEventListener("click", addChecklistItem);
+root.querySelector(".add-event-checklist-add-input").addEventListener("keydown", (e) => {
+if (e.key === "Enter") {
+  e.preventDefault();
+  addChecklistItem();
+}
+});
 root.querySelector(".add-event-date-btn").addEventListener("click", () => {
 const input = root.querySelector(".add-event-date");
 if (input.showPicker) {
@@ -8142,9 +12829,32 @@ btn.classList.add("active");
 this._updateAddEventFieldVisibility(btn.dataset.value === "on");
 });
 });
+// "Roll over to next day if not completed" can now be restricted
+// to specific days (see _rolldaysBtnsHtml/_wireRolldaysToggle) - the day
+// picker only makes sense once rollover itself is checked.
+//
+// v186 bugfix: this used to set style.display = "" to reveal the field,
+// which is a no-op here specifically - .rolldays-field's OWN stylesheet
+// rule is "display: none" (its hidden-by-default state), so clearing the
+// inline style just falls back to that same "none" instead of showing
+// anything. Needs an explicit non-none value ("block") to actually
+// override it. (Most other fields in this file default to visible in
+// their stylesheet rule, where "" correctly means "go back to shown" -
+// this one's different because it's hidden by default at the CSS level,
+// not just via inline style.)
+const addEventRolloverCb = root.querySelector(".add-event-reminder-rollover");
+const addEventRolldaysField = root.querySelector(".add-event-reminder-rolldays-field");
+if (addEventRolloverCb && addEventRolldaysField) {
+addEventRolloverCb.addEventListener("change", () => {
+addEventRolldaysField.style.display = addEventRolloverCb.checked ? "block" : "none";
+});
+}
+this._wireRolldaysToggle(root.querySelector(".add-event-reminder-rolldays"));
 root.querySelector(".debug-close").addEventListener("click", () => {
 root.querySelector(".debug-overlay").classList.remove("open");
 });
+root.querySelector(".debug-copy-btn").addEventListener("click", () => this._copyDebugInfo());
+root.querySelector(".debug-export-btn").addEventListener("click", () => this._exportDebugInfo());
 root.querySelector(".event-info-close").addEventListener("click", () => {
 root.querySelector(".event-info-overlay").classList.remove("open");
 this._eventInfoOpenId = null;
@@ -8156,6 +12866,22 @@ root.querySelector(".notify-devices-done").addEventListener("click", () => this.
 root.querySelector(".screensaver-users-btn").addEventListener("click", () => this._openScreenSaverUsersModal());
 root.querySelector(".screensaver-users-close").addEventListener("click", () => this._closeScreenSaverUsersModal());
 root.querySelector(".screensaver-users-done").addEventListener("click", () => this._closeScreenSaverUsersModal());
+root.querySelector(".screensaver-widgets-edit-btn").addEventListener("click", () => this._openScreenSaverWidgetsModal());
+root.querySelector(".screensaver-widgets-close").addEventListener("click", () => this._closeScreenSaverWidgetsModal());
+root.querySelector(".screensaver-widgets-done").addEventListener("click", () => this._closeScreenSaverWidgetsModal());
+root.querySelector(".screensaver-widgets-add-btn").addEventListener("click", () => this._openScreenSaverWidgetForm(null));
+root.querySelector(".screensaver-widget-form-cancel").addEventListener("click", () => this._closeScreenSaverWidgetForm());
+root.querySelector(".screensaver-widget-form-save").addEventListener("click", () => this._saveScreenSaverWidgetForm());
+root.querySelector(".screensaver-widget-back-btn").addEventListener("click", () => {
+this._screenSaverWidgetFormType = null;
+this._showScreenSaverWidgetGallery();
+});
+root.querySelector(".screensaver-widget-yaml-toggle-btn").addEventListener("click", () => this._toggleScreenSaverWidgetYamlMode());
+root.querySelector(".screensaver-widget-visual-toggle-btn").addEventListener("click", () => this._toggleScreenSaverWidgetYamlMode());
+root.querySelector(".screensaver-widget-clock-style-select").addEventListener("change", (e) => {
+const adaptiveField = root.querySelector(".screensaver-widget-clock-adaptive-field");
+if (adaptiveField) adaptiveField.style.display = e.target.value === "digits" ? "" : "none";
+});
 root.querySelector(".notify-devices-add-btn").addEventListener("click", () => this._addNotifyDevice());
 root.querySelector(".member-add-btn").addEventListener("click", () => this._addFamilyHubMember());
 root.querySelector(".notify-devices-autodetect-btn").addEventListener("click", () => this._autoDetectNotifyTarget());
@@ -8198,6 +12924,50 @@ const userId = this._notifyProfileEditingUserId;
 if (userId !== undefined && userId !== null) this._settingsUserProfilesDraft[userId].includeInChores = btn.dataset.value === "on";
 });
 });
+root.querySelectorAll(".notify-profile-child-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".notify-profile-child-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+const userId = this._notifyProfileEditingUserId;
+if (userId !== undefined && userId !== null) this._settingsUserProfilesDraft[userId].isChildAccount = btn.dataset.value === "on";
+});
+});
+// Kiosk account - same toggle mechanism as Child account just above,
+// but switching it ON also seeds two other kiosk-ish fields as a one-
+// time convenience default (see .notify-profile-kiosk-account-field's
+// own hint): Always-on alarm kiosk, and this profile's own Kiosk PIN
+// login enrollment (_settingsKioskLoginUserIdsDraft - a household-wide
+// array, not a per-profile field, hence the separate draft). Only fires
+// on the OFF->ON transition, and only ever turns things ON here - an
+// admin who then flips either back off individually is never fought
+// with on a later Settings open, since this only runs again on another
+// explicit click.
+root.querySelectorAll(".notify-profile-kiosk-account-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+const turningOn = btn.dataset.value === "on" && !root.querySelector('.notify-profile-kiosk-account-btn[data-value="on"]').classList.contains("active");
+root.querySelectorAll(".notify-profile-kiosk-account-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+const userId = this._notifyProfileEditingUserId;
+if (userId === undefined || userId === null) return;
+this._settingsUserProfilesDraft[userId].isKioskAccount = btn.dataset.value === "on";
+if (turningOn) {
+this._settingsUserProfilesDraft[userId].isAlarmKiosk = true;
+root.querySelectorAll(".notify-profile-alarm-kiosk-btn").forEach((b) => b.classList.toggle("active", b.dataset.value === "on"));
+if (!Array.isArray(this._settingsKioskLoginUserIdsDraft)) this._settingsKioskLoginUserIdsDraft = [];
+if (!this._settingsKioskLoginUserIdsDraft.includes(userId)) this._settingsKioskLoginUserIdsDraft.push(userId);
+const kioskLoginCheckEl = root.querySelector(".notify-profile-kiosk-login-check");
+if (kioskLoginCheckEl) kioskLoginCheckEl.checked = true;
+}
+});
+});
+root.querySelectorAll(".notify-profile-alarm-kiosk-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".notify-profile-alarm-kiosk-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+const userId = this._notifyProfileEditingUserId;
+if (userId !== undefined && userId !== null) this._settingsUserProfilesDraft[userId].isAlarmKiosk = btn.dataset.value === "on";
+});
+});
 root.querySelectorAll(".notify-profile-digest-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
 root.querySelectorAll(".notify-profile-digest-btn").forEach((b) => b.classList.remove("active"));
@@ -8238,7 +13008,7 @@ const userId = this._notifyProfileEditingUserId;
 if (userId === undefined || userId === null) return;
 this._settingsUserProfilesDraft[userId].notifyTimerAlarm = e.target.checked;
 });
-// v1.131.0+: this profile's own directly-set calendar/reminders/wish
+// this profile's own directly-set calendar/reminders/wish
 // list - see SETTINGS_KEY_USER_PROFILES's own comment in const.py.
 root.querySelector(".notify-profile-calendar-entity").addEventListener("input", (e) => {
 const userId = this._notifyProfileEditingUserId;
@@ -8246,12 +13016,22 @@ if (userId === undefined || userId === null) return;
 if (!this._settingsUserProfilesDraft[userId]) this._settingsUserProfilesDraft[userId] = this._defaultUserProfile();
 this._settingsUserProfilesDraft[userId].primaryCalendar = e.target.value.trim();
 });
+root.querySelector(".notify-profile-additional-reminders-add-btn").addEventListener("click", () => {
+const userId = this._notifyProfileEditingUserId;
+if (userId === undefined || userId === null) return;
+this._addNotifyProfileAdditionalRemindersBlank(userId);
+});
+root.querySelector(".notify-profile-additional-reminders-create-btn").addEventListener("click", () => {
+const userId = this._notifyProfileEditingUserId;
+if (userId === undefined || userId === null) return;
+this._createNotifyProfileAdditionalRemindersList(userId);
+});
 root.querySelector(".notify-profile-own-calendar-badge-add-btn").addEventListener("click", () => {
 const userId = this._notifyProfileEditingUserId;
 if (userId === undefined || userId === null) return;
 this._syncNotifyProfileBadgesFromDom(userId);
 if (!Array.isArray(this._settingsUserProfilesDraft[userId].badges)) this._settingsUserProfilesDraft[userId].badges = [];
-this._settingsUserProfilesDraft[userId].badges.push({ text: "", match: "", hideMatch: "" });
+this._settingsUserProfilesDraft[userId].badges.push({ text: "", match: "", hideMatch: "", digestHide: false });
 this._renderNotifyProfileBadges(userId);
 });
 root.querySelectorAll(".notify-profile-list-entity").forEach((input) => {
@@ -8266,7 +13046,7 @@ this._syncNotifyProfileListAddButtons();
 root.querySelectorAll(".notify-profile-list-add-btn").forEach((btn) => {
 btn.addEventListener("click", () => this._createNotifyProfileList(btn.dataset.listKind));
 });
-// v144+ task #29: toggles kiosk PIN login enrollment - see
+// toggles kiosk PIN login enrollment - see
 // _settingsKioskLoginUserIdsDraft's own docstring above.
 root.querySelector(".notify-profile-kiosk-login-check").addEventListener("change", (e) => {
 const userId = this._notifyProfileEditingUserId;
@@ -8286,9 +13066,17 @@ root.querySelector(".settings-cancel").addEventListener("click", () => this._clo
 root.querySelector(".settings-save").addEventListener("click", () => this._saveSettings());
 root.querySelector(".settings-debug-btn").addEventListener("click", () => {
 this._closeSettings();
+// A fresh fetch every time the panel is opened - see _renderDebug's own
+// comment on why this is the one place _debugServerInfo gets cleared
+// (not on every periodic re-render while the panel stays open).
+this._debugServerInfo = null;
 this._renderDebug();
 this._openModal(root.querySelector(".debug-overlay"));
 });
+root.querySelector(".settings-backup-now-btn").addEventListener("click", () => this._backupSettingsNow());
+root.querySelector(".this-device-save-btn").addEventListener("click", () => this._saveThisDeviceName());
+root.querySelector(".this-device-identify-btn").addEventListener("click", () => this._showIdentifyModal());
+root.querySelector(".device-settings-identify-all-btn").addEventListener("click", () => this._identifyAllDevices());
 root.querySelector(".add-person-btn").addEventListener("click", () => {
 this._syncPeopleDraftFromDom();
 this._settingsPeopleDraft.push({ entity: "", name: "", color: "#d9bf7e", countdown: false, badges: [] });
@@ -8311,6 +13099,11 @@ root.querySelectorAll(".timeline-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
 root.querySelectorAll(".timeline-btn").forEach((b) => b.classList.remove("active"));
 btn.classList.add("active");
+// Timeline range (start/end hour) only means anything once the
+// timeline itself is on - hidden the rest of the time so the field
+// doesn't sit there looking live when it has no effect.
+const timelineRangeFieldEl = root.querySelector(".timeline-range-field");
+if (timelineRangeFieldEl) timelineRangeFieldEl.style.display = btn.dataset.value === "on" ? "" : "none";
 });
 });
 root.querySelectorAll(".weekend-breakfast-btn").forEach((btn) => {
@@ -8343,9 +13136,9 @@ window.alert((e && e.message) || "Couldn't clear goals.");
 }
 });
 }
-root.querySelectorAll(".chore-due-time-btn").forEach((btn) => {
+root.querySelectorAll(".chores-confetti-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
-root.querySelectorAll(".chore-due-time-btn").forEach((b) => b.classList.remove("active"));
+root.querySelectorAll(".chores-confetti-btn").forEach((b) => b.classList.remove("active"));
 btn.classList.add("active");
 });
 });
@@ -8362,7 +13155,7 @@ btn.classList.add("active");
 this._updateGlobalThemeVisibility(btn.dataset.value === "on");
 });
 });
-// v144.6+: "This device's theme" override (see _getDeviceThemeOverride's
+// "This device's theme" override (see _getDeviceThemeOverride's
 // own comment) - unlike every other Settings field, this one is
 // device-local (localStorage, not the shared Settings blob) and takes
 // effect immediately on change rather than waiting for the modal's Save
@@ -8384,15 +13177,23 @@ root.querySelectorAll(".meals-in-month-btn").forEach((b) => b.classList.remove("
 btn.classList.add("active");
 });
 });
+const mealPlanEntityInput = root.querySelector(".meal-plan-entity-input");
+if (mealPlanEntityInput) {
+mealPlanEntityInput.addEventListener("input", () => this._syncMealPlanEntityAddButton());
+}
+const mealPlanEntityAddBtn = root.querySelector(".meal-plan-entity-add-btn");
+if (mealPlanEntityAddBtn) {
+mealPlanEntityAddBtn.addEventListener("click", () => this._createMealPlanEntityList());
+}
 root.querySelectorAll(".grey-out-past-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
 root.querySelectorAll(".grey-out-past-btn").forEach((b) => b.classList.remove("active"));
 btn.classList.add("active");
 });
 });
-root.querySelectorAll(".fab-position-btn").forEach((btn) => {
+root.querySelectorAll(".top-bar-style-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
-root.querySelectorAll(".fab-position-btn").forEach((b) => b.classList.remove("active"));
+root.querySelectorAll(".top-bar-style-btn").forEach((b) => b.classList.remove("active"));
 btn.classList.add("active");
 });
 });
@@ -8412,17 +13213,58 @@ root.querySelectorAll(".week-variant-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
 root.querySelectorAll(".week-variant-btn").forEach((b) => b.classList.remove("active"));
 btn.classList.add("active");
+// Rows only mean anything for the Week variant's own day-column
+// grid - Planner is a completely different per-person-column layout
+// with no row-splitting concept at all, so the field would just be
+// confusing dead weight while Planner is picked.
+const weekRowsFieldEl = root.querySelector(".week-rows-field");
+if (weekRowsFieldEl) weekRowsFieldEl.style.display = btn.dataset.value === "week" ? "" : "none";
+// Hand-tweaking any of the raw fields below no longer matches a
+// named preset exactly - see _updateActiveLayoutPresetHighlight's
+// own comment for why that's shown as "none selected" rather than
+// left stuck on whatever preset was last clicked.
+this._updateActiveLayoutPresetHighlight();
 });
 });
+// "Layout ideas" (household ask: "give users a couple jumping off
+// points, ideas of layouts, the week view, the portrait view maybe 2
+// more") - a quick-pick row above the raw Week variant/day-count/rows
+// fields that fills them in for you. Deliberately just POPULATES those
+// existing fields rather than writing localStorage or saving anything
+// itself - a preset is a starting point to then Save (or keep tweaking)
+// like everything else on this tab, not a separate parallel settings
+// path with its own persistence to keep in sync.
+root.querySelectorAll(".layout-preset-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+const preset = this._layoutPresetRegistry()[btn.dataset.preset];
+if (!preset) return;
+root.querySelectorAll(".week-variant-btn").forEach((b) => b.classList.toggle("active", b.dataset.value === preset.variant));
+const weekRowsFieldEl = root.querySelector(".week-rows-field");
+if (weekRowsFieldEl) weekRowsFieldEl.style.display = preset.variant === "week" ? "" : "none";
+const dayCountEl = root.querySelector(".week-day-count-input");
+if (dayCountEl) dayCountEl.value = String(preset.dayCount);
+const rowsEl = root.querySelector(".week-rows-input");
+if (rowsEl) rowsEl.value = String(preset.rows);
+this._updateActiveLayoutPresetHighlight();
+});
+});
+// Hand-editing the raw day-count/rows fields directly (without going
+// through a preset button at all) should still light up a preset if the
+// typed values happen to land on one exactly - same
+// _updateActiveLayoutPresetHighlight the preset buttons themselves use.
+const layoutPresetDayCountEl = root.querySelector(".week-day-count-input");
+if (layoutPresetDayCountEl) layoutPresetDayCountEl.addEventListener("input", () => this._updateActiveLayoutPresetHighlight());
+const layoutPresetRowsEl = root.querySelector(".week-rows-input");
+if (layoutPresetRowsEl) layoutPresetRowsEl.addEventListener("input", () => this._updateActiveLayoutPresetHighlight());
 root.querySelectorAll(".month-variant-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
 root.querySelectorAll(".month-variant-btn").forEach((b) => b.classList.remove("active"));
 btn.classList.add("active");
 });
 });
-root.querySelectorAll(".week-day-count-btn").forEach((btn) => {
+root.querySelectorAll(".current-day-first-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
-root.querySelectorAll(".week-day-count-btn").forEach((b) => b.classList.remove("active"));
+root.querySelectorAll(".current-day-first-btn").forEach((b) => b.classList.remove("active"));
 btn.classList.add("active");
 });
 });
@@ -8432,6 +13274,17 @@ root.querySelectorAll(".countdown-enabled-btn").forEach((b) => b.classList.remov
 btn.classList.add("active");
 });
 });
+// the old select+Add button click handler used to live here -
+// removed now that _renderAlarmDevicesSection renders the candidate list
+// as directly-clickable buttons instead and wires each one's own click
+// handler itself (re-wired on every re-render, same as the Remove buttons
+// right above it in that function).
+const alarmTtsSelect = root.querySelector(".alarm-tts-entity-select");
+if (alarmTtsSelect) {
+alarmTtsSelect.addEventListener("change", () => {
+this._settingsAlarmTtsEntityDraft = alarmTtsSelect.value;
+});
+}
 const countdownAddBtn = root.querySelector(".countdown-add-btn");
 if (countdownAddBtn) {
 countdownAddBtn.addEventListener("click", async () => {
@@ -8477,15 +13330,9 @@ root.querySelectorAll(".routines-enabled-btn").forEach((b) => b.classList.remove
 btn.classList.add("active");
 });
 });
-root.querySelectorAll(".goals-in-chores-btn").forEach((btn) => {
+root.querySelectorAll(".goals-show-on-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
-root.querySelectorAll(".goals-in-chores-btn").forEach((b) => b.classList.remove("active"));
-btn.classList.add("active");
-});
-});
-root.querySelectorAll(".goals-in-rewards-btn").forEach((btn) => {
-btn.addEventListener("click", () => {
-root.querySelectorAll(".goals-in-rewards-btn").forEach((b) => b.classList.remove("active"));
+root.querySelectorAll(".goals-show-on-btn").forEach((b) => b.classList.remove("active"));
 btn.classList.add("active");
 });
 });
@@ -8596,6 +13443,9 @@ ${(p.badges || [])
 <input type="text" class="person-badge-text" placeholder="Badge (e.g. N)" value="${b.text || ""}" maxlength="4" />
 <input type="text" class="person-badge-match" placeholder="Show badge when event contains..." value="${b.match || ""}" />
 <input type="text" class="person-badge-hide" placeholder="Hide event when contains..." value="${b.hideMatch || ""}" />
+<label class="person-badge-digest-label" title="Hide any matching event from the Daily Digest too">
+<input type="checkbox" class="person-badge-digest-hide" ${b.digestHide ? "checked" : ""} /> Hide from digest
+</label>
 <button type="button" class="person-badge-remove-btn" data-idx="${idx}" data-badge-idx="${bidx}" title="Remove badge">&#10005;</button>
 </div>
 `
@@ -8625,7 +13475,7 @@ btn.addEventListener("click", () => {
 this._syncPeopleDraftFromDom();
 const idx = parseInt(btn.dataset.idx, 10);
 if (!Array.isArray(this._settingsPeopleDraft[idx].badges)) this._settingsPeopleDraft[idx].badges = [];
-this._settingsPeopleDraft[idx].badges.push({ text: "", match: "", hideMatch: "" });
+this._settingsPeopleDraft[idx].badges.push({ text: "", match: "", hideMatch: "", digestHide: false });
 this._renderPeopleSettings(this._settingsPeopleDraft);
 });
 });
@@ -8638,6 +13488,294 @@ this._settingsPeopleDraft[idx].badges.splice(bidx, 1);
 this._renderPeopleSettings(this._settingsPeopleDraft);
 });
 });
+}
+// Human-readable date for one predefined holiday's row (e.g. "October
+// 31", or "4th Thursday of November" for a floating one that doesn't
+// land on the same month/day every year) - display-only, not editable;
+// a predefined entry's actual date always comes from its own def in
+// HOLIDAY_PREDEFINED_DEFS (see _holidayEntryDateForYear), never from
+// anything saved per-household.
+_holidayBackgroundDateLabel(def) {
+const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+if (def.key === "thanksgiving") return this._t("settings.holiday_thanksgiving_date", "4th Thursday of November");
+if (def.key === "easter") return this._t("settings.holiday_easter_date", "varies - computed each year");
+return `${monthNames[def.month - 1]} ${def.day}`;
+}
+// Builds the Holidays and Custom dates lists under Settings > General >
+// Holiday Backgrounds (see HOLIDAY_PREDEFINED_DEFS, _normalizeHoliday-
+// Backgrounds) - same "re-render the whole list and re-wire every row on
+// any change" convention as _renderPeopleSettings right above, with one
+// shared draft array (this._settingsHolidayBackgroundsDraft) holding both
+// the 8 predefined rows AND every custom row, in that order (matching
+// _normalizeHolidayBackgrounds' own predefined-then-custom ordering) -
+// data-idx on every row control is this entry's index in that one array,
+// not a position within just the predefined or just the custom list.
+_renderHolidayBackgroundsSettings(list) {
+const entries = Array.isArray(list) ? list : [];
+const predefinedContainer = this._root.querySelector(".holiday-bg-predefined-list");
+const customContainer = this._root.querySelector(".holiday-bg-custom-list");
+if (!predefinedContainer || !customContainer) return;
+const rowHtml = (entry, idx) => {
+const isPredefined = entry.source === "predefined";
+const def = isPredefined ? HOLIDAY_PREDEFINED_DEFS.find((d) => d.key === entry.predefinedKey) : null;
+const dateLabel = def ? this._holidayBackgroundDateLabel(def) : "";
+const esc = (s) => String(s || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+// A predefined row's name translates through settings.holiday_predefined_<key>
+// as long as it's still exactly this def's own English default (i.e. no
+// admin has renamed it yet) - once renamed, that's now a household's own
+// text and is shown verbatim, same as every other free-text field here.
+const predefinedDisplayName = def && entry.name === def.name ? this._t(`settings.holiday_predefined_${def.key}`, def.name) : entry.name;
+const nameField = isPredefined
+? `<div class="holiday-bg-name" style="flex:1 1 auto;font-size:13px;font-weight:600;color:var(--fc-text);">${esc(predefinedDisplayName)}</div>`
+: `<input type="text" class="holiday-bg-name" data-idx="${idx}" maxlength="60" value="${esc(entry.name)}" data-i18n-placeholder="settings.holiday_name_placeholder" placeholder="${this._t("settings.holiday_name_placeholder", "Name (e.g. Grandma's Birthday)")}" />`;
+const dateRow = isPredefined
+? ""
+: `<div class="holiday-bg-date-row">
+<input type="number" class="holiday-bg-month" data-idx="${idx}" min="1" max="12" value="${entry.month}" placeholder="MM" />
+<input type="number" class="holiday-bg-day" data-idx="${idx}" min="1" max="31" value="${entry.day}" placeholder="DD" />
+<label class="holiday-bg-recurring-label"><input type="checkbox" class="holiday-bg-recurring" data-idx="${idx}" ${entry.recurring ? "checked" : ""} /> <span data-i18n="settings.holiday_every_year">Every year</span></label>
+${!entry.recurring ? `<input type="number" class="holiday-bg-year" data-idx="${idx}" min="2000" max="2100" value="${entry.year || new Date().getFullYear()}" placeholder="YYYY" />` : ""}
+</div>`;
+return `
+<div class="holiday-bg-row" data-idx="${idx}">
+<div class="holiday-bg-row-top">
+<input type="checkbox" class="holiday-bg-enabled" data-idx="${idx}" ${entry.enabled ? "checked" : ""} title="${this._t("settings.holiday_enable_title", "Turn this background on")}" />
+${nameField}
+${isPredefined ? `<div class="holiday-bg-date-label">${dateLabel}</div>` : `<button type="button" class="holiday-bg-remove-btn" data-idx="${idx}" title="${this._t("common.delete", "Delete")}">&#10005;</button>`}
+</div>
+${dateRow}
+<div class="holiday-bg-image-row">
+${entry.imageUrl ? `<img class="holiday-bg-preview" src="${esc(entry.imageUrl)}" />` : ""}
+<input type="file" accept="image/*" class="holiday-bg-file-input" data-idx="${idx}" style="display:none" />
+<button type="button" class="btn-cancel holiday-bg-upload-btn" data-idx="${idx}">${entry.imageUrl ? this._t("settings.holiday_change_photo", "Change photo") : this._t("settings.holiday_upload_photo", "Upload photo")}</button>
+${entry.imageUrl ? `<button type="button" class="btn-cancel holiday-bg-remove-image-btn" data-idx="${idx}">${this._t("settings.holiday_remove_photo", "Remove photo")}</button>` : ""}
+<span class="holiday-bg-upload-status" data-idx="${idx}"></span>
+</div>
+<label class="holiday-bg-expand-label"><input type="checkbox" class="holiday-bg-expand" data-idx="${idx}" ${entry.expandFullDay ? "checked" : ""} /> <span data-i18n="settings.holiday_expand_full_day">Expand to full screen</span></label>
+<div class="holiday-bg-scope-row" data-idx="${idx}" style="display:${entry.expandFullDay ? "flex" : "none"}">
+<button type="button" class="holiday-bg-scope-btn${entry.expandScope === "day" ? " active" : ""}" data-idx="${idx}" data-value="day" data-i18n="settings.holiday_expand_scope_day">Just this day</button>
+<button type="button" class="holiday-bg-scope-btn${entry.expandScope === "week" ? " active" : ""}" data-idx="${idx}" data-value="week" data-i18n="settings.holiday_expand_scope_week">This whole week</button>
+<button type="button" class="holiday-bg-scope-btn${entry.expandScope === "month" ? " active" : ""}" data-idx="${idx}" data-value="month" data-i18n="settings.holiday_expand_scope_month">This whole month</button>
+</div>
+</div>`;
+};
+const predefinedRows = entries.map((e, idx) => (e.source === "predefined" ? { e, idx } : null)).filter(Boolean);
+const customRows = entries.map((e, idx) => (e.source === "custom" ? { e, idx } : null)).filter(Boolean);
+predefinedContainer.innerHTML = predefinedRows.map(({ e, idx }) => rowHtml(e, idx)).join("");
+customContainer.innerHTML = customRows.length
+? customRows.map(({ e, idx }) => rowHtml(e, idx)).join("")
+: `<div style="font-size:12px;color:var(--fc-text-secondary);font-style:italic;margin-bottom:4px;" data-i18n="settings.holiday_no_custom_dates">No custom dates yet — add one below.</div>`;
+const root = this._root;
+const allRowContainers = [predefinedContainer, customContainer];
+allRowContainers.forEach((container) => {
+container.querySelectorAll(".holiday-bg-remove-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+this._syncHolidayBackgroundsDraftFromDom();
+const idx = parseInt(btn.dataset.idx, 10);
+this._settingsHolidayBackgroundsDraft.splice(idx, 1);
+this._renderHolidayBackgroundsSettings(this._settingsHolidayBackgroundsDraft);
+});
+});
+container.querySelectorAll(".holiday-bg-recurring").forEach((cb) => {
+cb.addEventListener("change", () => {
+this._syncHolidayBackgroundsDraftFromDom();
+const idx = parseInt(cb.dataset.idx, 10);
+this._settingsHolidayBackgroundsDraft[idx].recurring = cb.checked;
+if (cb.checked) this._settingsHolidayBackgroundsDraft[idx].year = null;
+else if (!this._settingsHolidayBackgroundsDraft[idx].year) this._settingsHolidayBackgroundsDraft[idx].year = new Date().getFullYear();
+this._renderHolidayBackgroundsSettings(this._settingsHolidayBackgroundsDraft);
+});
+});
+container.querySelectorAll(".holiday-bg-remove-image-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+this._syncHolidayBackgroundsDraftFromDom();
+const idx = parseInt(btn.dataset.idx, 10);
+this._settingsHolidayBackgroundsDraft[idx].imageUrl = "";
+this._renderHolidayBackgroundsSettings(this._settingsHolidayBackgroundsDraft);
+});
+});
+container.querySelectorAll(".holiday-bg-expand").forEach((cb) => {
+cb.addEventListener("change", () => {
+this._syncHolidayBackgroundsDraftFromDom();
+const idx = parseInt(cb.dataset.idx, 10);
+this._settingsHolidayBackgroundsDraft[idx].expandFullDay = cb.checked;
+// Only the checkbox state changed here (the scope row simply shows/hides -
+// its own already-chosen value is untouched), so a plain show/hide of the
+// existing row is enough; no need to re-render the whole list and lose
+// focus/scroll position the way toggling "Every year" above does.
+const scopeRow = container.querySelector(`.holiday-bg-scope-row[data-idx="${idx}"]`);
+if (scopeRow) scopeRow.style.display = cb.checked ? "flex" : "none";
+});
+});
+container.querySelectorAll(".holiday-bg-scope-btn").forEach((scopeBtn) => {
+scopeBtn.addEventListener("click", () => {
+this._syncHolidayBackgroundsDraftFromDom();
+const idx = parseInt(scopeBtn.dataset.idx, 10);
+this._settingsHolidayBackgroundsDraft[idx].expandScope = scopeBtn.dataset.value;
+const scopeRow = scopeBtn.closest(".holiday-bg-scope-row");
+if (scopeRow) scopeRow.querySelectorAll(".holiday-bg-scope-btn").forEach((b) => b.classList.toggle("active", b === scopeBtn));
+});
+});
+container.querySelectorAll(".holiday-bg-upload-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+const idx = btn.dataset.idx;
+const fileInput = container.querySelector(`.holiday-bg-file-input[data-idx="${idx}"]`);
+if (fileInput) fileInput.click();
+});
+});
+container.querySelectorAll(".holiday-bg-file-input").forEach((input) => {
+input.addEventListener("change", async () => {
+const file = input.files && input.files[0];
+if (!file) return;
+const idx = parseInt(input.dataset.idx, 10);
+const statusEl = container.querySelector(`.holiday-bg-upload-status[data-idx="${idx}"]`);
+if (statusEl) statusEl.textContent = this._t("settings.holiday_uploading", "Uploading…");
+try {
+this._syncHolidayBackgroundsDraftFromDom();
+const url = await this._holidayBgUploadImage(file);
+this._settingsHolidayBackgroundsDraft[idx].imageUrl = url;
+this._renderHolidayBackgroundsSettings(this._settingsHolidayBackgroundsDraft);
+} catch (err) {
+if (statusEl) statusEl.textContent = this._t("settings.holiday_upload_failed", "Couldn't upload that photo.");
+}
+});
+});
+});
+const addBtn = root.querySelector(".holiday-bg-add-btn");
+if (addBtn) {
+addBtn.addEventListener("click", () => {
+this._syncHolidayBackgroundsDraftFromDom();
+this._settingsHolidayBackgroundsDraft.push({
+id: `custom-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+source: "custom",
+predefinedKey: null,
+name: "",
+enabled: true,
+month: 1,
+day: 1,
+year: null,
+recurring: true,
+imageUrl: "",
+expandFullDay: false,
+expandScope: "day",
+});
+this._renderHolidayBackgroundsSettings(this._settingsHolidayBackgroundsDraft);
+});
+}
+}
+// Reads every Holiday Backgrounds row's live DOM values back into
+// this._settingsHolidayBackgroundsDraft - same "sync from DOM before any
+// add/remove mutation, and once more right before Save" convention as
+// _syncPeopleDraftFromDom. Fields a row doesn't actually show (e.g. a
+// predefined row's month/day/year, which aren't editable - see
+// _renderHolidayBackgroundsSettings' own isPredefined branch) fall back to
+// whatever the draft already holds for that entry, same as
+// _syncPeopleDraftFromDom's own remindersEntity carry-forward.
+_syncHolidayBackgroundsDraftFromDom() {
+const priorDraft = Array.isArray(this._settingsHolidayBackgroundsDraft) ? this._settingsHolidayBackgroundsDraft : [];
+if (!priorDraft.length) return;
+const rows = this._root.querySelectorAll(".holiday-bg-row");
+rows.forEach((row) => {
+const idx = parseInt(row.dataset.idx, 10);
+const prior = priorDraft[idx];
+if (!prior) return;
+const enabledEl = row.querySelector(".holiday-bg-enabled");
+if (enabledEl) prior.enabled = !!enabledEl.checked;
+const nameEl = row.querySelector("input.holiday-bg-name");
+if (nameEl) prior.name = nameEl.value.trim();
+const monthEl = row.querySelector(".holiday-bg-month");
+if (monthEl) {
+const n = parseInt(monthEl.value, 10);
+prior.month = Number.isFinite(n) && n >= 1 && n <= 12 ? n : prior.month;
+}
+const dayEl = row.querySelector(".holiday-bg-day");
+if (dayEl) {
+const n = parseInt(dayEl.value, 10);
+prior.day = Number.isFinite(n) && n >= 1 && n <= 31 ? n : prior.day;
+}
+const yearEl = row.querySelector(".holiday-bg-year");
+if (yearEl) {
+const n = parseInt(yearEl.value, 10);
+prior.year = Number.isFinite(n) ? n : prior.year;
+}
+const expandEl = row.querySelector(".holiday-bg-expand");
+if (expandEl) prior.expandFullDay = !!expandEl.checked;
+const activeScopeBtn = row.querySelector(".holiday-bg-scope-btn.active");
+if (activeScopeBtn) prior.expandScope = activeScopeBtn.dataset.value;
+});
+}
+// Uploads a picked file to Home Assistant's own image_upload component
+// and returns the `/api/image/serve/<id>/original` URL to store - the
+// exact same mechanism/endpoint the Family To-Do card's Wishlist photo
+// upload already uses (see that card's _wishlistUploadImage/
+// _wishlistBlobToUploadFromFile for the original, more-detailed comments
+// this is deliberately kept in lockstep with), re-encoded here too so a
+// multi-megabyte phone photo doesn't turn a Settings save into a slow
+// upload on a wall tablet's own connection.
+async _holidayBgBlobToUploadFromFile(file) {
+let blob = file;
+let name = (file && file.name) || "photo.jpg";
+try {
+const rawDataUrl = await new Promise((resolve, reject) => {
+const reader = new FileReader();
+reader.onload = () => resolve(reader.result);
+reader.onerror = () => reject(reader.error || new Error("Couldn't read that file."));
+reader.readAsDataURL(file);
+});
+const img = await new Promise((resolve, reject) => {
+const el = new Image();
+el.onload = () => resolve(el);
+el.onerror = () => reject(new Error("Couldn't decode that image."));
+el.src = rawDataUrl;
+setTimeout(() => reject(new Error("timed out decoding image")), 1500);
+});
+const maxDim = 1600;
+const width = img.width || maxDim;
+const height = img.height || maxDim;
+const scale = Math.min(1, maxDim / Math.max(width, height));
+const canvas = document.createElement("canvas");
+canvas.width = Math.max(1, Math.round(width * scale));
+canvas.height = Math.max(1, Math.round(height * scale));
+const ctx = canvas.getContext && canvas.getContext("2d");
+if (ctx) {
+ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+const reEncoded = await new Promise((resolve) => {
+if (typeof canvas.toBlob === "function") {
+canvas.toBlob((b) => resolve(b), "image/jpeg", 0.85);
+} else {
+resolve(null);
+}
+});
+if (reEncoded) {
+blob = reEncoded;
+name = "photo.jpg";
+}
+}
+} catch (e) {
+// Best-effort only - falls through to uploading the original file.
+}
+return { blob, name };
+}
+async _holidayBgFetchWithAuth(path, opts) {
+if (this._hass && typeof this._hass.fetchWithAuth === "function") {
+return this._hass.fetchWithAuth(path, opts);
+}
+const token = this._hass && this._hass.auth && this._hass.auth.data && this._hass.auth.data.access_token;
+const headers = Object.assign({}, opts && opts.headers, token ? { authorization: `Bearer ${token}` } : {});
+return fetch(path, Object.assign({}, opts, { headers }));
+}
+async _holidayBgUploadImage(file) {
+if (!file) return null;
+const { blob, name } = await this._holidayBgBlobToUploadFromFile(file);
+const formData = new FormData();
+formData.append("file", blob, name);
+const response = await this._holidayBgFetchWithAuth("/api/image/upload", { method: "POST", body: formData });
+if (!response || !response.ok) {
+throw new Error(`image upload failed (${response && response.status})`);
+}
+const result = await response.json();
+if (!result || !result.id) throw new Error("image upload response had no id");
+return `/api/image/serve/${result.id}/original`;
 }
 _notifyServiceOptions() {
 // Read directly from hass - always available client-side, no round trip needed.
@@ -8799,13 +13937,21 @@ this._renderNotifyProfilesList();
 // those two are hard-scoped to their own use cases.
 _setSettingsTab(tab) {
 const root = this._root;
-this._settingsActiveTab = tab === "notifications" || tab === "permissions" ? tab : "general";
+this._settingsActiveTab = tab === "notifications" || tab === "permissions" || tab === "devices" ? tab : "general";
 root.querySelectorAll(".settings-tab-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.settingsTab === this._settingsActiveTab);
 });
 root.querySelectorAll(".settings-tab-panel").forEach((panel) => {
 panel.style.display = panel.dataset.settingsTabPanel === this._settingsActiveTab ? "" : "none";
 });
+// Device Settings admin dashboard - fetched fresh every time
+// the tab is opened (not cached across Settings sessions), same "always
+// a fresh round trip rather than caching indefinitely" convention
+// _openSettings's own comment on the Screen Saver user list uses, so a
+// device that just reported in (or an admin's own change from another
+// browser tab/session) always shows up here without needing anything
+// reloaded.
+if (this._settingsActiveTab === "devices") this._fetchDeviceSettingsAdmin();
 }
 // --- Per-user notification profile editor (Users tab > Edit) ---
 _openNotifyProfileModal(userId) {
@@ -8816,7 +13962,7 @@ const root = this._root;
 const profile = this._settingsUserProfilesDraft[userId];
 const user = (this._notifyProfileUsersCache || []).find((u) => u.id === userId);
 const nameEl = root.querySelector(".notify-profile-name");
-if (nameEl) nameEl.textContent = (user && user.name) || "Notification profile";
+if (nameEl) nameEl.textContent = (user && user.name) || this._t("settings.notification_profile_default", "Notification profile");
 const colorInputEl = root.querySelector(".notify-profile-color-input");
 if (colorInputEl) colorInputEl.value = profile.color || "#c9c2b3";
 const targetsCountEl = root.querySelector(".notify-profile-targets-count");
@@ -8827,6 +13973,22 @@ btn.classList.toggle("active", btn.dataset.value === (profile.remindersEnabled ?
 root.querySelectorAll(".notify-profile-chores-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (profile.includeInChores === false ? "off" : "on"));
 });
+root.querySelectorAll(".notify-profile-child-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (profile.isChildAccount ? "on" : "off"));
+});
+root.querySelectorAll(".notify-profile-kiosk-account-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (profile.isKioskAccount ? "on" : "off"));
+});
+root.querySelectorAll(".notify-profile-alarm-kiosk-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (profile.isAlarmKiosk ? "on" : "off"));
+});
+// Admin-only, same isAdminForPin check computed just below (real HA
+// admin) already used for the Kiosk PIN and Permissions accordions - a
+// child can never see or flip this about themselves.
+const childField = root.querySelector(".notify-profile-child-field");
+if (childField) childField.style.display = this._hass && this._hass.user && this._hass.user.is_admin ? "" : "none";
+const kioskAccountField = root.querySelector(".notify-profile-kiosk-account-field");
+if (kioskAccountField) kioskAccountField.style.display = this._hass && this._hass.user && this._hass.user.is_admin ? "" : "none";
 root.querySelectorAll(".notify-profile-digest-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (profile.digestEnabled ? "on" : "off"));
 });
@@ -8843,7 +14005,7 @@ const choreDueCheck = root.querySelector(".notify-profile-chore-due-check");
 if (choreDueCheck) choreDueCheck.checked = !!profile.notifyChoreDue;
 const timerAlarmCheck = root.querySelector(".notify-profile-timer-alarm-check");
 if (timerAlarmCheck) timerAlarmCheck.checked = !!profile.notifyTimerAlarm;
-// v144+ task #29: kiosk PIN login enrollment - see
+// kiosk PIN login enrollment - see
 // _settingsKioskLoginUserIdsDraft's own docstring for why this reads/
 // writes that separate draft rather than the profile object above.
 const kioskLoginCheck = root.querySelector(".notify-profile-kiosk-login-check");
@@ -8858,17 +14020,16 @@ if (pinStatusEl) {
 pinStatusEl.textContent = "";
 pinStatusEl.classList.remove("is-error");
 }
-// v1.132.6+: the whole Kiosk PIN login field now lives in its own
+// the whole Kiosk PIN login field now lives in its own
 // accordion, hidden from non-admins entirely (same isAdminForPin check
 // already used for the Set/change PIN button and the Permissions
-// accordion just below) - household ask, verbatim: "Put Kiosk pin in an
-// accordian hide this accordian from non admins." Previously only the Set
+// accordion just below) - Previously only the Set
 // PIN button itself was admin-gated; the enable checkbox and hint text
 // were visible (and, since the checkbox's own change handler has no
 // admin check, editable) by anyone who opened a profile modal.
 const kioskAccordion = root.querySelector(".notify-profile-kiosk-accordion");
 if (kioskAccordion) kioskAccordion.style.display = isAdminForPin ? "" : "none";
-// v1.132.5+: Permissions accordion - admin-only, same isAdminForPin check
+// Permissions accordion - admin-only, same isAdminForPin check
 // (real HA admin, re-checked every open) already used for the PIN button
 // just above. this._notifyProfileOpenUserId is tracked so a permissions
 // fetch still in flight (kicked off when Settings itself opened - see
@@ -8886,11 +14047,17 @@ if (isAdminForPin) this._renderNotifyProfilePermissions(userId);
 this._syncGrocyNotifyVisibility();
 this._renderNotifyProfileCalendars(userId);
 this._renderNotifyProfileRemindersLists(userId);
-// v1.131.0+: this profile's own directly-set calendar/reminders/wish
+// this profile's own directly-set calendar/reminders/wish
 // list - see SETTINGS_KEY_USER_PROFILES's own comment in const.py.
 const calendarEntityEl = root.querySelector(".notify-profile-calendar-entity");
 if (calendarEntityEl) calendarEntityEl.value = profile.primaryCalendar || "";
 this._renderNotifyProfileBadges(userId);
+this._renderNotifyProfileAdditionalRemindersLists(userId);
+const additionalRemindersStatusEl = root.querySelector(".notify-profile-additional-reminders-status");
+if (additionalRemindersStatusEl) {
+additionalRemindersStatusEl.textContent = "";
+additionalRemindersStatusEl.classList.remove("is-error");
+}
 root.querySelectorAll(".notify-profile-list-entity").forEach((input) => {
 input.value = profile[input.dataset.listKind] || "";
 });
@@ -8909,10 +14076,10 @@ sendStatusEl.classList.remove("is-error");
 }
 this._openModal(root.querySelector(".notify-profile-overlay"));
 }
-// v144+ task #29: sets/changes/clears this person's kiosk PIN - always
+// sets/changes/clears this person's kiosk PIN - always
 // admin-only server-side too (see chores_websocket_api.py's
 // ws_kiosk_set_pin), this button is just the UI's own reflection of that
-// (see setPinBtn.style.display above). v144.7+: was a plain window.prompt
+// (see setPinBtn.style.display above). was a plain window.prompt
 // (same convention as family-hub-rewards-card.js's own OLD _giftStars,
 // before that one also became a modal in the same release); now a real
 // .modal-overlay, this file's own .modal-box/.btn-cancel/.btn-save
@@ -9061,7 +14228,7 @@ if (grocyExpiringRow) grocyExpiringRow.style.display = expiringOn ? "" : "none";
 const grocyLowStockRow = root.querySelector(".notify-profile-section-grocy-low-stock");
 if (grocyLowStockRow) grocyLowStockRow.style.display = lowStockOn ? "" : "none";
 }
-// v124+: cards instead of checkboxes - tapping a card's body toggles that
+// cards instead of checkboxes - tapping a card's body toggles that
 // calendar's subscription (same subscribedCalendars list as before, just a
 // different way to check it), and a separate star button toggles this
 // person's primaryCalendar (see _getPeople/_primaryCalendarColorByEntity).
@@ -9124,7 +14291,7 @@ this._renderNotifyProfileRemindersLists(userId);
 });
 });
 }
-// v130+: for every OTHER person who's configured their own individual
+// for every OTHER person who's configured their own individual
 // Reminders list, a 3-way control for how much of it THIS profile can
 // see: none, add-to-calendar (visible, no alert), or add-to-calendar-
 // plus-alert (visible AND pushed the moment a reminder on it comes due).
@@ -9134,7 +14301,7 @@ this._renderNotifyProfileRemindersLists(userId);
 // ELSE's list. Mirrors _renderNotifyProfileCalendars' own card-list
 // shape/wiring.
 //
-// v1.132.0+: "someone else's individual Reminders list" now has two
+// "someone else's individual Reminders list" now has two
 // possible sources, merged together here. Most households will only ever
 // hit the second one going forward - the first is legacy-only:
 //   1. settings.people[i].remindersEntity - the Calendars tab's old
@@ -9220,7 +14387,7 @@ this._renderNotifyProfileRemindersLists(userId);
 });
 });
 }
-// v1.131.0+: badges for THIS profile's own primaryCalendar - same exact
+// badges for THIS profile's own primaryCalendar - same exact
 // {text, match, hideMatch} shape and .person-badge-row/.person-badge-text/
 // .person-badge-match/.person-badge-hide/.person-badge-remove-btn CSS
 // classes a settings.people[] row's own badges editor already uses (see
@@ -9242,6 +14409,9 @@ container.innerHTML = badges
 <input type="text" class="person-badge-text" placeholder="Badge (e.g. N)" value="${b.text || ""}" maxlength="4" />
 <input type="text" class="person-badge-match" placeholder="Show badge when event contains..." value="${b.match || ""}" />
 <input type="text" class="person-badge-hide" placeholder="Hide event when contains..." value="${b.hideMatch || ""}" />
+<label class="person-badge-digest-label" title="Hide any matching event from the Daily Digest too">
+<input type="checkbox" class="person-badge-digest-hide" ${b.digestHide ? "checked" : ""} /> Hide from digest
+</label>
 <button type="button" class="person-badge-remove-btn" data-badge-idx="${bidx}" title="Remove badge">&#10005;</button>
 </div>
 `
@@ -9249,6 +14419,9 @@ container.innerHTML = badges
 .join("");
 container.querySelectorAll(".person-badge-text, .person-badge-match, .person-badge-hide").forEach((input) => {
 input.addEventListener("input", () => this._syncNotifyProfileBadgesFromDom(userId));
+});
+container.querySelectorAll(".person-badge-digest-hide").forEach((input) => {
+input.addEventListener("change", () => this._syncNotifyProfileBadgesFromDom(userId));
 });
 container.querySelectorAll(".person-badge-remove-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
@@ -9272,13 +14445,135 @@ const badges = Array.from(rows).map((row) => ({
 text: row.querySelector(".person-badge-text").value.trim(),
 match: row.querySelector(".person-badge-match").value.trim(),
 hideMatch: row.querySelector(".person-badge-hide").value.trim(),
+digestHide: !!row.querySelector(".person-badge-digest-hide").checked,
 }));
 if (!this._settingsUserProfilesDraft[userId]) this._settingsUserProfilesDraft[userId] = this._defaultUserProfile();
 this._settingsUserProfilesDraft[userId].badges = badges;
 }
+// "multi reminder list" - this profile's EXTRA individual Reminders
+// lists alongside its primary (the "Their reminders list" field just
+// above, always profile.remindersEntity - never touched here). Same
+// editable-rows-with-remove pattern as _renderNotifyProfileBadges, just
+// one plain entity-id text input per row instead of several badge
+// fields, plus a "make primary" swap button each row gets that the
+// badges editor has no equivalent of.
+_renderNotifyProfileAdditionalRemindersLists(userId) {
+const root = this._root;
+const container = root.querySelector(".notify-profile-additional-reminders-list");
+if (!container) return;
+const profile = this._settingsUserProfilesDraft[userId] || this._defaultUserProfile();
+const entities = Array.isArray(profile.additionalRemindersEntities) ? profile.additionalRemindersEntities : [];
+container.innerHTML = entities
+.map(
+(entity, idx) => `
+<div class="notify-profile-additional-reminders-item" data-reminders-idx="${idx}">
+<input type="text" class="notify-profile-additional-reminders-entity" placeholder="todo.user_reminders_2" value="${entity || ""}" />
+<button type="button" class="notify-profile-additional-reminders-make-primary-btn" data-reminders-idx="${idx}" title="Make this the primary list">&#9733; Make primary</button>
+<button type="button" class="notify-profile-additional-reminders-remove-btn" data-reminders-idx="${idx}" title="Remove this list">&#10005;</button>
+</div>
+`
+)
+.join("");
+container.querySelectorAll(".notify-profile-additional-reminders-entity").forEach((input) => {
+input.addEventListener("input", () => this._syncNotifyProfileAdditionalRemindersFromDom(userId));
+});
+container.querySelectorAll(".notify-profile-additional-reminders-make-primary-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+this._syncNotifyProfileAdditionalRemindersFromDom(userId);
+const idx = parseInt(btn.dataset.remindersIdx, 10);
+const p = this._settingsUserProfilesDraft[userId];
+const list = Array.isArray(p.additionalRemindersEntities) ? p.additionalRemindersEntities : [];
+const chosen = list[idx];
+if (chosen === undefined) return;
+const oldPrimary = p.remindersEntity || "";
+list.splice(idx, 1);
+p.remindersEntity = chosen;
+if (oldPrimary) list.unshift(oldPrimary);
+p.additionalRemindersEntities = list;
+const primaryInput = root.querySelector('.notify-profile-list-entity[data-list-kind="remindersEntity"]');
+if (primaryInput) primaryInput.value = p.remindersEntity;
+this._syncNotifyProfileListAddButtons();
+this._renderNotifyProfileAdditionalRemindersLists(userId);
+});
+});
+container.querySelectorAll(".notify-profile-additional-reminders-remove-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+this._syncNotifyProfileAdditionalRemindersFromDom(userId);
+const idx = parseInt(btn.dataset.remindersIdx, 10);
+this._settingsUserProfilesDraft[userId].additionalRemindersEntities.splice(idx, 1);
+this._renderNotifyProfileAdditionalRemindersLists(userId);
+});
+});
+}
+// Read-before-mutate, same reasoning as _syncNotifyProfileBadgesFromDom -
+// called before any add/remove/make-primary so an in-progress edit in
+// another row is never lost by the re-render those trigger.
+_syncNotifyProfileAdditionalRemindersFromDom(userId) {
+const container = this._root.querySelector(".notify-profile-additional-reminders-list");
+if (!container) return;
+const rows = container.querySelectorAll(".notify-profile-additional-reminders-item");
+const entities = Array.from(rows).map((row) => row.querySelector(".notify-profile-additional-reminders-entity").value.trim());
+if (!this._settingsUserProfilesDraft[userId]) this._settingsUserProfilesDraft[userId] = this._defaultUserProfile();
+this._settingsUserProfilesDraft[userId].additionalRemindersEntities = entities;
+}
+// "+ Add another list" - just appends a blank row to type an existing
+// entity id into (no API call) - mirrors the badges editor's own "+ Add
+// badge" button, which also starts blank rather than prompting for
+// details up front.
+_addNotifyProfileAdditionalRemindersBlank(userId) {
+this._syncNotifyProfileAdditionalRemindersFromDom(userId);
+const p = this._settingsUserProfilesDraft[userId];
+if (!Array.isArray(p.additionalRemindersEntities)) p.additionalRemindersEntities = [];
+p.additionalRemindersEntities.push("");
+this._renderNotifyProfileAdditionalRemindersLists(userId);
+}
+// "+ Create new" - same family_hub/create_todo_list flow
+// _createNotifyProfileList uses for the primary list, just appending the
+// result as a new additional-list row instead of filling a single field.
+// Named "<PersonName>_Reminders_2", "..._3", etc. so two auto-created
+// lists for the same person never collide.
+async _createNotifyProfileAdditionalRemindersList(userId) {
+const root = this._root;
+if (!root || !this._hass) return;
+const btn = root.querySelector(".notify-profile-additional-reminders-create-btn");
+const statusEl = root.querySelector(".notify-profile-additional-reminders-status");
+const user = (this._notifyProfileUsersCache || []).find((u) => u.id === userId);
+const personName = (user && user.name) || "Family Hub";
+this._syncNotifyProfileAdditionalRemindersFromDom(userId);
+const p = this._settingsUserProfilesDraft[userId];
+if (!Array.isArray(p.additionalRemindersEntities)) p.additionalRemindersEntities = [];
+const listName = `${personName}_Reminders_${p.additionalRemindersEntities.length + 2}`;
+if (btn) {
+btn.disabled = true;
+btn.textContent = "Creating…";
+}
+if (statusEl) {
+statusEl.textContent = "";
+statusEl.classList.remove("is-error");
+}
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/create_todo_list", name: listName });
+if (result && result.entity_id) {
+p.additionalRemindersEntities.push(result.entity_id);
+this._renderNotifyProfileAdditionalRemindersLists(userId);
+if (statusEl) statusEl.textContent = `Created ${result.entity_id} - tap Save to keep it.`;
+} else if (statusEl) {
+statusEl.textContent = "Couldn't create a list automatically - add one under Settings → Devices & Services → Local To-do, then type its entity id above.";
+statusEl.classList.add("is-error");
+}
+} catch (e) {
+if (statusEl) {
+statusEl.textContent = "Couldn't create a list automatically - add one under Settings → Devices & Services → Local To-do, then type its entity id above.";
+statusEl.classList.add("is-error");
+}
+}
+if (btn) {
+btn.disabled = false;
+btn.textContent = "+ Create new";
+}
+}
 // Shows/hides each "+ Add list" button based on whether its own field is
-// currently empty - household ask, verbatim: *"if there isn't a todo list
-// for reminders or for wish list make the button say 'add list'"* -
+// currently empty - -
 // nothing to create once a list is already picked, so the button simply
 // disappears rather than staying around as a dead click target.
 _syncNotifyProfileListAddButtons() {
@@ -9339,6 +14634,55 @@ btn.disabled = false;
 btn.textContent = "+ Add list";
 }
 }
+// Same "+ Add list" pattern as _syncNotifyProfileListAddButtons, for the
+// single household-wide meal-plan entity field under Menu Blocks -
+_syncMealPlanEntityAddButton() {
+const root = this._root;
+if (!root) return;
+const input = root.querySelector(".meal-plan-entity-input");
+const btn = root.querySelector(".meal-plan-entity-add-btn");
+if (input && btn) btn.style.display = input.value.trim() ? "none" : "";
+}
+// "+ Add list" for the Menu to-do list field - creates a new Local To-do
+// list named "Family Meal Plan" via the same family_hub/create_todo_list
+// command _createNotifyProfileList uses, and fills the field with the
+// resulting entity id.
+async _createMealPlanEntityList() {
+const root = this._root;
+if (!root || !this._hass) return;
+const input = root.querySelector(".meal-plan-entity-input");
+const btn = root.querySelector(".meal-plan-entity-add-btn");
+const statusEl = root.querySelector(".meal-plan-entity-status");
+if (!input) return;
+if (btn) {
+btn.disabled = true;
+btn.textContent = "Creating…";
+}
+if (statusEl) {
+statusEl.textContent = "";
+statusEl.classList.remove("is-error");
+}
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/create_todo_list", name: "Family Meal Plan" });
+if (result && result.entity_id) {
+input.value = result.entity_id;
+this._syncMealPlanEntityAddButton();
+if (statusEl) statusEl.textContent = `Created ${result.entity_id} - tap Save to keep it.`;
+} else if (statusEl) {
+statusEl.textContent = "Couldn't create a list automatically - add one under Settings → Devices & Services → Local To-do, then type its entity id above.";
+statusEl.classList.add("is-error");
+}
+} catch (e) {
+if (statusEl) {
+statusEl.textContent = "Couldn't create a list automatically - add one under Settings → Devices & Services → Local To-do, then type its entity id above.";
+statusEl.classList.add("is-error");
+}
+}
+if (btn) {
+btn.disabled = false;
+btn.textContent = "+ Add list";
+}
+}
 _closeNotifyProfileModal() {
 this._root.querySelector(".notify-profile-overlay").classList.remove("open");
 this._notifyProfileEditingUserId = null;
@@ -9354,8 +14698,9 @@ const badges = Array.from(badgeRows).map((br) => ({
 text: br.querySelector(".person-badge-text").value.trim(),
 match: br.querySelector(".person-badge-match").value.trim(),
 hideMatch: br.querySelector(".person-badge-hide").value.trim(),
+digestHide: !!br.querySelector(".person-badge-digest-hide").checked,
 }));
-// v1.132.0+: the Calendars tab no longer has a "their own Reminders
+// the Calendars tab no longer has a "their own Reminders
 // list" field on each row - moved to the Users tab profile editor (see
 // _migrate_people_reminders_into_profiles on the backend, which already
 // transfers any calendar that's someone's primaryCalendar the moment
@@ -9378,6 +14723,7 @@ remindersEntity,
 }
 _openSettings() {
 const root = this._root;
+this._populateThisDeviceField();
 const settings = this._getSettings();
 const count = settings.blocks.length;
 root.querySelectorAll(".block-count-btn").forEach((btn) => {
@@ -9389,6 +14735,8 @@ btn.classList.toggle("active", btn.dataset.size === settings.blockSize);
 root.querySelectorAll(".timeline-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (this._getShowTimeline() ? "on" : "off"));
 });
+const timelineRangeFieldEl = root.querySelector(".timeline-range-field");
+if (timelineRangeFieldEl) timelineRangeFieldEl.style.display = this._getShowTimeline() ? "" : "none";
 root.querySelector(".timeline-start-select").value = String(settings.timelineStartHour);
 root.querySelector(".timeline-end-select").value = String(settings.timelineEndHour);
 root.querySelectorAll(".weekend-breakfast-btn").forEach((btn) => {
@@ -9397,14 +14745,31 @@ btn.classList.toggle("active", btn.dataset.value === (settings.weekendBreakfast 
 root.querySelectorAll(".meals-in-month-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.showMealsInMonth ? "on" : "off"));
 });
+const mealPlanEntityInputEl = root.querySelector(".meal-plan-entity-input");
+if (mealPlanEntityInputEl) {
+mealPlanEntityInputEl.value = settings.mealPlanEntity || "";
+this._syncMealPlanEntityAddButton();
+}
+const mealPlanEntityStatusEl = root.querySelector(".meal-plan-entity-status");
+if (mealPlanEntityStatusEl) {
+mealPlanEntityStatusEl.textContent = "";
+mealPlanEntityStatusEl.classList.remove("is-error");
+}
+const weatherEntityInputEl = root.querySelector(".weather-entity-input");
+if (weatherEntityInputEl) {
+weatherEntityInputEl.value = settings.weatherEntity || "";
+}
+const weatherEntityDatalistEl = root.querySelector("#weather-entity-datalist");
+if (weatherEntityDatalistEl) {
+weatherEntityDatalistEl.innerHTML = this._entitiesForDomain("weather").map((e) => `<option value="${e.id}">${e.name}</option>`).join("");
+}
 root.querySelectorAll(".grey-out-past-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.greyOutPastEvents ? "on" : "off"));
 });
-root.querySelectorAll(".fab-position-btn").forEach((btn) => {
-btn.classList.toggle("active", btn.dataset.value === (settings.fabPosition === "card" ? "card" : "dashboard"));
+const topBarStyleValue = this._getSmallScreenMode() ? "minimal" : "normal";
+root.querySelectorAll(".top-bar-style-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === topBarStyleValue);
 });
-const smallScreenModeCheckEl = root.querySelector(".small-screen-mode-check");
-if (smallScreenModeCheckEl) smallScreenModeCheckEl.checked = this._getSmallScreenMode();
 root.querySelectorAll(".scroll-lock-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.scrollLocked ? "on" : "off"));
 });
@@ -9414,12 +14779,25 @@ btn.classList.toggle("active", btn.dataset.value === settings.defaultView);
 root.querySelectorAll(".week-variant-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === this._getWeekViewVariant());
 });
+const weekRowsFieldEl = root.querySelector(".week-rows-field");
+if (weekRowsFieldEl) weekRowsFieldEl.style.display = this._getWeekViewVariant() === "week" ? "" : "none";
 root.querySelectorAll(".month-variant-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === this._getMonthViewVariant());
 });
-root.querySelectorAll(".week-day-count-btn").forEach((btn) => {
-btn.classList.toggle("active", btn.dataset.value === String(this._getWeekViewDayCount()));
+const weekDayCountInputEl = root.querySelector(".week-day-count-input");
+if (weekDayCountInputEl) weekDayCountInputEl.value = String(this._getWeekViewDayCount());
+const bottomPaddingInputEl = root.querySelector(".bottom-padding-input");
+if (bottomPaddingInputEl) bottomPaddingInputEl.value = String(settings.bottomPadding || 0);
+root.querySelectorAll(".current-day-first-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (this._getCurrentDayFirst() ? "on" : "off"));
 });
+const weekRowsInputEl = root.querySelector(".week-rows-input");
+if (weekRowsInputEl) weekRowsInputEl.value = String(this._getWeekRows());
+// Shows which "layout idea" (if any) this device is already on when
+// Settings is opened - see _updateActiveLayoutPresetHighlight's own
+// comment for why an exact-match-only, possibly-none-highlighted result
+// is deliberate.
+this._updateActiveLayoutPresetHighlight();
 root.querySelectorAll(".countdown-enabled-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.countdownEnabled ? "on" : "off"));
 });
@@ -9444,14 +14822,18 @@ btn.classList.toggle("active", btn.dataset.value === (settings.grocyLowStockEnab
 root.querySelectorAll(".routines-enabled-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.routinesEnabled ? "on" : "off"));
 });
-root.querySelectorAll(".goals-in-chores-btn").forEach((btn) => {
-btn.classList.toggle("active", btn.dataset.value === (settings.goalsShowInChores ? "on" : "off"));
+const goalsShowOnValue = settings.goalsShowInChores && settings.goalsShowInRewards
+? "both"
+: settings.goalsShowInChores
+? "chores"
+: settings.goalsShowInRewards
+? "rewards"
+: "none";
+root.querySelectorAll(".goals-show-on-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === goalsShowOnValue);
 });
-root.querySelectorAll(".goals-in-rewards-btn").forEach((btn) => {
-btn.classList.toggle("active", btn.dataset.value === (settings.goalsShowInRewards ? "on" : "off"));
-});
-root.querySelectorAll(".chore-due-time-btn").forEach((btn) => {
-btn.classList.toggle("active", btn.dataset.value === (settings.choreDueShowTime ? "on" : "off"));
+root.querySelectorAll(".chores-confetti-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (settings.choresConfettiOnComplete ? "on" : "off"));
 });
 // Household's own "admin only setting" request - only a real Home
 // Assistant admin (not just someone granted chore-assignment/verify
@@ -9494,17 +14876,41 @@ this._fetchGlobalThemes().then(() => this._populateDeviceThemeOverrideSelect());
 this._populateDeviceThemeOverrideSelect();
 }
 this._settingsPeopleDraft = JSON.parse(JSON.stringify(this._getPeople()));
+// Fresh deep copy on every Settings open, same draft convention as
+// _settingsPeopleDraft right above - already-normalized (one row per
+// HOLIDAY_PREDEFINED_DEFS entry plus every custom date) by
+// _normalizeHolidayBackgrounds, so there's no separate "fill in the
+// predefined rows" step needed here.
+this._settingsHolidayBackgroundsDraft = JSON.parse(JSON.stringify(settings.holidayBackgrounds || []));
 // A fresh deep copy of the saved profiles every time Settings opens - the
 // Users tab (and the notify-targets/profile-editor modals nested
 // under it) all read/write this one draft object, merged back into the
 // big settings blob on Save.
 this._settingsUserProfilesDraft = JSON.parse(JSON.stringify(settings.userProfiles || {}));
+// same "fresh deep copy on open, merged back in on Save"
+// draft convention as _settingsUserProfilesDraft above, for the household-
+// level Alarm Devices registry - see _renderAlarmDevicesSection.
+this._settingsAlarmDevicesDraft = JSON.parse(JSON.stringify(settings.alarmDevices || []));
+this._settingsAlarmTtsEntityDraft = settings.alarmTtsEntityId || "";
+// Cleared on every Settings open, not just once ever, so a speaker/
+// satellite added to Home Assistant since the last time Settings was open
+// shows up in the add-select without a full page reload.
+this._alarmDeviceCandidates = null;
+const ttsSelectEl = root.querySelector(".alarm-tts-entity-select");
+if (ttsSelectEl) ttsSelectEl.dataset.populated = "false";
+this._renderAlarmDevicesSection(root);
+// Same fresh-copy-on-open, merged-back-on-Save draft convention as
+// _settingsAlarmDevicesDraft above, for the shared screensaver widget
+// layout - see _openScreenSaverWidgetsModal/_renderScreenSaverWidgetsCanvas.
+this._settingsScreenSaverWidgetsDraft = JSON.parse(JSON.stringify(settings.screenSaverWidgets || []));
+this._updateScreenSaverWidgetsButton();
+this._renderScreenSaverWidgetsHideList(root);
 // Same fresh-copy-on-open, merged-back-on-Save treatment as
 // _settingsUserProfilesDraft above - the Users tab's Add/Remove buttons
 // and the Permissions tab's filtering (see _renderPermissionsList) both
 // read this live draft, not settings.memberUserIds directly.
 this._settingsMemberIdsDraft = Array.isArray(settings.memberUserIds) ? settings.memberUserIds.slice() : [];
-// v144+ task #29: same fresh-copy-on-open, merged-back-on-Save draft
+// same fresh-copy-on-open, merged-back-on-Save draft
 // pattern as _settingsMemberIdsDraft right above - who has kiosk PIN
 // login ENABLED is ordinary (non-secret) settings data, edited in each
 // person's own notify-profile modal (see _openNotifyProfileModal's
@@ -9517,20 +14923,8 @@ this._settingsKioskLoginUserIdsDraft = Array.isArray(settings.kioskLoginEnabledU
 this._notifyProfileEditingUserId = null;
 this._notifyDevicesEditIdx = null;
 this._setSettingsTab("general");
-const remindersEntityLabel = root.querySelector(".reminders-entity-label");
-if (remindersEntityLabel) remindersEntityLabel.textContent = this._config.reminders_entity;
-const remindersMissingWarn = root.querySelector(".reminders-entity-missing-warn");
-if (remindersMissingWarn) {
-const entityId = this._config.reminders_entity;
-const missing = this._hass && entityId && !this._hass.states[entityId];
-if (missing) {
-remindersMissingWarn.textContent = `⚠️ This entity doesn't exist in Home Assistant yet, so reminders can't be saved until it does. Create a to-do list with that entity id (Settings → Devices & Services → Add Integration → Local To-do), or update reminders_entity in this card's configuration to point at a to-do list you already have.`;
-remindersMissingWarn.style.display = "";
-} else {
-remindersMissingWarn.style.display = "none";
-}
-}
 this._renderPeopleSettings(this._settingsPeopleDraft);
+this._renderHolidayBackgroundsSettings(this._settingsHolidayBackgroundsDraft);
 this._updateSettingsBlockVisibility(count);
 const screenSaver = settings.screenSaver || this._defaultSettings().screenSaver;
 root.querySelectorAll(".screensaver-source-type-btn").forEach((btn) => {
@@ -9546,6 +14940,8 @@ if (screenSaverIdleEl) screenSaverIdleEl.value = String(screenSaver.idleSeconds 
 root.querySelectorAll(".screensaver-recipe-disable-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (screenSaver.disableWhileRecipeOpen ? "on" : "off"));
 });
+const screenSaverReturnDashboardEl = root.querySelector(".screensaver-return-dashboard-input");
+if (screenSaverReturnDashboardEl) screenSaverReturnDashboardEl.value = screenSaver.returnDashboardPath || "";
 const cameraOptionsEl = root.querySelector("#screensaver-camera-options");
 if (cameraOptionsEl && this._hass) {
 cameraOptionsEl.innerHTML = Object.keys(this._hass.states)
@@ -9553,7 +14949,7 @@ cameraOptionsEl.innerHTML = Object.keys(this._hass.states)
 .map((id) => `<option value="${id}"></option>`)
 .join("");
 }
-// v1.132.5+: Permissions no longer has its own tab here - it lives in an
+// Permissions no longer has its own tab here - it lives in an
 // admin-only accordion inside each person's own Notification Profile
 // modal (see _openNotifyProfileModal/_renderNotifyProfilePermissions).
 // Permissions data is admin-only to view and to change (the backend
@@ -9573,6 +14969,42 @@ if (saveStatusEl) {
 saveStatusEl.textContent = "";
 saveStatusEl.classList.remove("is-error");
 }
+// Every section that isn't on that whitelist (household
+// calendar management, scroll
+// lock, Menu Blocks, Chores/Rewards/Routines, Countdown, Daily Digest,
+// Grocy, Screen Saver, the Notification tap destination field, and Add a
+// person) is tagged .admin-only-setting directly in the template above,
+// and hidden here with plain CSS display:none for anyone whose real HA
+// login isn't an admin - same is_admin check _isAdmin()/the existing
+// Danger Zone gate already use elsewhere in this file. This is UI-only,
+// same belt-and-suspenders note as the Danger Zone above: the backend's
+// own family_hub/set_settings handler is what actually decides who can
+// write what, so hiding a field here is about a clean/uncluttered non-
+// admin view, not enforcement.
+//
+// Hiding is done with CSS rather than skipping population, so every
+// hidden field still gets its real saved value written into its DOM
+// element (see all the .value/.checked assignments above) - the Save
+// handler reads the same DOM either way, so a non-admin saving Settings
+// can never blank out a household-wide field they simply never saw.
+root.querySelectorAll(".admin-only-setting").forEach((el) => {
+el.style.display = isAdmin ? "" : "none";
+});
+// a second, narrower notch below "ordinary non-admin".
+// An admin flags
+// someone as a Child account from inside their own profile modal (see
+// .notify-profile-child-field/isChildAccount above) - when THAT'S the
+// person currently looking at Settings, the Users tab disappears
+// entirely on top of everything .admin-only-setting already hides, since
+// even their own notification profile row is off the whitelist for this
+// stricter level. An admin is never gated by this, even if somehow also
+// flagged (isAdmin above already short-circuits everything else, and
+// nobody self-service-toggles this - see the admin-only field itself).
+const currentUserId = this._hass && this._hass.user && this._hass.user.id;
+const ownProfile = currentUserId && this._settingsUserProfilesDraft ? this._settingsUserProfilesDraft[currentUserId] : null;
+const isChildViewer = !isAdmin && !!(ownProfile && (ownProfile.isChildAccount || ownProfile.isKioskAccount));
+const usersTabBtn = root.querySelector('.settings-tab-btn[data-settings-tab="notifications"]');
+if (usersTabBtn) usersTabBtn.style.display = isChildViewer ? "none" : "";
 this._openModal(root.querySelector(".settings-overlay"));
 // The Users tab's per-person list loads async (family_hub/list_users) and
 // re-renders once it arrives - opening Settings isn't blocked on the
@@ -9584,6 +15016,27 @@ this._fetchNotifyProfileUsers();
 // caching indefinitely) so a newly-created Home Assistant user shows up
 // without needing anything reloaded.
 this._fetchScreenSaverUsers();
+// _applyTranslations() normally only
+// ever runs ONCE, from _ensureTranslationsLoaded()'s own .then() callback
+// right after the very first hass assignment - long before Settings has
+// ever been opened, so it sweeps whatever [data-i18n]/[data-i18n-title]
+// elements exist in the DOM at that exact moment. That's fine for every
+// OTHER Settings label (all static, all part of _build()'s one-time
+// template, already in the DOM by then) - but not for the handful of
+// elements this method (and _renderAlarmDevicesSection, which this method
+// already calls above) rebuild via .innerHTML on every single Settings
+// open (the alarm-devices empty-state hints, the Users/Screen-Saver lists
+// once their own async round trips resolve). Those get freshly re-created
+// AFTER the one-and-only sweep already ran, so they were never covered by
+// it and always showed their raw English fallback text, in any language,
+// forever - not a regression in the strict sense, just a gap that's been
+// there since these dynamic sections were first added, and is easy to
+// mistake for "translations broke" since it's scoped to exactly the
+// Settings modal. Re-running the sweep every time Settings opens (a
+// plain, cheap, idempotent root-wide querySelectorAll - a no-op for any
+// element that's already translated) re-covers this dynamic content
+// instead of only ever covering _build()'s static one.
+this._applyTranslations();
 }
 // Toggles which of the Video URL / Camera entity fields is visible in the
 // Screen Saver section, based on the source-type toggle above them -
@@ -9687,14 +15140,14 @@ const settings = this._getSettings();
 const enabledMap = (settings.screenSaver && settings.screenSaver.usersEnabled) || {};
 enabledIds = Object.keys(enabledMap).filter((id) => enabledMap[id]);
 }
-if (!enabledIds.length) return "None selected";
+if (!enabledIds.length) return this._t("settings.none_selected", "None selected");
 const users = Array.isArray(this._screenSaverUsersCache) ? this._screenSaverUsersCache : [];
 const names = enabledIds.map((id) => {
 const u = users.find((x) => x.id === id);
 return u ? u.name : id;
 });
 if (names.length <= 2) return names.join(", ");
-return `${names.length} selected`;
+return this._t("settings.n_selected", `${names.length} selected`, { n: String(names.length) });
 }
 _updateScreenSaverUsersButton() {
 const root = this._root;
@@ -9717,6 +15170,700 @@ const root = this._root;
 if (!root) return;
 root.querySelector(".screensaver-users-overlay").classList.remove("open");
 }
+// --- Screensaver widgets (screensaver-dashboard layout editor) ---------
+// Same "collapse to one summary button" treatment as the logins picker
+// above - the widget layout itself lives in its own modal
+// (_openScreenSaverWidgetsModal) rather than inline in this form.
+_screenSaverWidgetsSummaryText() {
+const widgets = this._settingsScreenSaverWidgetsDraft || [];
+if (!widgets.length) return this._t("settings.screensaver_widgets_none", "No widgets yet");
+return this._t("settings.n_widgets", `${widgets.length} widget${widgets.length === 1 ? "" : "s"}`, { n: String(widgets.length) });
+}
+_updateScreenSaverWidgetsButton() {
+const root = this._root;
+if (!root) return;
+const summaryEl = root.querySelector(".screensaver-widgets-summary");
+if (summaryEl) summaryEl.textContent = this._screenSaverWidgetsSummaryText();
+}
+// The per-device "hide this widget here" checklist sits inline in the
+// main Settings form (not the nested Edit Layout modal) since it's a
+// this-device-only, no-Save-needed setting - same immediacy as the device
+// theme override above it. Re-rendered both when Settings opens and
+// whenever the widget list itself changes (add/delete in the modal),
+// since a widget removed from the layout should disappear from the hide
+// checklist too.
+_renderScreenSaverWidgetsHideList(root) {
+root = root || this._root;
+if (!root) return;
+const wrap = root.querySelector(".screensaver-widgets-hide-field");
+const listEl = root.querySelector(".screensaver-widgets-hide-list");
+if (!wrap || !listEl) return;
+const widgets = this._settingsScreenSaverWidgetsDraft || [];
+if (!widgets.length) {
+wrap.style.display = "none";
+listEl.innerHTML = "";
+return;
+}
+wrap.style.display = "";
+const hiddenIds = this._getScreenSaverHiddenWidgetIds();
+listEl.innerHTML = "";
+widgets.forEach((widget) => {
+const row = document.createElement("label");
+row.className = "screensaver-widgets-hide-row";
+const cb = document.createElement("input");
+cb.type = "checkbox";
+cb.checked = hiddenIds.includes(widget.id);
+cb.addEventListener("change", () => this._toggleScreenSaverWidgetHiddenOnThisDevice(widget.id, cb.checked));
+const label = document.createElement("span");
+label.textContent = (widget.config && widget.config.type) || widget.id;
+row.appendChild(cb);
+row.appendChild(label);
+listEl.appendChild(row);
+});
+}
+_openScreenSaverWidgetsModal() {
+const root = this._root;
+if (!root) return;
+this._renderScreenSaverWidgetsCanvas();
+this._closeScreenSaverWidgetForm();
+this._openModal(root.querySelector(".screensaver-widgets-overlay"));
+}
+_closeScreenSaverWidgetsModal() {
+const root = this._root;
+if (!root) return;
+root.querySelector(".screensaver-widgets-overlay").classList.remove("open");
+this._updateScreenSaverWidgetsButton();
+this._renderScreenSaverWidgetsHideList(root);
+}
+// Draws every widget in the draft layout as a positioned, draggable,
+// resizable box on the editor canvas - a scaled-down stand-in for the
+// live screensaver rather than the real hosted card (rendering N live
+// Lovelace cards inside a modal just to drag them around isn't worth the
+// cost or the edge cases of a card reacting to being dragged), labeled
+// with its card type so it's still clear what's what while arranging.
+_renderScreenSaverWidgetsCanvas() {
+const root = this._root;
+if (!root) return;
+const canvas = root.querySelector(".screensaver-widgets-canvas");
+if (!canvas) return;
+canvas.innerHTML = "";
+const widgets = this._settingsScreenSaverWidgetsDraft || [];
+widgets.forEach((widget) => {
+const box = document.createElement("div");
+box.className = "screensaver-widget-box";
+Object.assign(box.style, {
+left: `${widget.x}%`,
+top: `${widget.y}%`,
+width: `${widget.w}%`,
+height: `${widget.h}%`,
+});
+const labelRow = document.createElement("div");
+labelRow.className = "screensaver-widget-box-label";
+const labelText = document.createElement("span");
+labelText.textContent = (widget.config && widget.config.type) || widget.id;
+const actions = document.createElement("div");
+actions.className = "screensaver-widget-box-actions";
+const editBtn = document.createElement("button");
+editBtn.type = "button";
+editBtn.textContent = "✎";
+editBtn.addEventListener("pointerdown", (e) => e.stopPropagation());
+editBtn.addEventListener("click", (e) => {
+e.stopPropagation();
+this._openScreenSaverWidgetForm(widget.id);
+});
+const delBtn = document.createElement("button");
+delBtn.type = "button";
+delBtn.textContent = "✕";
+delBtn.addEventListener("pointerdown", (e) => e.stopPropagation());
+delBtn.addEventListener("click", (e) => {
+e.stopPropagation();
+this._deleteScreenSaverWidget(widget.id);
+});
+actions.appendChild(editBtn);
+actions.appendChild(delBtn);
+labelRow.appendChild(labelText);
+labelRow.appendChild(actions);
+box.appendChild(labelRow);
+const resizeHandle = document.createElement("div");
+resizeHandle.className = "screensaver-widget-box-resize";
+box.appendChild(resizeHandle);
+box.addEventListener("pointerdown", (e) => this._startScreenSaverWidgetDrag(e, widget.id, canvas, box, "move"));
+resizeHandle.addEventListener("pointerdown", (e) => this._startScreenSaverWidgetDrag(e, widget.id, canvas, box, "resize"));
+canvas.appendChild(box);
+});
+}
+// Shared pointer-drag handler for both moving (drag the box itself) and
+// resizing (drag its corner handle) - both just differ in which of
+// x/y vs w/h they update, math'd off the canvas's own bounding rect so it
+// works the same regardless of how big the modal is drawn on screen. Every
+// value stays clamped to the 0-100 percentage range _normalizeSettings
+// already expects, and a resize is floored at a small minimum size so a
+// widget can never be dragged down to nothing and become unreachable.
+_startScreenSaverWidgetDrag(e, widgetId, canvas, box, mode) {
+e.preventDefault();
+e.stopPropagation();
+const widgets = this._settingsScreenSaverWidgetsDraft || [];
+const widget = widgets.find((w) => w.id === widgetId);
+if (!widget) return;
+const rect = canvas.getBoundingClientRect();
+const startX = e.clientX;
+const startY = e.clientY;
+const startWidget = Object.assign({}, widget);
+const onMove = (ev) => {
+const dxPct = ((ev.clientX - startX) / rect.width) * 100;
+const dyPct = ((ev.clientY - startY) / rect.height) * 100;
+if (mode === "move") {
+widget.x = Math.min(100 - widget.w, Math.max(0, startWidget.x + dxPct));
+widget.y = Math.min(100 - widget.h, Math.max(0, startWidget.y + dyPct));
+} else {
+widget.w = Math.min(100 - widget.x, Math.max(5, startWidget.w + dxPct));
+widget.h = Math.min(100 - widget.y, Math.max(5, startWidget.h + dyPct));
+}
+Object.assign(box.style, { left: `${widget.x}%`, top: `${widget.y}%`, width: `${widget.w}%`, height: `${widget.h}%` });
+};
+const onUp = () => {
+window.removeEventListener("pointermove", onMove);
+window.removeEventListener("pointerup", onUp);
+};
+window.addEventListener("pointermove", onMove);
+window.addEventListener("pointerup", onUp);
+}
+_deleteScreenSaverWidget(widgetId) {
+this._settingsScreenSaverWidgetsDraft = (this._settingsScreenSaverWidgetsDraft || []).filter((w) => w.id !== widgetId);
+this._renderScreenSaverWidgetsCanvas();
+}
+// Named widget "kinds" for the Add-widget gallery (household ask: "allow
+// the user to select the widgets with a UI similar to what is used to
+// build dashboards" - i.e. Home Assistant's own Add Card flow: pick a
+// kind first, then fill in just the couple of fields that kind needs,
+// rather than starting from a blank JSON blob). Each entry is a REAL
+// Lovelace card type this screensaver canvas already knows how to host
+// (see _renderScreenSaverWidgets's own createCardElement comment below -
+// any Lovelace card type works, this registry just gives a handful of
+// the most useful ones a name, an icon, a one-line description, and a
+// starter config. entityDomain narrows the guided Entity field's
+// suggestions to that domain ("" means "any domain", null means "this
+// kind has no entity at all", like Clock or Text). hasContent marks the
+// one kind (Text/markdown) that takes free-form content instead of/
+// alongside an entity. Anything not listed here is still fully
+// reachable via the gallery's own "Custom" tile, which drops straight
+// into the original raw-JSON field unchanged - this registry only ever
+// ADDS a friendlier on-ramp for the common cases, it never takes away
+// the power-user path.
+_screenSaverWidgetTypeRegistry() {
+return {
+  "weather-forecast": {
+    name: this._t("settings.screensaver_widget_type_weather", "Weather"),
+    desc: this._t("settings.screensaver_widget_type_weather_desc", "Current conditions and forecast from a weather entity"),
+    icon: "⛅", entityDomain: "weather", hasContent: false,
+    defaultConfig: () => ({ type: "weather-forecast" }),
+  },
+  clock: {
+    name: this._t("settings.screensaver_widget_type_clock", "Clock"),
+    desc: this._t("settings.screensaver_widget_type_clock_desc", "A simple digital clock, no entity needed"),
+    icon: "\u{1F550}", entityDomain: null, hasContent: false,
+    defaultConfig: () => ({ type: "clock" }),
+  },
+  calendar: {
+    name: this._t("settings.screensaver_widget_type_calendar", "Calendar"),
+    desc: this._t("settings.screensaver_widget_type_calendar_desc", "A month grid for one calendar entity"),
+    icon: "\u{1F4C5}", entityDomain: "calendar", hasContent: false,
+    defaultConfig: () => ({ type: "calendar" }),
+  },
+  entity: {
+    name: this._t("settings.screensaver_widget_type_entity", "Sensor"),
+    desc: this._t("settings.screensaver_widget_type_entity_desc", "A single entity's current state"),
+    icon: "\u{1F522}", entityDomain: "", hasContent: false,
+    defaultConfig: () => ({ type: "entity" }),
+  },
+  "picture-entity": {
+    name: this._t("settings.screensaver_widget_type_camera", "Camera"),
+    desc: this._t("settings.screensaver_widget_type_camera_desc", "A live snapshot from a camera entity"),
+    icon: "\u{1F4F7}", entityDomain: "camera", hasContent: false,
+    defaultConfig: () => ({ type: "picture-entity" }),
+  },
+  markdown: {
+    name: this._t("settings.screensaver_widget_type_text", "Text"),
+    desc: this._t("settings.screensaver_widget_type_text_desc", "Custom text or Markdown, no entity needed"),
+    icon: "\u{1F4DD}", entityDomain: null, hasContent: true,
+    defaultConfig: () => ({ type: "markdown", content: "" }),
+  },
+};
+}
+// Entities from this._hass.states matching one domain (or every entity,
+// when domain is "" - the generic Sensor kind), sorted by friendly name,
+// for the guided Entity field's <datalist> - a lightweight stand-in for
+// a real dashboard's entity picker (typeahead over a plain text input,
+// so typing an id this list doesn't happen to include still works,
+// rather than a rigid closed <select>).
+_entitiesForDomain(domain) {
+if (!this._hass || !this._hass.states) return [];
+return Object.keys(this._hass.states)
+.filter((id) => !domain || id.startsWith(`${domain}.`))
+.map((id) => ({ id, name: (this._hass.states[id].attributes && this._hass.states[id].attributes.friendly_name) || id }))
+.sort((a, b) => a.name.localeCompare(b.name));
+}
+// The three mutually-exclusive "steps" of the add/edit form - gallery
+// (choosing a kind), the configure step (a real Home Assistant card
+// editor when one is available for the chosen type, or - see
+// _mountScreenSaverWidgetNativeEditor's own docstring for when this
+// happens - the older Entity/Text guided fields as a fallback), or the
+// raw JSON field, now reachable from either direction via the "Edit as
+// YAML"/"Edit visually" toggle buttons rather than being a one-way trip.
+// Each also shows/hides the Save button, since there's nothing to save
+// yet while the gallery itself is showing.
+_showScreenSaverWidgetGallery() {
+const root = this._root;
+if (!root) return;
+root.querySelector(".screensaver-widget-gallery").style.display = "";
+root.querySelector(".screensaver-widget-guided").style.display = "none";
+root.querySelector(".screensaver-widget-json-field").style.display = "none";
+const transparentFieldGallery = root.querySelector(".screensaver-widget-transparent-field");
+if (transparentFieldGallery) transparentFieldGallery.style.display = "none";
+const saveBtn = root.querySelector(".screensaver-widget-form-save");
+if (saveBtn) saveBtn.style.display = "none";
+}
+// Enters (or re-enters, coming back from YAML mode) the "configure"
+// step for a given config - always a real, type-having config (the
+// gallery's own registry defaultConfig() for a brand-new widget, or an
+// existing widget's config being edited). Tries Home Assistant's own
+// native per-card-type editor first (see _mountScreenSaverWidgetNative
+// Editor), which is what actually makes this step feel like editing a
+// real dashboard card - the legacy Entity/Text guided fields only ever
+// show as a fallback once that attempt has finished and failed.
+_showScreenSaverWidgetConfigure(config) {
+const root = this._root;
+if (!root) return;
+root.querySelector(".screensaver-widget-gallery").style.display = "none";
+root.querySelector(".screensaver-widget-guided").style.display = "";
+root.querySelector(".screensaver-widget-json-field").style.display = "none";
+const transparentFieldGuided = root.querySelector(".screensaver-widget-transparent-field");
+if (transparentFieldGuided) transparentFieldGuided.style.display = "";
+const saveBtn = root.querySelector(".screensaver-widget-form-save");
+if (saveBtn) saveBtn.style.display = "";
+this._screenSaverWidgetFormMode = "visual";
+this._screenSaverWidgetFormConfig = JSON.parse(JSON.stringify(config));
+this._screenSaverWidgetNativeEditorMounted = false;
+const reg = this._screenSaverWidgetTypeRegistry()[this._screenSaverWidgetFormType] || this._screenSaverWidgetRegistryEntryForType(config.type);
+const label = root.querySelector(".screensaver-widget-type-chosen-label");
+if (label) label.textContent = reg ? `${reg.icon} ${reg.name}` : config.type;
+// Hidden by default - _mountScreenSaverWidgetNativeEditor's own
+// failure path is what reveals these, populated from the config
+// actually being edited (not blanked out) so editing an existing
+// widget that falls back here still shows its real current values.
+const entityField = root.querySelector(".screensaver-widget-entity-field");
+if (entityField) entityField.style.display = "none";
+const contentField = root.querySelector(".screensaver-widget-content-field");
+if (contentField) contentField.style.display = "none";
+this._populateScreenSaverWidgetClockFields(config);
+const mountEl = root.querySelector(".screensaver-widget-native-editor");
+if (mountEl) mountEl.innerHTML = "";
+this._mountScreenSaverWidgetNativeEditor(reg);
+}
+// Deprecated alias kept for the gallery tile click handler below and
+// anything else still thinking in terms of "type" rather than a full
+// config - resolves the registry's defaultConfig() for `type` and
+// hands off to _showScreenSaverWidgetConfigure above.
+_showScreenSaverWidgetGuided(type) {
+const reg = this._screenSaverWidgetTypeRegistry()[type];
+this._showScreenSaverWidgetConfigure(reg ? reg.defaultConfig() : { type });
+}
+_showScreenSaverWidgetJsonField() {
+const root = this._root;
+if (!root) return;
+root.querySelector(".screensaver-widget-gallery").style.display = "none";
+root.querySelector(".screensaver-widget-guided").style.display = "none";
+root.querySelector(".screensaver-widget-json-field").style.display = "";
+const transparentFieldJson = root.querySelector(".screensaver-widget-transparent-field");
+if (transparentFieldJson) transparentFieldJson.style.display = "";
+const saveBtn = root.querySelector(".screensaver-widget-form-save");
+if (saveBtn) saveBtn.style.display = "";
+}
+// Reverse lookup from a real Lovelace card `type` string (e.g. "clock",
+// as found in an existing widget's own saved config) back to this
+// registry's own key/entry - the registry is keyed by the same string
+// for every entry here today, but this stays a real lookup (not a bare
+// `registry[type]`) in case a future entry's key and its defaultConfig()
+// type ever diverge.
+_screenSaverWidgetRegistryEntryForType(type) {
+const registry = this._screenSaverWidgetTypeRegistry();
+const key = Object.keys(registry).find((k) => registry[k].defaultConfig().type === type);
+return key ? registry[key] : null;
+}
+// Builds the gallery grid once per open (fresh each time so a newly
+// arrived entity - e.g. a camera just added to Home Assistant - is
+// picked up by the datalist without needing a page reload) and wires
+// each tile: a real kind jumps to the configure step with that kind's
+// starter config, "Custom" jumps straight to the original blank JSON
+// field, unchanged from before this gallery existed.
+_renderScreenSaverWidgetGallery() {
+const root = this._root;
+if (!root) return;
+const gridEl = root.querySelector(".screensaver-widget-gallery-grid");
+if (!gridEl) return;
+const registry = this._screenSaverWidgetTypeRegistry();
+const tileHtml = (type, reg) => `<button type="button" class="screensaver-widget-type-tile" data-type="${type}">
+<span class="screensaver-widget-type-icon">${reg.icon}</span>
+<span class="screensaver-widget-type-name">${reg.name}</span>
+<span class="screensaver-widget-type-desc">${reg.desc}</span>
+</button>`;
+const tilesHtml = Object.keys(registry).map((type) => tileHtml(type, registry[type])).join("");
+const customHtml = tileHtml("custom", {
+icon: "\u{1F527}",
+name: this._t("settings.screensaver_widget_type_custom", "Custom"),
+desc: this._t("settings.screensaver_widget_type_custom_desc", "Any Lovelace card, written as JSON"),
+});
+gridEl.innerHTML = tilesHtml + customHtml;
+gridEl.querySelectorAll(".screensaver-widget-type-tile").forEach((tile) => {
+tile.addEventListener("click", () => {
+const type = tile.dataset.type;
+this._screenSaverWidgetFormType = type;
+if (type === "custom") {
+const input = root.querySelector(".screensaver-widget-config-input");
+if (input) input.value = "";
+// Custom goes straight to raw JSON, same as before this gallery
+// existed - _screenSaverWidgetFormMode must be "yaml" here (not just
+// the field shown) or Save would try to read it through the guided-
+// fields branch instead of parsing the textarea, discarding whatever
+// gets typed.
+this._screenSaverWidgetFormMode = "yaml";
+this._showScreenSaverWidgetJsonField();
+} else {
+const reg = registry[type];
+this._showScreenSaverWidgetConfigure(reg.defaultConfig());
+}
+});
+});
+}
+// Tries to mount Home Assistant's own real editor for this card type -
+// the same GUI editor (and, for most stock cards, the same underlying
+// schema) shown when editing this exact card type on a real dashboard -
+// into the .screensaver-widget-native-editor mount point, so configuring
+// a widget here feels like configuring a card there instead of using
+// this file's own hand-rolled Entity/Text fields.
+//
+// Every stock Lovelace card class exposes a static async
+// getConfigElement() that lazily imports and returns that card type's
+// own editor element (this is how Home Assistant's own dashboard editor
+// gets a card's editor too - see hui-card-editor's own source for the
+// equivalent call) - NOT a public/documented API for third-party reuse,
+// so this is wrapped in a guard for every step that could plausibly fail
+// (the helper missing, the method missing, the call throwing or
+// resolving to nothing, or setConfig throwing on a config this editor
+// doesn't like) rather than assuming any of it. `token` guards against a
+// slow getConfigElement() resolving after the user has since closed the
+// form, picked a different kind, or flipped to YAML - each of those
+// bumps _screenSaverWidgetFormToken, so a stale resolution here is
+// simply dropped instead of mounting into a form that has moved on.
+async _mountScreenSaverWidgetNativeEditor(reg) {
+this._screenSaverWidgetFormToken = (this._screenSaverWidgetFormToken || 0) + 1;
+const token = this._screenSaverWidgetFormToken;
+const root = this._root;
+const mountEl = root && root.querySelector(".screensaver-widget-native-editor");
+try {
+if (typeof window.loadCardHelpers !== "function") throw new Error("no loadCardHelpers");
+const helpers = await window.loadCardHelpers();
+if (token !== this._screenSaverWidgetFormToken) return;
+const cardEl = helpers.createCardElement(this._screenSaverWidgetFormConfig);
+if (!cardEl || typeof cardEl.constructor.getConfigElement !== "function") throw new Error("no getConfigElement");
+const editorEl = await cardEl.constructor.getConfigElement();
+if (token !== this._screenSaverWidgetFormToken) return;
+if (!editorEl) throw new Error("getConfigElement resolved to nothing");
+editorEl.hass = this._hass;
+if (typeof editorEl.setConfig === "function") editorEl.setConfig(this._screenSaverWidgetFormConfig);
+editorEl.addEventListener("config-changed", (ev) => {
+if (token !== this._screenSaverWidgetFormToken) return;
+if (ev.detail && ev.detail.config) this._screenSaverWidgetFormConfig = ev.detail.config;
+});
+if (mountEl) {
+mountEl.innerHTML = "";
+mountEl.appendChild(editorEl);
+}
+this._screenSaverWidgetNativeEditorMounted = true;
+} catch (e) {
+if (token !== this._screenSaverWidgetFormToken) return;
+this._screenSaverWidgetNativeEditorMounted = false;
+if (mountEl) mountEl.innerHTML = "";
+// No real editor for this type - fall back to the guided Entity/
+// Text fields when this is one of our own registered kinds
+// (populated from the config actually being edited, not blanked),
+// or straight to YAML when it isn't, since there is nothing else
+// this form could usefully show for an arbitrary card type.
+if (reg) {
+this._populateScreenSaverWidgetGuidedFallbackFields(reg);
+} else if (mountEl) {
+const hint = document.createElement("div");
+hint.className = "screensaver-widget-native-editor-error";
+hint.textContent = this._t("settings.screensaver_widget_no_visual_editor", "No visual editor available for this card - edit as YAML below.");
+mountEl.appendChild(hint);
+this._toggleScreenSaverWidgetYamlMode();
+}
+}
+}
+// Populates and reveals the legacy Entity/Text fields (the guided form
+// this whole native-editor attempt replaces as the primary path, kept
+// as this specific fallback) from the config already being edited, not
+// from reg.defaultConfig() - a native-editor failure on an EXISTING
+// widget should still show that widget's real current entity/content,
+// not silently blank them out from under the user.
+_populateScreenSaverWidgetGuidedFallbackFields(reg) {
+const root = this._root;
+if (!root) return;
+const config = this._screenSaverWidgetFormConfig || {};
+const entityField = root.querySelector(".screensaver-widget-entity-field");
+const entityInput = root.querySelector(".screensaver-widget-entity-input");
+const showEntity = reg.entityDomain !== null;
+if (entityField) entityField.style.display = showEntity ? "" : "none";
+if (entityInput) entityInput.value = showEntity ? (config.entity || "") : "";
+if (showEntity) {
+const datalist = root.querySelector("#screensaver-widget-entity-datalist");
+if (datalist) {
+datalist.innerHTML = this._entitiesForDomain(reg.entityDomain).map((e) => `<option value="${e.id}">${e.name}</option>`).join("");
+}
+}
+const contentField = root.querySelector(".screensaver-widget-content-field");
+const contentInput = root.querySelector(".screensaver-widget-content-input");
+const showContent = !!reg.hasContent;
+if (contentField) contentField.style.display = showContent ? "" : "none";
+if (contentInput) contentInput.value = showContent ? (config.content || "") : "";
+}
+// Reads the legacy Entity/Text fields back into `config` ONLY when they
+// are the ones currently on screen (i.e. _mountScreenSaverWidgetNative
+// Editor fell back to them) - a no-op when the native editor (or
+// neither) is showing, since there is nothing on screen to read in that
+// case; the native editor keeps `config` current itself via its own
+// config-changed listener instead. Returns null (after showing the same
+// inline error the original guided form always showed) if the Entity
+// field is visible, required by this kind, and left blank.
+_readScreenSaverWidgetGuidedFieldsIntoConfig(config) {
+const root = this._root;
+if (!root) return config;
+const entityField = root.querySelector(".screensaver-widget-entity-field");
+if (entityField && entityField.style.display !== "none") {
+const entityInput = root.querySelector(".screensaver-widget-entity-input");
+const entityId = entityInput ? entityInput.value.trim() : "";
+if (!entityId) {
+const errEl = root.querySelector(".screensaver-widget-config-error");
+if (errEl) {
+errEl.textContent = this._t("settings.screensaver_widget_entity_required", "Pick or type an entity first.");
+errEl.style.display = "";
+}
+return null;
+}
+config.entity = entityId;
+}
+// Read independently of the entity field above - a content-only kind
+// (e.g. Text/markdown) has no entity field at all, so gating this on the
+// entity field's visibility (as an earlier version of this function did)
+// meant its typed content was silently dropped on Save.
+const contentField = root.querySelector(".screensaver-widget-content-field");
+if (contentField && contentField.style.display !== "none") {
+const contentInput = root.querySelector(".screensaver-widget-content-input");
+config.content = contentInput ? contentInput.value : "";
+}
+return config;
+}
+// Family Hub's own extra Clock options - "digits only" (see
+// _renderScreenSaverWidgets' own fh_style handling for what this
+// actually changes about how the widget renders) and automatic light/
+// dark contrast against whatever's behind it - layered on top of
+// whichever editor (native or the guided fallback) is showing above,
+// since neither the stock Home Assistant Clock card nor its own editor
+// has any concept of either. Stored as fh_style/fh_adaptive_color right
+// on the widget's own card config - namespaced with an fh_ prefix so
+// they can never collide with a real Lovelace card key, same convention
+// as every other Family-Hub-only addition to a hosted card's config.
+_populateScreenSaverWidgetClockFields(config) {
+const root = this._root;
+if (!root) return;
+const isClock = !!(config && config.type === "clock");
+const isDigits = isClock && config.fh_style === "digits";
+const styleField = root.querySelector(".screensaver-widget-clock-style-field");
+if (styleField) styleField.style.display = isClock ? "" : "none";
+const adaptiveField = root.querySelector(".screensaver-widget-clock-adaptive-field");
+if (adaptiveField) adaptiveField.style.display = isDigits ? "" : "none";
+const styleSelect = root.querySelector(".screensaver-widget-clock-style-select");
+if (styleSelect) styleSelect.value = isDigits ? "digits" : "card";
+const adaptiveInput = root.querySelector(".screensaver-widget-clock-adaptive-input");
+if (adaptiveInput) adaptiveInput.checked = !!(isClock && config.fh_adaptive_color);
+}
+_readScreenSaverWidgetClockFieldsIntoConfig(config) {
+const root = this._root;
+if (!root || !config || config.type !== "clock") return config;
+const styleSelect = root.querySelector(".screensaver-widget-clock-style-select");
+const style = styleSelect ? styleSelect.value : "card";
+if (style === "digits") {
+const adaptiveInput = root.querySelector(".screensaver-widget-clock-adaptive-input");
+config.fh_style = "digits";
+config.fh_adaptive_color = !!(adaptiveInput && adaptiveInput.checked);
+} else {
+delete config.fh_style;
+delete config.fh_adaptive_color;
+}
+return config;
+}
+// Flips between the configure step (native editor or its guided
+// fallback) and raw YAML, keeping _screenSaverWidgetFormConfig as the
+// single source of truth crossing over in either direction - going TO
+// YAML first folds in whatever's on screen (the guided fallback fields
+// and/or the Clock-only extras; the native editor already kept
+// _screenSaverWidgetFormConfig live via its own config-changed
+// listener), going FROM YAML parses the textarea and, only if that
+// succeeds, re-enters the configure step with the parsed result
+// (re-attempting the native editor fresh, same as opening the form
+// would). An invalid YAML/JSON document shows the same inline error the
+// Save button already uses and leaves the user on the YAML step to fix
+// it, rather than silently discarding what they typed.
+_toggleScreenSaverWidgetYamlMode() {
+const root = this._root;
+if (!root) return;
+const errEl = root.querySelector(".screensaver-widget-config-error");
+if (errEl) errEl.style.display = "none";
+if (this._screenSaverWidgetFormMode === "yaml") {
+const input = root.querySelector(".screensaver-widget-config-input");
+let parsed;
+try {
+parsed = JSON.parse(input.value);
+} catch (e) {
+if (errEl) {
+errEl.textContent = this._t("settings.screensaver_widget_config_invalid", "That's not valid JSON.");
+errEl.style.display = "";
+}
+return;
+}
+if (!parsed || typeof parsed !== "object" || typeof parsed.type !== "string" || !parsed.type) {
+if (errEl) {
+errEl.textContent = this._t("settings.screensaver_widget_config_needs_type", "Needs at least a \"type\" field, like a dashboard card's own config.");
+errEl.style.display = "";
+}
+return;
+}
+this._showScreenSaverWidgetConfigure(parsed);
+} else {
+let config = this._readScreenSaverWidgetGuidedFieldsIntoConfig(this._screenSaverWidgetFormConfig);
+if (config === null) return;
+config = this._readScreenSaverWidgetClockFieldsIntoConfig(config);
+this._screenSaverWidgetFormConfig = config;
+this._screenSaverWidgetFormToken = (this._screenSaverWidgetFormToken || 0) + 1;
+const input = root.querySelector(".screensaver-widget-config-input");
+if (input) input.value = JSON.stringify(config, null, 2);
+this._screenSaverWidgetFormMode = "yaml";
+this._showScreenSaverWidgetJsonField();
+}
+}
+// The add/edit form shares one hidden panel toggled by editingId - null
+// means "add new" (starts at the gallery above), a widget id means
+// "edit this one's card config in place". Editing now also tries the
+// same native-editor-first configure step new widgets use (see
+// _showScreenSaverWidgetConfigure), rather than always jumping straight
+// to raw JSON the way the original single-step form did - the "Edit as
+// YAML" toggle is what reaches raw JSON now, for either an add or an
+// edit.
+_openScreenSaverWidgetForm(editingId) {
+const root = this._root;
+if (!root) return;
+const form = root.querySelector(".screensaver-widget-form");
+if (!form) return;
+this._screenSaverWidgetFormEditingId = editingId;
+const errEl = root.querySelector(".screensaver-widget-config-error");
+if (errEl) errEl.style.display = "none";
+form.style.display = "";
+if (editingId) {
+const widget = (this._settingsScreenSaverWidgetsDraft || []).find((w) => w.id === editingId);
+this._screenSaverWidgetFormType = "custom";
+const transparentInput = root.querySelector(".screensaver-widget-transparent-input");
+if (transparentInput) transparentInput.checked = !!(widget && widget.transparent);
+this._showScreenSaverWidgetConfigure(widget ? widget.config : { type: "" });
+} else {
+this._screenSaverWidgetFormType = null;
+this._renderScreenSaverWidgetGallery();
+this._showScreenSaverWidgetGallery();
+}
+}
+_closeScreenSaverWidgetForm() {
+const root = this._root;
+if (!root) return;
+const form = root.querySelector(".screensaver-widget-form");
+if (form) form.style.display = "none";
+// Bumping the token drops any in-flight _mountScreenSaverWidgetNative
+// Editor() resolution for this now-closed form - see that function's
+// own comment on why a stale resolution must never mount into a form
+// the user has already walked away from.
+this._screenSaverWidgetFormToken = (this._screenSaverWidgetFormToken || 0) + 1;
+this._screenSaverWidgetFormEditingId = undefined;
+this._screenSaverWidgetFormType = undefined;
+this._screenSaverWidgetFormConfig = undefined;
+this._screenSaverWidgetFormMode = undefined;
+this._screenSaverWidgetNativeEditorMounted = false;
+}
+_saveScreenSaverWidgetForm() {
+const root = this._root;
+if (!root) return;
+const errEl = root.querySelector(".screensaver-widget-config-error");
+let config;
+// _showScreenSaverWidgetConfigure already seeded
+// _screenSaverWidgetFormConfig with either a brand-new kind's
+// reg.defaultConfig() or an existing widget's real config the moment
+// the gallery/edit step was left, so - other than YAML mode, parsed
+// fresh from its own textarea below - there is exactly one source of
+// truth to save from regardless of whether the native editor mounted,
+// fell back to the guided Entity/Text fields, or (a still-pending
+// native-editor mount) hasn't resolved either way yet: the native
+// editor keeps _screenSaverWidgetFormConfig current itself via its own
+// config-changed listener, and folding in the guided-fields fallback
+// below is a no-op whenever those fields aren't the ones on screen.
+if (this._screenSaverWidgetFormMode === "yaml") {
+const input = root.querySelector(".screensaver-widget-config-input");
+try {
+config = JSON.parse(input.value);
+} catch (e) {
+errEl.textContent = this._t("settings.screensaver_widget_config_invalid", "That's not valid JSON.");
+errEl.style.display = "";
+return;
+}
+if (!config || typeof config !== "object" || typeof config.type !== "string" || !config.type) {
+errEl.textContent = this._t("settings.screensaver_widget_config_needs_type", "Needs at least a \"type\" field, like a dashboard card's own config.");
+errEl.style.display = "";
+return;
+}
+} else {
+// The native editor (if mounted) has already been keeping
+// _screenSaverWidgetFormConfig current via its own config-changed
+// listener - this just folds in the guided-fields fallback (a no-op
+// if the native editor is what's actually showing) and the Clock-
+// only extras on top of whichever config is already there.
+config = this._readScreenSaverWidgetGuidedFieldsIntoConfig(this._screenSaverWidgetFormConfig || { type: this._screenSaverWidgetFormType });
+if (config === null) return;
+config = this._readScreenSaverWidgetClockFieldsIntoConfig(config);
+if (!config || typeof config.type !== "string" || !config.type) {
+errEl.textContent = this._t("settings.screensaver_widget_config_needs_type", "Needs at least a \"type\" field, like a dashboard card's own config.");
+errEl.style.display = "";
+return;
+}
+}
+const transparentInput = root.querySelector(".screensaver-widget-transparent-input");
+const transparent = !!(transparentInput && transparentInput.checked);
+this._settingsScreenSaverWidgetsDraft = this._settingsScreenSaverWidgetsDraft || [];
+if (this._screenSaverWidgetFormEditingId) {
+const widget = this._settingsScreenSaverWidgetsDraft.find((w) => w.id === this._screenSaverWidgetFormEditingId);
+if (widget) {
+widget.config = config;
+widget.transparent = transparent;
+}
+} else {
+this._settingsScreenSaverWidgetsDraft.push({
+id: `sw-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+config,
+x: 5,
+y: 5,
+w: 30,
+h: 20,
+transparent,
+});
+}
+this._closeScreenSaverWidgetForm();
+this._renderScreenSaverWidgetsCanvas();
+}
 _closeSettings() {
 this._root.querySelector(".settings-overlay").classList.remove("open");
 }
@@ -9735,6 +15882,11 @@ field.style.display = idx < count ? "" : "none";
 // closest thing this card has to "per device".
 _screenSaverApplicable() {
 if (!this._hass || !this._hass.user || !this._hass.user.id) return false;
+// Per-device live toggle - see DEVICE_SETTINGS_EVENT_SCREENSAVER_TOGGLE's
+// own comment in const.py. Defaults to true (undefined) until either
+// _reportDeviceSettings's response or a live push event sets it, so a
+// device that hasn't heard from the backend yet still behaves as before.
+if (this._screenSaverDeviceEnabled === false) return false;
 const ss = this._getSettings().screenSaver;
 if (!ss) return false;
 const hasSource = ss.sourceType === "camera" ? !!ss.cameraEntity : !!ss.videoUrl;
@@ -9756,7 +15908,7 @@ const root = this._root;
 if (!root) return false;
 const dishDetail = root.querySelector(".dish-detail-overlay");
 if (dishDetail && dishDetail.classList.contains("open")) return true;
-// v1.121.0+: goes through the shared _grocyViewerOverlay() accessor now,
+// goes through the shared _grocyViewerOverlay() accessor now,
 // not a plain root.querySelector - the overlay may have already been
 // promoted to document.body (see that method's own comment on why), in
 // which case it's no longer a descendant of `root` at all.
@@ -9764,7 +15916,7 @@ const grocyViewer = this._grocyViewerOverlay();
 if (grocyViewer && grocyViewer.classList.contains("open")) return true;
 return false;
 }
-// v134+: the settings poll (_startPolling, every 60s) used to call
+// the settings poll (_startPolling, every 60s) used to call
 // _resetScreenSaverIdleTimer() unconditionally on every single tick,
 // whether or not anything about the screenSaver settings had actually
 // changed. That meant any household with idleSeconds set above 60 (the
@@ -9807,7 +15959,7 @@ this._screenSaverTimer = setTimeout(() => this._showScreenSaver(), seconds * 100
 // Builds the actual full-screen video/camera element once and appends it
 // directly to document.body - deliberately NOT inside this card's own
 // shadow DOM (unlike every other modal here, which lives in
-// this._root). A real household reported the screensaver only covering
+// this._root). Otherwise the screensaver only covers
 // the dashboard's own content area, leaving Home Assistant's sidebar and
 // top bar visible on top of it: `<ha-card>` (and/or Home Assistant's own
 // drawer/app-layout further up the tree) apparently establishes its own
@@ -9853,15 +16005,297 @@ img.alt = "";
 Object.assign(img.style, { width: "100%", height: "100%", objectFit: "cover", background: "#000", display: "none" });
 el.appendChild(video);
 el.appendChild(img);
+// Widget layer sits above the video/camera background but below nothing
+// else - it's pointer-events:none so a tap anywhere still falls through
+// to the overlay's own pointerdown-to-dismiss listener below, even when a
+// hosted widget card would otherwise want the tap itself (e.g. a todo
+// checkbox). Individual widget cards are appended into this same
+// container by _renderScreenSaverWidgets, never onto `el` directly, so
+// that function can fully own everything inside it.
+const widgetsLayer = document.createElement("div");
+widgetsLayer.className = "screensaver-widgets";
+Object.assign(widgetsLayer.style, {
+position: "absolute",
+top: "0",
+left: "0",
+right: "0",
+bottom: "0",
+pointerEvents: "none",
+});
+el.appendChild(widgetsLayer);
 el.addEventListener("pointerdown", () => this._hideScreenSaver());
 document.body.appendChild(el);
 this._screenSaverOverlayEl = el;
 return el;
 }
+// True only for a Clock widget with fh_style: "digits" - see
+// _populateScreenSaverWidgetClockFields/_readScreenSaverWidgetClockFieldsIntoConfig
+// for how that gets written into the widget's own config from the widget
+// form. Everything else (weather, todo, any other card type, or a Clock
+// left on its normal "card" style) keeps going through the regular
+// helpers.createCardElement path in _renderScreenSaverWidgets below.
+_isScreenSaverDigitsClockConfig(config) {
+return !!(config && config.type === "clock" && config.fh_style === "digits");
+}
+// Formats "now" honoring whatever the real native Clock editor (or raw
+// YAML) wrote into this widget's own config - time_format ("12"/"24",
+// falling back to the signed-in user's own HA time-format preference the
+// same way the stock Clock card does when time_format is left unset),
+// show_seconds, and time_zone. Kept separate from element creation so the
+// per-tick update path (_tickScreenSaverDigitsClocks) can call it
+// directly without touching DOM structure.
+_formatScreenSaverDigitsClockTime(config) {
+let hour12;
+const fmt = config && config.time_format;
+if (fmt === "12") hour12 = true;
+else if (fmt === "24") hour12 = false;
+else hour12 = !(this._hass && this._hass.locale && this._hass.locale.time_format === "24");
+const options = { hour: "numeric", minute: "2-digit", hour12 };
+if (config && config.show_seconds) options.second = "2-digit";
+if (config && config.time_zone) options.timeZone = config.time_zone;
+const lang = (this._hass && this._hass.locale && this._hass.locale.language) || "en";
+try {
+return new Intl.DateTimeFormat(lang, options).format(new Date());
+} catch (e) {
+// An unrecognized time_zone/language throws rather than falling back
+// on its own - drop the offending options one at a time rather than
+// showing nothing.
+try {
+return new Intl.DateTimeFormat(lang, { hour: "numeric", minute: "2-digit", hour12 }).format(new Date());
+} catch (e2) {
+return new Date().toLocaleTimeString();
+}
+}
+}
+// Builds the bare "digits only" Clock element - no ha-card, no border,
+// no background, just the time text centered in its wrapper. Font size
+// and (if fh_adaptive_color is set) text color are both filled in by
+// _tickScreenSaverDigitsClocks right after mount and every second after
+// that, since both depend on the wrapper's actual on-screen size/
+// position, which isn't known until it's laid out.
+_createScreenSaverDigitsClockElement(config) {
+const el = document.createElement("div");
+el.className = "screensaver-digits-clock";
+Object.assign(el.style, {
+display: "flex",
+alignItems: "center",
+justifyContent: "center",
+width: "100%",
+height: "100%",
+fontWeight: "600",
+lineHeight: "1",
+color: "#fff",
+userSelect: "none",
+whiteSpace: "nowrap",
+});
+el.textContent = this._formatScreenSaverDigitsClockTime(config);
+return el;
+}
+// Adaptive light/dark contrast for a "digits" Clock widget with
+// fh_adaptive_color set - samples the screensaver's actual background
+// media (whichever of the video/camera-image elements
+// _ensureScreenSaverOverlay put up is currently the visible one) roughly
+// under this widget's own on-screen box, and reports whether it reads as
+// dark there (so the caller can flip to light digits) or light (dark
+// digits). This is a heuristic, not a pixel-exact match to what
+// object-fit: cover happens to crop - it treats the widget's x/y/w/h
+// percentages as if they mapped 1:1 onto the media's natural size, which
+// is close enough for a light-vs-dark call and cheap enough to re-run
+// every tick. Returns null (caller leaves the color as it was) on
+// anything unreadable yet (media not loaded) or on a tainted-canvas
+// failure - most likely a camera stream Home Assistant proxies
+// cross-origin without CORS headers.
+_sampleScreenSaverBackgroundIsDark(overlay, widget) {
+try {
+const video = overlay.querySelector(".screensaver-video");
+const img = overlay.querySelector(".screensaver-camera-image");
+const mediaEl =
+video && video.style.display !== "none" && video.readyState >= 2
+? video
+: img && img.style.display !== "none" && img.naturalWidth
+? img
+: null;
+if (!mediaEl) return null;
+const naturalW = mediaEl.videoWidth || mediaEl.naturalWidth || 0;
+const naturalH = mediaEl.videoHeight || mediaEl.naturalHeight || 0;
+if (!naturalW || !naturalH) return null;
+const sx = (widget.x / 100) * naturalW;
+const sy = (widget.y / 100) * naturalH;
+const sw = Math.max(1, (widget.w / 100) * naturalW);
+const sh = Math.max(1, (widget.h / 100) * naturalH);
+if (!this._screenSaverSampleCanvas) {
+this._screenSaverSampleCanvas = document.createElement("canvas");
+this._screenSaverSampleCanvas.width = 8;
+this._screenSaverSampleCanvas.height = 8;
+}
+const canvas = this._screenSaverSampleCanvas;
+const ctx = canvas.getContext("2d");
+ctx.drawImage(mediaEl, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+let total = 0;
+for (let i = 0; i < data.length; i += 4) {
+total += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+}
+const avg = total / (data.length / 4);
+return avg < 128;
+} catch (e) {
+return null;
+}
+}
+// Drives every "digits" Clock widget currently mounted - re-formats the
+// time, resizes the text to fill its wrapper (both dimensions, so it
+// never overflows a narrow or short box), and, for any with
+// fh_adaptive_color on, re-samples the background under it and flips its
+// color. One shared interval for all of them, started in _showScreenSaver
+// and stopped in _hideScreenSaver, rather than one timer per widget.
+_tickScreenSaverDigitsClocks() {
+const overlay = this._screenSaverOverlayEl;
+if (!overlay || !overlay.isConnected) return;
+const widgets = this._getSettings().screenSaverWidgets || [];
+const byId = {};
+widgets.forEach((w) => {
+byId[w.id] = w;
+});
+Object.keys(this._screenSaverWidgetEls || {}).forEach((id) => {
+const wrap = this._screenSaverWidgetEls[id];
+const digitsEl = wrap && wrap.querySelector(".screensaver-digits-clock");
+const widget = byId[id];
+if (!digitsEl || !widget) return;
+digitsEl.textContent = this._formatScreenSaverDigitsClockTime(widget.config);
+const h = wrap.clientHeight;
+const w = wrap.clientWidth;
+if (h && w) {
+const byHeight = h * 0.6;
+const byWidth = w / Math.max(1, digitsEl.textContent.length * 0.62);
+digitsEl.style.fontSize = `${Math.max(10, Math.min(byHeight, byWidth))}px`;
+}
+if (widget.config && widget.config.fh_adaptive_color) {
+const isDark = this._sampleScreenSaverBackgroundIsDark(overlay, widget);
+if (isDark !== null) digitsEl.style.color = isDark ? "#fff" : "#000";
+}
+});
+}
+// Mounts/updates the household's screensaver widget layout (weather,
+// clock, todo list, or any other Lovelace card - see the
+// screenSaverWidgets normalization in _normalizeSettings) onto the live
+// overlay's .screensaver-widgets layer, using Home Assistant's own public
+// loadCardHelpers()/createCardElement() API so any card type can be
+// hosted without this file knowing anything about what it renders. A
+// Clock widget with fh_style: "digits" is the one exception - it's
+// rendered by _createScreenSaverDigitsClockElement instead, bypassing
+// createCardElement entirely, since the whole point of that style is
+// having no stock card (and its ha-card chrome) at all. Widgets this
+// device has hidden locally (_getScreenSaverHiddenWidgetIds) are skipped
+// entirely. Re-entrant/idempotent: called every time the screensaver
+// shows (and whenever hass updates while it's showing) so a household
+// editing the layout from another device sees it reflected the next time
+// this device's screensaver wakes.
+async _renderScreenSaverWidgets(overlay) {
+const layer = overlay && overlay.querySelector(".screensaver-widgets");
+if (!layer) return;
+const widgets = (this._getSettings().screenSaverWidgets || []);
+const hiddenIds = this._getScreenSaverHiddenWidgetIds();
+const visible = widgets.filter((w) => !hiddenIds.includes(w.id));
+if (!visible.length) {
+layer.innerHTML = "";
+this._screenSaverWidgetEls = {};
+return;
+}
+// loadCardHelpers() is only needed for widgets NOT using the bare
+// digits-clock path below - a digits-only layout must still render even
+// in an environment where it's unavailable.
+const hasNonDigits = visible.some((w) => !this._isScreenSaverDigitsClockConfig(w.config));
+let helpers = null;
+if (hasNonDigits) {
+if (typeof window.loadCardHelpers !== "function") return;
+helpers = await window.loadCardHelpers();
+}
+const seenIds = {};
+this._screenSaverWidgetEls = this._screenSaverWidgetEls || {};
+for (const widget of visible) {
+seenIds[widget.id] = true;
+const isDigits = this._isScreenSaverDigitsClockConfig(widget.config);
+const wantedStyle = isDigits ? "digits" : "card";
+let wrap = this._screenSaverWidgetEls[widget.id];
+// A widget can flip between the digits style and a normal card (edited
+// elsewhere while the overlay stayed mounted, just hidden) - rebuild
+// its wrapper's contents when that happens rather than only updating
+// .hass on whatever's already there, which would leave stale DOM from
+// the wrong style behind.
+const needsRebuild = !wrap || !wrap.isConnected || wrap.dataset.screensaverWidgetStyle !== wantedStyle;
+if (needsRebuild) {
+if (wrap && wrap.parentNode) wrap.parentNode.removeChild(wrap);
+wrap = document.createElement("div");
+wrap.setAttribute("data-screensaver-widget-id", widget.id);
+wrap.dataset.screensaverWidgetStyle = wantedStyle;
+Object.assign(wrap.style, { position: "absolute", overflow: "hidden" });
+try {
+if (isDigits) {
+wrap.appendChild(this._createScreenSaverDigitsClockElement(widget.config));
+} else {
+const cardEl = helpers.createCardElement(widget.config);
+cardEl.hass = this._hass;
+// Household ask: "not fill screen, but fill the card that we can
+// resize on the screen saver" - the widget's own drag-resized box
+// (`wrap`) already gets whatever x/y/w/h% the user set; stock
+// Lovelace cards otherwise size themselves to their own intrinsic
+// content instead of stretching to fill that box, which is what
+// made e.g. a Clock widget look small/padded inside a bigger box.
+// Force the hosted card element itself to 100% of its wrapper so
+// its content stretches to fill whatever size the user picked.
+Object.assign(cardEl.style, { display: "block", width: "100%", height: "100%" });
+wrap.appendChild(cardEl);
+}
+} catch (e) {
+}
+layer.appendChild(wrap);
+this._screenSaverWidgetEls[widget.id] = wrap;
+} else if (!isDigits) {
+const cardEl = wrap.firstElementChild;
+if (cardEl) cardEl.hass = this._hass;
+}
+// A digits-clock's own text/font-size/color are refreshed every second
+// by _tickScreenSaverDigitsClocks, not here - this function only owns
+// mount/position/transparency.
+Object.assign(wrap.style, {
+left: `${widget.x}%`,
+top: `${widget.y}%`,
+width: `${widget.w}%`,
+height: `${widget.h}%`,
+});
+// "make this full size and no BG" ask - re-applied every pass (not
+// just on first mount) so toggling the checkbox on an already-live
+// widget takes effect the very next time this function runs, same as
+// every other per-widget style above. CSS custom properties cross a
+// shadow boundary even though normal styles don't, so setting these
+// on OUR wrapper reaches into whatever the hosted card's own ha-card
+// element reads them from, for any stock Lovelace card, without this
+// file needing to know that card's internal DOM at all.
+if (widget.transparent) {
+wrap.style.setProperty("--ha-card-background", "transparent");
+wrap.style.setProperty("--card-background-color", "transparent");
+wrap.style.setProperty("--ha-card-box-shadow", "none");
+wrap.style.background = "transparent";
+} else {
+wrap.style.removeProperty("--ha-card-background");
+wrap.style.removeProperty("--card-background-color");
+wrap.style.removeProperty("--ha-card-box-shadow");
+wrap.style.background = "";
+}
+}
+Object.keys(this._screenSaverWidgetEls).forEach((id) => {
+if (!seenIds[id]) {
+const wrap = this._screenSaverWidgetEls[id];
+if (wrap && wrap.parentNode) wrap.parentNode.removeChild(wrap);
+delete this._screenSaverWidgetEls[id];
+}
+});
+}
 _showScreenSaver() {
 if (!this._screenSaverApplicable()) return;
 const overlay = this._ensureScreenSaverOverlay();
 const ss = this._getSettings().screenSaver;
+this._renderScreenSaverWidgets(overlay);
 const videoEl = overlay.querySelector(".screensaver-video");
 const imgEl = overlay.querySelector(".screensaver-camera-image");
 if (ss.sourceType === "camera") {
@@ -9890,6 +16324,13 @@ if (playResult && typeof playResult.catch === "function") playResult.catch(() =>
 }
 }
 overlay.style.display = "flex";
+// Drives any "digits" Clock widget(s) - see _tickScreenSaverDigitsClocks.
+// Ticks once immediately (so sizing/color are correct before the first
+// second-boundary) and then every second after that.
+this._tickScreenSaverDigitsClocks();
+if (!this._screenSaverDigitsClockInterval) {
+this._screenSaverDigitsClockInterval = setInterval(() => this._tickScreenSaverDigitsClocks(), 1000);
+}
 }
 _hideScreenSaver() {
 const overlay = this._screenSaverOverlayEl;
@@ -9901,7 +16342,119 @@ if (this._screenSaverCameraInterval) {
 clearInterval(this._screenSaverCameraInterval);
 this._screenSaverCameraInterval = null;
 }
+if (this._screenSaverDigitsClockInterval) {
+clearInterval(this._screenSaverDigitsClockInterval);
+this._screenSaverDigitsClockInterval = null;
+}
 this._resetScreenSaverIdleTimer();
+this._goToReturnDashboard();
+}
+// Ported straight
+// from family-screensaver-card.js's own _goToReturnDashboard (same
+// method name, same mechanism) - the only difference is where the path
+// comes from: that card reads it off its own per-instance yaml config
+// (return_dashboard_path), this one reads screenSaver.returnDashboardPath
+// off the shared Settings blob, since the built-in screensaver here is a
+// single household-wide feature, not something placed as its own card
+// per dashboard. Same client-side navigation as the full card's own
+// dashboard-jump buttons (e.g. Family Today's _goToCalendar) - pushState
+// plus a "location-changed" event lets Home Assistant's own router swap
+// views instantly rather than a full page reload. A blank path (the
+// default) is a no-op, so upgrading changes nothing until a household
+// actually sets one.
+_goToReturnDashboard() {
+const ss = this._getSettings().screenSaver;
+const path = this._normalizeDashboardPath((ss && ss.returnDashboardPath) || "");
+if (!path) return;
+this._navigateWithFallback(path);
+}
+// v1.132.36 walked this back again - see that version's own
+// comment on _navigateWithFallback for the full story. Short version: a
+// brief v1.132.35 attempt replaced this with an unconditional hard
+// navigation (window.location.assign every time), reasoning that a
+// self-verifying soft route is fundamentally undiagnosable from JS. That
+// reasoning was correct as far as it went, but the household's own
+// direct feedback after trying it ("you borked the screen saver card it
+// now goes to the page but it refreshes home assistant in the process
+// and is very jaring it used to be very very smooth") made clear the
+// soft route DOES normally work fine and is worth keeping as the primary
+// path - the actual outstanding bug (see below) was never about this
+// mechanism being unreliable in general, it was that an entirely
+// separate, undocumented THIRD copy of the screensaver (the
+// window.__familyHubScreenSaver singleton shared by the Chores/Rewards/
+// My Chores cards) never had any return-dashboard navigation at all.
+// _navigateWithFallback (soft pushState+event first, verified, hard
+// navigation only as a last resort) is the shared, smooth-by-default
+// mechanism every Family Hub screensaver now uses - see this file's,
+// family-screensaver-card.js's, and the shared singleton's own copies,
+// which are kept in sync on purpose.
+_navigateWithFallback(path) {
+const before = window.location.href;
+// v1.132.61 first "fixed" this by having
+// _goToReturnDashboard skip calling this method AT ALL when path was
+// already the current page - but that also skipped the hard-navigate
+// fallback below for a page that's stuck (a genuinely thrown pushState,
+// e.g. a kiosk WebView sandbox/origin quirk), even though that failure
+// has nothing to do with the destination happening to match the current
+// page. Fixed properly here instead: still attempt the soft navigation
+// unconditionally (so a real pushState failure is still caught below),
+// but only skip the AMBIGUOUS "did href change?" fallback check when
+// nothing needed to change in the first place AND pushState didn't
+// throw - that's the one case _navigateWithFallback's own before/after
+// comparison can never tell apart from "the soft nav silently failed"
+// (both look like "href unchanged"), so this is the only case worth
+// treating specially.
+const alreadyThere = path === before || path === window.location.pathname + window.location.search;
+let threw = false;
+try {
+window.history.pushState(null, "", path);
+window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
+} catch (e) {
+// A thrown pushState (e.g. a kiosk WebView's own sandbox/origin
+// quirks) must never abort silently - fall through to the setTimeout
+// below, which will see window.location unchanged and hard-navigate.
+threw = true;
+}
+if (alreadyThere && !threw) return;
+setTimeout(() => {
+if (window.location.href === before) this._hardNavigate(path);
+}, 300);
+}
+_hardNavigate(path) {
+window.location.assign(path);
+}
+// Root cause: this field is a plain free-typed text input (unlike the
+// standalone Screen Saver card's own return_dashboard_path, which uses
+// Home Assistant's built-in navigation PICKER - see getConfigForm in
+// family-screensaver-card.js - so it can only ever produce a real,
+// already-slash-prefixed path). Nothing here validated or normalized
+// what got typed, so a household that typed "dashboard-tablet/family-
+// calendar" (no leading "/") got exactly that string handed straight to
+// `history.pushState(null, "", path)`. Without a leading slash,
+// pushState resolves it as RELATIVE to whatever page happens to be
+// showing at that exact moment (e.g. producing something like
+// "/lovelace-family/dashboard-tablet/family-calendar" instead of
+// "/dashboard-tablet/family-calendar") - a URL Home Assistant's router
+// has no matching panel for, so the "location-changed" dispatch is a
+// silent no-op from the household's point of view: the screensaver still
+// visibly dismisses (that part never depended on the path), but wake
+// never actually lands anywhere different.
+// Fixed by normalizing at every boundary this value crosses - both READS
+// (_normalizeSettings, so an already-broken value already sitting in a
+// household's saved settings self-heals the very next time Settings are
+// fetched, with no need to open Settings or retype anything) and the
+// SAVE path (_saveSettings, so retyping or resaving never re-introduces
+// the same bug) - plus here, at the actual point of use, as a last line
+// of defense against any value that reached the store some other way
+// (a direct family_hub/set_settings call, an older backup restore, etc).
+// A bare relative string like "dashboard-tablet/family-calendar" gets a
+// leading "/" added; an absolute http(s):// URL or an already-"/"-
+// prefixed path is left exactly as typed.
+_normalizeDashboardPath(raw) {
+const trimmed = typeof raw === "string" ? raw.trim() : "";
+if (!trimmed) return "";
+if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith("/")) return trimmed;
+return "/" + trimmed;
 }
 // Camera "streaming" here is the same lightweight approach Lovelace's own
 // picture-entity card uses under the hood - polling the camera's
@@ -10027,7 +16580,7 @@ this._renderCountdownItemsList();
 });
 });
 }
-// v1.110.3+ - auto-provision native timer.* helpers. See const.py's
+// auto-provision native timer.* helpers. See const.py's
 // TIMER_FAMILY_POOL_SIZE / TIMER_HELPER_NAME_PREFIX comment block for the
 // full research trail on why this lives here rather than in Python: the
 // `timer` domain is a storage-collection helper (like input_boolean/
@@ -10141,6 +16694,7 @@ async _createTimerHelper(name) {
 async _saveSettings() {
 const root = this._root;
 this._syncPeopleDraftFromDom();
+this._syncHolidayBackgroundsDraftFromDom();
 const people = this._settingsPeopleDraft
 .filter((p) => p.entity)
 .map((p) => ({
@@ -10153,6 +16707,7 @@ badges: (Array.isArray(p.badges) ? p.badges : [])
 text: (b.text || "").trim(),
 match: (b.match || "").trim(),
 hideMatch: (b.hideMatch || "").trim(),
+digestHide: !!b.digestHide,
 }))
 .filter((b) => b.text || b.match || b.hideMatch),
 remindersEntity: (p.remindersEntity || "").trim(),
@@ -10166,7 +16721,7 @@ const userProfiles = this._settingsUserProfilesDraft || {};
 // Users tab's Add/Remove controls, carried through unchanged here exactly
 // like userProfiles above.
 const memberUserIds = Array.isArray(this._settingsMemberIdsDraft) ? this._settingsMemberIdsDraft.slice() : [];
-// v144+ task #29: which members have kiosk PIN login enabled - edited
+// which members have kiosk PIN login enabled - edited
 // live in _settingsKioskLoginUserIdsDraft by each person's own notify-
 // profile modal checkbox, carried through unchanged here exactly like
 // memberUserIds above. The PIN itself never goes through this payload.
@@ -10186,49 +16741,89 @@ const activeWeekendBreakfastBtn = root.querySelector(".weekend-breakfast-btn.act
 const weekendBreakfast = activeWeekendBreakfastBtn ? activeWeekendBreakfastBtn.dataset.value === "on" : false;
 const activeMealsInMonthBtn = root.querySelector(".meals-in-month-btn.active");
 const showMealsInMonth = activeMealsInMonthBtn ? activeMealsInMonthBtn.dataset.value === "on" : false;
+// Must be included in settingsObj
+// below (family_hub/set_settings is a full replace, not a merge - see
+// _mealPlanEntity's own comment) or this field would be silently wiped on
+// the very next unrelated Settings save.
+const mealPlanEntityInputForSave = root.querySelector(".meal-plan-entity-input");
+const mealPlanEntity = mealPlanEntityInputForSave ? mealPlanEntityInputForSave.value.trim() : "";
+// mealTemplatesEntity has no Settings input of its own (auto-created/
+// managed entirely by _ensureHouseholdMealLists, never hand-typed) - pass
+// the current value straight through so an unrelated Settings save never
+// wipes it (same full-replace-not-merge reasoning as mealPlanEntity above).
+const mealTemplatesEntity = (this._getSettings().mealTemplatesEntity || "").trim();
+const weatherEntityInputForSave = root.querySelector(".weather-entity-input");
+const weatherEntity = weatherEntityInputForSave ? weatherEntityInputForSave.value.trim() : "";
 const activeGreyOutPastBtn = root.querySelector(".grey-out-past-btn.active");
 const greyOutPastEvents = activeGreyOutPastBtn ? activeGreyOutPastBtn.dataset.value === "on" : false;
-const activeFabPositionBtn = root.querySelector(".fab-position-btn.active");
-const fabPosition = activeFabPositionBtn && activeFabPositionBtn.dataset.value === "card" ? "card" : "dashboard";
-// v1.132.7+: this device only - see _getSmallScreenMode's own comment for
+// this device only - see _getSmallScreenMode's own comment for
 // why this is no longer part of settingsObj/family_hub/set_settings below
 // (that would apply it to every Family Hub device in the household again,
 // the exact bug being fixed).
-const smallScreenModeCheck = root.querySelector(".small-screen-mode-check");
-const smallScreenMode = !!(smallScreenModeCheck && smallScreenModeCheck.checked);
+const activeTopBarStyleBtn = root.querySelector(".top-bar-style-btn.active");
+const smallScreenMode = activeTopBarStyleBtn ? activeTopBarStyleBtn.dataset.value === "minimal" : false;
 try {
-localStorage.setItem("familyCalendarSmallScreenModeLocal", smallScreenMode ? "on" : "off");
+this._setScopedSettingItem("familyCalendarSmallScreenModeLocal", smallScreenMode ? "on" : "off");
 } catch (e) {
 }
 try {
-localStorage.setItem("familyCalendarShowTimelineLocal", showTimeline ? "on" : "off");
+this._setScopedSettingItem("familyCalendarShowTimelineLocal", showTimeline ? "on" : "off");
 } catch (e) {
 }
 const activeWeekVariantBtn = root.querySelector(".week-variant-btn.active");
 const weekViewVariant = activeWeekVariantBtn ? activeWeekVariantBtn.dataset.value : "week";
 try {
-localStorage.setItem("familyCalendarWeekViewVariantLocal", weekViewVariant);
+this._setScopedSettingItem("familyCalendarWeekViewVariantLocal", weekViewVariant);
 } catch (e) {
 }
 const activeMonthVariantBtn = root.querySelector(".month-variant-btn.active");
 const monthViewVariant = activeMonthVariantBtn ? activeMonthVariantBtn.dataset.value : "month";
 try {
-localStorage.setItem("familyCalendarMonthViewVariantLocal", monthViewVariant);
+this._setScopedSettingItem("familyCalendarMonthViewVariantLocal", monthViewVariant);
 } catch (e) {
 }
-// v1.110.5+: "Display X days for smaller displays" - same this-device-
-// only localStorage precedent as weekViewVariant/monthViewVariant just
-// above (not the shared/household settings blob), since how many day
-// columns fit comfortably is a property of the physical screen this
-// dashboard runs on, not something every household device should share.
-const activeWeekDayCountBtn = root.querySelector(".week-day-count-btn.active");
-const weekViewDayCount = activeWeekDayCountBtn ? activeWeekDayCountBtn.dataset.value : "7";
+// "Display X days for smaller displays", widened in v1.133.3+
+// to a free-entry 1-36 number input ) - same this-device-only localStorage precedent as
+// weekViewVariant/monthViewVariant just above (not the shared/household
+// settings blob), since how many day columns fit comfortably is a
+// property of the physical screen this dashboard runs on, not something
+// every household device should share.
+const weekDayCountInputEl = root.querySelector(".week-day-count-input");
+const weekDayCountRaw = weekDayCountInputEl ? parseInt(weekDayCountInputEl.value, 10) : NaN;
+const weekViewDayCount = String(Number.isInteger(weekDayCountRaw) && weekDayCountRaw >= 1 && weekDayCountRaw <= 36 ? weekDayCountRaw : 7);
 try {
-localStorage.setItem("familyCalendarWeekDayCountLocal", weekViewDayCount);
+this._setScopedSettingItem("familyCalendarWeekDayCountLocal", weekViewDayCount);
+} catch (e) {
+}
+// This-device-only, per the household's own choice when this was
+// clarified - see _getCurrentDayFirst's own comment.
+const activeCurrentDayFirstBtn = root.querySelector(".current-day-first-btn.active");
+const currentDayFirst = activeCurrentDayFirstBtn ? activeCurrentDayFirstBtn.dataset.value === "on" : false;
+try {
+this._setScopedSettingItem("familyCalendarCurrentDayFirstLocal", currentDayFirst ? "on" : "off");
+} catch (e) {
+}
+// This-device-only, same precedent as the day-count input just above.
+// Written to the NEW familyCalendarWeekRowsLocal key (not the old
+// familyCalendarPortraitRowsLocal one Portrait used before it merged
+// into Week) - see _getWeekRows' own comment for why the key had to
+// change rather than just reusing the old one. The field is always
+// populated with the correct already-migrated value before a household
+// ever gets here (see the Settings-populate code), so falling back to 1
+// (today's plain Week default) here only ever matters if the input was
+// somehow left blank/invalid.
+const weekRowsInputEl = root.querySelector(".week-rows-input");
+const weekRowsRaw = weekRowsInputEl ? parseInt(weekRowsInputEl.value, 10) : NaN;
+const weekRows = String(Number.isInteger(weekRowsRaw) && weekRowsRaw >= 1 && weekRowsRaw <= 7 ? weekRowsRaw : 1);
+try {
+this._setScopedSettingItem("familyCalendarWeekRowsLocal", weekRows);
 } catch (e) {
 }
 const activeScrollLockBtn = root.querySelector(".scroll-lock-btn.active");
 const scrollLocked = activeScrollLockBtn ? activeScrollLockBtn.dataset.value === "on" : false;
+const bottomPaddingInputEl = root.querySelector(".bottom-padding-input");
+const bottomPaddingRaw = bottomPaddingInputEl ? parseInt(bottomPaddingInputEl.value, 10) : NaN;
+const bottomPadding = Number.isFinite(bottomPaddingRaw) ? Math.max(0, Math.min(2000, bottomPaddingRaw)) : 0;
 const activeDefaultViewBtn = root.querySelector(".default-view-btn.active");
 const defaultView = activeDefaultViewBtn ? activeDefaultViewBtn.dataset.value : "week";
 const activeCountdownEnabledBtn = root.querySelector(".countdown-enabled-btn.active");
@@ -10250,12 +16845,12 @@ const activeGrocyLowStockBtn = root.querySelector(".grocy-low-stock-enabled-btn.
 const grocyLowStockEnabled = activeGrocyLowStockBtn ? activeGrocyLowStockBtn.dataset.value === "on" : false;
 const activeRoutinesEnabledBtn = root.querySelector(".routines-enabled-btn.active");
 const routinesEnabled = activeRoutinesEnabledBtn ? activeRoutinesEnabledBtn.dataset.value === "on" : false;
-const activeGoalsInChoresBtn = root.querySelector(".goals-in-chores-btn.active");
-const goalsShowInChores = activeGoalsInChoresBtn ? activeGoalsInChoresBtn.dataset.value === "on" : false;
-const activeGoalsInRewardsBtn = root.querySelector(".goals-in-rewards-btn.active");
-const goalsShowInRewards = activeGoalsInRewardsBtn ? activeGoalsInRewardsBtn.dataset.value === "on" : false;
-const activeChoreDueTimeBtn = root.querySelector(".chore-due-time-btn.active");
-const choreDueShowTime = activeChoreDueTimeBtn ? activeChoreDueTimeBtn.dataset.value === "on" : false;
+const activeGoalsShowOnBtn = root.querySelector(".goals-show-on-btn.active");
+const goalsShowOnValue = activeGoalsShowOnBtn ? activeGoalsShowOnBtn.dataset.value : "none";
+const goalsShowInChores = goalsShowOnValue === "chores" || goalsShowOnValue === "both";
+const goalsShowInRewards = goalsShowOnValue === "rewards" || goalsShowOnValue === "both";
+const activeChoresConfettiBtn = root.querySelector(".chores-confetti-btn.active");
+const choresConfettiOnComplete = activeChoresConfettiBtn ? activeChoresConfettiBtn.dataset.value === "on" : false;
 const notifyClickPathInput = root.querySelector(".notify-click-path-input");
 const notificationClickPath = notifyClickPathInput ? notifyClickPathInput.value.trim() : "";
 const defaults = ["Breakfast", "Lunch", "Dinner"];
@@ -10312,6 +16907,14 @@ screenSaverUsersEnabled = Object.assign({}, this._getSettings().screenSaver.user
 }
 const activeScreenSaverRecipeDisableBtn = root.querySelector(".screensaver-recipe-disable-btn.active");
 const screenSaverDisableWhileRecipeOpen = activeScreenSaverRecipeDisableBtn ? activeScreenSaverRecipeDisableBtn.dataset.value === "on" : false;
+const screenSaverReturnDashboardInput = root.querySelector(".screensaver-return-dashboard-input");
+// normalized on save too (not just on read) - see
+// _normalizeDashboardPath's own comment - so retyping/resaving never
+// re-introduces the missing-leading-slash bug, and what's stored always
+// matches what _goToReturnDashboard will actually use.
+const screenSaverReturnDashboardPath = screenSaverReturnDashboardInput
+? this._normalizeDashboardPath(screenSaverReturnDashboardInput.value)
+: "";
 const screenSaver = {
 sourceType: screenSaverSourceType,
 videoUrl: screenSaverVideoUrl,
@@ -10319,11 +16922,33 @@ cameraEntity: screenSaverCameraEntity,
 idleSeconds: screenSaverIdleSeconds,
 usersEnabled: screenSaverUsersEnabled,
 disableWhileRecipeOpen: screenSaverDisableWhileRecipeOpen,
+returnDashboardPath: screenSaverReturnDashboardPath,
 };
 const settingsObj = {
 blocks,
 blockSize,
 showTimeline,
+// A mirror of every Week/Month view/layout field's CURRENT value
+// (whatever this device/instance just saved above) - kept up to date on
+// EVERY save regardless of whether THIS card placement's own static-mode
+// config option is on, same always-read-and-resend precedent showTimeline
+// already set (see _defaultSettings' own comment). Only actually
+// consulted by a placement whose own config has staticLayoutAcrossDevices
+// set (see _getStaticLayoutAcrossDevices and setConfig's own comment on
+// it) - the toggle itself is no longer part of this shared blob at all,
+// since it's a per-card-config option now (see getConfigElement below).
+weekViewVariantShared: weekViewVariant,
+monthViewVariantShared: monthViewVariant,
+weekDayCountShared: parseInt(weekViewDayCount, 10),
+weekRowsShared: parseInt(weekRows, 10),
+currentDayFirstShared: currentDayFirst,
+// smallScreenMode is the one exception - it stays OUT of settingsObj
+// (same as before this feature) unless THIS card placement's own static-
+// mode config is actually on, since including it unconditionally again
+// would resurrect the exact v1.132.5 bug _getSmallScreenMode's own
+// comment documents fixing (turning it on on one tablet turning it on on
+// every device) for every household that leaves static mode off.
+...(this._getStaticLayoutAcrossDevices() ? { smallScreenMode } : {}),
 timelineStartHour,
 timelineEndHour,
 defaultView,
@@ -10337,14 +16962,16 @@ grocyLowStockEnabled,
 routinesEnabled,
 goalsShowInChores,
 goalsShowInRewards,
-choreDueShowTime,
+choresConfettiOnComplete,
 notificationClickPath,
 people,
 weekendBreakfast,
 showMealsInMonth,
+mealPlanEntity,
+mealTemplatesEntity,
+weatherEntity,
 greyOutPastEvents,
-fabPosition,
-// v1.132.7+: smallScreenMode deliberately NOT included here any more -
+// smallScreenMode deliberately NOT included here any more -
 // see _getSmallScreenMode's own comment. It's this-device-only
 // (localStorage, already written above) now, not part of the shared
 // household settings blob every Family Hub device reads. The old field
@@ -10352,13 +16979,30 @@ fabPosition,
 // opened Settings since this update can still do its one-time carry-
 // forward migration from whatever was last saved there.
 scrollLocked,
+bottomPadding,
 theme,
 useGlobalTheme,
 globalThemeId,
 screenSaver,
+// Same "full replace, not a merge" read-and-resend requirement as
+// alarmDevices below - the household-wide screensaver widget layout, kept
+// as its own draft (see _openSettings) since it's edited in a nested
+// modal (_openScreenSaverWidgetsModal), not inline in this form.
+screenSaverWidgets: this._settingsScreenSaverWidgetsDraft || [],
 userProfiles,
 memberUserIds,
 kioskLoginEnabledUserIds,
+// household-level Alarm Devices registry/TTS pick - see
+// _renderAlarmDevicesSection and _ws_set_settings's own "full replace, not
+// a merge" docstring for why these two MUST be read-and-resent here or
+// they'd be silently dropped on every single Settings save.
+alarmDevices: this._settingsAlarmDevicesDraft || [],
+alarmTtsEntityId: this._settingsAlarmTtsEntityDraft || "",
+// Same "full replace, not a merge" read-and-resend requirement as
+// alarmDevices/screenSaverWidgets above - Holiday Backgrounds (Settings >
+// General > Holiday Backgrounds) is its own draft too (see _openSettings/
+// _renderHolidayBackgroundsSettings).
+holidayBackgrounds: this._settingsHolidayBackgroundsDraft || [],
 };
 const payload = JSON.stringify(settingsObj);
 const statusEl = root.querySelector(".settings-save-status");
@@ -10404,7 +17048,7 @@ statusEl.classList.add("is-error");
 }
 return;
 }
-// v1.110.3+ - "Creating a user should automatically create a timer helper
+// "Creating a user should automatically create a timer helper
 // for family hub... and there should be an additional 4 timer entities for
 // family". Best-effort and never blocks the save that already succeeded
 // above - see _ensureTimerHelpers's own docstring for the full design
@@ -10412,11 +17056,23 @@ return;
 // removed member's helper).
 this._ensureTimerHelpers(memberUserIds).catch(() => {});
 await this._fetchSettings();
+// Weather entity (Settings > General) may have just changed - re-fetch
+// right away rather than waiting for the next 60s poll (_startPolling/
+// _refreshAllData), same "reflect it immediately" reasoning as
+// _reportDeviceSettings below. _fetchWeather already has its own
+// try/catch, so a failure here can't break the rest of the save.
+this._fetchWeather();
 await this._syncDailyDigestConfig();
 await this._syncGrocyExpiringConfig();
 await this._syncGrocyLowStockConfig();
 await this._syncNotificationClickPath();
 }
+// Device Settings admin dashboard - this device's own General-
+// tab fields (day count, current-day-first, Week view rows, etc.) were
+// just possibly changed by this very save, so re-report them right away
+// rather than waiting for next session's _initFirstLoad - best-effort/
+// fire-and-forget, see the function's own docstring.
+this._reportDeviceSettings();
 if (statusEl) {
 statusEl.textContent = "";
 statusEl.classList.remove("is-error");
@@ -10430,14 +17086,28 @@ _renderDebug() {
 if (!this._root) return;
 const start = this._weekStart();
 const end = new Date(start);
-end.setDate(start.getDate() + 7);
+// Same fix as _fetchEvents's own "Query window" - this debug line
+// should describe the window that was actually fetched, not always
+// claim 7 days even for a 14-day (or other custom count) Week view.
+end.setDate(start.getDate() + (this._viewFamily(this._viewMode) === "week" ? this._weekViewDayCount() : 7));
 const lines = [];
 lines.push(`hass connected: ${!!this._hass}`);
 lines.push(`Logged in user: ${this._hass && this._hass.user ? this._hass.user.name + (this._hass.user.is_admin ? " (admin)" : " (non-admin)") : "unknown"}`);
 lines.push(`View mode: ${this._viewMode} ${this._viewFamily(this._viewMode) === "month" ? `(month offset ${this._monthOffset || 0})` : `(week offset ${this._weekOffset || 0})`}`);
 lines.push(`Query window: ${start.toISOString()} -> ${end.toISOString()}`);
 lines.push(`Browser local time now: ${new Date().toString()}`);
-lines.push(`Weather entity: ${this._config.weather_entity} (${Object.keys(this._forecast || {}).length} forecast days loaded)`);
+lines.push(`Weather entity: ${this._weatherEntity()} (${Object.keys(this._forecast || {}).length} forecast days loaded)`);
+// Added to help diagnose "the menu boxes aren't showing meals" reports -
+// _fetchMealPlan's own try/catch silently empties this._mealPlan on ANY
+// failure reading the Menu to-do list (a temporarily-unavailable entity
+// right after a Home Assistant restart, a mismatched entity id, a
+// websocket hiccup), with no console error at all - so from the outside
+// it looks identical to "the plan is just empty" with nothing to go on.
+// This line makes that distinguishable: which entity the card is
+// actually reading from right now (_mealPlanEntity() - Settings >
+// General > Menu Blocks overrides YAML when set), and how many distinct
+// days currently have at least one planned meal loaded from it.
+lines.push(`Menu entity: ${this._mealPlanEntity()} (${Object.keys(this._mealPlan || {}).length} day(s) with planned meals loaded, ${(this._recurringMeals || []).length} recurring, ${(this._leftoverMeals || []).length} leftover)`);
 lines.push(`Settings entity: ${this._config.settings_entity} (item uid: ${this._settingsItemUid || "none yet"})`);
 const settings = this._getSettings();
 lines.push(`Scroll locked: ${settings.scrollLocked}`);
@@ -10457,8 +17127,32 @@ lines.push(
 `Viewport: innerHeight=${window.innerHeight}, visualViewport.height=${vv ? Math.round(vv.height) : "n/a"}, host top=${Math.round(rect.top)}, host height=${Math.round(rect.height)}, host bottom=${Math.round(rect.bottom)}`
 );
 lines.push("");
+// Server-side feature inventory (version, chores/rewards/routines/goals,
+// device settings, permissions, settings history, etc.) - fetched once per
+// panel-open (see the settings-debug-btn click handler, the only place
+// this._debugServerInfo gets cleared) and cached here so repeated
+// _renderDebug calls while the panel stays open (this card's own render
+// loop re-renders it live, same as the per-person section below) don't
+// re-fetch on every tick.
+if (this._debugServerInfo) {
+lines.push(...this._formatServerDebugLines(this._debugServerInfo));
+} else if (this._debugServerInfoFailed) {
+lines.push("Family Hub version/feature info: unavailable (older backend, or Family Hub isn't set up as an integration yet - this panel still works for calendar-only diagnostics).");
+lines.push("");
+} else {
+lines.push("Family Hub version/feature info: loading…");
+lines.push("");
+this._fetchDebugInfo().then((info) => {
+if (info) {
+this._debugServerInfo = info;
+} else {
+this._debugServerInfoFailed = true;
+}
+this._renderDebug();
+});
+}
 for (const person of this._getPeople()) {
-const evs = this._events[person.entity] || [];
+const evs = this._privacyEventsFor(person.entity);
 const err = this._fetchErrors[person.entity];
 lines.push(`--- ${person.name} (${person.entity}) ---`);
 if (err) {
@@ -10476,6 +17170,149 @@ const content = this._root.querySelector(".debug-content");
 content.innerHTML = lines
 .map((l) => (l.startsWith("ERROR") ? `<div class="dbg-err">${l}</div>` : `<div>${l || "&nbsp;"}</div>`))
 .join("");
+// Plain-text copy kept alongside the rendered HTML above - this is what
+// the Copy/Export buttons actually send, so they export the exact same
+// content currently on screen (including the "loading..."/"unavailable"
+// placeholder lines if the server fetch hasn't resolved yet when someone
+// exports before it finishes).
+this._lastDebugText = lines.join("\n");
+}
+_formatServerDebugLines(info) {
+const lines = [];
+lines.push(`Family Hub version: ${info.family_hub_version}`);
+lines.push(`Home Assistant version: ${info.home_assistant_version}`);
+lines.push("");
+const members = info.members || { member_user_ids_count: 0, user_profiles: [] };
+lines.push(`Members: ${members.member_user_ids_count} in memberUserIds | ${members.user_profiles.length} userProfiles entries`);
+members.user_profiles.forEach((p) => {
+lines.push(
+`  • ${p.name || "(unnamed)"} (${p.user_id}) - chores: ${p.included_in_chores === false ? "excluded" : "included"}, kiosk login: ${p.kiosk_login_enabled ? "on" : "off"}`
+);
+});
+lines.push(`Permissions granted (non-admin): ${info.permissions_granted_count}`);
+lines.push("");
+const cf = info.chores_feature || {};
+lines.push(`Chores tracked: ${cf.chores_count} | Rewards catalog: ${cf.rewards_catalog_count} item(s) | balances tracked: ${cf.rewards_balances_count}`);
+lines.push(
+`Routines: ${cf.routines_enabled ? "enabled" : "disabled"} (${cf.routines_items_count} item(s)) | Goals: ${cf.goals_count} (in Chores: ${cf.goals_shown_in_chores ? "yes" : "no"}, in Rewards: ${cf.goals_shown_in_rewards ? "yes" : "no"}) | Timers running now: ${cf.timers_running}`
+);
+lines.push("");
+const pantry = info.pantry || {};
+lines.push(`Grocy: ${pantry.grocy_configured ? "configured" : "not configured"} | Pantry "Also Tracking" extras: ${pantry.pantry_extras_count}`);
+const ds = info.device_settings || {};
+lines.push(`Device Settings: ${ds.devices_known} known device(s), ${ds.presets_saved} saved preset(s)`);
+lines.push(`Privacy mode: ${info.privacy_mode_enabled ? "ON" : "off"}`);
+const sh = info.settings_history || {};
+lines.push(`Settings history: ${sh.snapshots_kept} snapshot(s) kept | newest: ${sh.newest_snapshot || "none yet"} | oldest: ${sh.oldest_snapshot || "none yet"}`);
+const rem = info.reminders || {};
+lines.push(`Reminders: ${rem.calendars_monitored} calendar(s) monitored, checked every ${rem.poll_minutes} min`);
+lines.push(`Daily Digest: ${info.daily_digest_enabled ? "enabled" : "disabled"}`);
+lines.push(`Event checklists active: ${info.event_checklists_count}`);
+lines.push("");
+return lines;
+}
+async _fetchDebugInfo() {
+if (!this._hass) return null;
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/get_debug_info" });
+return result && result.info && typeof result.info === "object" ? result.info : null;
+} catch (e) {
+// Family Hub not installed, or an older backend version without this
+// command yet - same resilience idiom as this file's other
+// sendMessagePromise calls (see _fetchReminderOverrides etc.). The
+// calendar-only half of this panel still works either way.
+return null;
+}
+}
+_copyDebugInfo() {
+const statusEl = this._root.querySelector(".debug-status");
+const text = this._lastDebugText || "";
+// Always logged too, same idiom as _copyRecipeImportDebugInfo - a
+// household without clipboard permissions granted (or on an older
+// webview) can still grab this from the browser's own devtools console.
+console.log("Family Hub debug info:", text);
+this._copyTextToClipboard(text)
+.then(() => {
+if (statusEl) {
+statusEl.textContent = "Copied to clipboard - paste it wherever you're sending it.";
+statusEl.classList.remove("is-error");
+}
+})
+.catch(() => {
+if (statusEl) {
+statusEl.textContent = "Couldn't copy automatically - the same debug info was logged to the browser console instead (right-click the page > Inspect > Console).";
+statusEl.classList.add("is-error");
+}
+});
+}
+_exportDebugInfo() {
+const statusEl = this._root.querySelector(".debug-status");
+const text = this._lastDebugText || "";
+const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+const filename = `family-hub-debug-${stamp}.txt`;
+try {
+this._downloadTextFile(filename, text);
+if (statusEl) {
+statusEl.textContent = `Saved ${filename} to your downloads.`;
+statusEl.classList.remove("is-error");
+}
+} catch (e) {
+console.log("Family Hub debug info:", text);
+if (statusEl) {
+statusEl.textContent = "Couldn't save a file here - the same debug info was logged to the browser console instead (right-click the page > Inspect > Console).";
+statusEl.classList.add("is-error");
+}
+}
+}
+_downloadTextFile(filename, text) {
+const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+const url = URL.createObjectURL(blob);
+const link = document.createElement("a");
+link.href = url;
+link.download = filename;
+document.body.appendChild(link);
+link.click();
+document.body.removeChild(link);
+// Freed on a short delay rather than immediately - some browsers (older
+// in-kiosk webviews especially) start the actual download
+// asynchronously after click(), and revoking the object URL too early
+// can abort it before the browser's finished reading from it.
+setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+async _backupSettingsNow() {
+// Manual counterpart to the hourly automatic Settings-history capture -
+// see _ws_backup_settings_now's own docstring in __init__.py. Always
+// saves a new snapshot (never skipped as "unchanged" the way the hourly
+// one can be), because pressing this button is itself a signal someone
+// wants a guaranteed restore point right now.
+const btn = this._root.querySelector(".settings-backup-now-btn");
+const statusEl = this._root.querySelector(".settings-backup-now-status");
+if (!this._hass) return;
+if (btn) btn.disabled = true;
+if (statusEl) {
+statusEl.textContent = "Backing up…";
+statusEl.classList.remove("is-error");
+}
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/backup_settings_now" });
+if (statusEl) {
+statusEl.textContent = "Backed up just now - find it under Settings > Devices & Services > Family Hub > Configure > Restore a backup.";
+statusEl.classList.remove("is-error");
+}
+// The Debug Info panel's own Settings History line (snapshot count /
+// newest timestamp) would otherwise keep showing stale pre-backup
+// numbers until that panel is closed and reopened - clear the cached
+// server info so its next open fetches fresh.
+this._debugServerInfo = null;
+this._debugServerInfoFailed = false;
+} catch (e) {
+if (statusEl) {
+statusEl.textContent = "Couldn't back up right now - try again in a moment, or use a full Home Assistant backup instead (Settings > System > Backups).";
+statusEl.classList.add("is-error");
+}
+} finally {
+if (btn) btn.disabled = false;
+}
 }
 _eventOverrideKey(detail) {
 const startTs = Math.floor(detail.start.getTime() / 1000);
@@ -10508,7 +17345,7 @@ if (this._eventInfoOpenId && !this._eventInfoRemindDirty) {
 this._renderEventInfoRemindSection(this._eventInfoOpenId);
 }
 }
-// v129+: multi-person events. Fetched proactively (see _refreshAllData,
+// multi-person events. Fetched proactively (see _refreshAllData,
 // unlike reminder overrides which only load when the popup itself opens)
 // since every render pass needs to know, for every event, who else it's
 // tagged for - see _eventPeopleEntities/_eventCollageStyle below.
@@ -10533,6 +17370,78 @@ this._eventPeopleOverrides = {};
 // cycle-of-slack tradeoff _fetchReminderOverrides already accepts below.
 if (this._eventInfoOpenId && !this._eventInfoPeopleDirty) {
 this._renderEventInfoPeopleSection(this._eventInfoOpenId);
+}
+}
+// attachable checklists ("baseball practice needs cleats, a
+// water bottle, a glove packed" - ). Fetched proactively (same
+// reasoning as _fetchEventPeopleOverrides just above, not lazily like
+// _fetchReminderOverrides) so the event-info popup can render its
+// checklist section the instant it opens, no extra round trip, and so a
+// future small "has a checklist" indicator on the event chip itself (not
+// added yet, but this makes it cheap to add later) would already have
+// the data in hand for every event on screen.
+async _fetchEventChecklists() {
+if (!this._hass) return;
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/get_event_checklists" });
+this._eventChecklists = (result && result.checklists && typeof result.checklists === "object") ? result.checklists : {};
+} catch (e) {
+// Family Hub not installed, or an older version without this command -
+// the checklist section just renders as "no checklist attached" for
+// everything, same graceful-fallback idiom as the other override
+// fetches above.
+this._eventChecklists = {};
+}
+if (this._eventInfoOpenId && !this._eventInfoChecklistDirty) {
+this._renderEventInfoChecklistSection(this._eventInfoOpenId);
+}
+}
+// The checklist store's key for an existing calendar event - identical
+// identity scheme to _eventOverrideKey (this event has no stable uid
+// across the REST/poller fetch paths, see _event_override_key's own
+// backend docstring), kept as a separate method rather than just calling
+// _eventOverrideKey directly so call sites read as "the checklist key"
+// rather than incidentally reusing an unrelated-looking helper.
+_checklistKeyForEvent(detail) {
+return this._eventOverrideKey(detail);
+}
+// The checklist store's key for a standalone reminder (a to-do item,
+// which DOES have a stable uid - see const.py's EVENT_CHECKLISTS_STORAGE_
+// KEY_PREFIX comment for why reminders don't need the composite-identity
+// trick events do). Mirrors the backend's own _checklist_target_key.
+_checklistKeyForReminder(todoEntity, itemUid) {
+return `reminder|${todoEntity}|${itemUid}`;
+}
+// Dispatches to whichever of the two key schemes above actually matches
+// what the backend stored - a standalone reminder's `detail` (see
+// _buildDayColumnHtml/_buildMonthSplitDetailHtml's own _eventDetails[...]
+// entries) carries isReminder/todoUid, an ordinary calendar event's
+// doesn't. The event-info popup's checklist section (_render
+// EventInfoChecklistSection/_saveEventInfoChecklistRecord) is the one
+// place both kinds of detail flow through the same code, so picking the
+// right key has to happen here rather than at either call site.
+_checklistKeyForDetail(detail) {
+return detail && detail.isReminder && detail.todoUid
+? this._checklistKeyForReminder(detail.calendarEntity, detail.todoUid)
+: this._checklistKeyForEvent(detail);
+}
+// Every todo.* entity in this Home Assistant instance, for the "use an
+// existing list" picker in the checklist section of the Add Event modal.
+// Cached on this._todoListCandidates once per Settings-open-equivalent
+// lifetime of the modal (cleared to null every time the modal is
+// (re)opened - see _openAddEvent) - same "ask again next time, not on
+// every keystroke" idea _fetchAlarmDeviceCandidates already uses for the
+// same reason (a todo.* entity added to Home Assistant since the modal
+// was last opened should show up without a full page reload).
+async _fetchTodoListCandidates() {
+if (this._todoListCandidates) return this._todoListCandidates;
+if (!this._hass || !this._hass.connection || !this._hass.connection.sendMessagePromise) return null;
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/checklist/list_todo_candidates" });
+this._todoListCandidates = (result && Array.isArray(result.todo_lists)) ? result.todo_lists : [];
+return this._todoListCandidates;
+} catch (e) {
+return null;
 }
 }
 // Every calendar entity actually involved in one event: the calendar it
@@ -10562,13 +17471,24 @@ return entities;
 // ever invoked once there's actually more than one color to show.
 _eventCollageStyle(entities, people, colorMap) {
 const colors = entities.map((e) => this._colorFor((people || this._getPeople()).find((p) => p.entity === e) || { entity: e }, colorMap)).filter(Boolean);
-if (colors.length <= 1) return `background:${colors[0] || "#c9c2b3"}`;
+// The event pill's own text color always follows whatever's actually
+// behind it (see _textColorFor) instead of the fixed dark text every
+// pill class used to hardcode - a household picking black (or any other
+// dark color) for someone gets readable white text instead of black-on-
+// black, and a light color keeps the original dark text. A multi-person
+// collage just goes off its first/most-prominent band's color rather
+// than averaging every band - close enough for a readable choice, and
+// far simpler than measuring contrast against a striped background.
+if (colors.length <= 1) {
+const solid = colors[0] || "#c9c2b3";
+return `background:${solid};color:${this._textColorFor(solid)}`;
+}
 const bandPx = 22;
 const total = colors.length * bandPx;
 const stops = colors
 .map((c, i) => `${c} ${i * bandPx}px ${(i + 1) * bandPx}px`)
 .join(", ");
-return `background:repeating-linear-gradient(135deg, ${stops}, ${colors[0]} ${total}px ${total + bandPx}px)`;
+return `background:repeating-linear-gradient(135deg, ${stops}, ${colors[0]} ${total}px ${total + bandPx}px);color:${this._textColorFor(colors[0])}`;
 }
 _renderEventInfoRemindSection(id) {
 const detail = this._eventDetails && this._eventDetails[id];
@@ -10586,6 +17506,10 @@ section.innerHTML = `<div class="event-info-remind-none">&#128276; This is a rem
 <input type="time" class="event-info-reminder-time" />
 </div>
 <label class="remind-check-opt event-info-reminder-rollover-label"><input type="checkbox" class="event-info-reminder-rollover" />&#128257; Roll over to next day if not completed</label>
+<div class="field rolldays-field event-info-reminder-rolldays-field">
+<div class="rolldays-hint">Applies only on these days (leave every day selected to roll over daily, same as before)</div>
+<div class="rolldays-btn-row event-info-reminder-rolldays">${this._rolldaysBtnsHtml(detail.rolloverDays)}</div>
+</div>
 <div class="event-info-reminder-actions">
 <button type="button" class="event-info-reminder-save-btn">&#128190; Save changes</button>
 <button type="button" class="event-info-reminder-done-btn">&#9989; Mark done</button>
@@ -10594,6 +17518,18 @@ section.innerHTML = `<div class="event-info-remind-none">&#128276; This is a rem
 section.querySelector(".event-info-reminder-date").value = this._dateKey(detail.start);
 section.querySelector(".event-info-reminder-time").value = fmtTimeInput(detail.start);
 section.querySelector(".event-info-reminder-rollover").checked = !!detail.rollover;
+// "Roll over to next day if not completed" restricted to specific
+// days (see _rolldaysBtnsHtml) - the day picker only shows once rollover
+// itself is checked, same show/hide relationship as the Add Reminder form.
+const rolldaysField = section.querySelector(".event-info-reminder-rolldays-field");
+if (rolldaysField) rolldaysField.style.display = detail.rollover ? "block" : "none";
+const rolloverCb = section.querySelector(".event-info-reminder-rollover");
+if (rolloverCb && rolldaysField) {
+rolloverCb.addEventListener("change", () => {
+rolldaysField.style.display = rolloverCb.checked ? "block" : "none";
+});
+}
+this._wireRolldaysToggle(section.querySelector(".event-info-reminder-rolldays"));
 const statusEl = section.querySelector(".event-info-remind-status");
 const saveBtn = section.querySelector(".event-info-reminder-save-btn");
 if (saveBtn) {
@@ -10602,6 +17538,7 @@ const dateVal = section.querySelector(".event-info-reminder-date").value;
 const timeVal = section.querySelector(".event-info-reminder-time").value;
 if (!dateVal || !timeVal) return;
 const rollover = section.querySelector(".event-info-reminder-rollover").checked;
+const rolloverDays = this._readRolldaysFromContainer(section.querySelector(".event-info-reminder-rolldays"));
 saveBtn.disabled = true;
 saveBtn.textContent = "Saving…";
 if (statusEl) statusEl.textContent = "";
@@ -10612,7 +17549,7 @@ await this._hass.callService(
 {
 item: detail.todoUid,
 due_datetime: `${dateVal}T${timeVal}:00`,
-description: this._buildReminderDescription(detail.description, rollover),
+description: this._buildReminderDescription(detail.description, rollover, rolloverDays),
 },
 // detail.calendarEntity is the specific list this reminder actually
 // lives on (the shared family list, or one of the individual lists) -
@@ -10662,7 +17599,7 @@ section.querySelectorAll(".event-info-remind-check").forEach((cb) => {
 cb.addEventListener("change", () => this._saveReminderOverride(id));
 });
 }
-// v129+: multi-person events - "who else is this event also for," tagged
+// multi-person events - "who else is this event also for," tagged
 // onto an event that already lives on exactly ONE calendar (detail.
 // calendarEntity), via the same override-store mechanism the reminder
 // section above uses. Every OTHER person on the roster gets a checkbox
@@ -10829,6 +17766,231 @@ statusEl.textContent = savedMinutes.length
 if (statusEl) statusEl.textContent = "Couldn't save - try again";
 }
 }
+// attachable checklists - the event-info popup's read/edit
+// half of the feature (see _saveAddEventChecklistIfAny for the create-
+// time half in the Add Event modal). Renders one of three states into
+// .event-info-checklist-content: nothing attached yet (a single "+ Add a
+// checklist" button), an "existing" pointer (its live items, fetched
+// fresh from the real todo.* entity every render - never cached, since
+// that list can be edited from anywhere, not just here), or a "custom"
+// list (its own Family-Hub-owned items, straight from this._eventChecklists).
+async _renderEventInfoChecklistSection(id) {
+const root = this._root;
+const content = root.querySelector(".event-info-checklist-content");
+const detail = this._eventDetails && this._eventDetails[id];
+if (!content || !detail) return;
+const key = this._checklistKeyForDetail(detail);
+const record = (this._eventChecklists || {})[key];
+if (!record) {
+content.innerHTML = `<button type="button" class="event-info-checklist-add-btn">&#10133; ${this._t("event_info.checklist_add", "Add a checklist")}</button>`;
+const btn = content.querySelector(".event-info-checklist-add-btn");
+if (btn) btn.addEventListener("click", () => this._openEventInfoChecklistBuilder(id));
+return;
+}
+if (record.mode === "existing") {
+content.innerHTML = `<div class="remind-hint">${this._t("event_info.checklist_loading", "Loading…")}</div>`;
+let items = null;
+try {
+  const result = await this._hass.connection.sendMessagePromise({
+    type: "call_service",
+    domain: "todo",
+    service: "get_items",
+    service_data: {},
+    target: { entity_id: record.entity_id },
+    return_response: true,
+  });
+  const forEntity = result && result.response && result.response[record.entity_id];
+  items = (forEntity && forEntity.items) || [];
+} catch (e) {
+  items = null;
+}
+// The popup may have moved on to a different event while this round
+// trip was in flight (or closed outright) - don't paint stale results
+// into whatever it's now showing.
+if (this._eventInfoOpenId !== id) return;
+if (items === null) {
+  content.innerHTML = `<div class="remind-hint">${this._t("event_info.checklist_load_failed", "Couldn't load this list right now.")}</div>`;
+  return;
+}
+const itemsHtml = items.length
+  ? items
+      .map(
+        (it) =>
+          `<div class="checklist-item-row"><input type="checkbox" class="checklist-item-check" data-uid="${it.uid}" ${it.status === "completed" ? "checked" : ""} /><span class="checklist-item-row-text${it.status === "completed" ? " done" : ""}">${it.summary}</span></div>`
+      )
+      .join("")
+  : `<div class="remind-hint">${this._t("event_info.checklist_no_items", "No items yet.")}</div>`;
+content.innerHTML =
+  itemsHtml +
+  `<div class="checklist-add-row"><input type="text" class="event-info-checklist-add-input" maxlength="200" placeholder="${this._t("event_info.checklist_add_placeholder", "Add an item")}" /><button type="button" class="btn-cancel event-info-checklist-add-item-btn">${this._t("common.add", "Add")}</button></div>` +
+  `<button type="button" class="event-info-checklist-unlink-btn">&#128279; ${this._t("event_info.checklist_unlink", "Unlink this list")}</button>`;
+content.querySelectorAll(".checklist-item-check").forEach((cb) => {
+  cb.addEventListener("change", async () => {
+    try {
+      await this._hass.callService(
+        "todo",
+        "update_item",
+        { item: cb.dataset.uid, status: cb.checked ? "completed" : "needs_action" },
+        { entity_id: record.entity_id }
+      );
+    } catch (e) {
+      /* best-effort - the checkbox just stays as the user left it */
+    }
+  });
+});
+this._wireEventInfoChecklistAddRow(content, async (text) => {
+  try {
+    await this._hass.callService("todo", "add_item", { item: text }, { entity_id: record.entity_id });
+  } catch (e) {
+    /* best-effort */
+  }
+  this._renderEventInfoChecklistSection(id);
+});
+const unlinkBtn = content.querySelector(".event-info-checklist-unlink-btn");
+if (unlinkBtn) unlinkBtn.addEventListener("click", () => this._saveEventInfoChecklistRecord(id, detail, null));
+return;
+}
+// "custom" mode - a one-off list Family Hub owns outright.
+const items = record.items || [];
+const itemsHtml = items.length
+? items
+    .map(
+      (it) =>
+        `<div class="checklist-item-row"><input type="checkbox" class="checklist-item-check" data-item-id="${it.id}" ${it.done ? "checked" : ""} /><span class="checklist-item-row-text${it.done ? " done" : ""}">${it.text}</span><button type="button" class="checklist-item-remove-btn" data-item-id="${it.id}" title="Remove">&#10005;</button></div>`
+    )
+    .join("")
+: `<div class="remind-hint">${this._t("event_info.checklist_no_items", "No items yet.")}</div>`;
+content.innerHTML =
+itemsHtml +
+`<div class="checklist-add-row"><input type="text" class="event-info-checklist-add-input" maxlength="200" placeholder="${this._t("event_info.checklist_add_placeholder", "Add an item")}" /><button type="button" class="btn-cancel event-info-checklist-add-item-btn">${this._t("common.add", "Add")}</button></div>` +
+`<button type="button" class="event-info-checklist-unlink-btn">&#128465; ${this._t("event_info.checklist_delete", "Delete checklist")}</button>`;
+content.querySelectorAll(".checklist-item-check").forEach((cb) => {
+cb.addEventListener("change", () => {
+  const newItems = items.map((it) => (it.id === cb.dataset.itemId ? { ...it, done: cb.checked } : it));
+  this._saveEventInfoChecklistRecord(id, detail, { mode: "custom", items: newItems });
+});
+});
+content.querySelectorAll(".checklist-item-remove-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+  const newItems = items.filter((it) => it.id !== btn.dataset.itemId);
+  this._saveEventInfoChecklistRecord(id, detail, newItems.length ? { mode: "custom", items: newItems } : null);
+});
+});
+this._wireEventInfoChecklistAddRow(content, (text) => {
+const newItems = items.concat([{ text, done: false }]);
+this._saveEventInfoChecklistRecord(id, detail, { mode: "custom", items: newItems });
+});
+const unlinkBtn = content.querySelector(".event-info-checklist-unlink-btn");
+if (unlinkBtn) unlinkBtn.addEventListener("click", () => this._saveEventInfoChecklistRecord(id, detail, null));
+}
+// Shared "type something, click Add (or press Enter)" wiring for the
+// checklist section's own add-item row, used by both the "existing" and
+// "custom" render branches above (only what onAdd DOES with the text
+// differs between them).
+_wireEventInfoChecklistAddRow(content, onAdd) {
+const addBtn = content.querySelector(".event-info-checklist-add-item-btn");
+const addInput = content.querySelector(".event-info-checklist-add-input");
+if (!addBtn || !addInput) return;
+const submit = () => {
+const text = (addInput.value || "").trim().slice(0, 200);
+if (!text) return;
+addInput.value = "";
+onAdd(text);
+};
+addBtn.addEventListener("click", submit);
+addInput.addEventListener("keydown", (e) => {
+if (e.key === "Enter") {
+  e.preventDefault();
+  submit();
+}
+});
+}
+// The very first "attach a checklist" step for an event that doesn't have
+// one yet - same custom-vs-existing choice as the Add Event modal's own
+// checklist section, just rendered inline in the popup instead of inside
+// a separate modal. Picking "existing" and a list attaches immediately
+// (there's nothing else to configure); picking "custom" just reveals an
+// add-item row - the checklist record itself isn't created server-side
+// until the first item is actually added (an empty "custom" checklist is
+// meaningless and the backend would just treat it as a detach anyway, see
+// _ws_set_event_checklist's own docstring).
+_openEventInfoChecklistBuilder(id) {
+const root = this._root;
+const content = root.querySelector(".event-info-checklist-content");
+const detail = this._eventDetails && this._eventDetails[id];
+if (!content || !detail) return;
+content.innerHTML = `
+<div class="checklist-mode-btn-row">
+<button type="button" class="size-btn event-info-checklist-builder-mode-btn active" data-value="custom">${this._t("add_event.checklist_mode_custom", "Just for this")}</button>
+<button type="button" class="size-btn event-info-checklist-builder-mode-btn" data-value="existing">${this._t("add_event.checklist_mode_existing", "Use an existing list")}</button>
+</div>
+<div class="field event-info-checklist-builder-existing-field" style="display:none">
+<select class="hour-select event-info-checklist-builder-existing-select"></select>
+</div>
+<div class="event-info-checklist-builder-custom-field">
+<div class="checklist-add-row"><input type="text" class="event-info-checklist-add-input" maxlength="200" placeholder="${this._t("event_info.checklist_add_placeholder", "Add an item")}" /><button type="button" class="btn-cancel event-info-checklist-add-item-btn">${this._t("common.add", "Add")}</button></div>
+</div>
+`;
+content.querySelectorAll(".event-info-checklist-builder-mode-btn").forEach((btn) => {
+btn.addEventListener("click", async () => {
+  content.querySelectorAll(".event-info-checklist-builder-mode-btn").forEach((b) => b.classList.toggle("active", b === btn));
+  const isExisting = btn.dataset.value === "existing";
+  content.querySelector(".event-info-checklist-builder-existing-field").style.display = isExisting ? "" : "none";
+  content.querySelector(".event-info-checklist-builder-custom-field").style.display = isExisting ? "none" : "";
+  if (isExisting) {
+    const select = content.querySelector(".event-info-checklist-builder-existing-select");
+    const candidates = await this._fetchTodoListCandidates();
+    if (select && candidates) {
+      select.innerHTML = candidates.length
+        ? candidates
+            .map((c) => `<option value="${c.entity_id}">${c.name}</option>`)
+            .join("")
+        : `<option value="">${this._t("add_event.checklist_no_todo_lists", "No to-do lists found")}</option>`;
+      if (candidates.length) {
+        this._saveEventInfoChecklistRecord(id, detail, { mode: "existing", entity_id: select.value });
+      }
+    }
+  }
+});
+});
+this._wireEventInfoChecklistAddRow(content, (text) => {
+this._saveEventInfoChecklistRecord(id, detail, { mode: "custom", items: [{ text, done: false }] });
+});
+}
+// Single save/detach path for every checklist mutation the popup makes -
+// upserts (or, with checklist=null, detaches) via the same family_hub/
+// set_event_checklist command the Add Event modal uses, updates the
+// local cache from the server's own echoed-back record (never trusts the
+// locally-built one, in case the backend normalized anything - e.g.
+// trimmed/truncated text or minted an item id), and re-renders. A round
+// trip that lands after the popup has moved to a different event is
+// simply not re-rendered (see the same guard in the "existing" branch
+// above) - the write itself already succeeded, only the paint is skipped.
+async _saveEventInfoChecklistRecord(id, detail, checklist) {
+const key = this._checklistKeyForDetail(detail);
+// A standalone reminder needs the (todo_entity, item_uid) identity
+// pair the backend's own _checklist_target_key expects for it - sending
+// calendar_entity/start/summary instead (this call's old, event-only
+// shape) silently created a SECOND, differently-keyed record that
+// nothing ever reads back, leaving the reminder looking like it had no
+// checklist at all even though one really was saved server-side.
+const targetParams = detail.isReminder && detail.todoUid
+? { todo_entity: detail.calendarEntity, item_uid: detail.todoUid }
+: { calendar_entity: detail.calendarEntity, start: Math.floor(detail.start.getTime() / 1000), summary: detail.summary };
+try {
+const result = await this._hass.connection.sendMessagePromise({
+  type: "family_hub/set_event_checklist",
+  ...targetParams,
+  checklist,
+});
+if (!this._eventChecklists) this._eventChecklists = {};
+if (result && result.checklist) this._eventChecklists[key] = result.checklist;
+else delete this._eventChecklists[key];
+} catch (e) {
+/* best-effort - the section just re-renders whatever it had before */
+}
+if (this._eventInfoOpenId === id) this._renderEventInfoChecklistSection(id);
+}
 _openEventInfo(id) {
 const detail = this._eventDetails && this._eventDetails[id];
 if (!detail) return;
@@ -10847,22 +18009,29 @@ whenText = sameDay
 }
 const rows = [];
 rows.push(
-`<div class="event-info-row"><div class="label">${detail.isReminder ? "Reminder" : "Calendar"}</div><span class="event-info-chip" style="background:${detail.color}">${detail.isReminder ? "&#128276; " : ""}${detail.personName}</span></div>`
+`<div class="event-info-row"><div class="label">${detail.isReminder ? this._t("event_info.reminder", "Reminder") : this._t("event_info.calendar", "Calendar")}</div><span class="event-info-chip" style="background:${detail.color};color:${this._textColorFor(detail.color)}">${detail.isReminder ? "&#128276; " : ""}${detail.personName}</span></div>`
 );
-rows.push(`<div class="event-info-row"><div class="label">When</div>${whenText}</div>`);
+rows.push(`<div class="event-info-row"><div class="label">${this._t("event_info.when", "When")}</div>${whenText}</div>`);
 if (detail.location) {
-rows.push(`<div class="event-info-row"><div class="label">Location</div>${detail.location}</div>`);
+rows.push(`<div class="event-info-row"><div class="label">${this._t("event_info.location", "Location")}</div>${detail.location}</div>`);
 }
-// v129+: multi-person events - tag other people onto an event that
+// multi-person events - tag other people onto an event that
 // already lives on ONE calendar (see _renderEventInfoPeopleSection).
 // Standalone reminders are a to-do item, not a calendar event on
 // anyone's own calendar, so there's no "also for" to tag.
 if (!detail.isReminder) {
-rows.push(`<div class="event-info-row event-info-people-row"><div class="label">Also for</div><div class="event-info-people-content"></div></div>`);
+rows.push(`<div class="event-info-row event-info-people-row"><div class="label">${this._t("event_info.also_for", "Also for")}</div><div class="event-info-people-content"></div></div>`);
 }
-rows.push(`<div class="event-info-row event-info-remind-row"><div class="label">Remind me</div><div class="event-info-remind-content"></div></div>`);
+rows.push(`<div class="event-info-row event-info-remind-row"><div class="label">${this._t("event_info.remind_me", "Remind me")}</div><div class="event-info-remind-content"></div></div>`);
+// attachable checklists - this popup opens for a standalone
+// to-do Reminder (Add Event modal's Reminder tab) too, same as an
+// ordinary event or a marker-based reminder, so the section works for
+// all three: _checklistKeyForDetail picks the calendar-event-shaped key
+// (_checklistKeyForEvent) or the reminder-shaped one (_checklistKeyForReminder,
+// keyed on the to-do item's own stable uid) depending on detail.isReminder.
+rows.push(`<div class="event-info-row event-info-checklist-row"><div class="label">${this._t("event_info.checklist", "Checklist")}</div><div class="event-info-checklist-content"></div></div>`);
 if (detail.description) {
-rows.push(`<div class="event-info-row"><div class="label">Details</div>${detail.description}</div>`);
+rows.push(`<div class="event-info-row"><div class="label">${this._t("event_info.details", "Details")}</div>${detail.description}</div>`);
 }
 const mealDateKey = this._dateKey(detail.start);
 const mealDayIndex = detail.start.getDay();
@@ -10874,7 +18043,7 @@ const useMealButtonsHtml = mealBlocks
 .map((blockName, blockIndex) => `<button type="button" class="event-info-use-meal-btn" data-block-index="${blockIndex}">${blockName}</button>`)
 .join("");
 rows.push(
-`<div class="event-info-row event-info-use-meal-row"><div class="label">Use as meal</div><div class="event-info-use-meal-buttons">${useMealButtonsHtml}</div></div>`
+`<div class="event-info-row event-info-use-meal-row"><div class="label">${this._t("event_info.use_as_meal", "Use as meal")}</div><div class="event-info-use-meal-buttons">${useMealButtonsHtml}</div></div>`
 );
 }
 const today0 = new Date();
@@ -10889,7 +18058,22 @@ const existingCountdownItem = (this._getSettings().countdownItems || []).find(
 (it) => it.label === detail.summary && it.date === dateKeyForCountdown
 );
 rows.push(
-`<div class="event-info-row event-info-countdown-row"><div class="label">Countdown</div><button type="button" class="event-info-countdown-btn${existingCountdownItem ? " done" : ""}" data-countdown-item-id="${existingCountdownItem ? existingCountdownItem.id : ""}">${existingCountdownItem ? "\u{1F5D1} Remove from countdown" : "⏳ Use as countdown"}</button></div>`
+`<div class="event-info-row event-info-countdown-row"><div class="label">${this._t("event_info.countdown", "Countdown")}</div><button type="button" class="event-info-countdown-btn${existingCountdownItem ? " done" : ""}" data-countdown-item-id="${existingCountdownItem ? existingCountdownItem.id : ""}">${existingCountdownItem ? `\u{1F5D1} ${this._t("event_info.countdown_remove", "Remove from countdown")}` : `⏳ ${this._t("event_info.countdown_use", "Use as countdown")}`}</button></div>`
+);
+}
+// No row at all without
+// can_delete_event (same "you don't even see the affordance" shape as
+// every other permission-gated destructive action in this codebase, e.g.
+// the chores card's Claim/Edit buttons) - whether the button then ends up
+// WORKING or greyed-out-with-a-popup is a separate question, resolved
+// async by _wireEventInfoDeleteButton just below since it needs a round
+// trip to know (see _getCalendarDeleteSupport). Reminders are Family-
+// Hub-owned to-do items, not calendar events - no delete-the-calendar-
+// event affordance for them here (they already have their own removal
+// path via the to-do list itself).
+if (!detail.isReminder && this._canDeleteEvent()) {
+rows.push(
+`<div class="event-info-row event-info-delete-row"><div class="label">${this._t("event_info.delete", "Delete")}</div><button type="button" class="event-info-delete-btn" disabled>${this._t("event_info.checking", "Checking…")}</button></div>`
 );
 }
 root.querySelector(".event-info-content").innerHTML = rows.join("");
@@ -10898,17 +18082,30 @@ this._eventInfoRemindDirty = false;
 this._renderEventInfoRemindSection(id);
 this._eventInfoPeopleDirty = false;
 if (!detail.isReminder) this._renderEventInfoPeopleSection(id);
+this._renderEventInfoChecklistSection(id);
+if (!detail.isReminder && this._canDeleteEvent()) this._wireEventInfoDeleteButton(id, detail);
 root.querySelectorAll(".event-info-use-meal-btn").forEach((btn) => {
 btn.addEventListener("click", async () => {
 const blockIndex = parseInt(btn.dataset.blockIndex, 10);
 const existing = this._getMealForDay(mealDateKey, detail.start, blockIndex);
 if (existing) {
-const blockName = mealBlocks[blockIndex] || `Block ${blockIndex + 1}`;
-const confirmed = window.confirm(`${blockName} already has "${existing.name}" planned. Replace it with "${detail.summary}"?`);
+const blockName = mealBlocks[blockIndex] || this._t("event_info.block_fallback", `Block ${blockIndex + 1}`, { n: String(blockIndex + 1) });
+const confirmed = window.confirm(
+this._t("event_info.replace_meal_confirm", `${blockName} already has "${existing.name}" planned. Replace it with "${detail.summary}"?`, {
+block: blockName,
+existing: existing.name,
+new: detail.summary,
+})
+);
 if (!confirmed) return;
 }
 btn.disabled = true;
-await this._upsertMealPlan(mealDateKey, blockIndex, detail.summary, "", "", detail.color);
+const ok = await this._upsertMealPlan(mealDateKey, blockIndex, detail.summary, "", "", detail.color);
+if (!ok) {
+this._showToast(`⚠️ Couldn't use as meal - no Menu to-do list is linked. Set one in Settings → Menu Blocks.`, true);
+btn.disabled = false;
+return;
+}
 root.querySelectorAll(".event-info-use-meal-btn").forEach((b) => b.classList.remove("done"));
 btn.classList.add("done");
 btn.disabled = false;
@@ -10921,12 +18118,12 @@ countdownBtn.disabled = true;
 const currentId = countdownBtn.dataset.countdownItemId;
 if (currentId) {
 await this._removeCountdownItem(currentId);
-countdownBtn.textContent = "⏳ Use as countdown";
+countdownBtn.textContent = `⏳ ${this._t("event_info.countdown_use", "Use as countdown")}`;
 countdownBtn.classList.remove("done");
 countdownBtn.dataset.countdownItemId = "";
 } else {
 const newId = await this._addCountdownItem(detail.summary, this._dateKey(detail.start));
-countdownBtn.textContent = "\u{1F5D1} Remove from countdown";
+countdownBtn.textContent = `\u{1F5D1} ${this._t("event_info.countdown_remove", "Remove from countdown")}`;
 countdownBtn.classList.add("done");
 countdownBtn.dataset.countdownItemId = newId || "";
 }
@@ -10939,6 +18136,68 @@ this._openModal(root.querySelector(".event-info-overlay"));
 // blocked on the round trip.
 this._fetchReminderOverrides();
 this._fetchEventPeopleOverrides();
+}
+// _openEventInfo already drew the button in a disabled
+// "Checking…" state (synchronously, so the popup never flashes with no
+// Delete row at all for someone who has the permission) - this resolves
+// _getCalendarDeleteSupport (cached per calendar entity) and turns it
+// into either a working Delete button or a greyed-out one whose click
+// just explains why, per the household's own wording.
+async _wireEventInfoDeleteButton(id, detail) {
+const support = await this._getCalendarDeleteSupport(detail.calendarEntity);
+// The household may have closed this popup (or opened a different
+// event) while that round trip was in flight - never resurrect a stale
+// button onto whatever's showing now.
+if (this._eventInfoOpenId !== id) return;
+const btn = this._root.querySelector(".event-info-delete-btn");
+if (!btn) return;
+const canActuallyDelete = support.supported && !!detail.uid;
+btn.disabled = false;
+if (!canActuallyDelete) {
+btn.classList.add("unsupported");
+btn.textContent = `\u{1F5D1} ${this._t("event_info.delete_unsupported_btn", "Delete (unsupported)")}`;
+btn.title = this._t("event_info.delete_unsupported_title", "This calendar integration doesn't support deleting events from here.");
+btn.addEventListener("click", () => {
+window.alert(
+this._t(
+"event_info.delete_unsupported_alert",
+`Delete is not supported with your current calendar integration. Please use ${support.integrationName} to delete this event.`,
+{ integration: support.integrationName }
+)
+);
+});
+return;
+}
+btn.textContent = `\u{1F5D1} ${this._t("event_info.delete_event_btn", "Delete event")}`;
+btn.addEventListener("click", async () => {
+if (
+!window.confirm(
+this._t(
+"event_info.delete_confirm",
+`Delete "${detail.summary}"? This can't be undone here - it removes the event from ${detail.personName}'s calendar.`,
+{ summary: detail.summary, person: detail.personName }
+)
+)
+)
+return;
+btn.disabled = true;
+btn.textContent = this._t("event_info.deleting", "Deleting…");
+try {
+await this._hass.connection.sendMessagePromise({
+type: "family_hub/calendar/delete_event",
+entity_id: detail.calendarEntity,
+uid: detail.uid,
+});
+} catch (e) {
+window.alert((e && e.message) || this._t("event_info.delete_failed", "Couldn't delete this event."));
+btn.disabled = false;
+btn.textContent = `\u{1F5D1} ${this._t("event_info.delete_event_btn", "Delete event")}`;
+return;
+}
+this._root.querySelector(".event-info-overlay").classList.remove("open");
+this._eventInfoOpenId = null;
+await this._fetchEvents();
+});
 }
 _updateRatingButtons() {
 const heart = this._root.querySelector(".btn-heart");
@@ -11051,7 +18310,7 @@ this._openGrocyRecipeViewer(this._currentGrocyRecipeId, name, url, false, this._
 window.open(url, "_blank", "noopener");
 }
 }
-// v1.114.0+: a meal can already have more than one Grocy recipe tied to
+// a meal can already have more than one Grocy recipe tied to
 // it - the main recipe plus any "additional recipes" (sides, sauces,
 // desserts) that were themselves imported FROM Grocy rather than just
 // linked externally. Shared by every place that opens the Recipe Viewer
@@ -11090,7 +18349,7 @@ root.querySelector(".meal-edit-fields").style.display = showView ? "none" : "";
 // the moment Edit is tapped.
 const saveBtn = root.querySelector(".btn-save");
 if (saveBtn) saveBtn.style.display = showView ? "none" : "";
-// v1.109.6+: this just handed .btn-save's display back unconditionally -
+// this just handed .btn-save's display back unconditionally -
 // re-apply the can_edit_menu gate on top so tapping the pencil Edit
 // button can't surface a Save button for someone who can only suggest.
 this._applyMenuEditPermissionUi();
@@ -11110,7 +18369,7 @@ const existing = this._editingExistingMeal;
 const recipe = this._currentMenuRecipeDetail;
 const titleEl = root.querySelector(".meal-view-title");
 if (titleEl) titleEl.textContent = (existing && existing.name) || "";
-// v141+ - this view card previously showed prep/cook/serves facts and a
+// this view card previously showed prep/cook/serves facts and a
 // recipe link, but never the meal's own description/notes at all - the
 // only way to see what was actually typed there was to tap Edit first.
 // Same "hide the row when there's nothing to show" pattern every other
@@ -11121,7 +18380,7 @@ if (descEl) {
 descEl.textContent = description;
 descEl.style.display = description.trim() ? "" : "none";
 }
-// v142+ - "additional recipes" attached to this main recipe (sides,
+// "additional recipes" attached to this main recipe (sides,
 // sauces, desserts...) - shown read-only here as a plain comma list of
 // names, same "hide when empty" pattern as description/prep/cook/serves.
 // A name is only clickable when it has somewhere to go (a link or a
@@ -11176,7 +18435,7 @@ servesEl.style.display = "none";
 const hasLink = !!(existing && existing.link && existing.link.trim());
 root.querySelector(".meal-view-recipe-btn").style.display = hasLink ? "" : "none";
 }
-// v142+: renders the day/menu editor's "Additional recipes" list from
+// renders the day/menu editor's "Additional recipes" list from
 // this._editingAdditionalRecipes (pure scratch state - see its own
 // comment) - safe to call any time the editor's DOM exists, including
 // before it's ever been populated. Each row's name is clickable when the
@@ -11189,7 +18448,7 @@ const root = this._root;
 if (!root) return;
 const list = root.querySelector(".additional-recipes-list");
 if (!list) return;
-// v1.109.8+: any re-render of the list means the thing the inline
+// any re-render of the list means the thing the inline
 // add/edit form was pointed at may have moved (an entry removed, the
 // whole list replaced on editor open, a Recipe Box pick appended), so
 // close it rather than leave it editing a stale index. Every path that
@@ -11233,13 +18492,10 @@ this._renderAdditionalRecipesList();
 // "+ From a link" - a plain name + URL, for a side/dessert/sauce recipe
 // that isn't (and doesn't need to be) in the Recipe Box at all.
 //
-// v1.109.8+: this used to be TWO back-to-back blocking window.prompt()
+// this used to be TWO back-to-back blocking window.prompt()
 // calls ("Recipe name:", then "Recipe link (optional):") - browser-chrome
-// dialogs stacked on top of the meal editor, which is exactly the
-// popup-on-popup feel the household asked to get away from ("when you
-// select to add a recipe not from grocy it just gives you 2 boxes, name
-// and link and says save. trying to get away from the popup UI on this
-// item"). window.prompt is also genuinely unreliable where this card
+// dialogs stacked on top of the meal editor, an awkward popup-on-popup
+// feel this now avoids. window.prompt is also genuinely unreliable where this card
 // actually lives: several Android kiosk WebViews suppress it outright, so
 // the button could silently do nothing.
 //
@@ -11341,7 +18597,7 @@ const dayDate = new Date(start);
 dayDate.setDate(start.getDate() + dayIndex);
 this._openEditorForDate(dayDate, blockIndex);
 }
-// v144.10+: "leftovers should let you choose what days you have the
+// "leftovers should let you choose what days you have the
 // leftovers on" - replaces the old single "next N days" number input
 // with a checkbox per day, so any day(s) can be picked, not necessarily
 // a contiguous run starting the day after cooking. Builds checkboxes for
@@ -11369,7 +18625,7 @@ container.querySelectorAll(".leftover-day-check").forEach((cb) => {
 cb.addEventListener("change", () => this._updateLeftoversAccordionLabel());
 });
 }
-// v1.109.7+: "leftovers should be an accordion." The leftovers day-picker
+// "leftovers should be an accordion." The leftovers day-picker
 // is 13 checkboxes - by far the tallest single field in the meal editor -
 // and the overwhelming majority of meals have no leftovers at all, so it
 // now sits behind the same .accordion-toggle/.accordion-body pattern this
@@ -11419,7 +18675,7 @@ label.innerHTML = this._leftoversAccordionLabelHtml(this._readLeftoverDaysPicker
 _readLeftoverDaysPicker() {
 return Array.from(this._root.querySelectorAll(".leftover-day-check:checked")).map((cb) => cb.value);
 }
-// v1.109.6+: the meal editor's two faces. With can_edit_menu (or real HA
+// the meal editor's two faces. With can_edit_menu (or real HA
 // admin) it's exactly the editor it has always been. Without it, the
 // controls that WRITE to the meal plan - Save, Clear, Delete, Move to
 // another week, plus the repeat-weekly/leftovers options, which only make
@@ -11525,7 +18781,7 @@ root.querySelector(".modal-day-title").textContent = `Edit ${blockName} — ${da
 // _saveEditor uses to decide whether to ask "just this day, or every
 // future week?" instead of just overwriting.
 const existing = this._getMealForDay(dateKey, dayDate, this._editingBlockIndex);
-// v144.10+: "clicking a leftover card opens the original 'primary' card
+// "clicking a leftover card opens the original 'primary' card
 // to edit" - a leftovers PROJECTION (existing.leftover) has nothing of
 // its own here to edit; it's just showing the meal actually entered on
 // existing.sourceDateKey. Redirect straight to that day's editor instead
@@ -11543,13 +18799,14 @@ return;
 this._editingMealRecurring = !!(existing && existing.recurring);
 this._editingMealAnchorUid = existing ? existing.uid : null;
 this._editingExistingMeal = existing;
-// v142+: "additional recipes" - starts from whatever this slot's main
+// "additional recipes" - starts from whatever this slot's main
 // entry already has (cloned, not the live array, so removing one here
 // before Save/Cancel never mutates this._mealPlan directly), empty for
 // a brand-new/empty slot.
 this._editingAdditionalRecipes = existing && Array.isArray(existing.additionalRecipes) ? existing.additionalRecipes.map((r) => Object.assign({}, r)) : [];
 this._renderAdditionalRecipesList();
 root.querySelector(".input-name").value = existing ? existing.name : "";
+this._hideMealNameSuggestion();
 root.querySelector(".input-description").value = existing ? existing.description : "";
 root.querySelector(".input-link").value = existing ? existing.link : "";
 this._currentGrocyRecipeId = (existing && existing.grocyRecipeId) || null;
@@ -11563,7 +18820,7 @@ if (recurCheck) recurCheck.checked = !!(existing && existing.recur === "weekly")
 // the day-picker always describes the meal actually entered on this
 // exact date, seeded from whatever it already has picked.
 this._renderLeftoverDaysPicker(dayDate, existing ? existing.leftoverDates : []);
-// "Move to another week" (v141+) only makes sense for a meal that's
+// "Move to another week" only makes sense for a meal that's
 // actually stored on this exact date - not a "repeat weekly" or
 // leftovers PROJECTION (existing.recurring / existing.leftover), which
 // have nothing of their own here to relocate; moving those would need
@@ -11595,7 +18852,7 @@ this._editingMealIsSet = isSet;
 root.querySelector(".pick-btn-group").style.display = isSet ? "none" : "";
 this._renderMealViewCard();
 this._setMealEditorViewMode(isSet);
-// v1.109.6+: after every other field has been laid out, decide whether
+// after every other field has been laid out, decide whether
 // this person gets the real editor or the Suggest flow, and show whatever
 // anyone else has already proposed for this slot.
 this._renderMenuSuggestions();
@@ -11605,7 +18862,7 @@ this._openModal(root.querySelector(".edit-overlay"));
 _closeEditor() {
 this._root.querySelector(".edit-overlay").classList.remove("open");
 }
-// v1.110.5+: "adding a recipe to grocery, clicking add doesnt give you
+// "adding a recipe to grocery, clicking add doesnt give you
 // any feedback the modal stays open there is no confirmation, we should
 // close the modal and give a meal added successfully message." Checked
 // all three "add" flows in the meal-planning area: the recipe IMPORTER's
@@ -11621,7 +18878,12 @@ this._root.querySelector(".edit-overlay").classList.remove("open");
 // self-contained rather than a new dependency: auto-hides itself after a
 // couple seconds, and a second call while one is already showing just
 // restarts the clock with the new message rather than stacking multiple.
-_showToast(message) {
+// isError (default false) swaps in the red .fh-toast.is-error styling and
+// stays up noticeably longer (4.5s vs 2.2s) - an error like "no meal plan
+// to-do list is linked" needs to actually be read and acted on (go fix
+// Settings), not just glanced at the way a routine "added"/"updated"
+// confirmation is.
+_showToast(message, isError) {
 const root = this._root;
 if (!root) return;
 const el = root.querySelector(".fh-toast");
@@ -11629,6 +18891,7 @@ if (!el) return;
 if (this._toastHideTimer) clearTimeout(this._toastHideTimer);
 if (this._toastRemoveTimer) clearTimeout(this._toastRemoveTimer);
 el.textContent = message;
+el.classList.toggle("is-error", !!isError);
 el.hidden = false;
 // Force layout so the immediately-following class add reliably
 // transitions in, even on a toast that was just re-triggered mid-fade
@@ -11641,7 +18904,7 @@ el.classList.remove("show");
 this._toastRemoveTimer = setTimeout(() => {
 el.hidden = true;
 }, 250);
-}, 2200);
+}, isError ? 4500 : 2200);
 }
 _openDishEditor(recipe) {
 const root = this._root;
@@ -11656,6 +18919,7 @@ el.style.display = "";
 root.querySelector(".btn-delete-dish").style.display = recipe ? "" : "none";
 root.querySelector(".modal-day-title").textContent = recipe ? "Edit Recipe" : "Add Recipe";
 root.querySelector(".input-name").value = recipe ? recipe.name || "" : "";
+this._hideMealNameSuggestion();
 root.querySelector(".input-description").value = recipe ? recipe.description || "" : "";
 root.querySelector(".input-link").value = recipe ? recipe.link || "" : "";
 root.querySelector(".input-category").value = recipe ? recipe.category || "" : "";
@@ -11708,12 +18972,12 @@ this._openModal(root.querySelector(".edit-overlay"));
 // temporarily down): the Recipe Box entry is still removed either way,
 // since that's the part actually under this app's control, and a
 // leftover Grocy recipe can always be cleaned up from Grocy's own UI.
-_saveEditor() {
+async _saveEditor() {
 if (this._dishEditorMode) {
 this._saveDishEditor();
 return;
 }
-// v1.109.6+: belt-and-braces. _applyMenuEditPermissionUi already hides
+// belt-and-braces. _applyMenuEditPermissionUi already hides
 // Save for someone without can_edit_menu, so this should be unreachable
 // through the UI - but Save is also reachable from keyboard/Enter
 // handling and from _setMealEditorViewMode's own toggling, and silently
@@ -11748,6 +19012,12 @@ const servings = this._currentGrocyRecipeId && servingsRaw ? parseInt(servingsRa
 // path still needs to actively produce.
 const leftoverDates = this._readLeftoverDaysPicker();
 const wasLeftoverProjection = !!(this._editingExistingMeal && this._editingExistingMeal.leftover);
+// No-linked-to-do-list error message, shared by every branch below that
+// writes to the meal plan - see _upsertMealPlan/_upsertMealPlanByUid's
+// own comments for the bug this guards against (a false "added" toast
+// with nothing actually saved).
+const noListError = `⚠️ Couldn't save - no Menu to-do list is linked. Set one in Settings → Menu Blocks.`;
+let saveOk = true;
 if (name) {
 if (this._editingMealRecurring && this._editingMealAnchorUid) {
 // What's showing here is a projection of a "repeat weekly" meal set
@@ -11763,12 +19033,22 @@ const applyToAll = window.confirm(
 `Cancel - only change this one occurrence`
 );
 if (applyToAll) {
-this._upsertMealPlanByUid(this._editingMealAnchorUid, blockIndex, name, description, link, this._currentColor, recur, this._currentGrocyRecipeId, servings, this._editingAdditionalRecipes);
+saveOk = await this._upsertMealPlanByUid(this._editingMealAnchorUid, blockIndex, name, description, link, this._currentColor, recur, this._currentGrocyRecipeId, servings, this._editingAdditionalRecipes);
 } else {
-this._upsertMealPlan(dateKey, blockIndex, name, description, link, this._currentColor, null, this._currentGrocyRecipeId, servings, 1, this._editingAdditionalRecipes, leftoverDates);
+saveOk = await this._upsertMealPlan(dateKey, blockIndex, name, description, link, this._currentColor, null, this._currentGrocyRecipeId, servings, 1, this._editingAdditionalRecipes, leftoverDates);
 }
 } else {
-this._upsertMealPlan(dateKey, blockIndex, name, description, link, this._currentColor, recur, this._currentGrocyRecipeId, servings, 1, this._editingAdditionalRecipes, leftoverDates);
+saveOk = await this._upsertMealPlan(dateKey, blockIndex, name, description, link, this._currentColor, recur, this._currentGrocyRecipeId, servings, 1, this._editingAdditionalRecipes, leftoverDates);
+}
+if (!saveOk) {
+// Stop here on purpose - the editor stays open (its typed values
+// untouched) and the recipe is NOT mirrored into the Recipe Box below,
+// since this whole action is "add this to the menu", not "add this to
+// the menu AND separately save it to the Recipe Box" - a household
+// that fixes the missing to-do list and hits Save again gets a clean
+// single save, not a duplicate Recipe Box entry from the failed try.
+this._showToast(noListError, true);
+return;
 }
 this._upsertDish(name, description, link, this._currentRating, null, this._currentGrocyRecipeId);
 this._showToast(`\u{1F37D}\u{FE0F} "${name}" ${this._editingExistingMeal ? "updated" : "added"}`);
@@ -11777,13 +19057,21 @@ this._showToast(`\u{1F37D}\u{FE0F} "${name}" ${this._editingExistingMeal ? "upda
 // week" - an explicit "Skipped" entry for this date overrides the
 // projection without touching the recurring anchor, so it keeps
 // projecting normally onto every other week.
-this._upsertMealPlan(dateKey, blockIndex, "Skipped", "", "", this._currentColor, null);
+saveOk = await this._upsertMealPlan(dateKey, blockIndex, "Skipped", "", "", this._currentColor, null);
+if (!saveOk) {
+this._showToast(noListError, true);
+return;
+}
 } else if (wasLeftoverProjection) {
 // Same "skip just this one occurrence" idea, applied to a leftovers
 // projection instead of a weekly one - an explicit "Skipped" entry
 // overrides just this date without touching the leftovers source day,
 // which keeps covering every OTHER day in its own span normally.
-this._upsertMealPlan(dateKey, blockIndex, "Skipped", "", "", this._currentColor, null);
+saveOk = await this._upsertMealPlan(dateKey, blockIndex, "Skipped", "", "", this._currentColor, null);
+if (!saveOk) {
+this._showToast(noListError, true);
+return;
+}
 } else {
 this._removeMealPlan(dateKey, blockIndex);
 }
@@ -11861,6 +19149,7 @@ preview.style.display = "none";
 _selectLovedDish(recipe) {
 const root = this._root;
 root.querySelector(".input-name").value = recipe.name || "";
+this._hideMealNameSuggestion();
 root.querySelector(".input-description").value = recipe.description || "";
 root.querySelector(".input-link").value = recipe.link || "";
 this._currentGrocyRecipeId = recipe.grocyRecipeId || null;
@@ -11979,6 +19268,9 @@ const lowStockBtn = this._root.querySelector(".grocy-low-stock-btn");
 if (lowStockBtn) {
 lowStockBtn.style.display = this._getSettings().grocyLowStockEnabled ? "" : "none";
 }
+// Unlike Expiring Soon/Low Stock just above, the Daily Digest item is a
+// standard, always-present entry in this menu - no per-device setting
+// gates it any more (see _openDailyDigest).
 dropdown.classList.add("open");
 this._root.querySelector(".more-menu-btn").classList.add("active");
 this._root.querySelector(".more-menu-btn").setAttribute("aria-expanded", "true");
@@ -11990,6 +19282,27 @@ if (!dropdown) return;
 dropdown.classList.remove("open");
 this._root.querySelector(".more-menu-btn").classList.remove("active");
 this._root.querySelector(".more-menu-btn").setAttribute("aria-expanded", "false");
+}
+// Same open/close/outside-click pattern as _toggleMoreMenu/_closeMoreMenu
+// above - the Week/Month/Day switcher just has no opt-in sub-items to
+// show/hide on open, so there's nothing extra to do here.
+_toggleViewSelectMenu() {
+const dropdown = this._root.querySelector(".view-select-dropdown");
+if (!dropdown) return;
+if (dropdown.classList.contains("open")) {
+this._closeViewSelectMenu();
+} else {
+dropdown.classList.add("open");
+const btn = this._root.querySelector(".view-select-btn");
+if (btn) btn.setAttribute("aria-expanded", "true");
+}
+}
+_closeViewSelectMenu() {
+const dropdown = this._root.querySelector(".view-select-dropdown");
+if (!dropdown) return;
+dropdown.classList.remove("open");
+const btn = this._root.querySelector(".view-select-btn");
+if (btn) btn.setAttribute("aria-expanded", "false");
 }
 _closeAddMenu() {
 const overlay = this._root.querySelector(".add-menu-overlay");
@@ -12873,6 +20186,77 @@ statusEl.textContent = "Couldn't reach Grocy.";
 statusEl.classList.add("is-error");
 }
 }
+// Daily Digest modal -
+// Same open/render/close shape as _openGrocyExpiringSoon/
+// _renderGrocyExpiringSoon just above, fetching family_hub/get_daily_
+// digest fresh every time it's opened rather than caching anything - the
+// backend resolves "whose digest" from connection.user.id alone (see
+// _ws_get_daily_digest's own docstring), so this never sends or needs a
+// user id itself. Two entry points share it: the More-menu item (always
+// present, no per-device setting gates it any more), and the live
+// family_hub_daily_digest_open bus event (_subscribeDailyDigestOpen
+// below) fired by either this same user's own button entity being
+// pressed elsewhere, or by another open tab/device logged in as them.
+_openDailyDigest() {
+this._openModal(this._root.querySelector(".daily-digest-overlay"));
+this._renderDailyDigest();
+}
+_closeDailyDigest() {
+this._root.querySelector(".daily-digest-overlay").classList.remove("open");
+}
+async _renderDailyDigest() {
+const statusEl = this._root.querySelector(".daily-digest-status");
+const sectionsEl = this._root.querySelector(".daily-digest-sections");
+statusEl.classList.remove("is-error");
+sectionsEl.style.display = "none";
+sectionsEl.innerHTML = "";
+if (!this._hass) return;
+statusEl.textContent = this._t("daily_digest.loading", "Loading…");
+try {
+const result = await this._hass.connection.sendMessagePromise({
+type: "family_hub/get_daily_digest",
+});
+const sections = Array.isArray(result.sections) ? result.sections : [];
+if (!sections.length) {
+statusEl.textContent = this._t("daily_digest.empty", "Nothing on the calendar, no reminders due, and no meals planned for today.");
+return;
+}
+statusEl.textContent = "";
+sectionsEl.style.display = "flex";
+sectionsEl.innerHTML = sections
+.map((section) => {
+const items = Array.isArray(section.items) ? section.items : [];
+const itemsHtml = items.map((item) => `<div class="daily-digest-item-row">${item}</div>`).join("");
+if (section.flat) {
+return `<div class="daily-digest-section daily-digest-flat-section"><div class="daily-digest-section-items">${itemsHtml}</div></div>`;
+}
+const title = section.title || this._t(`daily_digest.section_${section.key}`, section.key);
+return `<div class="daily-digest-section"><div class="daily-digest-section-title">${title}</div><div class="daily-digest-section-items">${itemsHtml}</div></div>`;
+})
+.join("");
+} catch (e) {
+statusEl.textContent = this._t("daily_digest.error", "Couldn't load your Daily Digest.");
+statusEl.classList.add("is-error");
+}
+}
+// Live half of the "open my digest" broadcast - see const.py's
+// DAILY_DIGEST_EVENT_OPEN for the full design note on why this
+// deliberately has no pending/catch-up backstop (unlike
+// _subscribeDeviceSettingsPush) the way a missed device-settings push
+// would. Same subscribeEvents lifecycle guard as _subscribeAlarmEvents/
+// _subscribeDeviceSettingsPush.
+async _subscribeDailyDigestOpen() {
+if (this._dailyDigestOpenUnsub || !this._hass || !this._hass.connection) return;
+try {
+const unsub = await this._hass.connection.subscribeEvents((event) => {
+if (event.data && event.data.user_id === this._myUserId()) this._openDailyDigest();
+}, "family_hub_daily_digest_open");
+this._dailyDigestOpenUnsub = unsub;
+} catch (e) {
+// best-effort - see _reportDeviceSettings's own docstring for why a
+// failed subscribe is never fatal to the rest of the card.
+}
+}
 async _addMissingGrocyProductsToShoppingList() {
 if (!this._hass) return;
 const statusEl = this._root.querySelector(".grocy-low-stock-status");
@@ -13696,7 +21080,7 @@ ok = false;
 document.body.removeChild(textarea);
 if (!ok) throw new Error("copy command failed");
 }
-// A household reported a recipe with 10 ingredients only sending 4 or 5
+// A recipe with 10 ingredients could only send 4 or 5
 // to Grocy, with no way to tell why from the review screen alone (was
 // something unmatched? mismatched to the wrong product? never even
 // parsed as a separate line?). Rather than guess, this dumps the exact
@@ -13853,7 +21237,7 @@ unit_id: m.unit_id || null,
 // at all (see _ws_create_grocy_recipe's "skipped" list) - it's still
 // visible afterward in the raw Ingredients text (ingredientsHtml above),
 // but silently missing from Grocy's own ingredients list/stock math/
-// shopping-list pushes for that recipe. A household reported this as
+// shopping-list pushes for that recipe, easily read as
 // "not importing all the items" without realizing why - only warning
 // once (rather than after the fact, in a status message that then
 // closes the whole modal a moment later) actually gives them a chance to
@@ -13924,9 +21308,9 @@ this._fetchGrocyRecipes();
 // The importer is a one-shot "create this recipe" action, not a place
 // to linger like the Grocery List or Shopping List modals, so a clean
 // success (nothing skipped, no picture hiccup) auto-closes after a
-// brief delay. A household reported a recipe with several skipped
-// ingredients and no clear idea why - it turned out the "N need to be
-// added by hand: ..." summary (which, since v72, includes Grocy's own
+// brief delay. A recipe with several skipped
+// ingredients gave no clear idea why - it turned out the "N need to be
+// added by hand: ..." summary (which includes Grocy's own
 // reason for each one) was auto-closing after the same fixed 1.6s used
 // for a plain success, nowhere near long enough to actually read a list
 // of several ingredients each with its own error message. Anything
@@ -13946,7 +21330,7 @@ state.lastCreateResult = { success: false, error: "Couldn't reach Grocy." };
 // Meal Suggestion, or - the one surviving path - add a Recipe Box entry)
 // but the other two lost their only entry points: the day/dish editor's
 // own "From Grocy" button was folded into the Recipe Box's unified
-// picker mode (task #290), and the Suggestions box's "Add from Grocy"
+// picker mode (), and the Suggestions box's "Add from Grocy"
 // button was removed outright since the Recipe Box is now the only place
 // a suggestion gets created (search + 💡, or add + the "Also add to Meal
 // Suggestions" checkbox). Add straight into the Recipe Box's Store (same
@@ -14017,7 +21401,7 @@ this._selectGrocyRecipe(recipes[idx]);
 });
 });
 }
-// v1.118.0+: _openGrocyRecipeViewer and its whole supporting cast
+// _openGrocyRecipeViewer and its whole supporting cast
 // (_closeGrocyRecipeViewer/_fetchGrocyRecipeDetail(sBatch)/
 // _renderGrocyRecipeDetail/_renderGrocyRecipeDescription/
 // _renderGrocyRecipeIngredients/_adjustGrocyRecipeViewerServings/the
@@ -14083,7 +21467,13 @@ if (!t) return;
 if (!window.confirm(`Apply "${t.name}" to this week? This will overwrite any meals already planned on matching days.`)) return;
 btn.disabled = true;
 btn.textContent = "Applying…";
-await this._applyMealTemplate(t);
+const ok = await this._applyMealTemplate(t);
+if (!ok) {
+this._showToast(`⚠️ Couldn't apply "${t.name}" - no Menu to-do list is linked. Set one in Settings → Menu Blocks.`, true);
+btn.disabled = false;
+btn.textContent = "Apply to this week";
+return;
+}
 this._closeTemplates();
 });
 });
@@ -14093,13 +21483,44 @@ this._closeTemplates();
 // along with that modal - see _openSuggestedRecipes for where "viewing
 // suggestions" and "picking a suggested recipe for a meal" both live now
 // (the Recipe Box's own "💡 Suggested" filter and _selectLovedDish).
+// The only "highlighted/selected" day concept Month view
+// has is the split variant's _monthSplitSelectedDate (the classic Month
+// view has no persistent selection at all - clicking a day jumps straight
+// into that week instead, see the .grid click handler's own comment) - so
+// when that's set and split Month is the active view, the Add Event
+// modal's date fields default to it instead of today. Every other case
+// (Week view, classic Month view, or split Month with nothing selected
+// yet - e.g. right after switching into it) keeps the original
+// default-to-today behavior unchanged.
+//
+// Same idea, Week view's own selection field
+// (_weekSelectedDate, set by the .grid click handler's .day-header
+// branch) - checked via _viewFamily so it applies to every Week-family
+// variant (plain Week at any row count, the 3/5-day windows), not just
+// the literal "week" _viewMode split Month's own check is written
+// against.
+_addEventDefaultDate() {
+if (this._viewMode === "split" && this._monthSplitSelectedDate) {
+const d = new Date(`${this._monthSplitSelectedDate}T00:00:00`);
+if (!isNaN(d.getTime())) return d;
+}
+if (this._viewFamily(this._viewMode) === "week" && this._weekSelectedDate) {
+const d = new Date(`${this._weekSelectedDate}T00:00:00`);
+if (!isNaN(d.getTime())) return d;
+}
+// Day view has no separate day-selection concept the way Week has
+// _weekSelectedDate (there's only ever the one day on screen), so the
+// FAB just defaults to whichever day _dayAnchor() is currently showing.
+if (this._viewFamily(this._viewMode) === "day") return this._dayAnchor();
+return new Date();
+}
 _openAddEvent(tab) {
 const root = this._root;
 const select = root.querySelector(".add-event-calendar-select");
 select.innerHTML = this._getPeople()
 .map((p) => `<option value="${p.entity}">${p.name}</option>`)
 .join("");
-// v130+: which Reminders list a new reminder gets saved to - the shared
+// which Reminders list a new reminder gets saved to - the shared
 // family list plus this user's own individual list and anything they're
 // subscribed to (see _addableRemindersLists). Rebuilt fresh every open
 // since subscriptions can change between one Add Reminder and the next.
@@ -14114,17 +21535,21 @@ root.querySelector(".add-event-title").value = "";
 root.querySelector(".add-event-location").value = "";
 root.querySelector(".add-event-description").value = "";
 root.querySelector(".add-event-reminder-rollover").checked = false;
+const addEventRolldaysFieldReset = root.querySelector(".add-event-reminder-rolldays-field");
+if (addEventRolldaysFieldReset) addEventRolldaysFieldReset.style.display = "none";
+root.querySelectorAll(".add-event-reminder-rolldays .rolldays-btn").forEach((btn) => btn.classList.add("active"));
 // New events default to reminders at 10 and 30 minutes before.
 root.querySelectorAll(".remind-check").forEach((cb) => {
 cb.checked = cb.value === "10" || cb.value === "30";
 });
 const now = new Date();
-root.querySelector(".add-event-date").value = this._dateKey(now);
+const defaultDate = this._addEventDefaultDate();
+root.querySelector(".add-event-date").value = this._dateKey(defaultDate);
 // Blank by default - the same "one day, exactly as before this field
 // existed" behavior _saveAddEvent falls back to whenever it's left empty
 // (see its own comment there).
 root.querySelector(".add-event-end-date").value = "";
-root.querySelector(".add-event-reminder-date").value = this._dateKey(now);
+root.querySelector(".add-event-reminder-date").value = this._dateKey(defaultDate);
 const nextHour = new Date(now);
 nextHour.setMinutes(0, 0, 0);
 nextHour.setHours(nextHour.getHours() + 1);
@@ -14137,13 +21562,29 @@ root.querySelector(".add-event-reminder-time").value = fmtTimeInput(nextHour);
 root.querySelectorAll(".add-event-allday-btn").forEach((b) => b.classList.toggle("active", b.dataset.value === "off"));
 this._updateAddEventFieldVisibility(false);
 this._renderAddEventPeopleField();
+// attachable checklists - always start fresh, closed, in
+// "just for this" mode with no items, same "nothing carries over between
+// one new event/reminder and the next" reasoning the rest of this reset
+// already follows (e.g. Notes, Location above).
+this._addEventChecklistItems = [];
+root.querySelector(".add-event-checklist-toggle").checked = false;
+root.querySelector(".add-event-checklist-body").style.display = "none";
+root.querySelectorAll(".add-event-checklist-mode-btn").forEach((b) => b.classList.toggle("active", b.dataset.value === "custom"));
+root.querySelector(".add-event-checklist-existing-field").style.display = "none";
+root.querySelector(".add-event-checklist-custom-field").style.display = "";
+root.querySelector(".add-event-checklist-add-input").value = "";
+this._renderAddEventChecklistItems();
+// Cleared so the existing-list dropdown re-fetches next time it's needed
+// (see _fetchTodoListCandidates's own comment) rather than showing
+// whatever was current the last time this modal happened to be open.
+this._todoListCandidates = null;
 // Which tab was last used isn't meaningful context to carry over to the
 // next, unrelated event/reminder - default to Calendar unless the + menu
 // specifically picked "Reminder" (see the add-fab-reminder handler).
 this._setAddEventTab(tab === "reminder" ? "reminder" : "calendar");
 this._openModal(root.querySelector(".add-event-overlay"));
 }
-// v141+: "Also for" on the Add Event modal itself, not just after the
+// "Also for" on the Add Event modal itself, not just after the
 // fact via the event-info popup's own identical checkbox row
 // (_renderEventInfoPeopleSection/_saveEventPeopleOverride) - lets someone
 // tag a new event for multiple people right when they create it instead
@@ -14171,6 +21612,53 @@ return `<label class="remind-check-opt event-info-person-opt"><input type="check
 .join("");
 content.innerHTML = `<div class="remind-check-row">${checkboxesHtml}</div>`;
 }
+// renders the "just for this" checklist-item builder inside
+// the Add Event modal from this._addEventChecklistItems (a plain
+// {text}[] - no "done" state yet, since the event/reminder this is
+// attached to doesn't exist until Save, so there's nothing to check off
+// before then) - same remove-button-per-row idiom as _renderAlarmDevices
+// Section's own list.
+_renderAddEventChecklistItems() {
+const root = this._root;
+const listEl = root.querySelector(".add-event-checklist-items");
+if (!listEl) return;
+const items = this._addEventChecklistItems || [];
+listEl.innerHTML = items.length
+? items
+    .map(
+      (item, i) =>
+        `<div class="checklist-item-row">` +
+        `<span class="checklist-item-row-text">${item.text}</span>` +
+        `<button type="button" class="checklist-item-remove-btn" data-index="${i}" title="Remove">&#10005;</button>` +
+        `</div>`
+    )
+    .join("")
+  : `<div class="remind-hint" data-i18n="add_event.checklist_no_items">No items yet - add whatever needs to be remembered below.</div>`;
+listEl.querySelectorAll(".checklist-item-remove-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const idx = parseInt(btn.dataset.index, 10);
+    if (Number.isFinite(idx)) this._addEventChecklistItems.splice(idx, 1);
+    this._renderAddEventChecklistItems();
+  });
+});
+this._applyTranslations();
+}
+// populates the "use an existing list" dropdown from
+// _fetchTodoListCandidates - separate from that fetch itself so it can be
+// called again cheaply (the fetch is cached) whenever the mode toggles to
+// "existing" without re-fetching every time.
+async _renderAddEventChecklistExistingSelect() {
+const root = this._root;
+const select = root.querySelector(".add-event-checklist-existing-select");
+if (!select) return;
+const candidates = await this._fetchTodoListCandidates();
+if (!candidates) return;
+const previous = select.value;
+select.innerHTML = candidates.length
+  ? candidates.map((c) => `<option value="${c.entity_id}">${c.name}</option>`).join("")
+  : `<option value="">${this._t("add_event.checklist_no_todo_lists", "No to-do lists found")}</option>`;
+if (previous && candidates.some((c) => c.entity_id === previous)) select.value = previous;
+}
 _setAddEventTab(tab) {
 const root = this._root;
 this._addEventActiveTab = tab === "reminder" ? "reminder" : "calendar";
@@ -14189,7 +21677,9 @@ const calendarField = root.querySelector(".add-event-calendar-field");
 if (calendarField) calendarField.style.display = isReminder ? "none" : "";
 const heading = root.querySelector(".add-event-heading");
 if (heading) {
-heading.innerHTML = isReminder ? "&#128276; New Reminder" : "&#10133; New Event";
+heading.innerHTML = isReminder
+? `&#128276; ${this._t("add_event.heading_reminder", "New Reminder")}`
+: `&#10133; ${this._t("add_event.heading_event", "New Event")}`;
 }
 this._setAddEventError("");
 this._refreshAddReminderMissingWarn();
@@ -14199,7 +21689,7 @@ this._refreshAddReminderMissingWarn();
 // missing, "Save" would silently do nothing (Home Assistant just logs a
 // warning and skips the service call rather than throwing), so warn up
 // front instead of leaving the user to figure out why nothing showed up.
-// v130+: checks whichever list is currently picked in the Add Reminder
+// checks whichever list is currently picked in the Add Reminder
 // tab's List selector (defaults to the family list), not always the fixed
 // reminders_entity - each individual list is just as capable of not
 // existing yet as the family one is. Called both when the Reminder tab is
@@ -14279,16 +21769,61 @@ return { minutesList, clean, isReminder };
 // server-side poller looks for the same marker and, once a due reminder
 // fires, bumps its due_datetime forward by a day as long as it's still
 // needs_action - so it keeps coming due, once a day, until marked done.
+// A second marker, <!--rolldays:0,4,5,6-->, alongside the
+// existing <!--rollover:1--> one - present only when the household
+// restricted rollover to specific days; absent (every pre-v185 reminder,
+// and any new one left at the "every day" default) means "roll over every
+// day," identical to the old unconditional behavior. See __init__.py's
+// REMINDER_ROLLOVER_DAYS_RE/_roll_reminder_to_today for the backend half.
 _parseReminderRollover(description) {
 const desc = description || "";
 const rollover = /<!--rollover:1-->/.test(desc);
-const clean = desc.replace(/\n*<!--rollover:1-->\s*/, "").trim();
-return { description: clean, rollover };
+const daysMatch = /<!--rolldays:([\d,]*)-->/.exec(desc);
+const rolloverDays = daysMatch && daysMatch[1]
+? daysMatch[1].split(",").map((d) => parseInt(d, 10)).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6)
+: [];
+const clean = desc
+.replace(/\n*<!--rollover:1-->\s*/, "")
+.replace(/\n*<!--rolldays:[\d,]*-->\s*/, "")
+.trim();
+return { description: clean, rollover, rolloverDays };
 }
-_buildReminderDescription(description, rollover) {
+_buildReminderDescription(description, rollover, rolloverDays) {
 const base = (description || "").trim();
 if (!rollover) return base;
-return base ? `${base}\n\n<!--rollover:1-->` : "<!--rollover:1-->";
+// A restriction only actually means anything once it's a real SUBSET of
+// the week - a full (or empty, e.g. someone unchecked everything by
+// mistake) selection is just "every day," so the marker is omitted
+// entirely rather than writing out all seven days every time. This also
+// keeps every pre-v185 reminder's plain <!--rollover:1--> marker (no
+// days list at all) reading exactly the same as "every day selected."
+const days = Array.isArray(rolloverDays) ? Array.from(new Set(rolloverDays)).filter((d) => d >= 0 && d <= 6) : [];
+const markers = ["<!--rollover:1-->"];
+if (days.length > 0 && days.length < 7) {
+markers.push(`<!--rolldays:${days.sort((a, b) => a - b).join(",")}-->`);
+}
+const markerBlock = markers.join("\n");
+return base ? `${base}\n\n${markerBlock}` : markerBlock;
+}
+// Renders the 7 Mon-Sun toggle buttons shared by the Add Reminder form and
+// the Event Info edit-reminder section - `selected` empty (or covering all
+// 7 days) renders every button active, matching "every day" being this
+// feature's default/unrestricted state.
+_rolldaysBtnsHtml(selectedDays) {
+const selected = new Set(selectedDays && selectedDays.length ? selectedDays : [0, 1, 2, 3, 4, 5, 6]);
+return REMINDER_WEEKDAY_LABELS.map(
+(label, idx) => `<button type="button" class="rolldays-btn ${selected.has(idx) ? "active" : ""}" data-day="${idx}">${label}</button>`
+).join("");
+}
+_wireRolldaysToggle(container) {
+if (!container) return;
+container.querySelectorAll(".rolldays-btn").forEach((btn) => {
+btn.addEventListener("click", () => btn.classList.toggle("active"));
+});
+}
+_readRolldaysFromContainer(container) {
+if (!container) return [];
+return Array.from(container.querySelectorAll(".rolldays-btn.active")).map((btn) => parseInt(btn.dataset.day, 10));
 }
 _formatReminderMinutes(minutes) {
 if (minutes % 1440 === 0) {
@@ -14305,6 +21840,48 @@ _formatReminderLabel(minutesList) {
 const list = Array.isArray(minutesList) ? minutesList : [minutesList];
 if (!list.length) return "";
 return `${list.map((m) => this._formatReminderMinutes(m)).join(" & ")} before`;
+}
+// shared by both _saveAddEvent's calendar branch and
+// _saveAddReminder below - reads whatever's currently set in the
+// checklist section (see _openAddEvent's own reset of this state) and,
+// if the toggle was ever turned on, attaches it to the just-created
+// event/reminder via the same identity scheme the event-info popup's
+// checklist section reads back with (_checklistKeyForEvent/
+// _checklistKeyForReminder on the backend's own equivalent,
+// _checklist_target_key). Best-effort, same idiom as the "Also for"
+// tagging right above its own call site - a failure here still leaves
+// the event/reminder itself created, just without its checklist
+// attached (it can always be added afterward from the event-info popup
+// for a calendar event; there's no such popup yet for a standalone
+// reminder - see the event-info popup's own checklist section comment).
+async _saveAddEventChecklistIfAny(targetParams) {
+const root = this._root;
+const toggle = root.querySelector(".add-event-checklist-toggle");
+if (!toggle || !toggle.checked) return;
+const isExisting = root.querySelector(".add-event-checklist-mode-btn.active").dataset.value === "existing";
+let checklist;
+if (isExisting) {
+const entityId = root.querySelector(".add-event-checklist-existing-select").value;
+if (!entityId) return;
+checklist = { mode: "existing", entity_id: entityId };
+} else {
+const items = (this._addEventChecklistItems || []).map((item) => ({ text: item.text }));
+if (!items.length) return;
+checklist = { mode: "custom", items };
+}
+try {
+const result = await this._hass.connection.sendMessagePromise({
+type: "family_hub/set_event_checklist",
+...targetParams,
+checklist,
+});
+if (result && result.key) {
+if (!this._eventChecklists) this._eventChecklists = {};
+this._eventChecklists[result.key] = result.checklist;
+}
+} catch (e) {
+/* best-effort - see comment above */
+}
 }
 async _saveAddEvent() {
 if (this._addEventActiveTab === "reminder") {
@@ -14336,7 +21913,7 @@ if (remindMinutesList.length) {
 const marker = `<!--reminder:${remindMinutesList.join(",")}-->`;
 description = description ? `${description}\n\n${marker}` : marker;
 }
-// v141+: multi-day events - an optional End date field (blank by
+// multi-day events - an optional End date field (blank by
 // default, see _openAddEvent) alongside the existing Date field. Left
 // blank (or picked earlier than Date, which would be nonsensical),
 // end date just falls back to the start date - the exact same single-day
@@ -14385,11 +21962,14 @@ return;
 // an existing event). Best-effort: a failure here still leaves the event
 // itself created, just not yet tagged - the user can always add people
 // afterward from the event-info popup like before this existed.
+// also needed below for the checklist attach, not just the
+// "Also for" tagging - computed once, unconditionally, rather than only
+// inside the peopleEntities branch this used to live in exclusively.
+const startDate = allDay ? new Date(dateVal + "T00:00:00") : new Date(data.start_date_time.replace(" ", "T"));
+const startTs = Math.floor(startDate.getTime() / 1000);
 const peopleEntities = Array.from(root.querySelectorAll(".add-event-people-check:checked")).map((c) => c.value);
 if (peopleEntities.length) {
-const startDate = allDay ? new Date(dateVal + "T00:00:00") : new Date(data.start_date_time.replace(" ", "T"));
 try {
-const startTs = Math.floor(startDate.getTime() / 1000);
 const result = await this._hass.connection.sendMessagePromise({
 type: "family_hub/set_event_people_override",
 calendar_entity: entity,
@@ -14405,6 +21985,7 @@ if (savedPeople.length) this._eventPeopleOverrides[key] = savedPeople;
 /* best-effort - see comment above */
 }
 }
+await this._saveAddEventChecklistIfAny({ calendar_entity: entity, start: startTs, summary: title });
 this._closeAddEvent();
 this._fetchEvents();
 }
@@ -14424,7 +22005,7 @@ const title = root.querySelector(".add-event-title").value.trim();
 if (!title) return;
 const dateVal = root.querySelector(".add-event-reminder-date").value;
 if (!dateVal) return;
-// v130+: saves to whichever list is picked in the List selector (family,
+// saves to whichever list is picked in the List selector (family,
 // the user's own individual list, or one they're subscribed to) rather
 // than always the fixed reminders_entity - see _addableRemindersLists.
 const listSelect = root.querySelector(".add-event-reminder-list-select");
@@ -14440,7 +22021,8 @@ return;
 const notifyTime = root.querySelector(".add-event-reminder-time").value || "09:00";
 const description = root.querySelector(".add-event-description").value.trim();
 const rollover = root.querySelector(".add-event-reminder-rollover").checked;
-const fullDescription = this._buildReminderDescription(description, rollover);
+const rolloverDays = this._readRolldaysFromContainer(root.querySelector(".add-event-reminder-rolldays"));
+const fullDescription = this._buildReminderDescription(description, rollover, rolloverDays);
 const data = {
 item: title,
 due_datetime: `${dateVal}T${notifyTime}:00`,
@@ -14452,8 +22034,52 @@ await this._hass.callService("todo", "add_item", data, { entity_id: entityId });
 this._setAddEventError(`⚠️ Couldn't save this reminder: ${e && e.message ? e.message : e}`);
 return;
 }
+// only bother finding the just-created item's own uid (there
+// is no return-value from the plain callService above - deliberately
+// unchanged from before this existed, see this method's own established
+// convention and test_reminder_rollover_days_frontend.js's own mock,
+// which only stubs callService) when a checklist actually needs
+// attaching to it. Looked up the cheap way any other reminder-editing
+// code already has to (todo.get_items, then match by title + due time)
+// rather than switching the save call itself to a response-carrying
+// variant purely for this one optional feature.
+const toggle = root.querySelector(".add-event-checklist-toggle");
+if (toggle && toggle.checked) {
+const newItemUid = await this._findJustAddedReminderUid(entityId, title, data.due_datetime);
+if (newItemUid) {
+  await this._saveAddEventChecklistIfAny({ todo_entity: entityId, item_uid: newItemUid });
+}
+}
 this._closeAddEvent();
 this._fetchReminders();
+}
+// best-effort lookup for the uid of the to-do item
+// _saveAddReminder just created via the plain (response-less)
+// todo.add_item callService call above - only needed when a checklist is
+// about to be attached to it. Matches by exact title + due_datetime,
+// which is unambiguous enough for "the item I just created a moment
+// ago" (a household adding two reminders with the identical title AND
+// identical minute-precision due time back to back is not a real-world
+// case worth over-engineering for). Returns null on any failure or
+// no-match - the reminder itself is already safely saved either way, so
+// this only ever costs "no checklist got attached," never a broken save.
+async _findJustAddedReminderUid(entityId, title, dueDatetime) {
+try {
+const result = await this._hass.connection.sendMessagePromise({
+  type: "call_service",
+  domain: "todo",
+  service: "get_items",
+  service_data: {},
+  target: { entity_id: entityId },
+  return_response: true,
+});
+const forEntity = result && result.response && result.response[entityId];
+const items = (forEntity && forEntity.items) || [];
+const match = items.find((it) => it.summary === title && it.due && it.due.startsWith(dueDatetime.slice(0, 16)));
+return match ? match.uid : null;
+} catch (e) {
+return null;
+}
 }
 _renderLegend() {
 if (!this._root || !this._hass) return;
@@ -14473,17 +22099,20 @@ if (!groups[key]) {
 groups[key] = { name: p.name, color: p.color, count: 0 };
 order.push(key);
 }
-groups[key].count += (this._events[p.entity] || []).length;
+groups[key].count += this._privacyEventsFor(p.entity).length;
 }
 const activeKeys = this._legendFilterKeys || [];
 // Reminders live on their own to-do list (this._reminders), not mixed into
 // this._events - so unlike eventCount, reminderCount doesn't need to scan
-// calendar event descriptions.
+// calendar event descriptions. Both go through the same privacy-mode
+// filters as every other render path (_privacyEventsFor/_privacyReminders)
+// so the legend's own counts go to zero along with the grid, instead of
+// leaking "there are N events today" while the grid itself shows none.
 let eventCount = 0;
-for (const evs of Object.values(this._events || {})) {
-eventCount += (evs || []).length;
+for (const p of people) {
+eventCount += this._privacyEventsFor(p.entity).length;
 }
-const reminderCount = (this._reminders || []).length;
+const reminderCount = this._privacyReminders().length;
 const typeFilter = this._eventTypeFilter || [];
 const identityChipsHtml = order
 .map((key) => {
@@ -14540,8 +22169,8 @@ this._renderMonthGrid();
 this._renderMonthSplitGrid();
 } else if (this._viewMode === "planner") {
 this._renderPlannerGrid();
-} else if (this._viewMode === "portrait") {
-this._renderPortraitGrid();
+} else if (this._viewMode === "day") {
+this._renderDayGrid();
 } else {
 this._renderWeekGrid();
 }
@@ -14552,7 +22181,7 @@ gridEl.className = "grid mode-month";
 const { dayNames, cellsHtml } = this._buildMonthCellsHtml(null);
 gridEl.innerHTML = `<div class="month-weekday-row">${dayNames.map((d) => `<div class="mwd">${d}</div>`).join("")}</div><div class="month-cells">${cellsHtml}</div>`;
 }
-// v145+: split out of the old _renderMonthGrid so the classic Month view
+// split out of the old _renderMonthGrid so the classic Month view
 // and the new "split" variant's own calendar pane (see
 // _renderMonthSplitGrid) can share this exact cell-building logic instead
 // of drifting apart as two copies. selectedDateKey (null for the classic
@@ -14570,7 +22199,7 @@ const people = this._getPeople();
 const colorMap = this._colorByName(people);
 const filterKeys = this._legendFilterKeys || [];
 const eventPeople = filterKeys.length ? people.filter((p) => filterKeys.includes((p.name || p.entity || "").trim().toLowerCase())) : people;
-// v129+: see _renderWeekGrid's identical comment - a multi-person event
+// see _renderWeekGrid's identical comment - a multi-person event
 // should still surface when filtering to just one of its tagged people.
 const filterEntitySet = filterKeys.length ? new Set(eventPeople.map((p) => p.entity)) : null;
 let cellsHtml = "";
@@ -14589,7 +22218,7 @@ let badges = [];
 for (const person of people) {
 const personBadges = person.badges || [];
 if (!personBadges.length) continue;
-const evs = this._events[person.entity] || [];
+const evs = this._privacyEventsFor(person.entity);
 const personColor = this._colorFor(person, colorMap);
 for (const ev of evs) {
 const evStart = this._toDate(ev.start);
@@ -14613,10 +22242,10 @@ badges.push({ text: b.text, color: personColor });
 }
 }
 }
-// v129+: iterate every person (not just eventPeople) - see the identical
+// iterate every person (not just eventPeople) - see the identical
 // comment in _renderWeekGrid.
 for (const person of people) {
-const evs = this._events[person.entity] || [];
+const evs = this._privacyEventsFor(person.entity);
 const personIsBirthdays = person.entity === this._config.birthdays_entity;
 const personBadges = person.badges || [];
 const personColor = this._colorFor(person, colorMap);
@@ -14647,34 +22276,84 @@ if (typeFilter.length && !typeFilter.includes(isReminder ? "reminder" : "event")
 const peopleEntities = this._eventPeopleEntities(person.entity, evStart, ev.summary, people);
 if (filterEntitySet && !peopleEntities.some((e) => filterEntitySet.has(e))) continue;
 if (personIsBirthdays) hasBirthday = true;
-dayEvents.push({ summary: ev.summary || "(untitled)", color: personColor, bg: this._eventCollageStyle(peopleEntities, people, colorMap), isReminder });
+// carry start/end/allDay through onto the pill data so this cell
+// can (a) sort all-day events to the top - see the dayEvents.sort below -
+// and (b) tell a genuinely multi-day event (one that started before this
+// cell's day or keeps going past it) apart from an ordinary same-day one,
+// for the "continues" pill styling a few lines down.
+dayEvents.push({
+summary: ev.summary || "(untitled)",
+color: personColor,
+bg: this._eventCollageStyle(peopleEntities, people, colorMap),
+isReminder,
+allDay: this._isAllDay(ev),
+start: evStart,
+end: evEnd,
+});
 }
 }
 }
 {
 const typeFilter = this._eventTypeFilter || [];
 if (!typeFilter.length || typeFilter.includes("reminder")) {
-for (const r of this._reminders || []) {
+for (const r of this._privacyReminders()) {
 if (r.due >= dayStart && r.due < dayEnd) {
-// v130+: an individual list's reminders use their owning person's own
+// an individual list's reminders use their owning person's own
 // color (r.color) instead of the fixed purple - the shared family list
 // (r.color left null/falsy by _fetchReminders) keeps REMINDER_COLOR.
 const remColor = r.color || REMINDER_COLOR;
-dayEvents.push({ summary: r.summary, color: remColor, bg: `background:${remColor}`, isReminder: true });
+// A reminder is a single point in time, never all-day and never
+// multi-day, so allDay stays false and end is just a nominal
+// point right after start (matches the identical pattern in
+// _buildMonthSplitDetailHtml/_buildDayColumnHtml).
+dayEvents.push({ summary: r.summary, color: remColor, bg: `background:${remColor};color:${this._textColorFor(remColor)}`, isReminder: true, allDay: false, start: r.due, end: new Date(r.due.getTime() + 60000) });
 }
 }
 }
 }
+// Same stable-sort idiom already used for
+// the day agenda list (_buildMonthSplitDetailHtml) and the Week view's
+// own day column (_buildDayColumnHtml) - all-day events first, then
+// timed events/reminders in start-time order within each group.
+dayEvents.sort((a, b) => (a.allDay === b.allDay ? a.start - b.start : a.allDay ? -1 : 1));
+// Copied from _buildDayColumnHtml's
+// identical isPastEvent logic rather than shared, since that helper is a
+// closure over that function's own dayStart/dayEnd/today/isBeforeToday -
+// see its own comment for the today-vs-earlier-day distinction (today's
+// events dimmed one at a time as each ends; an earlier day is
+// dimmed entirely, since the whole day is already over).
+const isBeforeToday = dayStart.getTime() < today.getTime();
+const greyOutPast = settings.greyOutPastEvents && (isToday || isBeforeToday);
+const nowMs = Date.now();
+const isPastEvent = (e) => {
+if (!greyOutPast) return false;
+if (isBeforeToday) return true;
+return e.isReminder ? e.start.getTime() <= nowMs : e.end.getTime() <= nowMs;
+};
 const shown = dayEvents.slice(0, 3);
 const more = dayEvents.length - shown.length;
 let pillsHtml =
 shown
-.map(
-(e) =>
-`<div class="mc-pill${e.isReminder ? " mc-reminder-pill" : ""}" style="${e.bg || `background:${e.color}`}">${e.isReminder ? "&#128276; " : ""}${e.summary}</div>`
-)
+.map((e) => {
+// Each day cell
+// is still its own independently-bordered card (see .month-cell),
+// so a pill can't literally paint across the 4px gap/border into the
+// next cell's box without a much bigger layout rewrite - instead, a
+// multi-day event's pill on the day(s) it continues through gets its
+// rounded corner squared off on the continuing side, pulled flush
+// against that edge (negative margin cancels the cell's own
+// padding), and a small chevron pointing the direction it continues,
+// so a run of same-colored pills across consecutive days reads as
+// one flowing event rather than separate, disconnected pills.
+const continuesFromPrev = !e.isReminder && e.start && e.start.getTime() < dayStart.getTime();
+const continuesToNext = !e.isReminder && e.end && e.end.getTime() > dayEnd.getTime();
+const continueClass = `${continuesFromPrev ? " mc-continue-prev" : ""}${continuesToNext ? " mc-continue-next" : ""}`;
+const prefix = continuesFromPrev ? "◂ " : "";
+const suffix = continuesToNext ? " ▸" : "";
+return `<div class="mc-pill${e.isReminder ? " mc-reminder-pill" : ""}${continueClass}${isPastEvent(e) ? " past" : ""}" style="${e.bg || `background:${e.color}`}">${e.isReminder ? "&#128276; " : ""}${prefix}${e.summary}${suffix}</div>`;
+})
 .join("") + (more > 0 ? `<div class="mc-more">+${more} more</div>` : "");
-// v141+ - meals render BEFORE (above) events/reminders in each cell,
+// meals render BEFORE (above) events/reminders in each cell,
 // not after - a household glancing at Month view is usually checking
 // "what's for dinner" alongside the day's schedule, and meals used to
 // get pushed to the bottom of a busy cell where they were easy to miss.
@@ -14695,7 +22374,13 @@ pillsHtml = mealsHtml + pillsHtml;
 const badgesHtml = badges
 .map((b) => `<span class="custody-badge" style="background:${b.color};color:${this._textColorFor(b.color)}">${b.text}</span>`)
 .join("");
-cellsHtml += `<div class="month-cell ${isToday ? "today" : ""} ${outside ? "outside" : ""} ${selectedDateKey && dateKey === selectedDateKey ? "selected" : ""}" data-date="${dateKey}">
+const matchedHolidayBg = this._matchHolidayBackgroundForDate(settings, cellDate, isToday);
+const dayColHolidayStyle =
+matchedHolidayBg
+? ` style="background-image: linear-gradient(rgba(0,0,0,0.32), rgba(0,0,0,0.32)), url('${matchedHolidayBg.imageUrl.replace(/'/g, "%27")}'); background-size: cover; background-position: center;"`
+: "";
+const dayColHolidayDark = matchedHolidayBg ? this._isHolidayBackgroundDark(matchedHolidayBg.imageUrl) : false;
+cellsHtml += `<div class="month-cell ${isToday ? "today" : ""} ${outside ? "outside" : ""} ${selectedDateKey && dateKey === selectedDateKey ? "selected" : ""}${dayColHolidayDark ? " holiday-bg-dark" : ""}" data-date="${dateKey}"${dayColHolidayStyle}>
 <div class="mc-date">${cellDate.getDate()}${hasBirthday ? " \u{1F382}" : ""}${badgesHtml}</div>
 <div class="mc-events">${pillsHtml}</div>
 </div>`;
@@ -14707,9 +22392,9 @@ return { dayNames, cellsHtml };
 // view), the selected day's full event list on the other, plus a button
 // to jump straight to that day's week. See CSS for .mode-month-split for
 // how the two panes lay out side-by-side (landscape) vs. stacked
-// calendar-on-top (portrait, via @media (orientation: portrait) - not to
-// be confused with the unrelated manually-selected "portrait" WEEK
-// variant, which stacks week day-columns instead).
+// calendar-on-top (portrait, via @media (orientation: portrait) - purely
+// a description of the screen's own orientation, unrelated to the old
+// Week-family "Portrait" mode name, which no longer exists at all).
 _renderMonthSplitGrid() {
 const gridEl = this._root.querySelector(".grid");
 gridEl.className = "grid mode-month-split";
@@ -14761,7 +22446,7 @@ const filterEntitySet = filterKeys.length ? new Set(eventPeople.map((p) => p.ent
 const typeFilter = this._eventTypeFilter || [];
 let items = [];
 for (const person of people) {
-const evs = this._events[person.entity] || [];
+const evs = this._privacyEventsFor(person.entity);
 const personIsBirthdays = person.entity === this._config.birthdays_entity;
 const personBadges = person.badges || [];
 const personColor = this._colorFor(person, colorMap);
@@ -14801,6 +22486,13 @@ description: reminderInfo.clean,
 reminderMinutesList: reminderInfo.minutesList,
 isReminder: reminderInfo.isReminder,
 location: ev.location || "",
+// The one identifier that lets a delete call
+// target this exact occurrence rather than guessing by (entity,
+// start, summary) - see _openEventInfo's delete button wiring.
+// Most calendar platforms' GET response includes it; when they
+// don't, this stays null and the delete button falls back to its
+// "unsupported" state (see _getCalendarDeleteSupport).
+uid: ev.uid || null,
 };
 items.push({
 id: eventId,
@@ -14816,7 +22508,7 @@ isBirthday: personIsBirthdays,
 }
 }
 if (!typeFilter.length || typeFilter.includes("reminder")) {
-for (const r of this._reminders || []) {
+for (const r of this._privacyReminders()) {
 if (r.due >= dayStart && r.due < dayEnd) {
 const remColor = r.color || REMINDER_COLOR;
 const reminderId = `msd-rem-${dateKey}-${items.length}-${r.uid}`;
@@ -14833,7 +22525,7 @@ reminderMinutesList: [],
 isReminder: true,
 todoUid: r.uid,
 };
-items.push({ id: reminderId, summary: r.summary, start: r.due, allDay: false, bg: `background:${remColor}`, color: remColor, isReminder: true });
+items.push({ id: reminderId, summary: r.summary, start: r.due, allDay: false, bg: `background:${remColor};color:${this._textColorFor(remColor)}`, color: remColor, isReminder: true });
 }
 }
 }
@@ -14870,30 +22562,45 @@ return `<div class="msd-header">
 </div>
 <div class="msd-items">${mealsHtml}${itemsHtml}</div>`;
 }
+// v1.134.0+: Week and the old "Portrait" variant merged into one mode -
+// household ask, verbatim: "I think that we have built enough
+// functionality into the portrait mode that this should become the
+// default mode... a week view is just the portrait mode with 7 days and
+// one row." Plain Week (rows===1) is now simply the rows===1 case of the
+// exact same row-splitting layout Portrait always used - there is no
+// longer a second, separately-maintained CSS-grid rendering path for a
+// single row. See _getWeekRows for the this-device-only row count
+// (including the one-time migration from whichever of Week/Portrait a
+// device used to be on) and its own comment for the baseCols/extra split
+// math (unchanged from the old _renderPortraitGrid).
 _renderWeekGrid() {
 const gridEl = this._root.querySelector(".grid");
-// v1.110.5+: a 3- or 5-day window gets its own CSS grid-column-count
-// modifier class (.day-count-3/.day-count-5) alongside the existing
-// mode-week - see that rule's own comment for why this is a modifier
-// rather than a fourth view mode. 7 keeps the plain "mode-week" class
-// with no modifier, so nothing about today's default look changes.
-const dayCount = this._weekViewDayCount();
-gridEl.className = dayCount === 7 ? "grid mode-week" : `grid mode-week day-count-${dayCount}`;
+gridEl.className = "grid mode-week";
 const ctx = this._buildWeekLikeContext();
-let html = "";
+const dayCount = this._weekViewDayCount();
+const rows = Math.max(1, Math.min(this._getWeekRows(), dayCount));
+const cols = [];
 for (let i = 0; i < dayCount; i++) {
-html += this._buildDayColumnHtml(i, ctx);
+cols.push(this._buildDayColumnHtml(i, ctx));
 }
-gridEl.innerHTML = html;
+const baseCols = Math.floor(dayCount / rows);
+const extra = dayCount % rows;
+const rowsHtml = [];
+let idx = 0;
+for (let r = 0; r < rows; r++) {
+const thisRowCount = baseCols + (r < extra ? 1 : 0);
+rowsHtml.push(`<div class="week-row">${cols.slice(idx, idx + thisRowCount).join("")}</div>`);
+idx += thisRowCount;
+}
+gridEl.innerHTML = rowsHtml.join("");
 this._afterRenderDayColumns(ctx);
 }
 
-// Shared setup for any view that lays out the current week as 7
-// day-columns (Week itself, and Portraits 4-then-3 split of the same 7
-// columns - see _renderPortraitGrid) - computed once per render and
-// threaded through as a single ctx object rather than a long positional
-// argument list, so _buildDayColumnHtml/_afterRenderDayColumns stay easy
-// to call from either place.
+// Shared setup for any view that lays out the current week as day-
+// columns (Week's own row-splitting layout - see _renderWeekGrid) -
+// computed once per render and threaded through as a single ctx object
+// rather than a long positional argument list, so _buildDayColumnHtml/
+// _afterRenderDayColumns stay easy to call from either place.
 _buildWeekLikeContext() {
 const start = this._weekStart();
 const today = new Date();
@@ -14904,7 +22611,7 @@ const people = this._getPeople();
 const colorMap = this._colorByName(people);
 const filterKeys = this._legendFilterKeys || [];
 const eventPeople = filterKeys.length ? people.filter((p) => filterKeys.includes((p.name || p.entity || "").trim().toLowerCase())) : people;
-// v129+: a multi-person event should still show up when filtering the
+// a multi-person event should still show up when filtering the
 // legend down to just ONE of its tagged people, even though it physically
 // lives on someone else's calendar - see the entities-intersection check
 // below, which replaces the old "only pull events from eventPeople's own
@@ -14918,13 +22625,13 @@ const rangeEndMin = rangeEnd >= 24 ? 1440 : (rangeEnd + 1) * 60;
 return { start, today, dayNames, settings, people, colorMap, filterKeys, eventPeople, filterEntitySet, PX_PER_HOUR, rangeStart, rangeEnd, rangeStartMin, rangeEndMin };
 }
 
-// Builds one day-columns full HTML (header/weather, meal banners,
-// events-or-timeline) for day index i (0 = the ctx weeks Sunday) - the
-// exact fragment Week renders 7-across in one row; Portrait renders the
-// same 7 fragments split 4-then-3 across two rows instead (see
-// _renderPortraitGrid). Pulled out of _renderWeekGrid so a fix or feature
-// in one views day-column content never needs a second, separate edit to
-// keep the other view in sync.
+// Builds one day-column's full HTML (header/weather, meal banners,
+// events-or-timeline) for day index i (0 = the ctx window's start date) -
+// _renderWeekGrid calls this once per day and splits the resulting N
+// fragments across as many rows as this device's own row-count setting
+// asks for (see _getWeekRows). Pulled out on its own so a fix or feature
+// in the day-column content itself only ever needs one edit, regardless
+// of how many rows this device happens to be showing.
 _buildDayColumnHtml(i, ctx) {
 const { start, today, dayNames, settings, people, colorMap, filterEntitySet, rangeStart, rangeEnd, rangeStartMin, rangeEndMin, PX_PER_HOUR } = ctx;
 const dayStart = new Date(start);
@@ -14933,6 +22640,22 @@ const dayEnd = new Date(dayStart);
 dayEnd.setDate(dayStart.getDate() + 1);
 const isToday = dayStart.getTime() === today.getTime();
 const dateKey = this._dateKey(dayStart);
+// Holiday/special-day background for just this one column (Settings >
+// General > Holiday Backgrounds) - a household-uploaded photo instead of
+// this card's plain --fc-card background, same spirit as the single
+// hardcoded Halloween easter egg (HALLOWEEN_BG_IMAGE) but per-household,
+// per-date, and scoped to one day's column rather than the whole card.
+// A matched entry with "Expand to full screen" checked is deliberately
+// SKIPPED here - that one instead takes over the whole card's own
+// background via _applySizeVars's --fc-bg-image (see
+// _matchHolidayBackgroundForDate's own comment), so painting it a second
+// time, cropped to just this column, would be redundant.
+const matchedHolidayBg = this._matchHolidayBackgroundForDate(settings, dayStart, isToday);
+const dayColHolidayStyle =
+matchedHolidayBg
+? ` style="background-image: linear-gradient(rgba(0,0,0,0.32), rgba(0,0,0,0.32)), url('${matchedHolidayBg.imageUrl.replace(/'/g, "%27")}'); background-size: cover; background-position: center;"`
+: "";
+const dayColHolidayDark = matchedHolidayBg ? this._isHolidayBackgroundDark(matchedHolidayBg.imageUrl) : false;
 const blocks = this._getBlocksForDay(i);
 const forecast = this._forecast ? this._forecast[dateKey] : null;
 const wxIconHtml = forecast
@@ -14970,7 +22693,7 @@ const typeFilter = this._eventTypeFilter || [];
 for (const person of people) {
 const personBadges = person.badges || [];
 if (!personBadges.length) continue;
-const evs = this._events[person.entity] || [];
+const evs = this._privacyEventsFor(person.entity);
 const personColor = this._colorFor(person, colorMap);
 for (const ev of evs) {
 const evStart = this._toDate(ev.start);
@@ -14994,12 +22717,12 @@ badges.push({ text: b.text, color: personColor });
 }
 }
 }
-// v129+: iterate every person's own calendar (not just eventPeople) so a
+// iterate every person's own calendar (not just eventPeople) so a
 // multi-person event tagged with someone outside the current legend
 // filter still surfaces when filtering to one of its OTHER tagged people
 // - see the entities-intersection check below, filterEntitySet above.
 for (const person of people) {
-const evs = this._events[person.entity] || [];
+const evs = this._privacyEventsFor(person.entity);
 const personBadges = person.badges || [];
 const personColor = this._colorFor(person, colorMap);
 for (const ev of evs) {
@@ -15043,6 +22766,7 @@ description: reminderInfo.clean,
 reminderMinutesList: reminderInfo.minutesList,
 isReminder: reminderInfo.isReminder,
 location: ev.location || "",
+uid: ev.uid || null,
 };
 dayEvents.push({
 id: eventId,
@@ -15059,9 +22783,9 @@ isReminder: reminderInfo.isReminder,
 }
 }
 if (!typeFilter.length || typeFilter.includes("reminder")) {
-for (const r of this._reminders || []) {
+for (const r of this._privacyReminders()) {
 if (r.due >= dayStart && r.due < dayEnd) {
-// v130+: individual-list reminders show in the owning person's own
+// individual-list reminders show in the owning person's own
 // color and are labeled with their name (r.color/r.personName, set by
 // _fetchReminders); the shared family list falls back to the fixed
 // REMINDER_COLOR and the generic "Reminder" label, same as before.
@@ -15080,6 +22804,7 @@ reminderMinutesList: [],
 isReminder: true,
 todoUid: r.uid,
 rollover: !!r.rollover,
+rolloverDays: r.rolloverDays || [],
 location: "",
 };
 dayEvents.push({
@@ -15089,7 +22814,7 @@ start: r.due,
 end: new Date(r.due.getTime() + 60000),
 allDay: false,
 color: remColor,
-bg: `background:${remColor}`,
+bg: `background:${remColor};color:${this._textColorFor(remColor)}`,
 initial: "\u{1F514}",
 isReminder: true,
 });
@@ -15097,11 +22822,11 @@ isReminder: true,
 }
 }
 dayEvents.sort((a, b) => (a.allDay === b.allDay ? a.start - b.start : a.allDay ? -1 : 1));
-// v141+ - "grey out already-passed events/reminders" setting: purely a
+// "dim already-passed events/reminders" setting: purely a
 // visual "where am I in the day" aid, so it never disables clicking/
 // interacting with the greyed-out pill - see the .past CSS rule, which
 // only touches opacity. A future day's events are never greyed (nothing
-// there is "past" yet). v144.9+: an EARLIER day's events/reminders are
+// there is "past" yet). an EARLIER day's events/reminders are
 // now ALSO greyed, and entirely so - once the whole day is over, there's
 // no meaningful "still in progress" for anything on it, unlike today's
 // column, which greys out event by event as each one individually ends.
@@ -15169,9 +22894,18 @@ return `<div class="event${ev.isReminder ? " reminder-event" : ""}${isPastEvent(
 })
 .join("");
 }
+// Mirrors the split Month variant's own "click a day
+// to select/highlight it" behavior (_monthSplitSelectedDate + .month-
+// cell.selected) rather than opening the Add modal directly on click -
+// see _addEventDefaultDate's own comment for why (the household still
+// taps the FAB to actually add something; selecting a day just primes
+// what date that add defaults to). data-date on .day-header is what the
+// .grid click handler reads to select it, same data-date convention
+// .month-cell already uses.
+const isSelected = this._weekSelectedDate === dateKey;
 return `
-<div class="day-col ${isToday ? "today" : ""}">
-<div class="day-header">
+<div class="day-col ${isToday ? "today" : ""}${dayColHolidayDark ? " holiday-bg-dark" : ""}"${dayColHolidayStyle}>
+<div class="day-header ${isSelected ? "selected" : ""}" data-date="${dateKey}">
 <div class="name-row"><div class="name">${dayNames[dayStart.getDay()]}</div>${wxIconHtml}</div>
 <div class="num">${dayStart.getDate()}${badges
 .map((b) => `<span class="custody-badge" style="background:${b.color};color:${this._textColorFor(b.color)}">${b.text}</span>`)
@@ -15183,10 +22917,9 @@ return `
 `;
 }
 
-// Post-render side effects shared by Week and Portrait, once their
-// day-columns actually exist in the DOM: scrolls each timeline to a
-// sensible starting hour, and (re)attaches meal-drag handlers if Edit
-// Meals is active.
+// Post-render side effects for Week's day-columns, once they actually
+// exist in the DOM: scrolls each timeline to a sensible starting hour,
+// and (re)attaches meal-drag handlers if Edit Meals is active.
 _afterRenderDayColumns(ctx) {
 const { rangeStart, rangeEnd, PX_PER_HOUR } = ctx;
 if (this._getShowTimeline()) {
@@ -15205,33 +22938,6 @@ this._attachMealDragHandlers();
 }
 }
 
-// Portrait 4+3: identical per-day content to Week (meal banners, events or
-// timeline, custody badges, weather) via the same _buildDayColumnHtml -
-// the only difference is how the weeks 7 day-columns are arranged, so
-// this reuses that fragment rather than duplicating ~250 lines of
-// event/timeline-building logic a second time. Two flex rows (not a
-// single CSS grid template) so a 3-day bottom row still spans the full
-// width instead of leaving a dead 4th-column gap the way a plain
-// 4-column CSS grid would - see the .grid.mode-portrait/.portrait-row
-// CSS. Always splits 4-then-3, never calendar-aware (e.g. not "the rest
-// of this week"), since the week always starts Sunday in this project
-// (see _weekStart) - a simple, predictable split a household can learn
-// at a glance, matching how the feature was requested: 4 days on top, 3
-// on the bottom, for a portrait-oriented display where Weeks 7-across
-// layout squeezes each day too narrow to read.
-_renderPortraitGrid() {
-const gridEl = this._root.querySelector(".grid");
-gridEl.className = "grid mode-portrait";
-const ctx = this._buildWeekLikeContext();
-const cols = [];
-for (let i = 0; i < 7; i++) {
-cols.push(this._buildDayColumnHtml(i, ctx));
-}
-const topRow = cols.slice(0, 4).join("");
-const bottomRow = cols.slice(4, 7).join("");
-gridEl.innerHTML = `<div class="portrait-row">${topRow}</div><div class="portrait-row">${bottomRow}</div>`;
-this._afterRenderDayColumns(ctx);
-}
 // A planner-style layout - days running down the side (one row each,
 // current week only), one column per person - modeled directly on the
 // paper wall-planner some households already use, so its digital
@@ -15251,13 +22957,14 @@ gridEl.className = "grid mode-planner";
 const start = this._weekStart();
 const today = new Date();
 today.setHours(0, 0, 0, 0);
+const settings = this._getSettings();
 const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const people = this._getPeople();
 const colorMap = this._colorByName(people);
 const filterKeys = this._legendFilterKeys || [];
 const eventPeople = filterKeys.length ? people.filter((p) => filterKeys.includes((p.name || p.entity || "").trim().toLowerCase())) : people;
 const columns = eventPeople.length ? eventPeople : [null];
-// v142+: "more mobile-friendly Planner view" - below the same 700px
+// "more mobile-friendly Planner view" - below the same 700px
 // breakpoint every other view already collapses at, the wide sideways-
 // scrolling person-columns grid (fine on a tablet, unusable on a phone -
 // tiny 90px columns, constant horizontal scrolling to see anyone but the
@@ -15287,7 +22994,7 @@ dayStart.setDate(start.getDate() + i);
 const dayEnd = new Date(dayStart);
 dayEnd.setDate(dayStart.getDate() + 1);
 const isToday = dayStart.getTime() === today.getTime();
-// v142+: Planner view previously had no badge support at all, unlike
+// Planner view previously had no badge support at all, unlike
 // Week/Month - same per-day custody-badge matching (person.badges'
 // match/hideMatch substring rules against that day's events on the
 // person's own calendar) as those two views, rendered into the day-name
@@ -15296,7 +23003,7 @@ let dayBadges = [];
 for (const person of people) {
 const personBadges = person.badges || [];
 if (!personBadges.length) continue;
-const evs = this._events[person.entity] || [];
+const evs = this._privacyEventsFor(person.entity);
 const personColor = this._colorFor(person, colorMap);
 for (const ev of evs) {
 const evStart = this._toDate(ev.start);
@@ -15321,9 +23028,15 @@ dayBadges.push({ text: b.text, color: personColor });
 const dayBadgesHtml = dayBadges
 .map((b) => `<span class="custody-badge" style="background:${b.color};color:${this._textColorFor(b.color)}">${b.text}</span>`)
 .join("");
-rowsHtml += `<div class="planner-day-cell${isToday ? " today" : ""}"><span class="planner-day-name">${dayNames[dayStart.getDay()]}</span><span class="planner-day-number">${dayStart.getDate()}${dayBadgesHtml}</span></div>`;
+const matchedHolidayBg = this._matchHolidayBackgroundForDate(settings, dayStart, isToday);
+const dayColHolidayStyle =
+matchedHolidayBg
+? ` style="background-image: linear-gradient(rgba(0,0,0,0.32), rgba(0,0,0,0.32)), url('${matchedHolidayBg.imageUrl.replace(/'/g, "%27")}'); background-size: cover; background-position: center;"`
+: "";
+const dayColHolidayDark = matchedHolidayBg ? this._isHolidayBackgroundDark(matchedHolidayBg.imageUrl) : false;
+rowsHtml += `<div class="planner-day-cell${isToday ? " today" : ""}${dayColHolidayDark ? " holiday-bg-dark" : ""}"${dayColHolidayStyle}><span class="planner-day-name">${dayNames[dayStart.getDay()]}</span><span class="planner-day-number">${dayStart.getDate()}${dayBadgesHtml}</span></div>`;
 let dayMobileSections = "";
-// v129+: Planner view genuinely has one column per person (unlike Week/
+// Planner view genuinely has one column per person (unlike Week/
 // Month, which merge everyone into one shared per-day list) - this is
 // the view the household's "show it in every involved person's own
 // column" answer actually applies to. Build the day's full event pool
@@ -15335,7 +23048,7 @@ let dayMobileSections = "";
 const dayPool = [];
 for (const person of people) {
 const personBadges = person.badges || [];
-const evs = this._events[person.entity] || [];
+const evs = this._privacyEventsFor(person.entity);
 for (const ev of evs) {
 const evStart = this._toDate(ev.start);
 const evEnd = this._toDate(ev.end) || evStart;
@@ -15347,13 +23060,13 @@ const hideMatch = (b.hideMatch || "").trim().toLowerCase();
 return hideMatch && summaryLower.includes(hideMatch);
 });
 if (hideMatched) continue;
-// v144.2+ (task #32): same suppression Week/Portrait's own dayPool
+// v144.2+ (): same suppression Week's own dayPool
 // build already has (see _buildDayColumnHtml above) - an event that
 // matched a badge's `match` rule is dropped from the event list
 // entirely, not just de-duped. Badges themselves are computed
 // separately above (dayBadges) so the badge still renders even
 // though the underlying event no longer does.
-// v144.2+ (task #32): same suppression Week/Portrait's own dayPool
+// v144.2+ (): same suppression Week's own dayPool
 // build already has (see _buildDayColumnHtml above) - an event that
 // matched a badge's `match` rule is dropped from the event list
 // entirely, not just de-duped. Badges themselves are computed
@@ -15395,6 +23108,7 @@ description: pooled.reminderInfo.clean,
 reminderMinutesList: pooled.reminderInfo.minutesList,
 isReminder: pooled.reminderInfo.isReminder,
 location: pooled.ev.location || "",
+uid: pooled.ev.uid || null,
 };
 dayEvents.push({ id: eventId, summary: pooled.ev.summary || "(untitled)", start: pooled.evStart, allDay: this._isAllDay(pooled.ev), isReminder: pooled.reminderInfo.isReminder, bg: pooled.bg });
 }
@@ -15418,12 +23132,256 @@ dayMobileSections += `<div class="planner-mobile-person"><div class="planner-mob
 }
 if (isMobile) {
 const dayBody = dayMobileSections || `<div class="planner-mobile-empty">Nothing planned</div>`;
-mobileHtml += `<div class="planner-mobile-day${isToday ? " today" : ""}"><div class="planner-mobile-day-header"><span class="planner-day-name">${dayNames[dayStart.getDay()]}</span><span class="planner-day-number">${dayStart.getDate()}${dayBadgesHtml}</span></div><div class="planner-mobile-persons">${dayBody}</div></div>`;
+mobileHtml += `<div class="planner-mobile-day${isToday ? " today" : ""}"><div class="planner-mobile-day-header${dayColHolidayDark ? " holiday-bg-dark" : ""}"${dayColHolidayStyle}><span class="planner-day-name">${dayNames[dayStart.getDay()]}</span><span class="planner-day-number">${dayStart.getDate()}${dayBadgesHtml}</span></div><div class="planner-mobile-persons">${dayBody}</div></div>`;
 }
 }
 gridEl.innerHTML = isMobile
 ? `<div class="planner-mobile-list">${mobileHtml}</div>`
 : `<div class="planner-grid" style="grid-template-columns: 64px repeat(${columns.length}, minmax(90px, 1fr))">${headerHtml}${rowsHtml}</div>`;
+}
+
+// Day view (Option B from the single-day mockup): one column per
+// person for the single day being viewed, all sharing the same hourly
+// scale, so a busy household can spot overlapping commitments (two
+// people needing the car, a pickup that collides with a lesson) at a
+// glance the way a single merged list hides. Deliberately reuses
+// .day-col/.events/.timeline/.hour-row/.tl-event/.all-day-chip
+// verbatim (they're already generic, not Week-specific - see their own
+// CSS) rather than inventing parallel markup, so this gets the exact
+// same event-pill styling, past-event greying, and the generic
+// data-event-id click-to-open-modal handling on .grid for free. Meal
+// banners and custody badges are Week-only for now (this is scoped to
+// calendar events/reminders, the actual ask); Day always
+// renders as an hourly timeline regardless of the household's Show
+// Timeline setting, since the whole point of per-person lanes is
+// seeing WHEN things happen relative to each other, not just that they
+// happen.
+_buildDayLikeContext() {
+const dayStart = this._dayAnchor();
+const dayEnd = new Date(dayStart);
+dayEnd.setDate(dayStart.getDate() + 1);
+const today = new Date();
+today.setHours(0, 0, 0, 0);
+const isToday = dayStart.getTime() === today.getTime();
+const settings = this._getSettings();
+const people = this._getPeople();
+const colorMap = this._colorByName(people);
+const filterKeys = this._legendFilterKeys || [];
+const eventPeople = filterKeys.length ? people.filter((p) => filterKeys.includes((p.name || p.entity || "").trim().toLowerCase())) : people;
+const PX_PER_HOUR = 40;
+const rangeStart = settings.timelineStartHour;
+const rangeEnd = settings.timelineEndHour;
+const rangeStartMin = rangeStart * 60;
+const rangeEndMin = rangeEnd >= 24 ? 1440 : (rangeEnd + 1) * 60;
+const typeFilter = this._eventTypeFilter || [];
+// Same "build the whole day's event pool once, tag each with every
+// person it's for, then let each lane pick out what involves IT" shape
+// as Planner's dayPool above - a multi-person event needs to show up
+// in every tagged person's lane, not just the calendar it physically
+// lives on.
+const pool = [];
+for (const person of people) {
+const personBadges = person.badges || [];
+const evs = this._privacyEventsFor(person.entity);
+for (const ev of evs) {
+const evStart = this._toDate(ev.start);
+const evEnd = this._toDate(ev.end) || evStart;
+if (!evStart) continue;
+if (!(evEnd > dayStart && evStart < dayEnd)) continue;
+const summaryLower = (ev.summary || "").toLowerCase();
+const hideMatched = personBadges.some((b) => {
+const hideMatch = (b.hideMatch || "").trim().toLowerCase();
+return hideMatch && summaryLower.includes(hideMatch);
+});
+if (hideMatched) continue;
+const matchedBadge = personBadges.some((b) => {
+const badgeMatch = (b.match || "").trim().toLowerCase();
+return badgeMatch && summaryLower.includes(badgeMatch);
+});
+if (matchedBadge) continue;
+const reminderInfo = this._parseReminderMarker(ev.description);
+if (typeFilter.length && !typeFilter.includes(reminderInfo.isReminder ? "reminder" : "event")) continue;
+const peopleEntities = this._eventPeopleEntities(person.entity, evStart, ev.summary, people);
+pool.push({
+ev, evStart, evEnd, reminderInfo, peopleEntities,
+ownerEntity: person.entity,
+ownerColor: this._colorFor(person, colorMap),
+bg: this._eventCollageStyle(peopleEntities, people, colorMap),
+});
+}
+}
+// Reminders route by the personName/isFamily tags _fetchReminders
+// already sets - an individual-list reminder goes only into that
+// person's own lane, and the shared family list goes into the
+// synthetic Family lane (see _renderDayGrid) rather than every lane.
+const remindersToday = (typeFilter.length && !typeFilter.includes("reminder")) ? [] : this._privacyReminders().filter((r) => r.due >= dayStart && r.due < dayEnd);
+return { dayStart, dayEnd, today, isToday, settings, people, colorMap, filterKeys, eventPeople, PX_PER_HOUR, rangeStart, rangeEnd, rangeStartMin, rangeEndMin, typeFilter, pool, remindersToday };
+}
+
+// Builds one person's lane (or the synthetic Family lane when person
+// is null) for Day view - laneKey identifies which pooled events/
+// reminders belong in it ("family" for the shared reminders list, an
+// entity id for a real person).
+_buildPersonLaneHtml(person, ctx) {
+const { dayStart, dayEnd, colorMap, PX_PER_HOUR, rangeStart, rangeEnd, rangeStartMin, rangeEndMin, settings, isToday, today } = ctx;
+const matchedHolidayBg = this._matchHolidayBackgroundForDate(settings, dayStart, isToday);
+const dayColHolidayStyle =
+matchedHolidayBg
+? ` style="background-image: linear-gradient(rgba(0,0,0,0.32), rgba(0,0,0,0.32)), url('${matchedHolidayBg.imageUrl.replace(/'/g, "%27")}'); background-size: cover; background-position: center;"`
+: "";
+const dayColHolidayDark = matchedHolidayBg ? this._isHolidayBackgroundDark(matchedHolidayBg.imageUrl) : false;
+const isFamily = !person;
+const laneColor = isFamily ? REMINDER_COLOR : this._colorFor(person, colorMap);
+const laneName = isFamily ? this._t("day_view.family_lane", "Family") : person.name;
+const laneInitial = (laneName || "?").trim().charAt(0).toUpperCase();
+let laneEvents = [];
+if (!isFamily) {
+for (const pooled of ctx.pool) {
+if (!pooled.peopleEntities.includes(person.entity)) continue;
+const eventId = `day-${person.entity}-${laneEvents.length}-${pooled.ownerEntity}`;
+this._eventDetails[eventId] = {
+summary: pooled.ev.summary || "(untitled)",
+start: pooled.evStart,
+end: pooled.evEnd,
+allDay: this._isAllDay(pooled.ev),
+color: pooled.ownerColor,
+personName: person.name,
+calendarEntity: pooled.ownerEntity,
+description: pooled.reminderInfo.clean,
+reminderMinutesList: pooled.reminderInfo.minutesList,
+isReminder: pooled.reminderInfo.isReminder,
+location: pooled.ev.location || "",
+uid: pooled.ev.uid || null,
+};
+laneEvents.push({
+id: eventId,
+summary: pooled.ev.summary || "(untitled)",
+start: pooled.evStart,
+end: pooled.evEnd,
+allDay: this._isAllDay(pooled.ev),
+color: pooled.ownerColor,
+bg: pooled.bg,
+isReminder: pooled.reminderInfo.isReminder,
+});
+}
+}
+for (const r of ctx.remindersToday) {
+const belongsHere = isFamily ? r.isFamily : r.personName === person.name;
+if (!belongsHere) continue;
+const remColor = r.color || REMINDER_COLOR;
+const reminderId = `day-rem-${isFamily ? "family" : person.entity}-${laneEvents.length}-${r.uid}`;
+this._eventDetails[reminderId] = {
+summary: r.summary,
+start: r.due,
+end: new Date(r.due.getTime() + 60000),
+allDay: false,
+color: remColor,
+personName: isFamily ? this._t("day_view.family_lane", "Family") : person.name,
+calendarEntity: r.listEntity || this._config.reminders_entity,
+description: r.description || "",
+reminderMinutesList: [],
+isReminder: true,
+todoUid: r.uid,
+rollover: !!r.rollover,
+rolloverDays: r.rolloverDays || [],
+location: "",
+};
+laneEvents.push({
+id: reminderId,
+summary: r.summary,
+start: r.due,
+end: new Date(r.due.getTime() + 60000),
+allDay: false,
+color: remColor,
+bg: `background:${remColor};color:${this._textColorFor(remColor)}`,
+isReminder: true,
+});
+}
+laneEvents.sort((a, b) => (a.allDay === b.allDay ? a.start - b.start : a.allDay ? -1 : 1));
+const isBeforeToday = dayStart.getTime() < today.getTime();
+const greyOutPast = settings.greyOutPastEvents && (isToday || isBeforeToday);
+const nowMs = Date.now();
+const isPastEvent = (ev) => {
+if (!greyOutPast) return false;
+if (isBeforeToday) return true;
+return ev.isReminder ? ev.start.getTime() <= nowMs : ev.end.getTime() <= nowMs;
+};
+const allDay = laneEvents.filter((e) => e.allDay);
+const timed = laneEvents.filter((e) => !e.allDay);
+const allDayHtml = allDay.length
+? `<div class="all-day-row">${allDay
+.map((ev) => `<span class="all-day-chip${isPastEvent(ev) ? " past" : ""}" style="${ev.bg || `background:${ev.color}`}" data-event-id="${ev.id}">${ev.summary}</span>`)
+.join("")}</div>`
+: "";
+let hourRowsHtml = "";
+for (let h = rangeStart; h <= Math.min(rangeEnd, 23); h++) {
+const top = (h - rangeStart) * PX_PER_HOUR;
+hourRowsHtml += `<div class="hour-row" style="top:${top}px;height:${PX_PER_HOUR}px"><span class="hour-label">${this._fmtHour12(h)}</span></div>`;
+}
+const laidOut = this._layoutTimedEvents(timed);
+const tlEventsHtml = laidOut
+.map(({ ev, col, totalCols }) => {
+const clippedStartMs = Math.max(ev.start.getTime(), dayStart.getTime());
+const clippedEndMs = Math.min(ev.end.getTime(), dayEnd.getTime());
+let startMinutes = Math.round((clippedStartMs - dayStart.getTime()) / 60000);
+let endMinutes = Math.round((clippedEndMs - dayStart.getTime()) / 60000);
+startMinutes = Math.max(rangeStartMin, Math.min(startMinutes, rangeEndMin));
+endMinutes = Math.max(rangeStartMin, Math.min(endMinutes, rangeEndMin));
+if (endMinutes <= startMinutes) endMinutes = Math.min(rangeEndMin, startMinutes + 30);
+const top = ((startMinutes - rangeStartMin) / 60) * PX_PER_HOUR;
+const height = Math.max(16, ((endMinutes - startMinutes) / 60) * PX_PER_HOUR);
+const timeLabel = ev.start.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+const left = `calc(32px + (100% - 34px) * ${col} / ${totalCols})`;
+const width = `calc((100% - 34px) / ${totalCols} - 2px)`;
+return `<div class="tl-event${ev.isReminder ? " reminder-event" : ""}${isPastEvent(ev) ? " past" : ""}" style="top:${top}px;height:${height}px;left:${left};width:${width};${ev.bg || `background:${ev.color}`}" data-event-id="${ev.id}">
+<span class="tl-time">${timeLabel}</span>
+<span class="tl-summary">${ev.isReminder ? "&#128276; " : ""}${ev.summary}</span>
+</div>`;
+})
+.join("");
+const eventsHtml = `${allDayHtml}<div class="timeline" style="height:${((rangeEndMin - rangeStartMin) / 60) * PX_PER_HOUR}px">${hourRowsHtml}${tlEventsHtml}</div>`;
+return `
+<div class="day-col person-lane${dayColHolidayDark ? " holiday-bg-dark" : ""}"${dayColHolidayStyle}>
+<div class="person-lane-header">
+<div class="person-lane-avatar" style="background:${laneColor};color:${this._textColorFor(laneColor)}">${isFamily ? "&#128506;" : laneInitial}</div>
+<div class="person-lane-name">${laneName}</div>
+</div>
+<div class="events">${eventsHtml}</div>
+</div>
+`;
+}
+
+// Post-render side effect shared with Week's own _afterRenderDayColumns
+// (scroll each lane's timeline to a sensible starting hour) - Day has no
+// meal banners, so there's nothing here to mirror the drag-handler half
+// of that function.
+_afterRenderPersonLanes(ctx) {
+const { rangeStart, rangeEnd, PX_PER_HOUR, isToday } = ctx;
+const now = new Date();
+this._root.querySelectorAll(".person-lane").forEach((lane) => {
+const evEl = lane.querySelector(".events");
+if (!evEl) return;
+const nowHour = now.getHours();
+const targetHour = isToday ? Math.max(rangeStart, Math.min(rangeEnd, nowHour - 1)) : rangeStart;
+evEl.scrollTop = (targetHour - rangeStart) * PX_PER_HOUR;
+});
+}
+
+_renderDayGrid() {
+const gridEl = this._root.querySelector(".grid");
+gridEl.className = "grid mode-day";
+const ctx = this._buildDayLikeContext();
+const columns = ctx.eventPeople.length ? ctx.eventPeople : [null];
+let html = columns.map((person) => this._buildPersonLaneHtml(person, ctx)).join("");
+// The shared family reminders list (isFamily, no personName) has
+// nowhere to go among the per-person lanes above, so it gets its own
+// lane at the end - same "always show the entry point" reasoning as
+// the rest of this view, rather than silently dropping shared
+// reminders from Day view entirely.
+const hasFamilyReminders = ctx.remindersToday.some((r) => r.isFamily);
+if (hasFamilyReminders) html += this._buildPersonLaneHtml(null, ctx);
+gridEl.innerHTML = html;
+this._afterRenderPersonLanes(ctx);
 }
 _attachMealDragHandlers() {
 const root = this._root;
@@ -15492,8 +23450,75 @@ toDate.setDate(start.getDate() + toDayIndex);
 await this._moveMealPlan(this._dateKey(fromDate), fromBlockIndex, this._dateKey(toDate), toBlockIndex);
 }
 }
+
+// Minimal GUI editor for HA's native Edit Card screen, covering ONLY the
+// staticLayoutAcrossDevices config option (see the comment on
+// FamilyWeekCalendarCard.getConfigElement for why this one field, and no
+// others, gets its own editor rather than living in the in-card Settings
+// modal). Implements the lovelace card-editor contract: a hass setter, a
+// setConfig(config) that stores the current config, and a config-changed
+// CustomEvent fired whenever the checkbox is toggled.
+class FamilyWeekCalendarCardEditor extends HTMLElement {
+setConfig(config) {
+this._config = config || {};
+this._render();
+}
+set hass(hass) {
+this._hass = hass;
+this._render();
+}
+connectedCallback() {
+this._render();
+}
+// Same ha-form/schema shape as every other Family Hub card's own editor
+// (family-hub-chores-card.js's FamilyHubChoresCardEditor, etc.) - fab_position
+// lives here, in this card's own Edit Card config, same as it does on
+// every other Family Hub card, rather than in the shared Settings modal.
+_schema() {
+return [
+{
+name: "static_layout_across_devices",
+selector: { boolean: {} },
+},
+{
+name: "fab_position",
+selector: { select: { mode: "dropdown", options: [
+{ value: "dashboard", label: "Dashboard corner (default)" },
+{ value: "card", label: "This card's own corner" },
+] } },
+},
+];
+}
+_render() {
+if (!this.isConnected || !this._config) return;
+if (!this._form) {
+this._form = document.createElement("ha-form");
+this._form.addEventListener("value-changed", (e) => {
+e.stopPropagation();
+this._config = e.detail.value;
+this.dispatchEvent(new CustomEvent("config-changed", { detail: { config: this._config }, bubbles: true, composed: true }));
+});
+this.appendChild(this._form);
+}
+this._form.hass = this._hass;
+this._form.data = this._config;
+this._form.schema = this._schema();
+this._form.computeLabel = (s) => (
+s.name === "static_layout_across_devices" ? "Static layout across devices" :
+s.name === "fab_position" ? "+ button position" : undefined
+);
+this._form.computeHelper = (s) => (
+s.name === "static_layout_across_devices"
+? "When on, every device/dashboard showing this card placement shares one Week/Month view and layout, instead of each device keeping its own."
+: s.name === "fab_position"
+? "\"Dashboard corner\" pins the + button to the bottom-right of the whole screen (today's behavior). \"This card's own corner\" anchors it to the bottom-right of THIS card instead - useful when this card shares a dashboard row/column with other cards."
+: undefined
+);
+}
+}
+
 if (!customElements.get("family-week-calendar-card")) {
-// v1.110.6+: applies the Recipe Box shared-logic object above onto this
+// applies the Recipe Box shared-logic object above onto this
 // card's own prototype - see that object's own comment for why this is
 // real sharing (same Function references), not a copy.
 Object.assign(FamilyWeekCalendarCard.prototype, window.__familyHubRecipeBoxShared);
