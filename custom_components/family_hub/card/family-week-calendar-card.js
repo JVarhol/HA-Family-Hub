@@ -68,7 +68,7 @@ if (document.getElementById("family-hub-privacy-mode-style")) return;
 const styleEl = document.createElement("style");
 styleEl.id = "family-hub-privacy-mode-style";
 styleEl.textContent = `
-.fh-privacy-mode-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 2147483000; background: transparent; display: none; align-items: center; justify-content: center; font-family: inherit; pointer-events: none; }
+.fh-privacy-mode-overlay { position: fixed; z-index: 2147483000; background: transparent; display: none; align-items: center; justify-content: center; font-family: inherit; pointer-events: none; overflow: hidden; }
 .fh-privacy-mode-overlay.open { display: flex; }
 .fh-privacy-lock-btn { pointer-events: auto; background: rgba(10,10,15,0.82); border: none; border-radius: 20px; padding: 22px 30px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 10px; color: #fff; box-shadow: 0 8px 28px rgba(0,0,0,0.35); }
 .fh-privacy-lock-icon { font-size: 56px; line-height: 1; }
@@ -3004,6 +3004,12 @@ this._setupSettingsFabCoordination();
 if (!this._boundSyncHeight) this._boundSyncHeight = this._syncHeight.bind(this);
 window.addEventListener("resize", this._boundSyncHeight);
 window.addEventListener("orientationchange", this._boundSyncHeight);
+// capture:true - 'scroll' doesn't bubble, so this is the only way to
+// hear about scrolling on an ancestor scroll container (e.g. Home
+// Assistant's own dashboard body), which is exactly when the Privacy
+// Mode lock badge (see _syncPrivacyModeOverlayRect) needs to be
+// repositioned to stay pinned over this card.
+window.addEventListener("scroll", this._boundSyncHeight, { passive: true, capture: true });
 // This card no longer measures or sets its own height at all (see
 // _syncHeight's own comment - it now just fills whatever box Home
 // Assistant's layout gives it via plain CSS), so there's nothing left
@@ -3071,6 +3077,7 @@ this._countdownTickerInterval = null;
 if (this._boundSyncHeight) {
 window.removeEventListener("resize", this._boundSyncHeight);
 window.removeEventListener("orientationchange", this._boundSyncHeight);
+window.removeEventListener("scroll", this._boundSyncHeight, { capture: true });
 }
 if (this._plannerMobileMQ && this._boundPlannerMQChange) {
 if (this._plannerMobileMQ.removeEventListener) {
@@ -3159,6 +3166,13 @@ if (!this.isConnected) return;
 const rect = this.getBoundingClientRect();
 const headerOffset = Math.max(0, Math.round(rect.top));
 this.style.setProperty("--fh-header-offset", `${headerOffset}px`);
+// Keeps the Privacy Mode lock badge (a body-level element - see
+// _ensurePrivacyModeOverlay's own comment) pinned to this card's own
+// rect any time that rect might have changed - resize, orientation
+// change, or (via the scroll listener below, which also calls
+// _syncHeight through the same _boundSyncHeight) scrolling the page.
+// A no-op when the overlay doesn't exist yet/isn't open.
+this._syncPrivacyModeOverlayRect();
 }
 getCardSize() {
 return 8;
@@ -4412,14 +4426,34 @@ await this._hass.connection.sendMessagePromise({ type: "family_hub/privacy_mode/
 // injected stylesheet above), so the calendar underneath stays fully
 // visible and usable - genuinely blank, not hidden behind a panel - with
 // only the lock badge itself (pointer-events:auto) sitting on top,
-// centered. Tapping the lock opens the PIN-unlock flow; it never turns
-// Privacy Mode off by itself (see _openPrivacyModeUnlock/
-// _submitPrivacyModeUnlock for the only two ways it actually comes back
-// off: a correct PIN there, or the backend switch entity's own turn_off,
-// which needs no UI at all).
+// centered.
+//
+// Household ask: the lock badge should only ever appear over THIS
+// calendar card, never float in the middle of the whole dashboard page -
+// a household running more than one Family Hub card on a view (calendar
+// + Today + Chores, say) was seeing the lock badge center itself on the
+// browser viewport as a whole, which could land it on top of an entirely
+// unrelated card whenever the calendar card wasn't the only, or the
+// visually centered, thing on the page. Still a body-level element (same
+// escape-the-shadow-root reasoning as above - a position:fixed element
+// inside this card's own shadow DOM/host would get clipped by any
+// ancestor's overflow:hidden or transform, which Home Assistant's own
+// dashboard chrome sets in enough places that this card can't rely on
+// avoiding it), but now explicitly sized/positioned to match THIS card's
+// own getBoundingClientRect() (see _syncPrivacyModeOverlayRect) rather
+// than the CSS inset:0 the earlier version used - kept in sync on
+// connect, on every _syncHeight() call (resize/orientation change), and
+// on scroll (see the window-level listeners near _boundSyncHeight).
+//
+// Tapping the lock opens the PIN-unlock flow; it never turns Privacy
+// Mode off by itself (see _openPrivacyModeUnlock/_submitPrivacyModeUnlock
+// for the only two ways it actually comes back off: a correct PIN there,
+// or the backend switch entity's own turn_off, which needs no UI at
+// all).
 _ensurePrivacyModeOverlay() {
 if (this._privacyModeOverlayEl && this._privacyModeOverlayEl.isConnected) {
 this._syncPrivacyOverlayThemeVars(this._privacyModeOverlayEl);
+this._syncPrivacyModeOverlayRect();
 return this._privacyModeOverlayEl;
 }
 const el = document.createElement("div");
@@ -4427,8 +4461,27 @@ el.className = "fh-privacy-mode-overlay";
 document.body.appendChild(el);
 this._privacyModeOverlayEl = el;
 this._syncPrivacyOverlayThemeVars(el);
+this._syncPrivacyModeOverlayRect();
 this._renderPrivacyOverlayLockView();
 return el;
+}
+// Positions/sizes the body-level lock overlay to match THIS card's own
+// current on-screen rect, so the lock badge it centers only ever appears
+// over this calendar card - see _ensurePrivacyModeOverlay's own comment
+// for why a body-level element needs this instead of plain CSS. A
+// position:fixed element's top/left are already viewport-relative, same
+// coordinate space getBoundingClientRect() returns, so no scroll-offset
+// math is needed - just re-read and re-apply the rect whenever the card
+// might have moved on screen (connect, resize/orientation change via
+// _syncHeight, and scroll).
+_syncPrivacyModeOverlayRect() {
+const el = this._privacyModeOverlayEl;
+if (!el || !this.isConnected) return;
+const rect = this.getBoundingClientRect();
+el.style.top = `${Math.round(rect.top)}px`;
+el.style.left = `${Math.round(rect.left)}px`;
+el.style.width = `${Math.max(0, Math.round(rect.width))}px`;
+el.style.height = `${Math.max(0, Math.round(rect.height))}px`;
 }
 // A body-level element like this overlay sits outside this card's own
 // shadow DOM (same escape-the-shadow-root reasoning as the overlay
@@ -9739,7 +9792,7 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .tl-event .tl-time { display: block; font-weight: 700; opacity: 0.85; font-size: 9px; line-height: 1.2; }
 .tl-event .tl-summary { font-weight: 700; white-space: normal; overflow-wrap: break-word; word-break: break-word; line-height: 1.2; }
 .tl-event.reminder-event, .event.reminder-event { border: 2px dashed rgba(128,128,128,0.55); }
-/* "grey out already-passed events/reminders" setting (opt-in - see
+/* "dim already-passed events/reminders" setting (opt-in - see
    _buildDayColumnHtml's isPastEvent). Today's column greys out event by
    event as each one ends; v144.9+, any earlier day greys out entirely.
    Purely visual: opacity only, cursor/pointer-events untouched, so a
@@ -10293,6 +10346,9 @@ comes later in paint order. */
 .btn-clear { background: var(--fc-accent3); color: #fff8ea; }
 .btn-cancel { background: var(--fc-surface-alt); color: var(--fc-text); }
 .settings-debug-btn { width: 100%; min-height: 40px; border-radius: 10px; border: none; background: var(--fc-surface-alt); color: var(--fc-text); font-size: 13px; font-weight: 700; cursor: pointer; margin-bottom: 14px; box-shadow: var(--fc-shadow); }
+.settings-backup-now-btn { width: 100%; min-height: 40px; border-radius: 10px; border: none; background: var(--fc-surface-alt); color: var(--fc-text); font-size: 13px; font-weight: 700; cursor: pointer; margin-bottom: 6px; box-shadow: var(--fc-shadow); }
+.settings-backup-now-status { font-size: 12px; color: var(--fc-text-secondary); margin-bottom: 14px; min-height: 14px; }
+.settings-backup-now-status.is-error { color: #b5583c; font-weight: 600; }
 .loved-box { width: min(92vw, 480px); }
 /* Wider than the other loved-box-based modals - each ingredient row here
    packs a raw-text input, amount field, unit select, product select, and a
@@ -10435,6 +10491,10 @@ instead of the usual stacked field layout. */
 .add-event-tab-btn { flex: 1 1 0; min-height: 40px; padding: 8px 10px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
 .add-event-tab-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
 .add-event-tab-panel { display: flex; flex-direction: column; gap: 12px; }
+.debug-actions { display: flex; gap: 8px; margin-bottom: 8px; }
+.debug-copy-btn, .debug-export-btn { flex: 1 1 0; min-height: 40px; border-radius: 10px; border: none; background: var(--fc-surface-alt); color: var(--fc-text); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
+.debug-status { font-size: 12px; color: var(--fc-text-secondary); margin-bottom: 8px; min-height: 14px; }
+.debug-status.is-error { color: #b5583c; font-weight: 600; }
 .debug-content { font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 .debug-content .dbg-cal { margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed var(--fc-border); }
 .debug-content .dbg-err { color: #b5583c; font-weight: 700; }
@@ -11129,6 +11189,11 @@ instead of the usual stacked field layout. */
 <div class="modal-box debug-box">
 <button class="modal-close debug-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
 <h2 data-i18n="settings.debug_info">Debug Info</h2>
+<div class="debug-actions">
+<button type="button" class="debug-copy-btn">&#128203; <span data-i18n="settings.debug_copy">Copy</span></button>
+<button type="button" class="debug-export-btn">&#128190; <span data-i18n="settings.debug_export">Export to file</span></button>
+</div>
+<div class="debug-status"></div>
 <div class="debug-content"></div>
 </div>
 </div>
@@ -11144,6 +11209,8 @@ instead of the usual stacked field layout. */
 <button class="modal-close settings-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
 <h2>&#9881;&#65039; <span data-i18n="settings.heading">Settings</span></h2>
 <button type="button" class="settings-debug-btn">&#128027; <span data-i18n="settings.debug_info">Debug Info</span></button>
+<button type="button" class="settings-backup-now-btn admin-only-setting">&#128190; <span data-i18n="settings.backup_now">Back up now</span></button>
+<div class="settings-backup-now-status admin-only-setting"></div>
 <div class="settings-tabs">
 <button type="button" class="settings-tab-btn active" data-settings-tab="general" data-i18n="settings.tab_general">General</button>
 <button type="button" class="settings-tab-btn" data-settings-tab="notifications" data-i18n="settings.tab_users">Users</button>
@@ -11261,12 +11328,12 @@ instead of the usual stacked field layout. */
 </div>
 </div>
 <div class="field admin-only-setting">
-<label data-i18n="settings.grey_out_label">Grey out events/reminders that have already passed</label>
+<label data-i18n="settings.grey_out_label">Dim events/reminders that have already passed</label>
 <div class="size-btn-row">
 <button type="button" class="size-btn grey-out-past-btn" data-value="off" data-i18n="common.off">Off</button>
 <button type="button" class="size-btn grey-out-past-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
-<div class="remind-hint" data-i18n="settings.grey_out_hint">Today's events grey out one by one as they end; any earlier day is greyed out entirely, since the whole day is already over.</div>
+<div class="remind-hint" data-i18n="settings.grey_out_hint">Today's events dim one by one as they end; any earlier day is dimmed entirely, since the whole day is already over.</div>
 </div>
 <div class="field">
 <label data-i18n="settings.top_bar_style_label">Calendar top bar style — this device only</label>
@@ -11276,16 +11343,6 @@ instead of the usual stacked field layout. */
 </div>
 <div class="remind-hint" data-i18n="settings.top_bar_style_hint">Minimal hides the top bar (Settings/Week/Month/Edit Meals/Suggestions/Recipe Box/More) to save space on a small device - Settings moves into the + button's menu instead, right alongside Calendar Entry/Reminder/Meal Suggestion/Recipe. Saved to THIS device/browser only, like the Days shown/Month button settings above - choosing Minimal here won't affect any other Family Hub tablet or screen in the household. (Becomes shared household-wide instead if this card's own "Static layout" config option, set from its Edit Card screen, is on.)</div>
 </div>
-</div>
-</div>
-<div class="field admin-only-setting">
-<button type="button" class="accordion-toggle" data-target="reminders-body">
-<span class="theme-section-label" data-i18n="settings.section_reminders">Reminders</span>
-<span class="accordion-chevron">&#9660;</span>
-</button>
-<div class="accordion-body" id="reminders-body">
-<div class="people-hint reminders-hint-text">Reminders (from the &#128276; tab of the Add Event modal) are saved as Home Assistant to-do items in <code class="reminders-entity-label"></code> - not events on your calendar. Mark them done, edit them, or reschedule them anytime from Home Assistant's own To-do UI (or the &#9989; Mark done button in the event-info popup), independent of Google Calendar or whatever your other calendars are backed by. Who gets notified about them is set per-person under the Users tab.</div>
-<div class="add-event-warn reminders-entity-missing-warn" style="display:none"></div>
 </div>
 </div>
 <div class="field admin-only-setting">
@@ -12796,6 +12853,8 @@ this._wireRolldaysToggle(root.querySelector(".add-event-reminder-rolldays"));
 root.querySelector(".debug-close").addEventListener("click", () => {
 root.querySelector(".debug-overlay").classList.remove("open");
 });
+root.querySelector(".debug-copy-btn").addEventListener("click", () => this._copyDebugInfo());
+root.querySelector(".debug-export-btn").addEventListener("click", () => this._exportDebugInfo());
 root.querySelector(".event-info-close").addEventListener("click", () => {
 root.querySelector(".event-info-overlay").classList.remove("open");
 this._eventInfoOpenId = null;
@@ -13007,9 +13066,14 @@ root.querySelector(".settings-cancel").addEventListener("click", () => this._clo
 root.querySelector(".settings-save").addEventListener("click", () => this._saveSettings());
 root.querySelector(".settings-debug-btn").addEventListener("click", () => {
 this._closeSettings();
+// A fresh fetch every time the panel is opened - see _renderDebug's own
+// comment on why this is the one place _debugServerInfo gets cleared
+// (not on every periodic re-render while the panel stays open).
+this._debugServerInfo = null;
 this._renderDebug();
 this._openModal(root.querySelector(".debug-overlay"));
 });
+root.querySelector(".settings-backup-now-btn").addEventListener("click", () => this._backupSettingsNow());
 root.querySelector(".this-device-save-btn").addEventListener("click", () => this._saveThisDeviceName());
 root.querySelector(".this-device-identify-btn").addEventListener("click", () => this._showIdentifyModal());
 root.querySelector(".device-settings-identify-all-btn").addEventListener("click", () => this._identifyAllDevices());
@@ -14859,33 +14923,6 @@ this._settingsKioskLoginUserIdsDraft = Array.isArray(settings.kioskLoginEnabledU
 this._notifyProfileEditingUserId = null;
 this._notifyDevicesEditIdx = null;
 this._setSettingsTab("general");
-// Deliberately NOT swept by _applyTranslations() (unlike every other
-// static label in this tab) - this hint has a nested <code> element
-// (.reminders-entity-label, repopulated with the actual entity id right
-// below) that a plain textContent-replace would silently delete. The
-// translated strings below carry that same <code> tag embedded verbatim
-// in the prose - translators keep it in place, same idiom as
-// strings.json's own {member_name}-style placeholders elsewhere.
-const remindersHintEl = root.querySelector(".reminders-hint-text");
-if (remindersHintEl) {
-remindersHintEl.innerHTML = this._t(
-"settings.reminders_hint_html",
-'Reminders (from the &#128276; tab of the Add Event modal) are saved as Home Assistant to-do items in <code class="reminders-entity-label"></code> - not events on your calendar. Mark them done, edit them, or reschedule them anytime from Home Assistant\'s own To-do UI (or the &#9989; Mark done button in the event-info popup), independent of Google Calendar or whatever your other calendars are backed by. Who gets notified about them is set per-person under the Users tab.'
-);
-}
-const remindersEntityLabel = root.querySelector(".reminders-entity-label");
-if (remindersEntityLabel) remindersEntityLabel.textContent = this._config.reminders_entity;
-const remindersMissingWarn = root.querySelector(".reminders-entity-missing-warn");
-if (remindersMissingWarn) {
-const entityId = this._config.reminders_entity;
-const missing = this._hass && entityId && !this._hass.states[entityId];
-if (missing) {
-remindersMissingWarn.textContent = `⚠️ This entity doesn't exist in Home Assistant yet, so reminders can't be saved until it does. Create a to-do list with that entity id (Settings → Devices & Services → Add Integration → Local To-do), or update reminders_entity in this card's configuration to point at a to-do list you already have.`;
-remindersMissingWarn.style.display = "";
-} else {
-remindersMissingWarn.style.display = "none";
-}
-}
 this._renderPeopleSettings(this._settingsPeopleDraft);
 this._renderHolidayBackgroundsSettings(this._settingsHolidayBackgroundsDraft);
 this._updateSettingsBlockVisibility(count);
@@ -14933,7 +14970,7 @@ saveStatusEl.textContent = "";
 saveStatusEl.classList.remove("is-error");
 }
 // Every section that isn't on that whitelist (household
-// calendar management, the informational Reminders accordion, scroll
+// calendar management, scroll
 // lock, Menu Blocks, Chores/Rewards/Routines, Countdown, Daily Digest,
 // Grocy, Screen Saver, the Notification tap destination field, and Add a
 // person) is tagged .admin-only-setting directly in the template above,
@@ -17090,6 +17127,30 @@ lines.push(
 `Viewport: innerHeight=${window.innerHeight}, visualViewport.height=${vv ? Math.round(vv.height) : "n/a"}, host top=${Math.round(rect.top)}, host height=${Math.round(rect.height)}, host bottom=${Math.round(rect.bottom)}`
 );
 lines.push("");
+// Server-side feature inventory (version, chores/rewards/routines/goals,
+// device settings, permissions, settings history, etc.) - fetched once per
+// panel-open (see the settings-debug-btn click handler, the only place
+// this._debugServerInfo gets cleared) and cached here so repeated
+// _renderDebug calls while the panel stays open (this card's own render
+// loop re-renders it live, same as the per-person section below) don't
+// re-fetch on every tick.
+if (this._debugServerInfo) {
+lines.push(...this._formatServerDebugLines(this._debugServerInfo));
+} else if (this._debugServerInfoFailed) {
+lines.push("Family Hub version/feature info: unavailable (older backend, or Family Hub isn't set up as an integration yet - this panel still works for calendar-only diagnostics).");
+lines.push("");
+} else {
+lines.push("Family Hub version/feature info: loading…");
+lines.push("");
+this._fetchDebugInfo().then((info) => {
+if (info) {
+this._debugServerInfo = info;
+} else {
+this._debugServerInfoFailed = true;
+}
+this._renderDebug();
+});
+}
 for (const person of this._getPeople()) {
 const evs = this._privacyEventsFor(person.entity);
 const err = this._fetchErrors[person.entity];
@@ -17109,6 +17170,149 @@ const content = this._root.querySelector(".debug-content");
 content.innerHTML = lines
 .map((l) => (l.startsWith("ERROR") ? `<div class="dbg-err">${l}</div>` : `<div>${l || "&nbsp;"}</div>`))
 .join("");
+// Plain-text copy kept alongside the rendered HTML above - this is what
+// the Copy/Export buttons actually send, so they export the exact same
+// content currently on screen (including the "loading..."/"unavailable"
+// placeholder lines if the server fetch hasn't resolved yet when someone
+// exports before it finishes).
+this._lastDebugText = lines.join("\n");
+}
+_formatServerDebugLines(info) {
+const lines = [];
+lines.push(`Family Hub version: ${info.family_hub_version}`);
+lines.push(`Home Assistant version: ${info.home_assistant_version}`);
+lines.push("");
+const members = info.members || { member_user_ids_count: 0, user_profiles: [] };
+lines.push(`Members: ${members.member_user_ids_count} in memberUserIds | ${members.user_profiles.length} userProfiles entries`);
+members.user_profiles.forEach((p) => {
+lines.push(
+`  • ${p.name || "(unnamed)"} (${p.user_id}) - chores: ${p.included_in_chores === false ? "excluded" : "included"}, kiosk login: ${p.kiosk_login_enabled ? "on" : "off"}`
+);
+});
+lines.push(`Permissions granted (non-admin): ${info.permissions_granted_count}`);
+lines.push("");
+const cf = info.chores_feature || {};
+lines.push(`Chores tracked: ${cf.chores_count} | Rewards catalog: ${cf.rewards_catalog_count} item(s) | balances tracked: ${cf.rewards_balances_count}`);
+lines.push(
+`Routines: ${cf.routines_enabled ? "enabled" : "disabled"} (${cf.routines_items_count} item(s)) | Goals: ${cf.goals_count} (in Chores: ${cf.goals_shown_in_chores ? "yes" : "no"}, in Rewards: ${cf.goals_shown_in_rewards ? "yes" : "no"}) | Timers running now: ${cf.timers_running}`
+);
+lines.push("");
+const pantry = info.pantry || {};
+lines.push(`Grocy: ${pantry.grocy_configured ? "configured" : "not configured"} | Pantry "Also Tracking" extras: ${pantry.pantry_extras_count}`);
+const ds = info.device_settings || {};
+lines.push(`Device Settings: ${ds.devices_known} known device(s), ${ds.presets_saved} saved preset(s)`);
+lines.push(`Privacy mode: ${info.privacy_mode_enabled ? "ON" : "off"}`);
+const sh = info.settings_history || {};
+lines.push(`Settings history: ${sh.snapshots_kept} snapshot(s) kept | newest: ${sh.newest_snapshot || "none yet"} | oldest: ${sh.oldest_snapshot || "none yet"}`);
+const rem = info.reminders || {};
+lines.push(`Reminders: ${rem.calendars_monitored} calendar(s) monitored, checked every ${rem.poll_minutes} min`);
+lines.push(`Daily Digest: ${info.daily_digest_enabled ? "enabled" : "disabled"}`);
+lines.push(`Event checklists active: ${info.event_checklists_count}`);
+lines.push("");
+return lines;
+}
+async _fetchDebugInfo() {
+if (!this._hass) return null;
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/get_debug_info" });
+return result && result.info && typeof result.info === "object" ? result.info : null;
+} catch (e) {
+// Family Hub not installed, or an older backend version without this
+// command yet - same resilience idiom as this file's other
+// sendMessagePromise calls (see _fetchReminderOverrides etc.). The
+// calendar-only half of this panel still works either way.
+return null;
+}
+}
+_copyDebugInfo() {
+const statusEl = this._root.querySelector(".debug-status");
+const text = this._lastDebugText || "";
+// Always logged too, same idiom as _copyRecipeImportDebugInfo - a
+// household without clipboard permissions granted (or on an older
+// webview) can still grab this from the browser's own devtools console.
+console.log("Family Hub debug info:", text);
+this._copyTextToClipboard(text)
+.then(() => {
+if (statusEl) {
+statusEl.textContent = "Copied to clipboard - paste it wherever you're sending it.";
+statusEl.classList.remove("is-error");
+}
+})
+.catch(() => {
+if (statusEl) {
+statusEl.textContent = "Couldn't copy automatically - the same debug info was logged to the browser console instead (right-click the page > Inspect > Console).";
+statusEl.classList.add("is-error");
+}
+});
+}
+_exportDebugInfo() {
+const statusEl = this._root.querySelector(".debug-status");
+const text = this._lastDebugText || "";
+const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+const filename = `family-hub-debug-${stamp}.txt`;
+try {
+this._downloadTextFile(filename, text);
+if (statusEl) {
+statusEl.textContent = `Saved ${filename} to your downloads.`;
+statusEl.classList.remove("is-error");
+}
+} catch (e) {
+console.log("Family Hub debug info:", text);
+if (statusEl) {
+statusEl.textContent = "Couldn't save a file here - the same debug info was logged to the browser console instead (right-click the page > Inspect > Console).";
+statusEl.classList.add("is-error");
+}
+}
+}
+_downloadTextFile(filename, text) {
+const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+const url = URL.createObjectURL(blob);
+const link = document.createElement("a");
+link.href = url;
+link.download = filename;
+document.body.appendChild(link);
+link.click();
+document.body.removeChild(link);
+// Freed on a short delay rather than immediately - some browsers (older
+// in-kiosk webviews especially) start the actual download
+// asynchronously after click(), and revoking the object URL too early
+// can abort it before the browser's finished reading from it.
+setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+async _backupSettingsNow() {
+// Manual counterpart to the hourly automatic Settings-history capture -
+// see _ws_backup_settings_now's own docstring in __init__.py. Always
+// saves a new snapshot (never skipped as "unchanged" the way the hourly
+// one can be), because pressing this button is itself a signal someone
+// wants a guaranteed restore point right now.
+const btn = this._root.querySelector(".settings-backup-now-btn");
+const statusEl = this._root.querySelector(".settings-backup-now-status");
+if (!this._hass) return;
+if (btn) btn.disabled = true;
+if (statusEl) {
+statusEl.textContent = "Backing up…";
+statusEl.classList.remove("is-error");
+}
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/backup_settings_now" });
+if (statusEl) {
+statusEl.textContent = "Backed up just now - find it under Settings > Devices & Services > Family Hub > Configure > Restore a backup.";
+statusEl.classList.remove("is-error");
+}
+// The Debug Info panel's own Settings History line (snapshot count /
+// newest timestamp) would otherwise keep showing stale pre-backup
+// numbers until that panel is closed and reopened - clear the cached
+// server info so its next open fetches fresh.
+this._debugServerInfo = null;
+this._debugServerInfoFailed = false;
+} catch (e) {
+if (statusEl) {
+statusEl.textContent = "Couldn't back up right now - try again in a moment, or use a full Home Assistant backup instead (Settings > System > Backups).";
+statusEl.classList.add("is-error");
+}
+} finally {
+if (btn) btn.disabled = false;
+}
 }
 _eventOverrideKey(detail) {
 const startTs = Math.floor(detail.start.getTime() / 1000);
@@ -22116,8 +22320,8 @@ dayEvents.sort((a, b) => (a.allDay === b.allDay ? a.start - b.start : a.allDay ?
 // identical isPastEvent logic rather than shared, since that helper is a
 // closure over that function's own dayStart/dayEnd/today/isBeforeToday -
 // see its own comment for the today-vs-earlier-day distinction (today's
-// events greyed out one at a time as each ends; an earlier day is
-// greyed out entirely, since the whole day is already over).
+// events dimmed one at a time as each ends; an earlier day is
+// dimmed entirely, since the whole day is already over).
 const isBeforeToday = dayStart.getTime() < today.getTime();
 const greyOutPast = settings.greyOutPastEvents && (isToday || isBeforeToday);
 const nowMs = Date.now();
@@ -22618,7 +22822,7 @@ isReminder: true,
 }
 }
 dayEvents.sort((a, b) => (a.allDay === b.allDay ? a.start - b.start : a.allDay ? -1 : 1));
-// "grey out already-passed events/reminders" setting: purely a
+// "dim already-passed events/reminders" setting: purely a
 // visual "where am I in the day" aid, so it never disables clicking/
 // interacting with the greyed-out pill - see the .past CSS rule, which
 // only touches opacity. A future day's events are never greyed (nothing

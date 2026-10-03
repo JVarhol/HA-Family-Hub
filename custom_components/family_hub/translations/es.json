@@ -124,8 +124,6 @@
       "fab_position_hint": "\"Esquina del panel\" fija el botón + en la esquina inferior derecha de toda la pantalla (comportamiento actual). \"Esquina de esta tarjeta\" lo ancla en su lugar en la esquina inferior derecha de ESTA tarjeta - útil cuando esta tarjeta comparte fila/columna del panel con otras tarjetas, para que el botón no quede flotando en una esquina que no le corresponde.",
       "small_screen_mode_label": "Modo pantalla pequeña — solo este dispositivo",
       "small_screen_mode_hint": "Oculta la barra superior (Ajustes/Semana/Mes/Editar comidas/Sugerencias/Recetario/Más) para ahorrar espacio en un dispositivo pequeño - Ajustes pasa al menú del botón + en su lugar, junto a Evento de calendario/Recordatorio/Sugerencia de comida/Receta. Se guarda solo en ESTE dispositivo/navegador, como los ajustes de Días mostrados/Botón Mes de arriba - activarlo aquí no afecta a ninguna otra tableta o pantalla de Family Hub en el hogar.",
-      "section_reminders": "Recordatorios",
-      "reminders_hint_html": "Los recordatorios (desde la pestaña 🔔 de la ventana Añadir evento) se guardan como tareas de Home Assistant en <code class=\"reminders-entity-label\"></code> - no como eventos en tu calendario. Márcalos como hechos, edítalos o reprográmalos en cualquier momento desde la propia interfaz de tareas de Home Assistant (o el botón ✅ Marcar hecho en la ventana de información del evento), independientemente de Google Calendar o de qué respalde a tus otros calendarios. Quién recibe notificaciones sobre ellos se configura por persona en la pestaña Usuarios.",
       "lock_scroll_label": "Bloquear el desplazamiento vertical",
       "unlocked": "Desbloqueado",
       "locked": "Bloqueado",

@@ -89,12 +89,13 @@
           "grocy": "Grocy",
           "test_notify": "Test a notification",
           "upcoming": "Upcoming notifications",
+          "restore_backup": "Restore a backup",
           "update": "Update Family Hub"
         }
       },
       "settings": {
         "title": "Family Hub Settings",
-        "description": "Most Family Hub settings - theme, per-person notifications, Chores & Rewards options, the screensaver, and more - live inside the Family Hub calendar card itself, not here. Open the dashboard where the card is added, and tap the \u2699\ufe0f Settings button in the card's top-right corner. (Calendar reminders, Grocy, and updates are configured from this Configure menu instead - see the other options here.)"
+        "description": "Most Family Hub settings - theme, per-person notifications, Chores & Rewards options, the screensaver, and more - live inside the Family Hub calendar card itself, not here. Open the dashboard where the card is added, and tap the ⚙️ Settings button in the card's top-right corner. (Calendar reminders, Grocy, and updates are configured from this Configure menu instead - see the other options here.)"
       },
       "grocy": {
         "title": "Grocy",
@@ -125,22 +126,64 @@
         "title": "Upcoming notifications",
         "description": "{summary}"
       },
+      "restore_backup": {
+        "title": "Backups",
+        "description": "Restore a saved snapshot, export one to a file, or import a snapshot from a file.",
+        "menu_options": {
+          "restore_backup_pick": "Restore a snapshot",
+          "export_backup": "Export a snapshot to a file",
+          "import_backup": "Import a snapshot from a file"
+        }
+      },
+      "restore_backup_confirm": {
+        "title": "Restore a backup",
+        "description": "Restoring the snapshot from {when}. This will replace your current Users, Permissions, calendars, and other household Settings. A safety snapshot of what you have right now will be taken automatically first.\n\nWould you also like to restore and push out each device's own saved settings (view/layout, screen saver, etc.)? This is off by default - most of the time you only want the household Settings restored, not every tablet's individual display settings rolled back too.",
+        "data": {
+          "push_device_settings": "Also restore and push per-device settings"
+        }
+      },
       "update": {
         "title": "Update Family Hub",
         "description": "Install a new family_hub_vN.zip without touching the file system. The current install is backed up automatically before anything is overwritten. Home Assistant needs a restart afterward (Settings > System > Restart) to load the new code - your themes, calendars, and reminders are untouched either way.",
         "data": {
           "zip_file": "Update zip file"
         }
+      },
+      "restore_backup_pick": {
+        "title": "Restore a backup",
+        "description": "Family Hub automatically saves a snapshot of your Settings, Permissions, and Device Settings once an hour, keeping the most recent few. Pick one below to restore - a safety snapshot of the current state is always taken first, so this is never a one-way door.",
+        "data": {
+          "snapshot": "Snapshot to restore"
+        }
+      },
+      "export_backup": {
+        "title": "Export a backup",
+        "description": "Pick a snapshot to save as a file. It's written into Home Assistant's own config folder - download or copy it from there (Samba, SSH, the Studio Code Server or Terminal add-ons, etc.) to keep it somewhere safe or move it to another installation.",
+        "data": {
+          "snapshot": "Snapshot to export"
+        }
+      },
+      "import_backup": {
+        "title": "Import a backup",
+        "description": "Upload a backup file previously created with Export a backup (from this install or another one). It's added as a new snapshot you can restore - nothing changes until you pick it from Restore a snapshot afterward.",
+        "data": {
+          "backup_file": "Backup file"
+        }
       }
     },
     "abort": {
       "update_installed": "Installed version {version}. Restart Home Assistant (Settings > System > Restart) to finish loading the update.",
-      "test_sent": "Test notification sent to {target}. If it didn't arrive, check that device/service directly in Developer Tools > Actions, or check its own connectivity/registration (e.g. the Home Assistant Companion app on the phone) - Family Hub only hands off to the service, it doesn't control delivery from there."
+      "test_sent": "Test notification sent to {target}. If it didn't arrive, check that device/service directly in Developer Tools > Actions, or check its own connectivity/registration (e.g. the Home Assistant Companion app on the phone) - Family Hub only hands off to the service, it doesn't control delivery from there.",
+      "no_backups": "No Settings-history snapshots exist yet - Family Hub takes the first one automatically within an hour of this install running. If you need to recover sooner, use a full Home Assistant backup instead (Settings > System > Backups).",
+      "restore_done": "Restored the snapshot from {when}. Per-device settings pushed live: {devices}. A safety snapshot of what you had right before this restore was saved automatically.",
+      "export_done": "Exported the snapshot from {when} to {path}. Download or copy that file from Home Assistant's config folder to keep it somewhere safe.",
+      "import_done": "Imported the snapshot from {when}. It's now available to restore from Restore a snapshot - importing it here didn't change anything yet."
     },
     "error": {
       "update_failed": "Couldn't install the update: {error}",
       "invalid_target": "\"{target}\" isn't a valid notify target - it should look like notify.mobile_app_something.",
-      "test_failed": "Couldn't send the test notification: {error}"
+      "test_failed": "Couldn't send the test notification: {error}",
+      "invalid_backup_file": "That file doesn't look like a Family Hub backup export: {error}. Make sure you're uploading a .json file created by Family Hub's own Export a backup step."
     }
   },
   "device_automation": {
@@ -231,7 +274,7 @@
       "countdown_use": "Use as countdown",
       "countdown_remove": "Remove from countdown",
       "delete": "Delete",
-      "checking": "Checking\u2026",
+      "checking": "Checking…",
       "block_fallback": "Block %n%",
       "replace_meal_confirm": "%block% already has \"%existing%\" planned. Replace it with \"%new%\"?",
       "delete_unsupported_btn": "Delete (unsupported)",
@@ -239,46 +282,47 @@
       "delete_unsupported_alert": "Delete is not supported with your current calendar integration. Please use %integration% to delete this event.",
       "delete_event_btn": "Delete event",
       "delete_confirm": "Delete \"%summary%\"? This can't be undone here - it removes the event from %person%'s calendar.",
-      "deleting": "Deleting\u2026",
+      "deleting": "Deleting…",
       "delete_failed": "Couldn't delete this event."
     },
     "settings": {
       "heading": "Settings",
       "debug_info": "Debug Info",
+      "debug_copy": "Copy",
+      "debug_export": "Export to file",
+      "backup_now": "Back up now",
       "tab_general": "General",
       "tab_users": "Users",
       "section_calendars": "Calendars",
-      "calendars_hint": "Tap \u23f3 on a calendar to include its events in the countdown banner. Use \u2795 Add badge to show a small bubble (like \"N\", in that calendar's color) on days with events matching a keyword, and optionally hide events matching another keyword. Who gets notified about a calendar's events/reminders is set per-person under the Users tab, not here.",
+      "calendars_hint": "Tap ⏳ on a calendar to include its events in the countdown banner. Use ➕ Add badge to show a small bubble (like \"N\", in that calendar's color) on days with events matching a keyword, and optionally hide events matching another keyword. Who gets notified about a calendar's events/reminders is set per-person under the Users tab, not here.",
       "add_calendar": "+ Add calendar",
       "default_view_label": "Default view",
-      "layout_presets_label": "Layout ideas \u2014 this device only (tap one to fill in the fields below, then Save)",
+      "layout_presets_label": "Layout ideas — this device only (tap one to fill in the fields below, then Save)",
       "layout_preset_week_name": "Week",
-      "layout_preset_week_desc": "One row, all 7 days at a glance \u2014 the classic view",
+      "layout_preset_week_desc": "One row, all 7 days at a glance — the classic view",
       "layout_preset_portrait_name": "Portrait",
-      "layout_preset_portrait_desc": "Same 7 days split into 2 rows \u2014 bigger text for a tall or portrait-mounted screen",
+      "layout_preset_portrait_desc": "Same 7 days split into 2 rows — bigger text for a tall or portrait-mounted screen",
       "layout_preset_agenda_name": "Agenda",
-      "layout_preset_agenda_desc": "A scrolling list instead of a grid \u2014 best for small screens or a quick glance",
+      "layout_preset_agenda_desc": "A scrolling list instead of a grid — best for small screens or a quick glance",
       "layout_preset_two_week_name": "Two-Week Ahead",
-      "layout_preset_two_week_desc": "14 days across 2 rows \u2014 plan meals and activities further out",
-      "week_button_shows_label": "Week button shows \u2014 this device only",
+      "layout_preset_two_week_desc": "14 days across 2 rows — plan meals and activities further out",
+      "week_button_shows_label": "Week button shows — this device only",
       "planner": "Planner",
-      "days_shown_label": "Days shown in Week view \u2014 this device only (smaller displays: fewer columns)",
-      "month_button_shows_label": "Month button shows \u2014 this device only",
+      "days_shown_label": "Days shown in Week view — this device only (smaller displays: fewer columns)",
+      "month_button_shows_label": "Month button shows — this device only",
       "month_plus_day": "Month + Day",
-      "show_hours_label": "Show hours of the day (timeline) \u2014 this device only",
+      "show_hours_label": "Show hours of the day (timeline) — this device only",
       "timeline_range_label": "Timeline range",
-      "grey_out_label": "Grey out events/reminders that have already passed",
-      "grey_out_hint": "Today's events grey out one by one as they end; any earlier day is greyed out entirely, since the whole day is already over.",
+      "grey_out_label": "Dim events/reminders that have already passed",
+      "grey_out_hint": "Today's events dim one by one as they end; any earlier day is dimmed entirely, since the whole day is already over.",
       "fab_position_label": "+ button position",
       "fab_dashboard_corner": "Dashboard corner",
       "fab_card_corner": "This card's corner",
       "fab_position_hint": "\"Dashboard corner\" pins the + button to the bottom-right of the whole screen (today's behavior). \"This card's corner\" anchors it to the bottom-right of THIS card instead - useful when this card shares a dashboard row/column with other cards, so the button doesn't float off in a corner unrelated to it.",
-      "top_bar_style_label": "Calendar top bar style \u2014 this device only",
+      "top_bar_style_label": "Calendar top bar style — this device only",
       "top_bar_style_normal": "Normal",
       "top_bar_style_minimal": "Minimal",
       "top_bar_style_hint": "Minimal hides the top bar (Settings/Week/Month/Edit Meals/Suggestions/Recipe Box/More) to save space on a small device - Settings moves into the + button's menu instead, right alongside Calendar Entry/Reminder/Meal Suggestion/Recipe. Saved to THIS device/browser only, like the Days shown/Month button settings above - choosing Minimal here won't affect any other Family Hub tablet or screen in the household.",
-      "section_reminders": "Reminders",
-      "reminders_hint_html": "Reminders (from the \ud83d\udd14 tab of the Add Event modal) are saved as Home Assistant to-do items in <code class=\"reminders-entity-label\"></code> - not events on your calendar. Mark them done, edit them, or reschedule them anytime from Home Assistant's own To-do UI (or the \u2705 Mark done button in the event-info popup), independent of Google Calendar or whatever your other calendars are backed by. Who gets notified about them is set per-person under the Users tab.",
       "lock_scroll_label": "Lock vertical scrolling",
       "unlocked": "Unlocked",
       "locked": "Locked",
@@ -319,13 +363,13 @@
       "custom_countdown_label": "Custom countdown items",
       "add_btn": "+ Add",
       "cycle_countdown_label": "Cycle through all upcoming countdown items",
-      "cycle_countdown_hint": "Add more than one item above (or mark events/reminders \"Use as countdown\") to see this in action \u2014 with only one item there's nothing to cycle through.",
+      "cycle_countdown_hint": "Add more than one item above (or mark events/reminders \"Use as countdown\") to see this in action — with only one item there's nothing to cycle through.",
       "section_daily_digest": "Daily Digest",
-      "digest_hint": "Sends one notification each morning summarizing today's events, meals, and due reminders \u2014 independent of anyone having the dashboard open. Who gets a digest, and what's in theirs, is set per-person under the Users tab; this just turns the feature on and picks the household's send time.",
+      "digest_hint": "Sends one notification each morning summarizing today's events, meals, and due reminders — independent of anyone having the dashboard open. Who gets a digest, and what's in theirs, is set per-person under the Users tab; this just turns the feature on and picks the household's send time.",
       "send_digest_label": "Send daily digest",
       "send_at_label": "Send at",
       "section_grocy": "Grocy",
-      "grocy_hint": "Connect Grocy itself under Settings \u2192 Devices & Services \u2192 Family Hub \u2192 Configure \u2192 Grocy - the toggles below only control which optional Grocy-powered features show up on the card once it's connected. Everything here is off by default.",
+      "grocy_hint": "Connect Grocy itself under Settings → Devices & Services → Family Hub → Configure → Grocy - the toggles below only control which optional Grocy-powered features show up on the card once it's connected. Everything here is off by default.",
       "track_expiring_label": "Track expiring items",
       "track_expiring_hint": "Adds an \"Expiring Soon\" list under the More menu. Whether it's also offered in anyone's Daily Digest is set under the Users tab once this is on.",
       "track_low_stock_label": "Track low stock",
@@ -425,8 +469,8 @@
       "send_test_digest_hint": "Sends what's currently checked above (even if not Saved yet) to this person's notify targets, right now - handy for checking a device actually gets it and previewing today's content.",
       "section_kiosk_pin": "Kiosk PIN login",
       "kiosk_enable_login": "Enable logging in as this person on a shared kiosk display",
-      "kiosk_login_hint": "Once enabled, a \ud83d\udd12 Login button appears on the Chores and Rewards boards - typing this person's PIN there runs those boards as them for a bit (auto logs out after 45 seconds idle) to claim their own rewards, mark their own chores done, or (if they have approval permission) approve/reject others'.",
-      "kiosk_set_pin": "Set / change PIN\u2026",
+      "kiosk_login_hint": "Once enabled, a 🔒 Login button appears on the Chores and Rewards boards - typing this person's PIN there runs those boards as them for a bit (auto logs out after 45 seconds idle) to claim their own rewards, mark their own chores done, or (if they have approval permission) approve/reject others'.",
+      "kiosk_set_pin": "Set / change PIN…",
       "section_permissions": "Permissions",
       "permissions_admin_hint": "Only visible to a Home Assistant admin account - everyone can still do their own chores and claim anything from the Chore Bin regardless of these. Changes here save immediately, not on the Done button below.",
       "set_kiosk_pin_title": "Set kiosk PIN",
@@ -435,7 +479,7 @@
       "save_pin": "Save PIN",
       "screensaver_logins_heading": "Screen Saver logins",
       "screensaver_logins_hint": "Check every Home Assistant login that should show the screensaver - everyone else keeps browsing without it, even though Settings itself is shared by the whole household.",
-      "screensaver_logins_empty": "No other Home Assistant user accounts found besides yours - create one for the wall-mounted device (Settings \u2192 People \u2192 Users) if you want the screensaver on there but not on your own phone.",
+      "screensaver_logins_empty": "No other Home Assistant user accounts found besides yours - create one for the wall-mounted device (Settings → People → Users) if you want the screensaver on there but not on your own phone.",
       "screensaver_widgets_label": "Widgets on the screensaver",
       "screensaver_widgets_none": "No widgets yet",
       "n_widgets": "%n% widgets",
@@ -471,10 +515,10 @@
       "three_days": "3 days",
       "five_days": "5 days",
       "seven_days": "7 days",
-      "days_shown_hint": "days (1\u201336)",
-      "current_day_first_label": "Current day always first \u2014 this device only",
-      "week_rows_label": "Rows shown at once in Week view \u2014 this device only",
-      "week_rows_hint": "rows (1\u20137)",
+      "days_shown_hint": "days (1–36)",
+      "current_day_first_label": "Current day always first — this device only",
+      "week_rows_label": "Rows shown at once in Week view — this device only",
+      "week_rows_hint": "rows (1–7)",
       "this_device_label": "This device",
       "device_name_label": "Device name",
       "device_name_placeholder": "auto",
@@ -485,7 +529,7 @@
       "section_presets": "Presets",
       "presets_hint": "Save any device's current values above as a named preset, then apply that preset to any other device below.",
       "presets_empty": "No presets saved yet - use \"Save as preset\" under any device above.",
-      "devices_loading": "Checking devices\u2026",
+      "devices_loading": "Checking devices…",
       "devices_this_device": "this device",
       "devices_never_reported": "never reported settings",
       "devices_push": "Push to this device",
@@ -516,8 +560,8 @@
       "holiday_expand_scope_day": "Just this day",
       "holiday_expand_scope_week": "This whole week",
       "holiday_expand_scope_month": "This whole month",
-      "holiday_no_custom_dates": "No custom dates yet \u2014 add one below.",
-      "holiday_uploading": "Uploading\u2026",
+      "holiday_no_custom_dates": "No custom dates yet — add one below.",
+      "holiday_uploading": "Uploading…",
       "holiday_upload_failed": "Couldn't upload that photo.",
       "holiday_predefined_new_years": "New Year's Day",
       "holiday_predefined_valentines": "Valentine's Day",
@@ -595,8 +639,8 @@
       "reward_catalog": "Reward catalog",
       "rewards_col": "Rewards",
       "rewards_toggle_title": "Show/hide the Rewards column",
-      "rm_add_someone_first": "Add someone to Family Hub first (Settings \u2192 Users) before giving them routine items.",
-      "rm_added_confirmation": "Added \"%title%\" for %person% \u2022 %category%.",
+      "rm_add_someone_first": "Add someone to Family Hub first (Settings → Users) before giving them routine items.",
+      "rm_added_confirmation": "Added \"%title%\" for %person% • %category%.",
       "rm_automate_legend": "Auto-complete trigger (optional, e.g. \"Dishwasher opened\")",
       "rm_couldnt_add": "Couldn't add this item.",
       "rm_days_hint": "Tap the days this applies to - leave them all off for every day.",
@@ -604,7 +648,7 @@
       "rm_item_title_placeholder": "Item title (e.g. Brush teeth)",
       "rm_no_approval_label": "Doesn't require approval (stars paid the moment it's checked)",
       "rm_no_items_yet": "No items yet - add one above.",
-      "rm_pick_from_library": "Pick from library\u2026 (optional)",
+      "rm_pick_from_library": "Pick from library… (optional)",
       "rm_stars_placeholder": "Stars for completing this (optional)",
       "routine_row_empty": "Nothing on today's list",
       "routine_row_empty_manage_suffix": " - manage items from the + button",
@@ -648,7 +692,7 @@
     },
     "daily_digest": {
       "title": "Daily Digest",
-      "loading": "Loading\u2026",
+      "loading": "Loading…",
       "empty": "Nothing on the calendar, no reminders due, and no meals planned for today.",
       "error": "Couldn't load your Daily Digest.",
       "section_calendar": "Today's events",
@@ -736,11 +780,11 @@
         "my_list_label": "My list (%name%)",
         "no_todo_lists_found": "No to-do lists found",
         "reminder_hint": "Saved as a to-do in Home Assistant, not an event on your calendar - fires once at this exact time, and you can mark it done or reschedule it anytime from Home Assistant's own To-do UI. Needs the Family Hub integration installed to actually notify; set reminder notify devices under Settings.",
-        "reminder_list_missing_warn": "\u26a0\ufe0f \"%entity%\" doesn't exist in Home Assistant yet, so reminders can't be saved until it does. Create a to-do list with that entity id (Settings \u2192 Devices & Services \u2192 Add Integration \u2192 Local To-do), or point this card's reminders_entity config at a to-do list you already have.",
-        "reminder_list_missing_error": "\u26a0\ufe0f \"%entity%\" doesn't exist in Home Assistant, so this reminder wasn't saved. Create a to-do list with that entity id (Settings \u2192 Devices & Services \u2192 Add Integration \u2192 Local To-do), or point the right list's config at a to-do list you already have.",
-        "calendar_missing_error": "\u26a0\ufe0f \"%entity%\" doesn't exist in Home Assistant. Check the calendars configured under Settings.",
-        "save_event_error": "\u26a0\ufe0f Couldn't save this event: %error%",
-        "save_reminder_error": "\u26a0\ufe0f Couldn't save this reminder: %error%"
+        "reminder_list_missing_warn": "⚠️ \"%entity%\" doesn't exist in Home Assistant yet, so reminders can't be saved until it does. Create a to-do list with that entity id (Settings → Devices & Services → Add Integration → Local To-do), or point this card's reminders_entity config at a to-do list you already have.",
+        "reminder_list_missing_error": "⚠️ \"%entity%\" doesn't exist in Home Assistant, so this reminder wasn't saved. Create a to-do list with that entity id (Settings → Devices & Services → Add Integration → Local To-do), or point the right list's config at a to-do list you already have.",
+        "calendar_missing_error": "⚠️ \"%entity%\" doesn't exist in Home Assistant. Check the calendars configured under Settings.",
+        "save_event_error": "⚠️ Couldn't save this event: %error%",
+        "save_reminder_error": "⚠️ Couldn't save this reminder: %error%"
       },
       "weekday_short_0": "Mon",
       "weekday_short_1": "Tue",
@@ -755,7 +799,7 @@
         "open_recipe_link": "Open recipe link",
         "due_x": "Due %time%",
         "reminder_chip": "Reminder",
-        "reminder_person_chip": "Reminder \u2022 %name%",
+        "reminder_person_chip": "Reminder • %name%",
         "mark_done": "Mark done"
       },
       "sectioned": {
@@ -781,17 +825,17 @@
       },
       "header": {
         "manage_stars_title": "Manually add or subtract stars, with a reason - for bonuses, corrections, etc. outside chores/rewards/goals",
-        "manage_stars_btn": "\u2b50 Manage stars",
+        "manage_stars_btn": "⭐ Manage stars",
         "manage_catalog_btn": "Manage catalog",
         "done_managing_btn": "Done managing"
       },
       "kiosk_login": {
-        "heading": "\ud83d\udd12 Kiosk login",
+        "heading": "🔒 Kiosk login",
         "submit": "Log in",
         "title": "Log in as a specific household member on this kiosk display",
         "logout_title": "Tap to log out of this kiosk session",
-        "logged_in_as": "\ud83d\udc64 %name% \u00b7 Log out",
-        "btn_label": "\ud83d\udd12 Login",
+        "logged_in_as": "👤 %name% · Log out",
+        "btn_label": "🔒 Login",
         "no_users": "No one is set up for kiosk login yet - an admin can enable it under Settings > Users.",
         "pick_user_first": "Pick who's logging in first.",
         "enter_pin": "Enter a PIN.",
@@ -843,7 +887,7 @@
         "cost_label": "Cost (stars)",
         "value_note_label": "What it's really worth (optional)",
         "value_note_placeholder": "$20, or 2 hrs",
-        "timer_hint": "Optional - e.g. 120 for \u201c2 hours of gaming\u201d. Using this reward starts a countdown and sends a notification when it's up. One reward timer runs at a time per person.",
+        "timer_hint": "Optional - e.g. 120 for “2 hours of gaming”. Using this reward starts a countdown and sends a notification when it's up. One reward timer runs at a time per person.",
         "timer_label": "Timer (optional - minutes)",
         "timer_placeholder": "Leave blank for no timer",
         "redeem_mode_label": "How it works",
@@ -931,7 +975,7 @@
         "stop_timer_title": "Stop this timer",
         "claim_btn": "Claim",
         "running_btn": "Running",
-        "blocked_by_other_timer_title": "You've already got \u201c%title%\u201d running",
+        "blocked_by_other_timer_title": "You've already got “%title%” running",
         "generic_reward": "a reward",
         "remove_title": "Remove",
         "not_enough_stars": "Not enough stars yet.",
@@ -957,7 +1001,7 @@
         "list_label": "List",
         "name_required": "Give the item a name.",
         "summary_label": "What do you need to do/get?",
-        "upload_photo": "Upload photo\u2026"
+        "upload_photo": "Upload photo…"
       },
       "board": {
         "drag_to_resize": "Drag to resize rows",
@@ -1026,7 +1070,7 @@
         "grocy_lists_heading": "Grocy Shopping Lists",
         "grocy_not_set_up": "Grocy isn't set up in Family Hub yet - add it under Settings &rarr; Devices &amp; Services &rarr; Family Hub &rarr; Configure &rarr; Grocy to show its shopping lists here.",
         "layout_heading": "Layout",
-        "loading": "Loading\u2026",
+        "loading": "Loading…",
         "no_grocy_lists": "No Grocy shopping lists found yet.",
         "no_todo_lists": "No to-do lists found on this Home Assistant instance yet.",
         "todo_lists_heading": "To-Do Lists",
@@ -1040,7 +1084,7 @@
         "expires_label": "Expires",
         "grocy_not_connected": "Grocy isn't connected yet.",
         "heading": "Put away",
-        "loading": "Loading\u2026",
+        "loading": "Loading…",
         "location_label": "Location",
         "no_locations": "No locations yet",
         "no_matches": "No close matches found - try a different search.",
@@ -1050,7 +1094,7 @@
         "product_label": "Product:",
         "put_away_failed": "Couldn't put that away: %error%",
         "search_btn": "Search",
-        "searching": "Searching\u2026",
+        "searching": "Searching…",
         "type_to_search": "Type a product name to search.",
         "unknown_error": "unknown error"
       },
@@ -1069,7 +1113,7 @@
         "claim": "Claim",
         "claimed": "Claimed",
         "claimed_by": "Claimed by %name%",
-        "claimed_by_you": "Claimed by you \u2013 tap to release",
+        "claimed_by_you": "Claimed by you – tap to release",
         "login_to_claim": "Log in to claim",
         "open_link": "Open link",
         "reward_badge_title": "Redeems this reward and removes it from both the wish list and the Rewards catalog",
@@ -1078,7 +1122,7 @@
       },
       "wishlist_upload": {
         "photo_added": "Photo added.",
-        "uploading": "Uploading\u2026",
+        "uploading": "Uploading…",
         "upload_failed": "Couldn't upload that photo - try a different file or paste a link instead."
       }
     },
@@ -1184,13 +1228,13 @@
     "recipe_box": {
       "add_recipe_btn": "+ Add Recipe",
       "add_recipe_title": "Add Recipe",
-      "added_to_suggestions": "\u2705 Added to Suggestions",
+      "added_to_suggestions": "✅ Added to Suggestions",
       "also_add_suggestion_suffix": " Also add to Meal Suggestions",
       "back_suffix": " Back",
       "category_label": "Category",
       "chip_all": "All",
-      "chip_loved": "\u2764\ufe0f Loved",
-      "chip_suggested": "\ud83d\udca1 Suggested",
+      "chip_loved": "❤️ Loved",
+      "chip_suggested": "💡 Suggested",
       "confirm_consume_ingredients": "Deduct this recipe's ingredients from your Grocy stock now? This can't be undone from here.",
       "confirm_delete_items": "Delete %label% from the Recipe Box?%note%",
       "confirm_delete_named": "Delete \"%name%\" from the Recipe Box?%note%",
@@ -1202,7 +1246,7 @@
       "edit_recipe_title": "Edit Recipe",
       "edit_suffix": " Edit",
       "empty_no_match": "No recipes match this search/filter.",
-      "empty_recipe_box": "Your Recipe Box is empty - tap \u201c+ Add Recipe\u201d or \u201c\ud83d\udd17 Import from a link\u201d above to get started.",
+      "empty_recipe_box": "Your Recipe Box is empty - tap “+ Add Recipe” or “🔗 Import from a link” above to get started.",
       "fewer_servings_title": "Fewer servings",
       "grid_view_title": "Grid view",
       "instructions_title": "Instructions",
@@ -1226,7 +1270,7 @@
       "note_delete_linked": " This will also delete it from Grocy.",
       "notes_label": "Notes",
       "open_in_grocy_suffix": " Open in Grocy",
-      "open_recipe_link": "\ud83d\udd17 Open recipe link",
+      "open_recipe_link": "🔗 Open recipe link",
       "photo_url_label": "Photo URL",
       "recipe_fallback": "Recipe",
       "remove_from_loved": "Remove from loved",
@@ -1243,21 +1287,21 @@
       "status_cant_reach_grocy": "Couldn't reach Grocy.",
       "status_consume_failed": "Couldn't consume this recipe's ingredients: %error%",
       "status_consumed": "Ingredients deducted from Grocy stock.",
-      "status_consuming": "Consuming ingredients in Grocy\u2026",
-      "status_grocy_not_connected": "Grocy isn't connected \u2014 set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.",
+      "status_consuming": "Consuming ingredients in Grocy…",
+      "status_grocy_not_connected": "Grocy isn't connected — set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.",
       "status_load_failed": "Couldn't load this recipe from Grocy: %error%",
-      "status_loading_recipe": "Loading recipe from Grocy\u2026",
-      "status_loading_recipes": "Loading recipes from Grocy\u2026",
+      "status_loading_recipe": "Loading recipe from Grocy…",
+      "status_loading_recipes": "Loading recipes from Grocy…",
       "suggest_for_meal": "Suggest this for a meal",
-      "suggest_this": "\ud83d\udca1 Suggest this",
+      "suggest_this": "💡 Suggest this",
       "suggest_this_suffix": " Suggest this",
       "these_n_recipes": "these %n% recipes",
-      "title_add_additional": "\ud83c\udf7d\ufe0f Add Additional Recipe",
-      "title_pick_recipe": "\ud83c\udf7d\ufe0f Pick a Recipe",
-      "title_recipe_box": "\ud83c\udf7d\ufe0f Recipe Box",
+      "title_add_additional": "🍽️ Add Additional Recipe",
+      "title_pick_recipe": "🍽️ Pick a Recipe",
+      "title_recipe_box": "🍽️ Recipe Box",
       "unknown_error": "unknown error",
       "untitled": "(untitled)",
-      "view_recipe_link": "\ud83d\udd17 View recipe",
+      "view_recipe_link": "🔗 View recipe",
       "written_out_ingredients": "Written-out ingredients list"
     },
     "active_timers": {
@@ -1285,11 +1329,11 @@
     },
     "screensaver": {
       "edit_mode_badge": "Edit-mode only",
-      "hint": "Invisible once you're done editing this dashboard - it keeps the screensaver running in the background from wherever it's placed. Screen source, idle time, and which logins it's on for are all set from the full calendar card's own Settings \u2192 Screen Saver section.",
+      "hint": "Invisible once you're done editing this dashboard - it keeps the screensaver running in the background from wherever it's placed. Screen source, idle time, and which logins it's on for are all set from the full calendar card's own Settings → Screen Saver section.",
       "return_dashboard_label": "Return to this dashboard on wake",
       "stay_on_dashboard": "Stay on this dashboard",
       "wrapped_card_unsupported": "This frontend version can't embed another card here - update Home Assistant, or use this card standalone instead.",
-      "status_not_active": "Screensaver isn't active for your current login yet - enable it under the calendar card's Settings \u2192 Screen Saver \u2192 Enable for these logins.",
+      "status_not_active": "Screensaver isn't active for your current login yet - enable it under the calendar card's Settings → Screen Saver → Enable for these logins.",
       "status_active_wakes_to": "Active for your login - wakes back to %path%.",
       "status_active_stays": "Active for your login - stays on this dashboard when woken."
     }
