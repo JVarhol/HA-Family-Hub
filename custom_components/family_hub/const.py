@@ -1568,6 +1568,19 @@ DEVICE_SETTINGS_FIELDS = {
         "type": "enum", "choices": ["on", "off"], "default": "off",
         "label": "Small screen mode", "scope": "instance",
     },
+    # The "Hidden" option of the General tab's "Calendar top bar style"
+    # picker (its "Minimal" option is familyCalendarSmallScreenModeLocal
+    # just above - this is purely the ADDITIONAL third choice, not a
+    # replacement for it) - see _getHideTopBarDevice()/_registerFab
+    # Coordinator in the card's own JS for how this ORs together with
+    # the card's own hide_top_bar config option. Added here so the admin
+    # Devices tab can see/push it remotely like every other per-device
+    # display setting, same request that already got Small screen mode
+    # and the other view/layout fields onto this list.
+    "familyCalendarHideTopBarDeviceLocal": {
+        "type": "enum", "choices": ["on", "off"], "default": "off",
+        "label": "Calendar top bar style: Hidden", "scope": "instance",
+    },
     # Unlike the free-text `device_name` ws_report
     # already carries (see device_settings_websocket_api.py's own module
     # docstring), that one is purely cosmetic display sugar the DEVICE
@@ -2030,6 +2043,20 @@ PERMISSION_SEE_WISHLIST_CLAIMS = "can_see_wishlist_claims"
 # CalendarEntityFeature.DELETE_EVENT at all, so even someone WITH this
 # permission sees the popup instead of a working button on those.
 PERMISSION_DELETE_EVENT = "can_delete_event"
+# Gates the new Edit affordance in family-week-calendar-card.js's
+# event-info popup (an Edit button opening an inline form) AND the
+# drag-to-a-different-day behavior Edit Meals mode extends to calendar
+# events - same standalone-permission shape as PERMISSION_DELETE_EVENT
+# just above, and the same "two independent questions" split: this
+# permission is whether the person is ALLOWED to edit an event at all;
+# whether it's actually POSSIBLE on this particular calendar is a
+# completely separate question answered by the update_supported flag
+# _ws_get_calendar_delete_support also now reports (CalendarEntityFeature.
+# UPDATE_EVENT, see CALENDAR_ENTITY_FEATURE_UPDATE_EVENT above). The
+# genuinely-enforced half lives server-side in __init__.py's
+# _ws_update_calendar_event, re-deriving this from the Permissions store
+# exactly like _ws_delete_calendar_event does for PERMISSION_DELETE_EVENT.
+PERMISSION_EDIT_EVENT = "can_edit_event"
 # Before this, every routine-item write (create/update/delete/reorder - see
 # chores_websocket_api.py's ws_create_routine_item/ws_update_routine_item/
 # ws_delete_routine_item/ws_reorder_routine_items) was gated on the single,
@@ -2086,6 +2113,7 @@ CHORE_PERMISSIONS = (
     PERMISSION_EDIT_MENU,
     PERMISSION_SEE_WISHLIST_CLAIMS,
     PERMISSION_DELETE_EVENT,
+    PERMISSION_EDIT_EVENT,
     PERMISSION_ROUTINES_MANAGE_OWN,
     PERMISSION_ROUTINES_MANAGE_ANY,
     PERMISSION_TOGGLE_PRIVACY_MODE,
@@ -2097,8 +2125,14 @@ CHORE_PERMISSIONS = (
 # its own state's `supported_features` attribute, which is what
 # _ws_get_calendar_delete_support (__init__.py) checks - not vendored here
 # since real Home Assistant isn't a dependency of this repo, so the bit
-# value is inlined rather than imported. Only DELETE_EVENT is needed here.
+# value is inlined rather than imported.
 CALENDAR_ENTITY_FEATURE_DELETE_EVENT = 2
+# A calendar entity implementing `async_update_event` (HA core's own
+# calendar/__init__.py) reports this bit instead/as well - checked by
+# _ws_get_calendar_delete_support (__init__.py) the same way DELETE_EVENT
+# is, so the card knows whether dragging an event to a new day (Edit
+# Meals mode) or opening its own Edit form will actually do anything.
+CALENDAR_ENTITY_FEATURE_UPDATE_EVENT = 4
 
 # Human-facing names for the "please use [INTEGRATION] app to delete this
 # event" popup (family-week-calendar-card.js's _wireEventInfoDeleteButton)

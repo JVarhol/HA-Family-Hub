@@ -343,7 +343,7 @@ this._myPermissions = (result && result.permissions) || {};
 this._myPermissions = {};
 }
 },
-async _upsertDish(name, description, link, rating, uidOverride, grocyRecipeId, category, image, checkDuplicates) {
+async _upsertDish(name, description, link, rating, uidOverride, grocyRecipeId, category, image, checkDuplicates, steps) {
 if (!name) return;
 const existing = uidOverride
 ? this._recipes.find((r) => r.uid === uidOverride)
@@ -372,6 +372,13 @@ return;
 // explicitly to actually clear one.
 const finalCategory = category !== undefined ? category : (existing ? existing.category || "" : "");
 const finalImage = image !== undefined ? image : (existing ? existing.image || "" : "");
+// v1.154.0+: steps is a local (non-Grocy) recipe's own ordered step-
+// block array (see _fhOpenStepEditor) - same "undefined means leave it
+// alone" convention as category/image above, since most _upsertDish
+// callers (a heart click, the day/menu editor's "also save this" path)
+// have no idea whether this recipe even has steps and shouldn't blank
+// them out just by never mentioning them.
+const finalSteps = steps !== undefined ? steps : (existing ? existing.steps || [] : []);
 const record = {
 uid: existing ? existing.uid : this._genId(),
 name,
@@ -381,6 +388,7 @@ rating: rating || null,
 grocyRecipeId: grocyRecipeId || null,
 category: finalCategory,
 image: finalImage,
+steps: finalSteps,
 };
 if (existing) {
 this._recipes[this._recipes.indexOf(existing)] = record;
@@ -805,7 +813,7 @@ this._renderLoved();
 _openDishDetail(recipe) {
 const root = this._root;
 this._dishDetailRecipe = recipe;
-root.querySelector(".dish-detail-title").textContent = recipe.name || this._t("recipe_box.untitled", "(untitled)");
+root.querySelector(".dish-detail-title").textContent = recipe.name || "(untitled)";
 const photo = root.querySelector(".dish-detail-photo");
 if (photo) {
 if (recipe.image) {
@@ -818,26 +826,39 @@ photo.style.display = "none";
 }
 const ratingHtml =
 (recipe.rating === "up"
-? `<span class="event-info-chip" style="background:#f2ddd4">&#10084;&#65039; ${this._t("recipe_box.loved_label_text", "Loved")}</span>`
+? `<span class="event-info-chip" style="background:#f2ddd4">&#10084;&#65039; Loved</span>`
 : recipe.rating === "down"
-? `<span class="event-info-chip" style="background:#d8e3e0">&#128078; ${this._t("recipe_box.not_a_fan_label_text", "Not a fan")}</span>`
+? `<span class="event-info-chip" style="background:#d8e3e0">&#128078; Not a fan</span>`
 : "") + (recipe.category ? `<span class="event-info-chip">${recipe.category}</span>` : "");
 root.querySelector(".dish-detail-rating").innerHTML = ratingHtml;
-root.querySelector(".dish-detail-desc").textContent = recipe.description || this._t("recipe_box.no_notes_added", "No notes added.");
+root.querySelector(".dish-detail-desc").textContent = recipe.description || "No notes added.";
+const stepsEl = root.querySelector(".dish-detail-steps");
+if (stepsEl) {
+this._dishDetailCheckedSteps = new Set();
+stepsEl.innerHTML = this._fhRenderStepBlocksHtml(recipe.steps || [], this._dishDetailCheckedSteps);
+stepsEl.querySelectorAll(".grocy-recipe-instruction-row").forEach((row) => {
+row.querySelector(".grocy-recipe-instruction-check").addEventListener("change", () => {
+const idx = Number(row.dataset.idx);
+if (row.querySelector(".grocy-recipe-instruction-check").checked) this._dishDetailCheckedSteps.add(idx);
+else this._dishDetailCheckedSteps.delete(idx);
+row.classList.toggle("checked-off", row.querySelector(".grocy-recipe-instruction-check").checked);
+});
+});
+}
 const suggestBtn = root.querySelector(".dish-detail-suggest-btn");
 if (suggestBtn) {
-suggestBtn.textContent = this._t("recipe_box.suggest_this", "\u{1F4A1} Suggest this");
+suggestBtn.textContent = "\u{1F4A1} Suggest this";
 suggestBtn.onclick = () => {
 this._suggestDish(recipe);
-suggestBtn.textContent = this._t("recipe_box.added_to_suggestions", "\u{2705} Added to Suggestions");
+suggestBtn.textContent = "\u{2705} Added to Suggestions";
 setTimeout(() => {
-suggestBtn.textContent = this._t("recipe_box.suggest_this", "\u{1F4A1} Suggest this");
+suggestBtn.textContent = "\u{1F4A1} Suggest this";
 }, 1600);
 };
 }
 const linkRow = root.querySelector(".dish-detail-link-row");
 if (recipe.link) {
-const label = recipe.grocyRecipeId ? this._t("recipe_box.view_recipe_link", "&#128279; View recipe") : this._t("recipe_box.open_recipe_link", "&#128279; Open recipe link");
+const label = recipe.grocyRecipeId ? "&#128279; View recipe" : "&#128279; Open recipe link";
 linkRow.innerHTML = `<button type="button" class="pick-loved-btn dish-detail-open-link">${label}</button>`;
 linkRow.querySelector(".dish-detail-open-link").addEventListener("click", () => {
 if (recipe.grocyRecipeId) {
@@ -874,13 +895,297 @@ new Set((this._recipes || []).map((r) => (r.category || "").trim()).filter(Boole
 ).sort((a, b) => a.localeCompare(b));
 datalist.innerHTML = categories.map((c) => `<option value="${c.replace(/"/g, "&quot;")}"></option>`).join("");
 },
-// the full in-card Grocy Recipe Viewer, moved here from being
+// v1.154.0+: new recipe step-block editor (household request: "add an
+// editor that allows you to add pictures at any step and edited recipe.
+// Allow you to add dividers, headers between step and more"). Steps are
+// now an ordered array of typed blocks - {type:"step",text}, {type:
+// "header",text}, {type:"divider"}, {type:"image",url} - rather than
+// plain strings, so instructions can be broken up with section headers,
+// visual dividers, and inline photos at any point. For a Grocy-linked
+// recipe these blocks are serialized into the same "<p><strong>
+// Preparation</strong></p>..." HTML block _renderGrocyRecipeDescription
+// already parses (see _fhParsePreparationBlocks/_fhBlocksToPreparationHtml)
+// so nothing about Grocy's own recipe storage needs to change - headers
+// become <h4>, dividers become <hr>, photos become a lone <img> inside
+// a <p>. For a local (non-Grocy) Recipe Box entry the blocks are instead
+// stored directly as a new "steps" field on the recipe record itself (see
+// _upsertDish) since that storage is schema-less already.
+_fhEscapeHtml(s) {
+return String(s == null ? "" : s)
+.replace(/&/g, "&amp;")
+.replace(/</g, "&lt;")
+.replace(/>/g, "&gt;");
+},
+_fhParsePreparationBlocks(inner) {
+const blocks = [];
+const re = /<h4>([\s\S]*?)<\/h4>|<hr\s*\/?>|<p>([\s\S]*?)<\/p>/gi;
+let m;
+while ((m = re.exec(inner || ""))) {
+if (m[1] !== undefined) {
+const text = m[1].trim();
+if (text) blocks.push({ type: "header", text });
+} else if (/^<hr/i.test(m[0])) {
+blocks.push({ type: "divider" });
+} else if (m[2] !== undefined) {
+const content = m[2].trim();
+const imgMatch = content.match(/^<img[^>]*\bsrc=["']([^"']+)["'][^>]*>$/i);
+if (imgMatch) {
+blocks.push({ type: "image", url: imgMatch[1] });
+} else if (content) {
+blocks.push({ type: "step", text: content });
+}
+}
+}
+return blocks;
+},
+_fhBlocksToPreparationHtml(blocks) {
+return (blocks || [])
+.map((b) => {
+if (b.type === "header") return `<h4>${b.text || ""}</h4>`;
+if (b.type === "divider") return "<hr>";
+if (b.type === "image") return `<p><img src="${(b.url || "").replace(/"/g, "&quot;")}"></p>`;
+return `<p>${b.text || ""}</p>`;
+})
+.join("");
+},
+_fhRenderStepBlocksHtml(blocks, checkedSteps) {
+if (!blocks || !blocks.length) return "";
+checkedSteps = checkedSteps || new Set();
+let stepNum = 0;
+const rows = blocks.map((b, idx) => {
+if (b.type === "header") {
+return `<div class="grocy-recipe-step-header">${b.text || ""}</div>`;
+}
+if (b.type === "divider") {
+return `<hr class="grocy-recipe-step-divider" />`;
+}
+if (b.type === "image") {
+return `<div class="grocy-recipe-step-image-wrap"><img class="grocy-recipe-step-image" src="${b.url || ""}" /></div>`;
+}
+stepNum++;
+const checked = checkedSteps.has(idx) ? " checked-off" : "";
+return `<label class="grocy-recipe-instruction-row${checked}" data-idx="${idx}"><input type="checkbox" class="grocy-recipe-instruction-check"${checked ? " checked" : ""} /><span class="grocy-recipe-instruction-badge">${stepNum}</span><span class="grocy-recipe-instruction-text">${b.text || ""}</span></label>`;
+});
+return `<div class="grocy-recipe-instructions-title">Instructions</div>` + rows.join("");
+},
+async _fhBlobToUploadFromFile(file) {
+let blob = file;
+let name = (file && file.name) || "photo.jpg";
+try {
+const rawDataUrl = await new Promise((resolve, reject) => {
+const reader = new FileReader();
+reader.onload = () => resolve(reader.result);
+reader.onerror = () => reject(reader.error || new Error("Couldn't read that file."));
+reader.readAsDataURL(file);
+});
+const img = await new Promise((resolve, reject) => {
+const el = new Image();
+el.onload = () => resolve(el);
+el.onerror = () => reject(new Error("Couldn't decode that image."));
+el.src = rawDataUrl;
+setTimeout(() => reject(new Error("timed out decoding image")), 1500);
+});
+const maxDim = 1600;
+const width = img.width || maxDim;
+const height = img.height || maxDim;
+const scale = Math.min(1, maxDim / Math.max(width, height));
+const canvas = document.createElement("canvas");
+canvas.width = Math.max(1, Math.round(width * scale));
+canvas.height = Math.max(1, Math.round(height * scale));
+const ctx = canvas.getContext && canvas.getContext("2d");
+if (ctx) {
+ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+const reEncoded = await new Promise((resolve) => {
+if (typeof canvas.toBlob === "function") {
+canvas.toBlob((b) => resolve(b), "image/jpeg", 0.85);
+} else {
+resolve(null);
+}
+});
+if (reEncoded) {
+blob = reEncoded;
+name = "photo.jpg";
+}
+}
+} catch (e) {
+// Best-effort only - falls through to uploading the original file.
+}
+return { blob, name };
+},
+async _fhFetchWithAuth(path, opts) {
+if (this._hass && typeof this._hass.fetchWithAuth === "function") {
+return this._hass.fetchWithAuth(path, opts);
+}
+const token = this._hass && this._hass.auth && this._hass.auth.data && this._hass.auth.data.access_token;
+const headers = Object.assign({}, opts && opts.headers, token ? { authorization: `Bearer ${token}` } : {});
+return fetch(path, Object.assign({}, opts, { headers }));
+},
+async _fhUploadImage(file) {
+if (!file) return null;
+const { blob, name } = await this._fhBlobToUploadFromFile(file);
+const formData = new FormData();
+formData.append("file", blob, name);
+const response = await this._fhFetchWithAuth("/api/image/upload", { method: "POST", body: formData });
+if (!response || !response.ok) {
+throw new Error(`image upload failed (${response && response.status})`);
+}
+const result = await response.json();
+if (!result || !result.id) throw new Error("image upload response had no id");
+return `/api/image/serve/${result.id}/original`;
+},
+_fhOpenStepEditor(blocks, onSave, onCancel) {
+const root = this._root;
+if (!root) return;
+this._fhStepEditorBlocks = (blocks || []).map((b) => Object.assign({}, b));
+this._fhStepEditorOnSave = onSave;
+this._fhStepEditorOnCancel = onCancel;
+this._renderFhStepEditorList();
+this._openModal(this._fhStepEditorOverlay());
+},
+_closeFhStepEditor() {
+const root = this._root;
+if (!root) return;
+this._closeModal(this._fhStepEditorOverlay());
+},
+_fhMoveStepBlock(idx, dir) {
+const blocks = this._fhStepEditorBlocks;
+if (!blocks) return;
+const newIdx = idx + dir;
+if (newIdx < 0 || newIdx >= blocks.length) return;
+const [item] = blocks.splice(idx, 1);
+blocks.splice(newIdx, 0, item);
+this._renderFhStepEditorList();
+},
+_renderFhStepEditorList() {
+const root = this._root;
+if (!root) return;
+const listEl = this._fhStepEditorOverlay().querySelector(".fh-step-editor-list");
+if (!listEl) return;
+const blocks = this._fhStepEditorBlocks || [];
+if (!blocks.length) {
+listEl.innerHTML = `<div class="loved-empty">No steps yet - use the buttons below to add some.</div>`;
+return;
+}
+const dragHandle = `<span class="fh-step-editor-drag-handle" title="Drag to reorder">&#9776;</span>`;
+listEl.innerHTML = blocks
+.map((b, idx) => {
+const controls =
+`<div class="fh-step-editor-row-controls">` +
+`<button type="button" class="fh-step-editor-up-btn" data-idx="${idx}"${idx === 0 ? " disabled" : ""}>&#8593;</button>` +
+`<button type="button" class="fh-step-editor-down-btn" data-idx="${idx}"${idx === blocks.length - 1 ? " disabled" : ""}>&#8595;</button>` +
+`<button type="button" class="fh-step-editor-del-btn" data-idx="${idx}">&#128465;&#65039;</button>` +
+`</div>`;
+if (b.type === "header") {
+return (
+`<div class="fh-step-editor-row fh-step-editor-header-row" data-idx="${idx}">` +
+dragHandle +
+`<input type="text" class="fh-step-editor-header-input" data-idx="${idx}" value="${this._fhEscapeHtml(b.text || "")}" placeholder="Section header" />` +
+controls +
+`</div>`
+);
+}
+if (b.type === "divider") {
+return `<div class="fh-step-editor-row fh-step-editor-divider-row" data-idx="${idx}">${dragHandle}<span class="fh-step-editor-divider-label">&mdash; divider &mdash;</span>${controls}</div>`;
+}
+if (b.type === "image") {
+return `<div class="fh-step-editor-row fh-step-editor-image-row" data-idx="${idx}">${dragHandle}<img class="fh-step-editor-image-preview" src="${b.url || ""}" />${controls}</div>`;
+}
+return (
+`<div class="fh-step-editor-row fh-step-editor-step-row" data-idx="${idx}">` +
+dragHandle +
+`<span class="fh-step-editor-step-num">${idx + 1}</span>` +
+`<textarea class="fh-step-editor-text-input" data-idx="${idx}" placeholder="Step text">${b.text || ""}</textarea>` +
+controls +
+`</div>`
+);
+})
+.join("");
+this._fhStepEditorAttachDrag(listEl);
+listEl.querySelectorAll(".fh-step-editor-text-input, .fh-step-editor-header-input").forEach((el) => {
+el.addEventListener("input", () => {
+const idx = Number(el.dataset.idx);
+if (this._fhStepEditorBlocks[idx]) this._fhStepEditorBlocks[idx].text = el.value;
+});
+});
+listEl.querySelectorAll(".fh-step-editor-up-btn").forEach((btn) => {
+btn.addEventListener("click", () => this._fhMoveStepBlock(Number(btn.dataset.idx), -1));
+});
+listEl.querySelectorAll(".fh-step-editor-down-btn").forEach((btn) => {
+btn.addEventListener("click", () => this._fhMoveStepBlock(Number(btn.dataset.idx), 1));
+});
+listEl.querySelectorAll(".fh-step-editor-del-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+const idx = Number(btn.dataset.idx);
+this._fhStepEditorBlocks.splice(idx, 1);
+this._renderFhStepEditorList();
+});
+});
+},
+// v1.159.0+: household request, verbatim - "you should be able to drag
+// headings, steps, photos dividers etc around". The up/down buttons
+// stay (still the only option for someone who can't do a drag gesture,
+// e.g. a screen reader or a stylus-only kiosk), this just adds a touch/
+// pointer-driven drag as the faster path for reordering a long list by
+// hand. Pointer Events (not HTML5 drag-and-drop, which mobile Safari/
+// Chrome support inconsistently for touch) dragged via the little grip
+// handle on each row, moving the actual DOM node live as the finger/
+// pointer crosses a neighboring row's midpoint, then resyncing
+// this._fhStepEditorBlocks from the final DOM order once the drag ends
+// - cheap, and avoids re-binding every row's listeners mid-drag the way
+// re-rendering on every pointermove would.
+_fhStepEditorAttachDrag(listEl) {
+const blocks = this._fhStepEditorBlocks || [];
+const rows = Array.from(listEl.querySelectorAll(".fh-step-editor-row"));
+rows.forEach((row, i) => {
+row.__fhBlock = blocks[i];
+const handle = row.querySelector(".fh-step-editor-drag-handle");
+if (!handle) return;
+handle.addEventListener("pointerdown", (e) => {
+e.preventDefault();
+const draggedRow = row;
+draggedRow.classList.add("fh-step-editor-dragging");
+let captured = false;
+try {
+handle.setPointerCapture(e.pointerId);
+captured = true;
+} catch (err) {}
+const onMove = (ev) => {
+const target = document.elementFromPoint(ev.clientX, ev.clientY);
+const overRow = target && target.closest && target.closest(".fh-step-editor-row");
+if (!overRow || overRow === draggedRow || overRow.parentElement !== listEl) return;
+const rect = overRow.getBoundingClientRect();
+const before = ev.clientY < rect.top + rect.height / 2;
+listEl.insertBefore(draggedRow, before ? overRow : overRow.nextSibling);
+};
+const onUp = (ev) => {
+draggedRow.classList.remove("fh-step-editor-dragging");
+handle.removeEventListener("pointermove", onMove);
+handle.removeEventListener("pointerup", onUp);
+handle.removeEventListener("pointercancel", onUp);
+if (captured) {
+try {
+handle.releasePointerCapture(ev.pointerId);
+} catch (err) {}
+}
+this._fhStepEditorBlocks = Array.from(listEl.querySelectorAll(".fh-step-editor-row")).map((r) => r.__fhBlock);
+this._renderFhStepEditorList();
+};
+handle.addEventListener("pointermove", onMove);
+handle.addEventListener("pointerup", onUp);
+handle.addEventListener("pointercancel", onUp);
+});
+});
+},
+// v1.118.0+: the full in-card Grocy Recipe Viewer, moved here from being
 // a FamilyWeekCalendarCard-only set of methods so this card can open the
 // exact same live viewer for a Grocy-linked dish instead of just opening
-// the plain external Grocy link (). Not shared: _selectGrocyRecipe/
+// the plain external Grocy link (household report: "the recipe box card
+// tries to send you to the external grocy link for recipes. this needs
+// to use the internal recipe viewer"). Not shared: _selectGrocyRecipe/
 // _renderGrocyPicker (the "Add from Grocy" search picker) - this card has
 // no such picker and doesn't need one, same as before.
-// Root
+// v1.121.0+: household report, verbatim: "recipe card opens recipes in a
+// modal instead of the full screen like the recipe modal does." Root
 // cause: wherever this shared viewer is running, if the card sits in a
 // normal masonry/sections dashboard grid (rather than filling the whole
 // screen, which is how a panel-view deployment usually hides this
@@ -960,11 +1265,45 @@ if (value && value.trim()) this._grocyRecipeViewerPortalEl.style.setProperty(nam
 }
 return overlay;
 },
+_fhStepEditorOverlay() {
+if (!this._fhStepEditorOverlayEl) {
+const root = this._root;
+this._fhStepEditorOverlayEl = root && root.querySelector(".fh-step-editor-overlay");
+}
+const overlay = this._fhStepEditorOverlayEl;
+if (overlay && !this._fhStepEditorPortalEl) {
+const portal = document.createElement("div");
+portal.className = "fh-step-editor-portal";
+// See the matching comment in family-week-calendar-card.js - same
+// portal mechanism as _grocyViewerOverlay, now needed here too since
+// this overlay is a true full-screen modal.
+if (typeof this._css === "function") {
+const style = document.createElement("style");
+style.textContent = this._css().split(":host").join(".fh-step-editor-portal");
+portal.appendChild(style);
+}
+portal.appendChild(overlay);
+document.body.appendChild(portal);
+this._fhStepEditorPortalEl = portal;
+}
+if (this._fhStepEditorPortalEl && typeof getComputedStyle === "function") {
+const live = getComputedStyle(this);
+[
+"--fc-bg", "--fc-card", "--fc-border", "--fc-text", "--fc-text-secondary",
+"--fc-accent", "--fc-accent-text", "--fc-accent2", "--fc-accent3",
+"--fc-surface-alt", "--fc-surface2", "--fc-glass-blur", "--fh-header-offset",
+].forEach((name) => {
+const value = live.getPropertyValue(name);
+if (value && value.trim()) this._fhStepEditorPortalEl.style.setProperty(name, value.trim());
+});
+}
+return overlay;
+},
 _openGrocyRecipeViewer(recipeId, fallbackName, fallbackLink, isPreview, tabs, sourceRecipe) {
 if (!recipeId) return;
 this._grocyRecipeViewerRecipeId = recipeId;
 this._grocyRecipeViewerFallbackLink = fallbackLink || "";
-// the actual Recipe Box entry this viewer was opened FROM, if
+// v1.129.0+: the actual Recipe Box entry this viewer was opened FROM, if
 // any - only ever passed by the Recipe Box's own primary browse click
 // (see that click handler's own comment, just below in this file), never
 // by a meal-preview/Expiring-Soon/additional-recipe call site elsewhere,
@@ -973,7 +1312,7 @@ this._grocyRecipeViewerFallbackLink = fallbackLink || "";
 // see the .grocy-recipe-viewer-recipe-actions toggle a few lines down.
 this._grocyRecipeViewerSourceRecipe = sourceRecipe || null;
 const overlay = this._grocyViewerOverlay();
-// Preview mode ('s picker preview icon) opens the exact same
+// Preview mode (task #177's picker preview icon) opens the exact same
 // viewer, but over a picker that's deliberately left open underneath -
 // show a "Back" button instead of relying on the plain close (X) to
 // implicitly reveal it, so it reads as "look, then come back" rather
@@ -984,10 +1323,10 @@ overlay.classList.toggle("preview-mode", !!isPreview);
 // the inline style here would silently leave it hidden even in preview
 // mode instead of showing it.
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-back-btn").style.display = isPreview ? "block" : "none";
-// same "block", not "" gotcha as the back button above -
+// v1.129.0+: same "block", not "" gotcha as the back button above -
 // .grocy-recipe-viewer-recipe-actions defaults to display:none in CSS.
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-recipe-actions").style.display = this._grocyRecipeViewerSourceRecipe ? "flex" : "none";
-this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = fallbackName || this._t("recipe_box.recipe_fallback", "Recipe");
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = fallbackName || "Recipe";
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-stats").innerHTML = "";
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-servings").textContent = "";
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-ingredients").innerHTML = "";
@@ -1033,7 +1372,7 @@ if (this._grocyRecipeViewerTabs) {
 tabsEl.innerHTML = this._grocyRecipeViewerTabs
 .map(
 (t) =>
-`<button type="button" class="grocy-recipe-viewer-tab-btn ${String(t.id) === String(recipeId) ? "active" : ""}" data-recipe-tab-id="${t.id}">${t.name || this._t("recipe_box.recipe_fallback", "Recipe")}</button>`
+`<button type="button" class="grocy-recipe-viewer-tab-btn ${String(t.id) === String(recipeId) ? "active" : ""}" data-recipe-tab-id="${t.id}">${t.name || "Recipe"}</button>`
 )
 .join("");
 tabsEl.style.display = "flex";
@@ -1053,7 +1392,7 @@ this._resetScreenSaverIdleTimer();
 },
 _closeGrocyRecipeViewer() {
 this._grocyViewerOverlay().classList.remove("open");
-// don't let a stale Recipe Box entry leak into the NEXT
+// v1.129.0+: don't let a stale Recipe Box entry leak into the NEXT
 // viewer open (a bare-recipe-id call site, e.g. a meal preview, that
 // forgets to pass a 6th argument would otherwise inherit whatever was
 // last set here rather than correctly showing no Suggest/Edit/Delete
@@ -1071,11 +1410,11 @@ this._resetScreenSaverIdleTimer();
 async _consumeGrocyRecipeIngredients() {
 const recipeId = this._grocyRecipeViewerRecipeId;
 if (!recipeId || !this._hass) return;
-if (!window.confirm(this._t("recipe_box.confirm_consume_ingredients", "Deduct this recipe's ingredients from your Grocy stock now? This can't be undone from here."))) {
+if (!window.confirm("Deduct this recipe's ingredients from your Grocy stock now? This can't be undone from here.")) {
 return;
 }
 const statusEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-status");
-statusEl.textContent = this._t("recipe_box.status_consuming", "Consuming ingredients in Grocy…");
+statusEl.textContent = "Consuming ingredients in Grocy…";
 statusEl.classList.remove("is-error");
 try {
 // Only sent when the viewer's own scaler has been moved off the
@@ -1093,26 +1432,26 @@ recipe_id: recipeId,
 ...(servings ? { servings } : {}),
 });
 if (result.configured === false) {
-statusEl.textContent = this._t("recipe_box.status_grocy_not_connected", "Grocy isn't connected — set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.");
+statusEl.textContent = "Grocy isn't connected — set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.";
 statusEl.classList.add("is-error");
 return;
 }
 if (!result.success) {
-statusEl.textContent = this._t("recipe_box.status_consume_failed", `Couldn't consume this recipe's ingredients: ${result.error || "unknown error"}`, { error: result.error || this._t("recipe_box.unknown_error", "unknown error") });
+statusEl.textContent = `Couldn't consume this recipe's ingredients: ${result.error || "unknown error"}`;
 statusEl.classList.add("is-error");
 return;
 }
-statusEl.textContent = this._t("recipe_box.status_consumed", "Ingredients deducted from Grocy stock.");
+statusEl.textContent = "Ingredients deducted from Grocy stock.";
 statusEl.classList.remove("is-error");
 } catch (e) {
-statusEl.textContent = this._t("recipe_box.status_cant_reach_grocy", "Couldn't reach Grocy.");
+statusEl.textContent = "Couldn't reach Grocy.";
 statusEl.classList.add("is-error");
 }
 },
 async _fetchGrocyRecipeDetail(recipeId) {
 if (!this._hass) return;
 const statusEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-status");
-statusEl.textContent = this._t("recipe_box.status_loading_recipe", "Loading recipe from Grocy…");
+statusEl.textContent = "Loading recipe from Grocy…";
 statusEl.classList.remove("is-error");
 try {
 const result = await this._hass.connection.sendMessagePromise({
@@ -1120,18 +1459,18 @@ type: "family_hub/get_grocy_recipe_detail",
 recipe_id: recipeId,
 });
 if (result.configured === false) {
-statusEl.textContent = this._t("recipe_box.status_grocy_not_connected", "Grocy isn't connected — set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.");
+statusEl.textContent = "Grocy isn't connected — set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.";
 return;
 }
 if (result.error || !result.recipe) {
-statusEl.textContent = this._t("recipe_box.status_load_failed", `Couldn't load this recipe from Grocy: ${result.error || "not found"}`, { error: result.error || this._t("recipe_box.not_found", "not found") });
+statusEl.textContent = `Couldn't load this recipe from Grocy: ${result.error || "not found"}`;
 statusEl.classList.add("is-error");
 return;
 }
 statusEl.textContent = "";
 this._renderGrocyRecipeDetail(result.recipe);
 } catch (e) {
-statusEl.textContent = this._t("recipe_box.status_cant_reach_grocy", "Couldn't reach Grocy.");
+statusEl.textContent = "Couldn't reach Grocy.";
 statusEl.classList.add("is-error");
 }
 },
@@ -1150,7 +1489,7 @@ statusEl.classList.add("is-error");
 async _fetchGrocyRecipeDetailsBatch(recipeIds, activeId) {
 if (!this._hass) return;
 const statusEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-status");
-statusEl.textContent = this._t("recipe_box.status_loading_recipes", "Loading recipes from Grocy…");
+statusEl.textContent = "Loading recipes from Grocy…";
 statusEl.classList.remove("is-error");
 try {
 const result = await this._hass.connection.sendMessagePromise({
@@ -1158,14 +1497,14 @@ type: "family_hub/get_grocy_recipe_details",
 recipe_ids: recipeIds,
 });
 if (result.configured === false) {
-statusEl.textContent = this._t("recipe_box.status_grocy_not_connected", "Grocy isn't connected — set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.");
+statusEl.textContent = "Grocy isn't connected — set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.";
 return;
 }
 this._grocyRecipeViewerDetailsById = result.recipes || {};
 this._grocyRecipeViewerTabErrors = result.errors || {};
 this._renderActiveGrocyRecipeViewerTab(activeId);
 } catch (e) {
-statusEl.textContent = this._t("recipe_box.status_cant_reach_grocy", "Couldn't reach Grocy.");
+statusEl.textContent = "Couldn't reach Grocy.";
 statusEl.classList.add("is-error");
 }
 },
@@ -1187,7 +1526,7 @@ return;
 }
 const err = (this._grocyRecipeViewerTabErrors || {})[String(recipeId)];
 const tabInfo = ((this._grocyRecipeViewerTabs || []).find((t) => String(t.id) === String(recipeId)) || {});
-this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = tabInfo.name || this._t("recipe_box.recipe_fallback", "Recipe");
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = tabInfo.name || "Recipe";
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-stats").innerHTML = "";
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-servings").textContent = "";
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-ingredients").innerHTML = "";
@@ -1195,7 +1534,7 @@ this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-instructions").in
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-description").innerHTML = "";
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-scale-row").style.display = "none";
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-photo").style.display = "none";
-statusEl.textContent = this._t("recipe_box.status_load_failed", `Couldn't load this recipe from Grocy: ${err || "not found"}`, { error: err || this._t("recipe_box.not_found", "not found") });
+statusEl.textContent = `Couldn't load this recipe from Grocy: ${err || "not found"}`;
 statusEl.classList.add("is-error");
 },
 // Tab-row click handler (delegated, see the connectedCallback wiring on
@@ -1226,22 +1565,22 @@ photoEl.style.display = "block";
 photoEl.style.display = "none";
 photoEl.src = "";
 }
-this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = recipe.name || this._t("recipe_box.recipe_fallback", "Recipe");
-// Prep/Cook/Total stat pills (/mockup) - only the ones this
+this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = recipe.name || "Recipe";
+// Prep/Cook/Total stat pills (task #250/mockup) - only the ones this
 // recipe actually has real data for; a manually-typed Grocy recipe with
 // none of the three published just gets an empty (and, per the
 // :empty CSS rule, invisible) stats row instead of a placeholder.
 const statsEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-stats");
 const statDefs = [
-[this._t("recipe_box.stat_prep", "Prep"), recipe.prep_time],
-[this._t("recipe_box.stat_cook", "Cook"), recipe.cook_time],
-[this._t("recipe_box.stat_total", "Total"), recipe.total_time],
+["Prep", recipe.prep_time],
+["Cook", recipe.cook_time],
+["Total", recipe.total_time],
 ].filter(([, value]) => (value || "").trim());
 statsEl.innerHTML = statDefs
 .map(([label, value]) => `<div class="grocy-recipe-stat"><span class="grocy-recipe-stat-label">${label}</span><span class="grocy-recipe-stat-value">${value}</span></div>`)
 .join("");
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-servings").textContent = recipe.servings
-? this._t("recipe_box.makes_servings", `Makes ${recipe.servings} serving${recipe.servings === 1 ? "" : "s"}`, { n: String(recipe.servings) })
+? `Makes ${recipe.servings} serving${recipe.servings === 1 ? "" : "s"}`
 : "";
 // The picker only ever had the list-page link; once the detail call
 // resolves we have the authoritative one from the recipe object itself
@@ -1250,7 +1589,17 @@ this._grocyRecipeViewerFallbackLink = recipe.link || this._grocyRecipeViewerFall
 
 const ingredients = Array.isArray(recipe.ingredients) ? recipe.ingredients : [];
 this._grocyRecipeViewerIngredients = ingredients;
-// The scaler () works off the recipe's own base_servings - the
+// Checking off an ingredient or a step is scoped to one viewing of one
+// recipe - re-opening the same recipe (or switching tabs to another one,
+// for multi-recipe tabbed viewing) starts every box unchecked again,
+// same as a paper copy would. Reset here (recipe detail load), not in
+// _renderGrocyRecipeIngredients/_renderGrocyRecipeDescription, since
+// those two also re-run on every serving-scale change and must NOT wipe
+// what's already checked off mid-cook just because someone bumped the
+// servings stepper.
+this._grocyRecipeViewerCheckedIngredients = new Set();
+this._grocyRecipeViewerCheckedSteps = new Set();
+// The scaler (task #173) works off the recipe's own base_servings - the
 // serving count Grocy's recipes_pos amounts are actually calibrated for -
 // separate from "servings" above, which can reflect a previously-saved
 // desired_servings override instead. Falls back gracefully to whatever's
@@ -1268,7 +1617,7 @@ this._renderGrocyRecipeIngredients();
 // The description/instructions HTML can itself embed a plain-text
 // ingredients list (see _createImportedGrocyRecipe's "Ingredients"
 // <ul> block, added for recipes imported via the card's "Import a
-// recipe from a link" flow, ) - kept unscaled here so
+// recipe from a link" flow, task #158) - kept unscaled here so
 // _renderGrocyRecipeDescription can re-derive the scaled version from
 // the original every time the stepper changes, rather than scaling an
 // already-scaled string a second time.
@@ -1279,7 +1628,7 @@ this._renderGrocyRecipeDescription();
 // servings ratio - mirrors _renderGrocyRecipeIngredients, but for the
 // plain-text "Ingredients" list some recipes also carry inside their
 // description HTML (see the comment above). Recipes without that exact
-// block (hand-typed directly in Grocy, or from before) simply
+// block (hand-typed directly in Grocy, or from before task #158) simply
 // pass through _scaleIngredientsDescriptionHtml unchanged.
 _renderGrocyRecipeDescription() {
 if (!this._root) return;
@@ -1289,7 +1638,8 @@ if (!descEl) return;
 const raw = this._grocyRecipeViewerRawDescription || "";
 if (!raw) {
 if (instructionsEl) instructionsEl.innerHTML = "";
-descEl.innerHTML = `<div class="loved-empty">${this._t("recipe_box.no_instructions", "No instructions added in Grocy.")}</div>`;
+descEl.innerHTML = `<div class="loved-empty">No instructions added in Grocy.</div>`;
+this._grocyRecipeViewerStepBlocks = [];
 return;
 }
 const baseServings = this._grocyRecipeViewerBaseServings || 1;
@@ -1298,35 +1648,35 @@ const ratio = baseServings > 0 ? servings / baseServings : 1;
 let html = this._scaleIngredientsDescriptionHtml(raw, ratio);
 
 // Recipes imported via this card's own "Import a recipe from a link"
-// flow (_createImportedGrocyRecipe, /#223) write a predictable
+// flow (_createImportedGrocyRecipe, task #158/#223) write a predictable
 // "<p><strong>Preparation</strong></p><p>step 1</p><p>step 2</p>..."
 // block, followed by (optionally) the Prep/Cook line and/or a Source
 // line, each of which starts with its own "<p><strong>". Recipes without
 // that exact shape (hand-typed directly in Grocy, older imports, plain
-// pasted text with no parsed steps) simply have no match here and fall
-// through to the untouched raw-HTML rendering exactly as before this
-// feature existed - nothing about them changes.
+// pasted text with no parsed steps) simply have no match here, and the
+// "Edit Steps" button starts them off with a blank steps list rather
+// than nothing to edit at all.
+//
+// v1.154.0+: this block is now parsed into typed step blocks (plain
+// steps, section headers, dividers, inline photos - see
+// _fhParsePreparationBlocks) instead of just a flat array of step
+// strings, so the household's step editor can add/reorder headers,
+// dividers, and photos anywhere in the instructions.
 const stepsMatch = html.match(/<p><strong>Preparation<\/strong><\/p>([\s\S]*?)(?=<p><strong>|$)/i);
-const steps = [];
-if (stepsMatch) {
-const stepRe = /<p>([\s\S]*?)<\/p>/gi;
-let m;
-while ((m = stepRe.exec(stepsMatch[1]))) {
-const text = m[1].trim();
-if (text) steps.push(text);
-}
-}
+const blocks = stepsMatch ? this._fhParsePreparationBlocks(stepsMatch[1]) : [];
+this._grocyRecipeViewerStepBlocks = blocks;
 
 if (instructionsEl) {
-instructionsEl.innerHTML = steps.length
-? `<div class="grocy-recipe-instructions-title">${this._t("recipe_box.instructions_title", "Instructions")}</div>` +
-steps
-.map(
-(step, i) =>
-`<div class="grocy-recipe-instruction-row"><span class="grocy-recipe-instruction-badge">${i + 1}</span><span class="grocy-recipe-instruction-text">${step}</span></div>`
-)
-.join("")
-: "";
+instructionsEl.innerHTML = this._fhRenderStepBlocksHtml(blocks, this._grocyRecipeViewerCheckedSteps);
+instructionsEl.querySelectorAll(".grocy-recipe-instruction-row").forEach((row) => {
+row.querySelector(".grocy-recipe-instruction-check").addEventListener("change", () => {
+const idx = Number(row.dataset.idx);
+if (!this._grocyRecipeViewerCheckedSteps) this._grocyRecipeViewerCheckedSteps = new Set();
+if (row.querySelector(".grocy-recipe-instruction-check").checked) this._grocyRecipeViewerCheckedSteps.add(idx);
+else this._grocyRecipeViewerCheckedSteps.delete(idx);
+row.classList.toggle("checked-off", row.querySelector(".grocy-recipe-instruction-check").checked);
+});
+});
 }
 
 // Once a block has its own dedicated element above (structured
@@ -1337,7 +1687,8 @@ steps
 // _ws_create_grocy_recipe's "skipped" list), so the structured list
 // above can be a strict SUBSET of what's in the raw text - and outright
 // removing the raw block used to hide those skipped ingredients
-// entirely (a real ). Rather than try to judge redundancy and
+// entirely (a real household report: "not including the ingredients in
+// the preparation section"). Rather than try to judge redundancy and
 // hide it, this always keeps the raw written-out list available - just
 // tucked behind a collapsed-by-default accordion, so it's a tap away
 // when needed (a skipped ingredient, double-checking exact wording,
@@ -1348,14 +1699,14 @@ if (ingredientsBlockMatch) {
 const accordionHtml =
 `<div class="grocy-recipe-ingredients-accordion">` +
 `<button type="button" class="accordion-toggle recipe-viewer-ingredients-toggle" data-target="recipe-viewer-ingredients-body">` +
-`<span class="theme-section-label">${this._t("recipe_box.written_out_ingredients", "Written-out ingredients list")}</span>` +
+`<span class="theme-section-label">Written-out ingredients list</span>` +
 `<span class="accordion-chevron">&#9660;</span>` +
 `</button>` +
 `<div class="accordion-body" id="recipe-viewer-ingredients-body"><ul>${ingredientsBlockMatch[1]}</ul></div>` +
 `</div>`;
 html = html.replace(ingredientsBlockMatch[0], accordionHtml);
 }
-if (steps.length) {
+if (stepsMatch) {
 html = html.replace(stepsMatch[0], "");
 }
 // The Prep/Cook line is now always shown as its own stat pills whenever
@@ -1363,7 +1714,7 @@ html = html.replace(stepsMatch[0], "");
 // redundant here - safe to strip unconditionally.
 html = html.replace(/<p>[\s\S]*?<strong>(?:Prep|Cook):<\/strong>[\s\S]*?<\/p>/i, "");
 html = html.trim();
-descEl.innerHTML = html || `<div class="loved-empty">${this._t("recipe_box.no_additional_notes", "No additional notes.")}</div>`;
+descEl.innerHTML = html || `<div class="loved-empty">No additional notes.</div>`;
 const ingredientsToggle = descEl.querySelector(".recipe-viewer-ingredients-toggle");
 if (ingredientsToggle) {
 ingredientsToggle.addEventListener("click", () => {
@@ -1372,6 +1723,88 @@ ingredientsToggle.classList.toggle("open");
 if (body) body.classList.toggle("open");
 });
 }
+},
+// Save step for the "Edit Steps" button (see _fhOpenStepEditor) - a
+// Grocy-linked recipe's instructions live entirely inside its own
+// description field as a "<p><strong>Preparation</strong></p>..." block
+// (see _renderGrocyRecipeDescription/_fhParsePreparationBlocks), so
+// saving new step blocks means re-fetching the recipe's CURRENT raw
+// description fresh from Grocy, splicing the newly-serialized Preparation
+// block back into it in place (leaving the Ingredients/Prep-Cook/Source
+// lines this editor never touches exactly as they were), and sending the
+// whole thing back through family_hub/update_grocy_recipe - which,
+// being a full delete-then-recreate of recipes_pos rows, also needs this
+// recipe's ingredients echoed back unchanged (same pattern as
+// _saveGrocyRecipeIngredientEdits where that method exists).
+async _saveGrocyRecipeStepEdits(recipeId, blocks, reopenName, reopenLink, reopenSourceRecipe) {
+if (!this._hass || !recipeId) return;
+// v1.154.0+: the "Edit Steps" button closes the (possibly document.body
+// -portal'd) Grocy Recipe Viewer before opening this plain shadow-root
+// step editor overlay on top of it (see that button's own click
+// handler) - so unlike _saveGrocyRecipeIngredientEdits, there's no
+// still-open viewer with its own status line to write progress/errors
+// into here. Every exit path below instead reopens the viewer fresh
+// (showing the saved result, or the unchanged recipe plus an alert() on
+// failure) rather than leaving the household on a bare closed modal.
+const reopenViewer = () => {
+this._openGrocyRecipeViewer(recipeId, reopenName, reopenLink, false, null, reopenSourceRecipe);
+};
+let detailResult;
+try {
+detailResult = await this._hass.connection.sendMessagePromise({ type: "family_hub/get_grocy_recipe_detail", recipe_id: recipeId });
+} catch (e) {
+window.alert("Couldn't reach the backend - steps weren't saved.");
+reopenViewer();
+return;
+}
+if (detailResult.configured === false || !detailResult.recipe) {
+window.alert(detailResult.error || "Couldn't load this recipe from Grocy - steps weren't saved.");
+reopenViewer();
+return;
+}
+const detail = detailResult.recipe;
+const rawDescription = detail.description || "";
+const ingredients = (detail.ingredients || []).map((ing) => {
+const amountText = ing.variable_amount || (typeof ing.amount_value === "number" ? String(ing.amount_value) : "");
+const raw = (ing.note && ing.note.trim()) || `${amountText} ${ing.product || ""}`.trim() || ing.product || "";
+return {
+raw,
+amount_text: amountText,
+amount: typeof ing.amount_value === "number" && isFinite(ing.amount_value) ? ing.amount_value : null,
+not_check_stock_fulfillment: !!ing.not_check_stock_fulfillment,
+product_id: ing.product_id || null,
+unit_id: ing.qu_id || null,
+};
+});
+const stepsMatch = rawDescription.match(/<p><strong>Preparation<\/strong><\/p>([\s\S]*?)(?=<p><strong>|$)/i);
+const newPrepHtml = blocks.length ? `<p><strong>Preparation</strong></p>${this._fhBlocksToPreparationHtml(blocks)}` : "";
+let newDescription;
+if (stepsMatch) {
+newDescription = rawDescription.slice(0, stepsMatch.index) + newPrepHtml + rawDescription.slice(stepsMatch.index + stepsMatch[0].length);
+} else {
+newDescription = rawDescription + newPrepHtml;
+}
+let result;
+try {
+result = await this._hass.connection.sendMessagePromise({
+type: "family_hub/update_grocy_recipe",
+recipe_id: recipeId,
+name: detail.name || "",
+description: newDescription,
+servings: detail.base_servings || 1,
+ingredients,
+});
+} catch (e) {
+window.alert("Couldn't reach the backend - steps weren't saved.");
+reopenViewer();
+return;
+}
+if (result.configured === false || !result.success) {
+window.alert((result && result.error) || "Couldn't save those steps.");
+reopenViewer();
+return;
+}
+reopenViewer();
 },
 // Finds the "Ingredients" <ul> block _createImportedGrocyRecipe writes
 // into a recipe's description (raw scraped lines like "2 cups flour",
@@ -1404,7 +1837,7 @@ return html.slice(0, match.index) + match[1] + scaledItems + match[3] + html.sli
 // "1 1/2" / "1/2" / "1½" / "½" / "2" / "2.5" / "1-2" -> a plain decimal.
 // A plain range ("1-2", "3-4") resolves to its upper bound rather than
 // failing outright - see the backend's _parse_quantity_token (kept in
-// sync deliberately) for why: the old behavior left ordinary countable
+// sync deliberately) for why: a household reported ordinary countable
 // ingredients like "1-2 russet potatoes" defaulting to "Don't count
 // toward stock" every time, since that checkbox's own default just
 // follows whether a usable number came back at all. Returns null for
@@ -1493,12 +1926,26 @@ if (group) groupHtml = `<div class="grocy-recipe-ingredient-group">${group}</div
 }
 const note = ing.note ? ` <span class="grocy-recipe-ingredient-note">(${ing.note})</span>` : "";
 const amountText = this._formatScaledIngredientAmount(ing, ratio);
-// Numbered circular badge (/mockup) in place of the amount
+// Numbered circular badge (task #251/mockup) in place of the amount
 // leading the row - the amount itself moves down alongside the
-// product name so nothing shown before is lost.
-return `${groupHtml}<div class="grocy-recipe-ingredient-row"><span class="grocy-recipe-ingredient-badge">${idx + 1}</span><span><span class="grocy-recipe-ingredient-amount">${amountText}</span> ${ing.product || ""}${note}</span></div>`;
+// product name so nothing shown before is lost. A checkbox now leads
+// the badge (restyle: "allow checking off ingredients and steps") so
+// a row can be marked done while actually cooking - wrapped in a
+// <label> so tapping anywhere on the row toggles it, not just the
+// small checkbox hit target itself.
+const checked = this._grocyRecipeViewerCheckedIngredients && this._grocyRecipeViewerCheckedIngredients.has(idx) ? " checked-off" : "";
+return `${groupHtml}<label class="grocy-recipe-ingredient-row${checked}" data-idx="${idx}"><input type="checkbox" class="grocy-recipe-ingredient-check"${checked ? " checked" : ""} /><span class="grocy-recipe-ingredient-badge">${idx + 1}</span><span><span class="grocy-recipe-ingredient-amount">${amountText}</span> ${ing.product || ""}${note}</span></label>`;
 })
 .join("");
+ingredientsEl.querySelectorAll(".grocy-recipe-ingredient-row").forEach((row) => {
+row.querySelector(".grocy-recipe-ingredient-check").addEventListener("change", () => {
+const idx = Number(row.dataset.idx);
+if (!this._grocyRecipeViewerCheckedIngredients) this._grocyRecipeViewerCheckedIngredients = new Set();
+if (row.querySelector(".grocy-recipe-ingredient-check").checked) this._grocyRecipeViewerCheckedIngredients.add(idx);
+else this._grocyRecipeViewerCheckedIngredients.delete(idx);
+row.classList.toggle("checked-off", row.querySelector(".grocy-recipe-ingredient-check").checked);
+});
+});
 },
 // A free-text amount ("to taste") can't be scaled - passed through as-is.
 // Anything without a raw numeric amount_value (an older/partial response)
@@ -2016,6 +2463,13 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
       this._grocyRecipeViewerPortalEl = null;
       this._grocyRecipeViewerOverlayEl = null;
     }
+    // Same teardown, same reason, for the step editor's own portal (see
+    // _fhStepEditorOverlay's own comment).
+    if (this._fhStepEditorPortalEl) {
+      this._fhStepEditorPortalEl.remove();
+      this._fhStepEditorPortalEl = null;
+      this._fhStepEditorOverlayEl = null;
+    }
   }
   getCardSize() {
     return 8;
@@ -2070,6 +2524,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
     if (!root) return;
     this._editingDishUid = recipe ? recipe.uid : null;
     this._editingDishGrocyRecipeId = (recipe && recipe.grocyRecipeId) || null;
+this._editingDishSteps = recipe ? recipe.steps || [] : [];
     root.querySelector(".rb-editor-title").textContent = recipe ? this._t("recipe_box.edit_recipe_title", "Edit Recipe") : this._t("recipe_box.add_recipe_title", "Add Recipe");
     root.querySelector(".rb-input-name").value = recipe ? recipe.name || "" : "";
     root.querySelector(".rb-input-description").value = recipe ? recipe.description || "" : "";
@@ -2114,7 +2569,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
     if (name) {
       // checkDuplicates=true - this IS the deliberate "add/edit a Recipe Box
       // entry" action, same as the modal's own _saveDishEditor.
-      this._upsertDish(name, description, link, this._currentRbRating, this._editingDishUid, this._editingDishGrocyRecipeId, category, image, true);
+      this._upsertDish(name, description, link, this._currentRbRating, this._editingDishUid, this._editingDishGrocyRecipeId, category, image, true, this._editingDishSteps);
       if (addAsSuggestion) {
         this._addSuggestion(name, description, link, this._editingDishGrocyRecipeId);
       }
@@ -2174,23 +2629,24 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
       </ha-card>
       <div class="modal-overlay dish-detail-overlay">
         <div class="modal-box dish-detail-box">
-          <button class="modal-close dish-detail-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
+          <button class="modal-close dish-detail-close" aria-label="Close">&#10005;</button>
           <h2 class="dish-detail-title"></h2>
           <img class="dish-detail-photo" style="display:none;" alt="" />
           <div class="dish-detail-rating"></div>
           <div class="dish-detail-desc"></div>
+          <div class="dish-detail-steps"></div>
           <div class="dish-detail-link-row"></div>
           <div class="modal-actions">
             <button class="btn-cancel dish-detail-suggest-btn">&#128161; Suggest this</button>
-            <button class="btn-cancel dish-detail-edit-btn">&#9999;&#65039;<span data-i18n="recipe_box.edit_suffix"> Edit</span></button>
-            <button class="btn-clear dish-detail-delete-btn">&#128465;&#65039;<span data-i18n="recipe_box.delete_suffix"> Delete</span></button>
+            <button class="btn-cancel dish-detail-edit-btn">&#9999;&#65039; Edit</button>
+            <button class="btn-clear dish-detail-delete-btn">&#128465;&#65039; Delete</button>
           </div>
         </div>
       </div>
       <div class="modal-overlay grocy-recipe-viewer-overlay">
         <div class="modal-box loved-box">
-          <button class="modal-close grocy-recipe-viewer-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
-          <button type="button" class="grocy-recipe-viewer-back-btn" style="display:none;">&#8592;<span data-i18n="recipe_box.back_suffix"> Back</span></button>
+          <button class="modal-close grocy-recipe-viewer-close" aria-label="Close">&#10005;</button>
+          <button type="button" class="grocy-recipe-viewer-back-btn" style="display:none;">&#8592; Back</button>
           <h2 class="grocy-recipe-viewer-title"></h2>
           <div class="grocy-recipe-viewer-tabs" style="display:none;"></div>
           <div class="grocy-recipe-viewer-status"></div>
@@ -2199,11 +2655,11 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
             <div class="grocy-recipe-viewer-main-col">
               <div class="grocy-recipe-viewer-servings"></div>
               <div class="grocy-recipe-viewer-scale-row" style="display:none;">
-                <span class="grocy-recipe-viewer-scale-label" data-i18n="recipe_box.scale_ingredients_for">Scale ingredients for</span>
-                <button type="button" class="grocy-recipe-viewer-scale-down" aria-label="Fewer servings" data-i18n-title="recipe_box.fewer_servings_title">&#8722;</button>
+                <span class="grocy-recipe-viewer-scale-label">Scale ingredients for</span>
+                <button type="button" class="grocy-recipe-viewer-scale-down" aria-label="Fewer servings">&#8722;</button>
                 <span class="grocy-recipe-viewer-scale-value"></span>
-                <span class="grocy-recipe-viewer-scale-unit" data-i18n="recipe_box.servings_unit">servings</span>
-                <button type="button" class="grocy-recipe-viewer-scale-up" aria-label="More servings" data-i18n-title="recipe_box.more_servings_title">&#43;</button>
+                <span class="grocy-recipe-viewer-scale-unit">servings</span>
+                <button type="button" class="grocy-recipe-viewer-scale-up" aria-label="More servings">&#43;</button>
               </div>
               <div class="grocy-recipe-viewer-ingredients"></div>
             </div>
@@ -2212,13 +2668,36 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
           <div class="grocy-recipe-viewer-instructions"></div>
           <div class="grocy-recipe-viewer-description"></div>
           <div class="grocy-recipe-viewer-footer">
-            <button type="button" class="suggestion-add-btn grocy-recipe-viewer-consume-btn">&#127860;<span data-i18n="recipe_box.mark_consumed_suffix"> Mark Consumed (deduct from Grocy stock)</span></button>
-            <button type="button" class="suggestion-add-btn grocy-recipe-viewer-open-btn">&#128279;<span data-i18n="recipe_box.open_in_grocy_suffix"> Open in Grocy</span></button>
+            <button type="button" class="suggestion-add-btn grocy-recipe-viewer-consume-btn">&#127860; Mark Consumed (deduct from Grocy stock)</button>
+            <button type="button" class="suggestion-add-btn grocy-recipe-viewer-open-btn">&#128279; Open in Grocy</button>
+            <!-- See the matching comment in family-week-calendar-card.js -
+                 moved out of .grocy-recipe-viewer-recipe-actions (source-
+                 recipe-only) since Edit Steps only ever needed the Grocy
+                 recipe id, same as Open in Grocy/Mark Consumed above. -->
+            <button type="button" class="suggestion-add-btn grocy-recipe-viewer-edit-steps-btn">&#128221; Edit Steps</button>
             <div class="modal-actions grocy-recipe-viewer-recipe-actions" style="display:none;">
-              <button type="button" class="btn-cancel grocy-recipe-viewer-suggest-btn">&#128161;<span data-i18n="recipe_box.suggest_this_suffix"> Suggest this</span></button>
-              <button type="button" class="btn-cancel grocy-recipe-viewer-edit-btn">&#9999;&#65039;<span data-i18n="recipe_box.edit_suffix"> Edit</span></button>
-              <button type="button" class="btn-clear grocy-recipe-viewer-delete-btn">&#128465;&#65039;<span data-i18n="recipe_box.delete_suffix"> Delete</span></button>
+              <button type="button" class="btn-cancel grocy-recipe-viewer-suggest-btn">&#128161; Suggest this</button>
+              <button type="button" class="btn-cancel grocy-recipe-viewer-edit-btn">&#9999;&#65039; Edit</button>
+              <button type="button" class="btn-clear grocy-recipe-viewer-delete-btn">&#128465;&#65039; Delete</button>
             </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-overlay fh-step-editor-overlay">
+        <div class="modal-box loved-box fh-step-editor-box">
+          <button class="modal-close fh-step-editor-close" aria-label="Close">&#10005;</button>
+          <h2 class="fh-step-editor-title">Edit Steps</h2>
+          <div class="fh-step-editor-list"></div>
+          <div class="fh-step-editor-add-row">
+            <button type="button" class="pick-loved-btn fh-step-editor-add-step">&#43; Step</button>
+            <button type="button" class="pick-loved-btn fh-step-editor-add-header">&#43; Header</button>
+            <button type="button" class="pick-loved-btn fh-step-editor-add-divider">&#43; Divider</button>
+            <button type="button" class="pick-loved-btn fh-step-editor-add-image">&#43; Photo</button>
+            <input type="file" class="fh-step-editor-image-input" accept="image/*" style="display:none;" />
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn-cancel fh-step-editor-cancel-btn">Cancel</button>
+            <button type="button" class="btn-save fh-step-editor-save-btn">Save</button>
           </div>
         </div>
       </div>
@@ -2237,6 +2716,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
             <button type="button" class="rating-btn rb-btn-thumbsdown" title="Not a fan" data-i18n-title="recipe_box.not_a_fan_title">&#128078;</button>
           </div>
           <label class="remind-check-opt"><input type="checkbox" class="rb-input-add-suggestion" />&#128161;<span data-i18n="recipe_box.also_add_suggestion_suffix"> Also add to Meal Suggestions</span></label>
+          <button type="button" class="pick-loved-btn rb-editor-edit-steps-btn">&#128221; Edit Steps</button>
           <div class="modal-actions">
             <button class="btn-clear rb-editor-delete-btn" style="display:none;" data-i18n="recipe_box.delete">Delete</button>
             <button class="btn-cancel rb-editor-cancel-btn" data-i18n="common.cancel">Cancel</button>
@@ -2314,6 +2794,78 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
       this._closeGrocyRecipeViewer();
       this._openRecipeBoxEditor(recipe);
     });
+    root.querySelector(".grocy-recipe-viewer-edit-steps-btn").addEventListener("click", () => {
+      const recipeId = this._grocyRecipeViewerRecipeId;
+      if (!recipeId) return;
+      // See the matching comment in family-week-calendar-card.js: close
+      // the (possibly document.body-portal'd) viewer first and reopen it
+      // fresh on Save/Cancel, rather than risk this plain shadow-root
+      // overlay opening trapped underneath it on a grid dashboard.
+      const titleEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title");
+      const name = (titleEl && titleEl.textContent) || "Recipe";
+      const link = this._grocyRecipeViewerFallbackLink;
+      const sourceRecipe = this._grocyRecipeViewerSourceRecipe;
+      this._closeGrocyRecipeViewer();
+      this._fhOpenStepEditor(
+        this._grocyRecipeViewerStepBlocks || [],
+        (blocks) => {
+          this._saveGrocyRecipeStepEdits(recipeId, blocks, name, link, sourceRecipe);
+        },
+        () => {
+          this._openGrocyRecipeViewer(recipeId, name, link, false, null, sourceRecipe);
+        }
+      );
+    });
+    root.querySelector(".fh-step-editor-add-step").addEventListener("click", () => {
+      this._fhStepEditorBlocks.push({ type: "step", text: "" });
+      this._renderFhStepEditorList();
+    });
+    root.querySelector(".fh-step-editor-add-header").addEventListener("click", () => {
+      this._fhStepEditorBlocks.push({ type: "header", text: "" });
+      this._renderFhStepEditorList();
+    });
+    root.querySelector(".fh-step-editor-add-divider").addEventListener("click", () => {
+      this._fhStepEditorBlocks.push({ type: "divider" });
+      this._renderFhStepEditorList();
+    });
+    root.querySelector(".fh-step-editor-add-image").addEventListener("click", () => {
+      this._fhStepEditorOverlay().querySelector(".fh-step-editor-image-input").click();
+    });
+    root.querySelector(".fh-step-editor-image-input").addEventListener("change", async (e) => {
+      const file = e.target.files && e.target.files[0];
+      e.target.value = "";
+      if (!file) return;
+      const addImageBtn = this._fhStepEditorOverlay().querySelector(".fh-step-editor-add-image");
+      const prevLabel = addImageBtn.textContent;
+      addImageBtn.textContent = "Uploading…";
+      addImageBtn.disabled = true;
+      try {
+        const url = await this._fhUploadImage(file);
+        this._fhStepEditorBlocks.push({ type: "image", url });
+        this._renderFhStepEditorList();
+      } catch (err) {
+        window.alert("Couldn't upload that photo: " + (err && err.message ? err.message : err));
+      } finally {
+        addImageBtn.textContent = prevLabel;
+        addImageBtn.disabled = false;
+      }
+    });
+    root.querySelector(".fh-step-editor-close").addEventListener("click", () => {
+      const onCancel = this._fhStepEditorOnCancel;
+      this._closeFhStepEditor();
+      if (onCancel) onCancel();
+    });
+    root.querySelector(".fh-step-editor-cancel-btn").addEventListener("click", () => {
+      const onCancel = this._fhStepEditorOnCancel;
+      this._closeFhStepEditor();
+      if (onCancel) onCancel();
+    });
+    root.querySelector(".fh-step-editor-save-btn").addEventListener("click", () => {
+      const blocks = (this._fhStepEditorBlocks || []).filter((b) => b.type === "divider" || b.type === "image" || (b.text && b.text.trim()));
+      const onSave = this._fhStepEditorOnSave;
+      this._closeFhStepEditor();
+      if (onSave) onSave(blocks);
+    });
     root.querySelector(".grocy-recipe-viewer-delete-btn").addEventListener("click", () => {
       const recipe = this._grocyRecipeViewerSourceRecipe;
       if (!recipe) return;
@@ -2338,6 +2890,11 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
     root.querySelector(".rb-editor-cancel-btn").addEventListener("click", () => this._closeRecipeBoxEditor());
     root.querySelector(".rb-editor-save-btn").addEventListener("click", () => this._saveRecipeBoxEditor());
     root.querySelector(".rb-editor-delete-btn").addEventListener("click", () => this._deleteRecipeBoxEditorDish());
+    root.querySelector(".rb-editor-edit-steps-btn").addEventListener("click", () => {
+      this._fhOpenStepEditor(this._editingDishSteps || [], (blocks) => {
+        this._editingDishSteps = blocks;
+      });
+    });
     this._recipeBoxCategory = "All";
     this._renderRecipeBoxCategoryChips();
     this._updateRecipeBoxViewButtons();
@@ -2674,14 +3231,18 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
       .rating-row { display: flex; gap: 10px; margin-top: 12px; }
       .rating-btn { flex: 1 1 auto; min-height: 48px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); font-size: 22px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; box-shadow: var(--fc-shadow); }
       .rating-btn.active-up { background: #f2ddd4; border-color: #cf8f6c; }
-      // the full in-card Grocy Recipe Viewer's CSS, copied
-      // verbatim from family-week-calendar-card.js's own rules for these
-      // same classes (the markup and the shared methods that populate it
-      // are the exact same ones too) - see this file's own top comment.
-      // --fh-header-offset (the calendar card's kiosk-mode header height)
-      // has no equivalent on this card, so its var() fallback (0px) is
-      // always what applies here - correct, since this card has no such
-      // header to offset around.
+      /* v1.118.0+: the full in-card Grocy Recipe Viewer's CSS, copied
+         verbatim from family-week-calendar-card.js's own rules for these
+         same classes (the markup and the shared methods that populate it
+         are the exact same ones too) - see this file's own top comment.
+         --fh-header-offset (the calendar card's kiosk-mode header height)
+         has no equivalent on this card, so its var() fallback (0px) is
+         always what applies here - correct, since this card has no such
+         header to offset around. (Was a // JS-style comment, which isn't
+         valid CSS - browsers silently stop parsing the stylesheet right
+         there, which is why none of the Grocy Recipe Viewer's styling
+         below this point ever actually applied. Fixed to a real CSS
+         block comment.) */
       .grocy-recipe-viewer-overlay { top: var(--fh-header-offset, 0px); z-index: 1002; align-items: stretch; justify-content: stretch; padding: 0; }
       .grocy-recipe-viewer-overlay .modal-box { background: var(--fc-bg); width: 100%; max-width: 100%; height: calc(100vh - var(--fh-header-offset, 0px)); max-height: calc(100vh - var(--fh-header-offset, 0px)); border-radius: 0; box-shadow: none; box-sizing: border-box; padding: 28px max(22px, calc(50% - 380px)) 60px; overflow-y: auto; }
       .grocy-recipe-viewer-overlay .grocy-recipe-viewer-close { position: fixed; top: calc(14px + var(--fh-header-offset, 0px)); right: 14px; }
@@ -2719,7 +3280,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
       .grocy-recipe-viewer-photo { display: none; flex: 1 1 260px; min-width: 220px; max-width: 100%; max-height: 320px; object-fit: cover; border-radius: 12px; align-self: flex-start; }
       .grocy-recipe-viewer-status { font-size: 12px; color: var(--fc-text-secondary); padding: 2px 2px 10px; text-align: center; }
       .grocy-recipe-viewer-status.is-error { color: #b5583c; }
-      /* Prep/Cook/Total stat pills () - only ever populated with real
+      /* Prep/Cook/Total stat pills (task #250) - only ever populated with real
       values parsed off the recipe (see _renderGrocyRecipeDetail); a recipe with
       none of the three published stays an empty, invisible row via :empty
       rather than showing a blank card, same treatment as every other optional
@@ -2729,7 +3290,7 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
       .grocy-recipe-stat { background: var(--fc-surface-alt); border: 1px solid var(--fc-border); border-radius: 10px; padding: 8px 18px; text-align: center; min-width: 78px; }
       .grocy-recipe-stat-label { display: block; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fc-text-secondary); margin-bottom: 2px; }
       .grocy-recipe-stat-value { display: block; font-size: 15px; font-weight: 800; color: var(--fc-text); }
-      /* Two-column reading layout () - ingredients (with their own
+      /* Two-column reading layout (task #251) - ingredients (with their own
       scaler) on one side, hero photo on the other; wraps to a single stacked
       column on narrow widths via flex-wrap, and the photo simply isn't in the
       DOM's visible flow at all when the recipe has none (display:none above),
@@ -2745,22 +3306,51 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
       .grocy-recipe-viewer-ingredients { margin-bottom: 14px; }
       .grocy-recipe-ingredient-group { font-size: 12px; font-weight: 700; color: var(--fc-text-secondary); text-transform: uppercase; letter-spacing: 0.03em; margin: 10px 0 4px; }
       .grocy-recipe-ingredient-group:first-child { margin-top: 0; }
-      .grocy-recipe-ingredient-row { display: flex; align-items: flex-start; gap: 10px; padding: 6px 0; font-size: 14px; color: var(--fc-text); border-bottom: 1px solid var(--fc-border); }
-      /* Numbered circular badge (/mockup) standing in for the plain
+      .grocy-recipe-ingredient-row { display: flex; align-items: flex-start; gap: 10px; padding: 6px 0; font-size: 14px; color: var(--fc-text); border-bottom: 1px solid var(--fc-border); cursor: pointer; }
+      .grocy-recipe-ingredient-check { margin-top: 3px; width: 16px; height: 16px; flex-shrink: 0; cursor: pointer; }
+      .grocy-recipe-ingredient-row.checked-off { opacity: 0.5; }
+      .grocy-recipe-ingredient-row.checked-off .grocy-recipe-ingredient-amount,
+      .grocy-recipe-ingredient-row.checked-off > span:last-child { text-decoration: line-through; }
+      /* Numbered circular badge (task #251/mockup) standing in for the plain
       amount text that used to lead each row - the amount itself moved into the
       row's second line/span alongside the product name so nothing that used to
       be shown is lost, just restyled. */
       .grocy-recipe-ingredient-badge { flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
       .grocy-recipe-ingredient-amount { font-weight: 600; color: var(--fc-text-secondary); }
       .grocy-recipe-ingredient-note { font-size: 12px; color: var(--fc-text-secondary); font-style: italic; }
-      /* Numbered Instructions steps () - parsed from the recipe's own
+      /* Numbered Instructions steps (task #252) - parsed from the recipe's own
       "Preparation" block when it has one (see _renderGrocyRecipeDescription);
       recipes without that exact structure never populate this element at all,
       so it stays empty/invisible via :empty and the raw description below
       carries the full instructions instead, same as before this feature. */
       .grocy-recipe-viewer-instructions:empty { display: none; }
       .grocy-recipe-instructions-title { font-size: 1.1em; font-weight: 800; color: var(--fc-accent); margin: 6px 0 10px; }
-      .grocy-recipe-instruction-row { display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; font-size: 14px; line-height: 1.5; color: var(--fc-text); }
+      .grocy-recipe-instruction-row { display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; font-size: 14px; line-height: 1.5; color: var(--fc-text); cursor: pointer; }
+      .grocy-recipe-instruction-check { margin-top: 5px; width: 16px; height: 16px; flex-shrink: 0; cursor: pointer; }
+      .grocy-recipe-instruction-row.checked-off { opacity: 0.5; }
+      .grocy-recipe-instruction-row.checked-off .grocy-recipe-instruction-text { text-decoration: line-through; }
+      .grocy-recipe-step-header { font-size: 1.05em; font-weight: 800; color: var(--fc-text); margin: 14px 0 4px; }
+      .grocy-recipe-step-divider { border: none; border-top: 1px solid var(--fc-border); margin: 14px 0; }
+      .grocy-recipe-step-image-wrap { margin: 10px 0; }
+      .grocy-recipe-step-image { max-width: 100%; border-radius: 10px; display: block; }
+      .fh-step-editor-overlay { top: var(--fh-header-offset, 0px); z-index: 1002; align-items: stretch; justify-content: stretch; padding: 0; }
+      .fh-step-editor-overlay .fh-step-editor-box { background: var(--fc-bg); width: 100%; max-width: 100%; height: calc(100vh - var(--fh-header-offset, 0px)); max-height: calc(100vh - var(--fh-header-offset, 0px)); border-radius: 0; box-shadow: none; box-sizing: border-box; padding: 28px max(22px, calc(50% - 380px)) 60px; overflow-y: auto; }
+      .fh-step-editor-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 14px; }
+      .fh-step-editor-row { display: flex; align-items: flex-start; gap: 8px; background: var(--fc-surface-alt, #f5f5f5); border-radius: 10px; padding: 8px; }
+      .fh-step-editor-drag-handle { flex: 0 0 auto; cursor: grab; touch-action: none; padding: 4px 6px; margin-top: 4px; font-size: 18px; line-height: 1; color: var(--fc-text-secondary, #888); user-select: none; }
+      .fh-step-editor-row.fh-step-editor-dragging { opacity: 0.5; box-shadow: 0 6px 16px rgba(0,0,0,0.25); }
+      .fh-step-editor-text-input { flex: 1; min-height: 44px; resize: vertical; font-family: inherit; font-size: 14px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--fc-border); }
+      .fh-step-editor-header-input { flex: 1; font-weight: 800; font-size: 14px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--fc-border); }
+      .fh-step-editor-step-num { flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center; margin-top: 8px; }
+      .fh-step-editor-divider-row { justify-content: space-between; align-items: center; }
+      .fh-step-editor-divider-label { color: var(--fc-text-muted, #888); font-size: 13px; flex: 1; text-align: center; }
+      .fh-step-editor-image-row { align-items: center; }
+      .fh-step-editor-image-preview { flex: 1; max-width: 100%; max-height: 120px; border-radius: 8px; object-fit: cover; }
+      .fh-step-editor-row-controls { display: flex; gap: 4px; flex-shrink: 0; }
+      .fh-step-editor-row-controls button { width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--fc-border); background: var(--fc-bg); cursor: pointer; font-size: 13px; padding: 0; }
+      .fh-step-editor-row-controls button:disabled { opacity: 0.35; cursor: default; }
+      .fh-step-editor-add-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+      .fh-step-editor-add-row button { flex: 1 1 auto; }
       .grocy-recipe-instruction-badge { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 13px; font-weight: 800; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
       .grocy-recipe-instruction-text { padding-top: 3px; }
       .grocy-recipe-viewer-description { font-size: 14px; line-height: 1.5; color: var(--fc-text); }
@@ -2781,11 +3371,12 @@ class FamilyHubRecipeBoxCard extends HTMLElement {
       .grocy-recipe-viewer-overlay .grocy-recipe-instruction-row { font-size: 15px; }
       .grocy-recipe-viewer-overlay .grocy-recipe-viewer-description { font-size: 16px; line-height: 1.6; }
       .grocy-recipe-viewer-overlay .grocy-recipe-viewer-footer { max-width: 320px; margin: 14px auto 0; }
-      // Base accordion/section-label classes the ingredients-accordion
-      // rules above build on (.grocy-recipe-ingredients-accordion
-      // .accordion-toggle/.accordion-body) - also copied verbatim from the
-      // calendar card, which already has these for its OTHER accordions
-      // (this card had none before now).
+      /* Base accordion/section-label classes the ingredients-accordion
+         rules above build on (.grocy-recipe-ingredients-accordion
+         .accordion-toggle/.accordion-body) - also copied verbatim from the
+         calendar card, which already has these for its OTHER accordions
+         (this card had none before now). (Same // -> CSS-comment fix as
+         above.) */
       .theme-section-label { font-size: 13px; font-weight: 800; color: var(--fc-text); margin: 6px 0 8px; text-transform: uppercase; letter-spacing: 0.02em; }
       .accordion-toggle { width: 100%; display: flex; align-items: center; justify-content: space-between; background: var(--fc-surface-alt); border: none; border-radius: 10px; padding: 10px 12px; cursor: pointer; box-shadow: var(--fc-shadow); }
       .accordion-toggle .theme-section-label { margin: 0; }

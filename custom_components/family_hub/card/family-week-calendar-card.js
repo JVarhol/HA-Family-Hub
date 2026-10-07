@@ -481,7 +481,7 @@ _genId() {
 return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 },
 _parseDishDescription(raw) {
-if (!raw) return { description: "", link: "", rating: null, color: null, block: 0, recur: null, grocyRecipeId: null, servings: null, category: "", image: "", additionalRecipes: [], leftoverDates: [] };
+if (!raw) return { description: "", link: "", rating: null, color: null, cook: "", block: 0, recur: null, grocyRecipeId: null, servings: null, category: "", image: "", additionalRecipes: [], leftoverDates: [] };
 try {
 const parsed = JSON.parse(raw);
 return {
@@ -489,6 +489,12 @@ description: parsed.description || "",
 link: parsed.link || "",
 rating: parsed.rating || null,
 color: parsed.color || null,
+// Who's cooking this meal - a household member's display name (see
+// _getPeople), or "" when not set. Purely cosmetic (drives the colored
+// bar at the bottom of the meal banner in _buildDayColumnHtml), never
+// validated against the current household member list, same spirit as
+// `color` above.
+cook: typeof parsed.cook === "string" ? parsed.cook : "",
 // Recipe Box-only fields (see _upsertDish) - harmlessly blank on
 // every other kind of item this same parser also handles (a planned
 // meal, a recurring-meal anchor, a suggestion), since none of those
@@ -544,7 +550,7 @@ additionalRecipes: Array.isArray(parsed.additionalRecipes)
 : [],
 };
 } catch (e) {
-return { description: raw, link: "", rating: null, color: null, block: 0, recur: null, grocyRecipeId: null, servings: null, category: "", image: "", spanDays: 1, additionalRecipes: [], leftoverDates: [] };
+return { description: raw, link: "", rating: null, color: null, cook: "", block: 0, recur: null, grocyRecipeId: null, servings: null, category: "", image: "", spanDays: 1, additionalRecipes: [], leftoverDates: [] };
 }
 },
 async _getItems(entityId) {
@@ -830,6 +836,9 @@ return this._hasPermission("can_edit_menu");
 _canDeleteEvent() {
 return this._hasPermission("can_delete_event");
 },
+_canEditEvent() {
+return this._hasPermission("can_edit_event");
+},
 // ->
 // clarified to use Home Assistant's OWN native frontend translation
 // system rather than a bespoke one, and to follow HA's own language
@@ -1012,7 +1021,7 @@ this._myPermissions = (result && result.permissions) || {};
 this._myPermissions = {};
 }
 },
-async _upsertDish(name, description, link, rating, uidOverride, grocyRecipeId, category, image, checkDuplicates) {
+async _upsertDish(name, description, link, rating, uidOverride, grocyRecipeId, category, image, checkDuplicates, steps) {
 if (!name) return;
 const existing = uidOverride
 ? this._recipes.find((r) => r.uid === uidOverride)
@@ -1041,6 +1050,13 @@ return;
 // explicitly to actually clear one.
 const finalCategory = category !== undefined ? category : (existing ? existing.category || "" : "");
 const finalImage = image !== undefined ? image : (existing ? existing.image || "" : "");
+// v1.154.0+: steps is a local (non-Grocy) recipe's own ordered step-
+// block array (see _fhOpenStepEditor) - same "undefined means leave it
+// alone" convention as category/image above, since most _upsertDish
+// callers (a heart click, the day/menu editor's "also save this" path)
+// have no idea whether this recipe even has steps and shouldn't blank
+// them out just by never mentioning them.
+const finalSteps = steps !== undefined ? steps : (existing ? existing.steps || [] : []);
 const record = {
 uid: existing ? existing.uid : this._genId(),
 name,
@@ -1050,6 +1066,7 @@ rating: rating || null,
 grocyRecipeId: grocyRecipeId || null,
 category: finalCategory,
 image: finalImage,
+steps: finalSteps,
 };
 if (existing) {
 this._recipes[this._recipes.indexOf(existing)] = record;
@@ -1059,6 +1076,7 @@ this._recipes.push(record);
 await this._persistRecipes();
 this._renderLoved();
 this._renderGrid();
+return record;
 },
 async _deleteDish(uid, grocyRecipeId) {
 if (!uid) return;
@@ -1516,6 +1534,19 @@ const ratingHtml =
 : "") + (recipe.category ? `<span class="event-info-chip">${recipe.category}</span>` : "");
 root.querySelector(".dish-detail-rating").innerHTML = ratingHtml;
 root.querySelector(".dish-detail-desc").textContent = recipe.description || "No notes added.";
+const stepsEl = root.querySelector(".dish-detail-steps");
+if (stepsEl) {
+this._dishDetailCheckedSteps = new Set();
+stepsEl.innerHTML = this._fhRenderStepBlocksHtml(recipe.steps || [], this._dishDetailCheckedSteps);
+stepsEl.querySelectorAll(".grocy-recipe-instruction-row").forEach((row) => {
+row.querySelector(".grocy-recipe-instruction-check").addEventListener("change", () => {
+const idx = Number(row.dataset.idx);
+if (row.querySelector(".grocy-recipe-instruction-check").checked) this._dishDetailCheckedSteps.add(idx);
+else this._dishDetailCheckedSteps.delete(idx);
+row.classList.toggle("checked-off", row.querySelector(".grocy-recipe-instruction-check").checked);
+});
+});
+}
 const suggestBtn = root.querySelector(".dish-detail-suggest-btn");
 if (suggestBtn) {
 suggestBtn.textContent = "\u{1F4A1} Suggest this";
@@ -1566,7 +1597,297 @@ new Set((this._recipes || []).map((r) => (r.category || "").trim()).filter(Boole
 ).sort((a, b) => a.localeCompare(b));
 datalist.innerHTML = categories.map((c) => `<option value="${c.replace(/"/g, "&quot;")}"></option>`).join("");
 },
-// the full in-card Grocy Recipe Viewer, moved here from being
+// v1.154.0+: new recipe step-block editor (household request: "add an
+// editor that allows you to add pictures at any step and edited recipe.
+// Allow you to add dividers, headers between step and more"). Steps are
+// now an ordered array of typed blocks - {type:"step",text}, {type:
+// "header",text}, {type:"divider"}, {type:"image",url} - rather than
+// plain strings, so instructions can be broken up with section headers,
+// visual dividers, and inline photos at any point. For a Grocy-linked
+// recipe these blocks are serialized into the same "<p><strong>
+// Preparation</strong></p>..." HTML block _renderGrocyRecipeDescription
+// already parses (see _fhParsePreparationBlocks/_fhBlocksToPreparationHtml)
+// so nothing about Grocy's own recipe storage needs to change - headers
+// become <h4>, dividers become <hr>, photos become a lone <img> inside
+// a <p>. For a local (non-Grocy) Recipe Box entry the blocks are instead
+// stored directly as a new "steps" field on the recipe record itself (see
+// _upsertDish) since that storage is schema-less already.
+_fhEscapeHtml(s) {
+return String(s == null ? "" : s)
+.replace(/&/g, "&amp;")
+.replace(/</g, "&lt;")
+.replace(/>/g, "&gt;");
+},
+_fhParsePreparationBlocks(inner) {
+const blocks = [];
+const re = /<h4>([\s\S]*?)<\/h4>|<hr\s*\/?>|<p>([\s\S]*?)<\/p>/gi;
+let m;
+while ((m = re.exec(inner || ""))) {
+if (m[1] !== undefined) {
+const text = m[1].trim();
+if (text) blocks.push({ type: "header", text });
+} else if (/^<hr/i.test(m[0])) {
+blocks.push({ type: "divider" });
+} else if (m[2] !== undefined) {
+const content = m[2].trim();
+const imgMatch = content.match(/^<img[^>]*\bsrc=["']([^"']+)["'][^>]*>$/i);
+if (imgMatch) {
+blocks.push({ type: "image", url: imgMatch[1] });
+} else if (content) {
+blocks.push({ type: "step", text: content });
+}
+}
+}
+return blocks;
+},
+_fhBlocksToPreparationHtml(blocks) {
+return (blocks || [])
+.map((b) => {
+if (b.type === "header") return `<h4>${b.text || ""}</h4>`;
+if (b.type === "divider") return "<hr>";
+if (b.type === "image") return `<p><img src="${(b.url || "").replace(/"/g, "&quot;")}"></p>`;
+return `<p>${b.text || ""}</p>`;
+})
+.join("");
+},
+_fhRenderStepBlocksHtml(blocks, checkedSteps) {
+if (!blocks || !blocks.length) return "";
+checkedSteps = checkedSteps || new Set();
+let stepNum = 0;
+const rows = blocks.map((b, idx) => {
+if (b.type === "header") {
+return `<div class="grocy-recipe-step-header">${b.text || ""}</div>`;
+}
+if (b.type === "divider") {
+return `<hr class="grocy-recipe-step-divider" />`;
+}
+if (b.type === "image") {
+return `<div class="grocy-recipe-step-image-wrap"><img class="grocy-recipe-step-image" src="${b.url || ""}" /></div>`;
+}
+stepNum++;
+const checked = checkedSteps.has(idx) ? " checked-off" : "";
+return `<label class="grocy-recipe-instruction-row${checked}" data-idx="${idx}"><input type="checkbox" class="grocy-recipe-instruction-check"${checked ? " checked" : ""} /><span class="grocy-recipe-instruction-badge">${stepNum}</span><span class="grocy-recipe-instruction-text">${b.text || ""}</span></label>`;
+});
+return `<div class="grocy-recipe-instructions-title">Instructions</div>` + rows.join("");
+},
+async _fhBlobToUploadFromFile(file) {
+let blob = file;
+let name = (file && file.name) || "photo.jpg";
+try {
+const rawDataUrl = await new Promise((resolve, reject) => {
+const reader = new FileReader();
+reader.onload = () => resolve(reader.result);
+reader.onerror = () => reject(reader.error || new Error("Couldn't read that file."));
+reader.readAsDataURL(file);
+});
+const img = await new Promise((resolve, reject) => {
+const el = new Image();
+el.onload = () => resolve(el);
+el.onerror = () => reject(new Error("Couldn't decode that image."));
+el.src = rawDataUrl;
+setTimeout(() => reject(new Error("timed out decoding image")), 1500);
+});
+const maxDim = 1600;
+const width = img.width || maxDim;
+const height = img.height || maxDim;
+const scale = Math.min(1, maxDim / Math.max(width, height));
+const canvas = document.createElement("canvas");
+canvas.width = Math.max(1, Math.round(width * scale));
+canvas.height = Math.max(1, Math.round(height * scale));
+const ctx = canvas.getContext && canvas.getContext("2d");
+if (ctx) {
+ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+const reEncoded = await new Promise((resolve) => {
+if (typeof canvas.toBlob === "function") {
+canvas.toBlob((b) => resolve(b), "image/jpeg", 0.85);
+} else {
+resolve(null);
+}
+});
+if (reEncoded) {
+blob = reEncoded;
+name = "photo.jpg";
+}
+}
+} catch (e) {
+// Best-effort only - falls through to uploading the original file.
+}
+return { blob, name };
+},
+async _fhFetchWithAuth(path, opts) {
+if (this._hass && typeof this._hass.fetchWithAuth === "function") {
+return this._hass.fetchWithAuth(path, opts);
+}
+const token = this._hass && this._hass.auth && this._hass.auth.data && this._hass.auth.data.access_token;
+const headers = Object.assign({}, opts && opts.headers, token ? { authorization: `Bearer ${token}` } : {});
+return fetch(path, Object.assign({}, opts, { headers }));
+},
+async _fhUploadImage(file) {
+if (!file) return null;
+const { blob, name } = await this._fhBlobToUploadFromFile(file);
+const formData = new FormData();
+formData.append("file", blob, name);
+const response = await this._fhFetchWithAuth("/api/image/upload", { method: "POST", body: formData });
+if (!response || !response.ok) {
+throw new Error(`image upload failed (${response && response.status})`);
+}
+const result = await response.json();
+if (!result || !result.id) throw new Error("image upload response had no id");
+return `/api/image/serve/${result.id}/original`;
+},
+_fhOpenStepEditor(blocks, onSave, onCancel) {
+const root = this._root;
+if (!root) return;
+this._fhStepEditorBlocks = (blocks || []).map((b) => Object.assign({}, b));
+this._fhStepEditorOnSave = onSave;
+this._fhStepEditorOnCancel = onCancel;
+this._renderFhStepEditorList();
+this._openModal(this._fhStepEditorOverlay());
+},
+_closeFhStepEditor() {
+// v1.159.0 bug fix: this called this._closeModal(...), a method that
+// only ever existed in family-hub-recipe-box-card.js - this file has no
+// _closeModal of its own (its other modals close via a plain
+// classList.remove("open") on the element directly, e.g.
+// _closeDishDetail), so every call here threw silently inside the
+// click handler and both Save and Cancel/X appeared to do nothing.
+const overlay = this._fhStepEditorOverlay();
+if (overlay) overlay.classList.remove("open");
+},
+_fhMoveStepBlock(idx, dir) {
+const blocks = this._fhStepEditorBlocks;
+if (!blocks) return;
+const newIdx = idx + dir;
+if (newIdx < 0 || newIdx >= blocks.length) return;
+const [item] = blocks.splice(idx, 1);
+blocks.splice(newIdx, 0, item);
+this._renderFhStepEditorList();
+},
+_renderFhStepEditorList() {
+const root = this._root;
+if (!root) return;
+const listEl = this._fhStepEditorOverlay().querySelector(".fh-step-editor-list");
+if (!listEl) return;
+const blocks = this._fhStepEditorBlocks || [];
+if (!blocks.length) {
+listEl.innerHTML = `<div class="loved-empty">No steps yet - use the buttons below to add some.</div>`;
+return;
+}
+const dragHandle = `<span class="fh-step-editor-drag-handle" title="Drag to reorder">&#9776;</span>`;
+listEl.innerHTML = blocks
+.map((b, idx) => {
+const controls =
+`<div class="fh-step-editor-row-controls">` +
+`<button type="button" class="fh-step-editor-up-btn" data-idx="${idx}"${idx === 0 ? " disabled" : ""}>&#8593;</button>` +
+`<button type="button" class="fh-step-editor-down-btn" data-idx="${idx}"${idx === blocks.length - 1 ? " disabled" : ""}>&#8595;</button>` +
+`<button type="button" class="fh-step-editor-del-btn" data-idx="${idx}">&#128465;&#65039;</button>` +
+`</div>`;
+if (b.type === "header") {
+return (
+`<div class="fh-step-editor-row fh-step-editor-header-row" data-idx="${idx}">` +
+dragHandle +
+`<input type="text" class="fh-step-editor-header-input" data-idx="${idx}" value="${this._fhEscapeHtml(b.text || "")}" placeholder="Section header" />` +
+controls +
+`</div>`
+);
+}
+if (b.type === "divider") {
+return `<div class="fh-step-editor-row fh-step-editor-divider-row" data-idx="${idx}">${dragHandle}<span class="fh-step-editor-divider-label">&mdash; divider &mdash;</span>${controls}</div>`;
+}
+if (b.type === "image") {
+return `<div class="fh-step-editor-row fh-step-editor-image-row" data-idx="${idx}">${dragHandle}<img class="fh-step-editor-image-preview" src="${b.url || ""}" />${controls}</div>`;
+}
+return (
+`<div class="fh-step-editor-row fh-step-editor-step-row" data-idx="${idx}">` +
+dragHandle +
+`<span class="fh-step-editor-step-num">${idx + 1}</span>` +
+`<textarea class="fh-step-editor-text-input" data-idx="${idx}" placeholder="Step text">${b.text || ""}</textarea>` +
+controls +
+`</div>`
+);
+})
+.join("");
+this._fhStepEditorAttachDrag(listEl);
+listEl.querySelectorAll(".fh-step-editor-text-input, .fh-step-editor-header-input").forEach((el) => {
+el.addEventListener("input", () => {
+const idx = Number(el.dataset.idx);
+if (this._fhStepEditorBlocks[idx]) this._fhStepEditorBlocks[idx].text = el.value;
+});
+});
+listEl.querySelectorAll(".fh-step-editor-up-btn").forEach((btn) => {
+btn.addEventListener("click", () => this._fhMoveStepBlock(Number(btn.dataset.idx), -1));
+});
+listEl.querySelectorAll(".fh-step-editor-down-btn").forEach((btn) => {
+btn.addEventListener("click", () => this._fhMoveStepBlock(Number(btn.dataset.idx), 1));
+});
+listEl.querySelectorAll(".fh-step-editor-del-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+const idx = Number(btn.dataset.idx);
+this._fhStepEditorBlocks.splice(idx, 1);
+this._renderFhStepEditorList();
+});
+});
+},
+// v1.159.0+: household request, verbatim - "you should be able to drag
+// headings, steps, photos dividers etc around". The up/down buttons
+// stay (still the only option for someone who can't do a drag gesture,
+// e.g. a screen reader or a stylus-only kiosk), this just adds a touch/
+// pointer-driven drag as the faster path for reordering a long list by
+// hand. Pointer Events (not HTML5 drag-and-drop, which mobile Safari/
+// Chrome support inconsistently for touch) dragged via the little grip
+// handle on each row, moving the actual DOM node live as the finger/
+// pointer crosses a neighboring row's midpoint, then resyncing
+// this._fhStepEditorBlocks from the final DOM order once the drag ends
+// - cheap, and avoids re-binding every row's listeners mid-drag the way
+// re-rendering on every pointermove would.
+_fhStepEditorAttachDrag(listEl) {
+const blocks = this._fhStepEditorBlocks || [];
+const rows = Array.from(listEl.querySelectorAll(".fh-step-editor-row"));
+rows.forEach((row, i) => {
+row.__fhBlock = blocks[i];
+const handle = row.querySelector(".fh-step-editor-drag-handle");
+if (!handle) return;
+handle.addEventListener("pointerdown", (e) => {
+if (e.button !== undefined && e.button !== 0) return;
+e.preventDefault();
+const draggedRow = row;
+draggedRow.classList.add("fh-step-editor-dragging");
+// Listening on window (not the handle itself) is the same pattern the
+// in-week meal drag already uses (see _startMealDrag) - deliberately
+// NOT relying on the handle's own setPointerCapture to keep receiving
+// pointermove once the finger/cursor moves off it. That capture is
+// exactly what this function's own insertBefore() below defeats: moving
+// the dragged row (and the handle inside it) to a new spot in the DOM
+// mid-drag silently drops pointer capture on real mobile WebKit, which
+// stopped delivering any further pointermove/pointerup to this handle -
+// "drag doesn't work on mobile" was that: the FIRST reorder still
+// happened (capture was still good for that one event), then everything
+// after went dead. window-level listeners don't depend on capture at
+// all, so they keep receiving events regardless of where the dragged
+// row ends up.
+const onMove = (ev) => {
+const target = document.elementFromPoint(ev.clientX, ev.clientY);
+const overRow = target && target.closest && target.closest(".fh-step-editor-row");
+if (!overRow || overRow === draggedRow || overRow.parentElement !== listEl) return;
+const rect = overRow.getBoundingClientRect();
+const before = ev.clientY < rect.top + rect.height / 2;
+listEl.insertBefore(draggedRow, before ? overRow : overRow.nextSibling);
+};
+const onUp = () => {
+draggedRow.classList.remove("fh-step-editor-dragging");
+window.removeEventListener("pointermove", onMove);
+window.removeEventListener("pointerup", onUp);
+window.removeEventListener("pointercancel", onUp);
+this._fhStepEditorBlocks = Array.from(listEl.querySelectorAll(".fh-step-editor-row")).map((r) => r.__fhBlock);
+this._renderFhStepEditorList();
+};
+window.addEventListener("pointermove", onMove);
+window.addEventListener("pointerup", onUp);
+window.addEventListener("pointercancel", onUp);
+});
+});
+},
+// v1.118.0+: the full in-card Grocy Recipe Viewer, moved here from being
 // a FamilyWeekCalendarCard-only set of methods so family-hub-recipe-box-
 // card.js can open the exact same live viewer for a Grocy-linked dish
 // instead of just opening the plain external Grocy link (household
@@ -1575,7 +1896,8 @@ datalist.innerHTML = categories.map((c) => `<option value="${c.replace(/"/g, "&q
 // shared: _selectGrocyRecipe/_renderGrocyPicker (the "Add from Grocy"
 // search picker) - Recipe Box has no such picker and doesn't need one,
 // same as before.
-// Root
+// v1.121.0+: household report, verbatim: "recipe card opens recipes in a
+// modal instead of the full screen like the recipe modal does." Root
 // cause: wherever this shared viewer is running, if the card sits in a
 // normal masonry/sections dashboard grid (rather than filling the whole
 // screen, which is how a panel-view deployment usually hides this
@@ -1633,9 +1955,23 @@ const overlay = this._grocyRecipeViewerOverlayEl;
 if (overlay && !this._grocyRecipeViewerPortalEl) {
 const portal = document.createElement("div");
 portal.className = "fh-grocy-viewer-portal";
-if (typeof this._css === "function") {
+// NOTE: this card has no _css() method (unlike family-hub-recipe-box-card.js,
+// where _css() backs both its own shadow-root <style> AND this exact portal
+// copy) - this card's CSS is inlined directly into the giant template
+// literal _build() assigns to root.innerHTML instead. The old
+// `typeof this._css === "function"` guard below was therefore ALWAYS false
+// here, silently skipping the portal <style> entirely: the Grocy Recipe
+// Viewer would open (the "open" class gets added) but render as an
+// unstyled, static-positioned lump instead of the full-page modal, because
+// none of .modal-overlay/.grocy-recipe-viewer-overlay rules ever reached
+// it. Fixed to pull the CSS text this card actually has - the live
+// shadow-root <style> element's own textContent - the same source of
+// truth this card's own rendering already uses, so the portal copy can
+// never drift from it.
+const existingStyleEl = this._root && this._root.querySelector("style");
+if (existingStyleEl && existingStyleEl.textContent) {
 const style = document.createElement("style");
-style.textContent = this._css().split(":host").join(".fh-grocy-viewer-portal");
+style.textContent = existingStyleEl.textContent.split(":host").join(".fh-grocy-viewer-portal");
 portal.appendChild(style);
 }
 portal.appendChild(overlay);
@@ -1655,11 +1991,50 @@ if (value && value.trim()) this._grocyRecipeViewerPortalEl.style.setProperty(nam
 }
 return overlay;
 },
+_fhStepEditorOverlay() {
+if (!this._fhStepEditorOverlayEl) {
+const root = this._root;
+this._fhStepEditorOverlayEl = root && root.querySelector(".fh-step-editor-overlay");
+}
+const overlay = this._fhStepEditorOverlayEl;
+if (overlay && !this._fhStepEditorPortalEl) {
+const portal = document.createElement("div");
+portal.className = "fh-step-editor-portal";
+// Same reasoning/mechanism as _grocyViewerOverlay's own portal (see its
+// long comment above) - this overlay is now meant to be a true
+// full-screen modal too (household request: "make the step editor a
+// full screen modal instead of a small one"), so it needs the exact
+// same escape from a grid dashboard's containing block, copying this
+// card's live stylesheet across since nothing in a shadow root's <style>
+// reaches an element moved out to document.body on its own.
+const existingStyleEl = this._root && this._root.querySelector("style");
+if (existingStyleEl && existingStyleEl.textContent) {
+const style = document.createElement("style");
+style.textContent = existingStyleEl.textContent.split(":host").join(".fh-step-editor-portal");
+portal.appendChild(style);
+}
+portal.appendChild(overlay);
+document.body.appendChild(portal);
+this._fhStepEditorPortalEl = portal;
+}
+if (this._fhStepEditorPortalEl && typeof getComputedStyle === "function") {
+const live = getComputedStyle(this);
+[
+"--fc-bg", "--fc-card", "--fc-border", "--fc-text", "--fc-text-secondary",
+"--fc-accent", "--fc-accent-text", "--fc-accent2", "--fc-accent3",
+"--fc-surface-alt", "--fc-surface2", "--fc-glass-blur", "--fh-header-offset",
+].forEach((name) => {
+const value = live.getPropertyValue(name);
+if (value && value.trim()) this._fhStepEditorPortalEl.style.setProperty(name, value.trim());
+});
+}
+return overlay;
+},
 _openGrocyRecipeViewer(recipeId, fallbackName, fallbackLink, isPreview, tabs, sourceRecipe) {
 if (!recipeId) return;
 this._grocyRecipeViewerRecipeId = recipeId;
 this._grocyRecipeViewerFallbackLink = fallbackLink || "";
-// the actual Recipe Box entry this viewer was opened FROM, if
+// v1.129.0+: the actual Recipe Box entry this viewer was opened FROM, if
 // any - only ever passed by the Recipe Box's own primary browse click
 // (see that click handler's own comment, just below in this file), never
 // by a meal-preview/Expiring-Soon/additional-recipe call site elsewhere,
@@ -1668,7 +2043,7 @@ this._grocyRecipeViewerFallbackLink = fallbackLink || "";
 // see the .grocy-recipe-viewer-recipe-actions toggle a few lines down.
 this._grocyRecipeViewerSourceRecipe = sourceRecipe || null;
 const overlay = this._grocyViewerOverlay();
-// Preview mode ('s picker preview icon) opens the exact same
+// Preview mode (task #177's picker preview icon) opens the exact same
 // viewer, but over a picker that's deliberately left open underneath -
 // show a "Back" button instead of relying on the plain close (X) to
 // implicitly reveal it, so it reads as "look, then come back" rather
@@ -1679,7 +2054,7 @@ overlay.classList.toggle("preview-mode", !!isPreview);
 // the inline style here would silently leave it hidden even in preview
 // mode instead of showing it.
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-back-btn").style.display = isPreview ? "block" : "none";
-// same "block", not "" gotcha as the back button above -
+// v1.129.0+: same "block", not "" gotcha as the back button above -
 // .grocy-recipe-viewer-recipe-actions defaults to display:none in CSS.
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-recipe-actions").style.display = this._grocyRecipeViewerSourceRecipe ? "flex" : "none";
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = fallbackName || "Recipe";
@@ -1748,7 +2123,7 @@ this._resetScreenSaverIdleTimer();
 },
 _closeGrocyRecipeViewer() {
 this._grocyViewerOverlay().classList.remove("open");
-// don't let a stale Recipe Box entry leak into the NEXT
+// v1.129.0+: don't let a stale Recipe Box entry leak into the NEXT
 // viewer open (a bare-recipe-id call site, e.g. a meal preview, that
 // forgets to pass a 6th argument would otherwise inherit whatever was
 // last set here rather than correctly showing no Suggest/Edit/Delete
@@ -1922,7 +2297,7 @@ photoEl.style.display = "none";
 photoEl.src = "";
 }
 this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title").textContent = recipe.name || "Recipe";
-// Prep/Cook/Total stat pills (/mockup) - only the ones this
+// Prep/Cook/Total stat pills (task #250/mockup) - only the ones this
 // recipe actually has real data for; a manually-typed Grocy recipe with
 // none of the three published just gets an empty (and, per the
 // :empty CSS rule, invisible) stats row instead of a placeholder.
@@ -1945,7 +2320,17 @@ this._grocyRecipeViewerFallbackLink = recipe.link || this._grocyRecipeViewerFall
 
 const ingredients = Array.isArray(recipe.ingredients) ? recipe.ingredients : [];
 this._grocyRecipeViewerIngredients = ingredients;
-// The scaler () works off the recipe's own base_servings - the
+// Checking off an ingredient or a step is scoped to one viewing of one
+// recipe - re-opening the same recipe (or switching tabs to another one,
+// for multi-recipe tabbed viewing) starts every box unchecked again,
+// same as a paper copy would. Reset here (recipe detail load), not in
+// _renderGrocyRecipeIngredients/_renderGrocyRecipeDescription, since
+// those two also re-run on every serving-scale change and must NOT wipe
+// what's already checked off mid-cook just because someone bumped the
+// servings stepper.
+this._grocyRecipeViewerCheckedIngredients = new Set();
+this._grocyRecipeViewerCheckedSteps = new Set();
+// The scaler (task #173) works off the recipe's own base_servings - the
 // serving count Grocy's recipes_pos amounts are actually calibrated for -
 // separate from "servings" above, which can reflect a previously-saved
 // desired_servings override instead. Falls back gracefully to whatever's
@@ -1963,7 +2348,7 @@ this._renderGrocyRecipeIngredients();
 // The description/instructions HTML can itself embed a plain-text
 // ingredients list (see _createImportedGrocyRecipe's "Ingredients"
 // <ul> block, added for recipes imported via the card's "Import a
-// recipe from a link" flow, ) - kept unscaled here so
+// recipe from a link" flow, task #158) - kept unscaled here so
 // _renderGrocyRecipeDescription can re-derive the scaled version from
 // the original every time the stepper changes, rather than scaling an
 // already-scaled string a second time.
@@ -1974,7 +2359,7 @@ this._renderGrocyRecipeDescription();
 // servings ratio - mirrors _renderGrocyRecipeIngredients, but for the
 // plain-text "Ingredients" list some recipes also carry inside their
 // description HTML (see the comment above). Recipes without that exact
-// block (hand-typed directly in Grocy, or from before) simply
+// block (hand-typed directly in Grocy, or from before task #158) simply
 // pass through _scaleIngredientsDescriptionHtml unchanged.
 _renderGrocyRecipeDescription() {
 if (!this._root) return;
@@ -1985,6 +2370,7 @@ const raw = this._grocyRecipeViewerRawDescription || "";
 if (!raw) {
 if (instructionsEl) instructionsEl.innerHTML = "";
 descEl.innerHTML = `<div class="loved-empty">No instructions added in Grocy.</div>`;
+this._grocyRecipeViewerStepBlocks = [];
 return;
 }
 const baseServings = this._grocyRecipeViewerBaseServings || 1;
@@ -1993,35 +2379,35 @@ const ratio = baseServings > 0 ? servings / baseServings : 1;
 let html = this._scaleIngredientsDescriptionHtml(raw, ratio);
 
 // Recipes imported via this card's own "Import a recipe from a link"
-// flow (_createImportedGrocyRecipe, /#223) write a predictable
+// flow (_createImportedGrocyRecipe, task #158/#223) write a predictable
 // "<p><strong>Preparation</strong></p><p>step 1</p><p>step 2</p>..."
 // block, followed by (optionally) the Prep/Cook line and/or a Source
 // line, each of which starts with its own "<p><strong>". Recipes without
 // that exact shape (hand-typed directly in Grocy, older imports, plain
-// pasted text with no parsed steps) simply have no match here and fall
-// through to the untouched raw-HTML rendering exactly as before this
-// feature existed - nothing about them changes.
+// pasted text with no parsed steps) simply have no match here, and the
+// "Edit Steps" button starts them off with a blank steps list rather
+// than nothing to edit at all.
+//
+// v1.154.0+: this block is now parsed into typed step blocks (plain
+// steps, section headers, dividers, inline photos - see
+// _fhParsePreparationBlocks) instead of just a flat array of step
+// strings, so the household's step editor can add/reorder headers,
+// dividers, and photos anywhere in the instructions.
 const stepsMatch = html.match(/<p><strong>Preparation<\/strong><\/p>([\s\S]*?)(?=<p><strong>|$)/i);
-const steps = [];
-if (stepsMatch) {
-const stepRe = /<p>([\s\S]*?)<\/p>/gi;
-let m;
-while ((m = stepRe.exec(stepsMatch[1]))) {
-const text = m[1].trim();
-if (text) steps.push(text);
-}
-}
+const blocks = stepsMatch ? this._fhParsePreparationBlocks(stepsMatch[1]) : [];
+this._grocyRecipeViewerStepBlocks = blocks;
 
 if (instructionsEl) {
-instructionsEl.innerHTML = steps.length
-? `<div class="grocy-recipe-instructions-title">Instructions</div>` +
-steps
-.map(
-(step, i) =>
-`<div class="grocy-recipe-instruction-row"><span class="grocy-recipe-instruction-badge">${i + 1}</span><span class="grocy-recipe-instruction-text">${step}</span></div>`
-)
-.join("")
-: "";
+instructionsEl.innerHTML = this._fhRenderStepBlocksHtml(blocks, this._grocyRecipeViewerCheckedSteps);
+instructionsEl.querySelectorAll(".grocy-recipe-instruction-row").forEach((row) => {
+row.querySelector(".grocy-recipe-instruction-check").addEventListener("change", () => {
+const idx = Number(row.dataset.idx);
+if (!this._grocyRecipeViewerCheckedSteps) this._grocyRecipeViewerCheckedSteps = new Set();
+if (row.querySelector(".grocy-recipe-instruction-check").checked) this._grocyRecipeViewerCheckedSteps.add(idx);
+else this._grocyRecipeViewerCheckedSteps.delete(idx);
+row.classList.toggle("checked-off", row.querySelector(".grocy-recipe-instruction-check").checked);
+});
+});
 }
 
 // Once a block has its own dedicated element above (structured
@@ -2032,7 +2418,8 @@ steps
 // _ws_create_grocy_recipe's "skipped" list), so the structured list
 // above can be a strict SUBSET of what's in the raw text - and outright
 // removing the raw block used to hide those skipped ingredients
-// entirely (a real ). Rather than try to judge redundancy and
+// entirely (a real household report: "not including the ingredients in
+// the preparation section"). Rather than try to judge redundancy and
 // hide it, this always keeps the raw written-out list available - just
 // tucked behind a collapsed-by-default accordion, so it's a tap away
 // when needed (a skipped ingredient, double-checking exact wording,
@@ -2050,7 +2437,7 @@ const accordionHtml =
 `</div>`;
 html = html.replace(ingredientsBlockMatch[0], accordionHtml);
 }
-if (steps.length) {
+if (stepsMatch) {
 html = html.replace(stepsMatch[0], "");
 }
 // The Prep/Cook line is now always shown as its own stat pills whenever
@@ -2067,6 +2454,88 @@ ingredientsToggle.classList.toggle("open");
 if (body) body.classList.toggle("open");
 });
 }
+},
+// Save step for the "Edit Steps" button (see _fhOpenStepEditor) - a
+// Grocy-linked recipe's instructions live entirely inside its own
+// description field as a "<p><strong>Preparation</strong></p>..." block
+// (see _renderGrocyRecipeDescription/_fhParsePreparationBlocks), so
+// saving new step blocks means re-fetching the recipe's CURRENT raw
+// description fresh from Grocy, splicing the newly-serialized Preparation
+// block back into it in place (leaving the Ingredients/Prep-Cook/Source
+// lines this editor never touches exactly as they were), and sending the
+// whole thing back through family_hub/update_grocy_recipe - which,
+// being a full delete-then-recreate of recipes_pos rows, also needs this
+// recipe's ingredients echoed back unchanged (same pattern as
+// _saveGrocyRecipeIngredientEdits where that method exists).
+async _saveGrocyRecipeStepEdits(recipeId, blocks, reopenName, reopenLink, reopenSourceRecipe) {
+if (!this._hass || !recipeId) return;
+// v1.154.0+: the "Edit Steps" button closes the (possibly document.body
+// -portal'd) Grocy Recipe Viewer before opening this plain shadow-root
+// step editor overlay on top of it (see that button's own click
+// handler) - so unlike _saveGrocyRecipeIngredientEdits, there's no
+// still-open viewer with its own status line to write progress/errors
+// into here. Every exit path below instead reopens the viewer fresh
+// (showing the saved result, or the unchanged recipe plus an alert() on
+// failure) rather than leaving the household on a bare closed modal.
+const reopenViewer = () => {
+this._openGrocyRecipeViewer(recipeId, reopenName, reopenLink, false, null, reopenSourceRecipe);
+};
+let detailResult;
+try {
+detailResult = await this._hass.connection.sendMessagePromise({ type: "family_hub/get_grocy_recipe_detail", recipe_id: recipeId });
+} catch (e) {
+window.alert("Couldn't reach the backend - steps weren't saved.");
+reopenViewer();
+return;
+}
+if (detailResult.configured === false || !detailResult.recipe) {
+window.alert(detailResult.error || "Couldn't load this recipe from Grocy - steps weren't saved.");
+reopenViewer();
+return;
+}
+const detail = detailResult.recipe;
+const rawDescription = detail.description || "";
+const ingredients = (detail.ingredients || []).map((ing) => {
+const amountText = ing.variable_amount || (typeof ing.amount_value === "number" ? String(ing.amount_value) : "");
+const raw = (ing.note && ing.note.trim()) || `${amountText} ${ing.product || ""}`.trim() || ing.product || "";
+return {
+raw,
+amount_text: amountText,
+amount: typeof ing.amount_value === "number" && isFinite(ing.amount_value) ? ing.amount_value : null,
+not_check_stock_fulfillment: !!ing.not_check_stock_fulfillment,
+product_id: ing.product_id || null,
+unit_id: ing.qu_id || null,
+};
+});
+const stepsMatch = rawDescription.match(/<p><strong>Preparation<\/strong><\/p>([\s\S]*?)(?=<p><strong>|$)/i);
+const newPrepHtml = blocks.length ? `<p><strong>Preparation</strong></p>${this._fhBlocksToPreparationHtml(blocks)}` : "";
+let newDescription;
+if (stepsMatch) {
+newDescription = rawDescription.slice(0, stepsMatch.index) + newPrepHtml + rawDescription.slice(stepsMatch.index + stepsMatch[0].length);
+} else {
+newDescription = rawDescription + newPrepHtml;
+}
+let result;
+try {
+result = await this._hass.connection.sendMessagePromise({
+type: "family_hub/update_grocy_recipe",
+recipe_id: recipeId,
+name: detail.name || "",
+description: newDescription,
+servings: detail.base_servings || 1,
+ingredients,
+});
+} catch (e) {
+window.alert("Couldn't reach the backend - steps weren't saved.");
+reopenViewer();
+return;
+}
+if (result.configured === false || !result.success) {
+window.alert((result && result.error) || "Couldn't save those steps.");
+reopenViewer();
+return;
+}
+reopenViewer();
 },
 // Finds the "Ingredients" <ul> block _createImportedGrocyRecipe writes
 // into a recipe's description (raw scraped lines like "2 cups flour",
@@ -2099,7 +2568,7 @@ return html.slice(0, match.index) + match[1] + scaledItems + match[3] + html.sli
 // "1 1/2" / "1/2" / "1½" / "½" / "2" / "2.5" / "1-2" -> a plain decimal.
 // A plain range ("1-2", "3-4") resolves to its upper bound rather than
 // failing outright - see the backend's _parse_quantity_token (kept in
-// sync deliberately) for why: the old behavior left ordinary countable
+// sync deliberately) for why: a household reported ordinary countable
 // ingredients like "1-2 russet potatoes" defaulting to "Don't count
 // toward stock" every time, since that checkbox's own default just
 // follows whether a usable number came back at all. Returns null for
@@ -2188,12 +2657,26 @@ if (group) groupHtml = `<div class="grocy-recipe-ingredient-group">${group}</div
 }
 const note = ing.note ? ` <span class="grocy-recipe-ingredient-note">(${ing.note})</span>` : "";
 const amountText = this._formatScaledIngredientAmount(ing, ratio);
-// Numbered circular badge (/mockup) in place of the amount
+// Numbered circular badge (task #251/mockup) in place of the amount
 // leading the row - the amount itself moves down alongside the
-// product name so nothing shown before is lost.
-return `${groupHtml}<div class="grocy-recipe-ingredient-row"><span class="grocy-recipe-ingredient-badge">${idx + 1}</span><span><span class="grocy-recipe-ingredient-amount">${amountText}</span> ${ing.product || ""}${note}</span></div>`;
+// product name so nothing shown before is lost. A checkbox now leads
+// the badge (restyle: "allow checking off ingredients and steps") so
+// a row can be marked done while actually cooking - wrapped in a
+// <label> so tapping anywhere on the row toggles it, not just the
+// small checkbox hit target itself.
+const checked = this._grocyRecipeViewerCheckedIngredients && this._grocyRecipeViewerCheckedIngredients.has(idx) ? " checked-off" : "";
+return `${groupHtml}<label class="grocy-recipe-ingredient-row${checked}" data-idx="${idx}"><input type="checkbox" class="grocy-recipe-ingredient-check"${checked ? " checked" : ""} /><span class="grocy-recipe-ingredient-badge">${idx + 1}</span><span><span class="grocy-recipe-ingredient-amount">${amountText}</span> ${ing.product || ""}${note}</span></label>`;
 })
 .join("");
+ingredientsEl.querySelectorAll(".grocy-recipe-ingredient-row").forEach((row) => {
+row.querySelector(".grocy-recipe-ingredient-check").addEventListener("change", () => {
+const idx = Number(row.dataset.idx);
+if (!this._grocyRecipeViewerCheckedIngredients) this._grocyRecipeViewerCheckedIngredients = new Set();
+if (row.querySelector(".grocy-recipe-ingredient-check").checked) this._grocyRecipeViewerCheckedIngredients.add(idx);
+else this._grocyRecipeViewerCheckedIngredients.delete(idx);
+row.classList.toggle("checked-off", row.querySelector(".grocy-recipe-ingredient-check").checked);
+});
+});
 },
 // A free-text amount ("to taste") can't be scaled - passed through as-is.
 // Anything without a raw numeric amount_value (an older/partial response)
@@ -2575,13 +3058,40 @@ staticLayoutAcrossDevices: config.static_layout_across_devices === true,
 // describes where THIS placement of the card should put its own button,
 // not something every device in the house should agree on.
 fabPosition: config.fab_position === "card" ? "card" : "dashboard",
+// Hides the + button (.add-event-fab) entirely for THIS placement of the
+// card - a real card-config option (edited from this card's own Edit
+// Card screen - see getConfigElement below), not a household-wide
+// Settings toggle, same reasoning as fabPosition just above: it
+// describes what this one placement looks like, not something every
+// device should agree on. Off by default. Typically paired with
+// hideTopBar below for a display-only placement (e.g. a wall-mounted
+// screen) that's never meant to be the place someone adds things from -
+// Settings/Add Event stay reachable from any OTHER placement of this (or
+// another Family Hub) card on the dashboard.
+hideFab: config.hide_fab === true,
+// Hides the top nav bar (.week-nav: Settings/Week-Month-Day switch/Edit
+// Meals/nav arrows/week label/Suggestions/Recipe Box/More) AND the
+// "jump to a week" shortcuts row just below it, for THIS placement of
+// the card - same per-placement reasoning as hideFab just above. This is
+// deliberately separate from the existing small-screen-mode toggle
+// (:host([small-screen-mode]) .week-nav, set from a household-wide,
+// this-device-only localStorage flag - see _getSmallScreenMode) even
+// though both end up hiding the same .week-nav element: small screen
+// mode also moves Settings into the + button's own menu and changes
+// other layout behavior, while this is just "hide the bar," nothing
+// else. Off by default.
+hideTopBar: config.hide_top_bar === true,
 };
-// Re-apply the [fab-position] host attribute immediately on every
-// setConfig - not just on first load - so editing fab_position from this
-// card's own Edit Card screen updates the live dashboard preview right
-// away, same as every other FAB-bearing Family Hub card's setConfig
-// already does. Safe to call this early/more than once - see
-// _registerFabCoordinator's own docstring.
+// Re-apply the [fab-position]/[hide-fab]/[hide-top-bar] host attributes
+// immediately on every setConfig - not just on first load - so editing
+// these from this card's own Edit Card screen updates the live dashboard
+// preview right away, same as every other FAB-bearing Family Hub card's
+// setConfig already does for fab_position. Safe to call this early/more
+// than once - see _registerFabCoordinator's own docstring.
+if (this._config.hideFab) this.setAttribute("hide-fab", "");
+else this.removeAttribute("hide-fab");
+if (this._config.hideTopBar) this.setAttribute("hide-top-bar", "");
+else this.removeAttribute("hide-top-bar");
 this._registerFabCoordinator();
 this._events = {};
 this._fetchErrors = {};
@@ -2631,6 +3141,13 @@ this._forecast = {};
 this._eventDetails = {};
 this._currentRating = null;
 this._currentColor = null;
+// Who's cooking this meal - a household member's display name, or ""
+// for not set. Same scratch-editor-state lifecycle as _currentColor:
+// populated fresh each time the day/menu editor opens, read back out on
+// save. Never meaningful in the Recipe Box's own dish editor (hidden
+// there via .dish-hide-field), since a reusable recipe has no single
+// "who's cooking" - only an actual planned day/meal does.
+this._currentCook = "";
 // Set whenever the day/dish editor is populated from something that came
 // from Grocy (picking a Grocy-imported suggestion or loved dish, or
 // reopening a previously-saved one) - lets the modal's link-open button
@@ -2641,6 +3158,7 @@ this._pickerMode = false;
 this._countdown = null;
 if (this._weekOffset === undefined) this._weekOffset = 0;
 if (this._monthOffset === undefined) this._monthOffset = 0;
+if (this._agendaOffset === undefined) this._agendaOffset = 0;
 if (this._settingsCache === undefined) this._settingsCache = null;
 if (this._settingsItemUid === undefined) this._settingsItemUid = null;
 if (this._householdMealListsEnsureAttempted === undefined) this._householdMealListsEnsureAttempted = false;
@@ -2926,6 +3444,8 @@ _registerFabCoordinator() {
 // add-menu-list markup and its click handler).
 if (this._getSmallScreenMode()) this.setAttribute("small-screen-mode", "");
 else this.removeAttribute("small-screen-mode");
+if ((this._config && this._config.hideTopBar) || this._getHideTopBarDevice()) this.setAttribute("hide-top-bar", "");
+else this.removeAttribute("hide-top-bar");
 if (!window.__familyHubFabCoordinator) return;
 const cardRelative = !!(this._config && this._config.fabPosition === "card");
 if (cardRelative) this.setAttribute("fab-position", "card");
@@ -3004,18 +3524,23 @@ this._setupSettingsFabCoordination();
 if (!this._boundSyncHeight) this._boundSyncHeight = this._syncHeight.bind(this);
 window.addEventListener("resize", this._boundSyncHeight);
 window.addEventListener("orientationchange", this._boundSyncHeight);
+if (window.visualViewport) {
+window.visualViewport.addEventListener("resize", this._boundSyncHeight);
+window.visualViewport.addEventListener("scroll", this._boundSyncHeight);
+}
 // capture:true - 'scroll' doesn't bubble, so this is the only way to
 // hear about scrolling on an ancestor scroll container (e.g. Home
 // Assistant's own dashboard body), which is exactly when the Privacy
 // Mode lock badge (see _syncPrivacyModeOverlayRect) needs to be
 // repositioned to stay pinned over this card.
 window.addEventListener("scroll", this._boundSyncHeight, { passive: true, capture: true });
-// This card no longer measures or sets its own height at all (see
-// _syncHeight's own comment - it now just fills whatever box Home
-// Assistant's layout gives it via plain CSS), so there's nothing left
-// here that an on-screen keyboard opening/closing could fight with.
-// What's left just keeps --fh-header-offset (a read-only position, not
-// a resize) current for the full-screen Recipe Viewer overlay.
+// Restored alongside _syncHeight's own JS height measurement above -
+// polls on an interval (not just event-driven) because some kiosk/
+// embedded dashboard browsers don't reliably fire resize/orientation
+// events when their own chrome resizes the available viewport.
+if (!this._heightInterval) {
+this._heightInterval = setInterval(this._boundSyncHeight, 1500);
+}
 requestAnimationFrame(this._boundSyncHeight);
 setTimeout(this._boundSyncHeight, 300);
 setTimeout(this._boundSyncHeight, 1200);
@@ -3072,12 +3597,25 @@ this._grocyRecipeViewerPortalEl.remove();
 this._grocyRecipeViewerPortalEl = null;
 this._grocyRecipeViewerOverlayEl = null;
 }
+// Same teardown, same reason, for the step editor's own portal (see
+// _fhStepEditorOverlay's own comment).
+if (this._fhStepEditorPortalEl) {
+this._fhStepEditorPortalEl.remove();
+this._fhStepEditorPortalEl = null;
+this._fhStepEditorOverlayEl = null;
+}
 if (this._countdownTickerInterval) clearInterval(this._countdownTickerInterval);
 this._countdownTickerInterval = null;
+if (this._heightInterval) clearInterval(this._heightInterval);
+this._heightInterval = null;
 if (this._boundSyncHeight) {
 window.removeEventListener("resize", this._boundSyncHeight);
 window.removeEventListener("orientationchange", this._boundSyncHeight);
 window.removeEventListener("scroll", this._boundSyncHeight, { capture: true });
+if (window.visualViewport) {
+window.visualViewport.removeEventListener("resize", this._boundSyncHeight);
+window.visualViewport.removeEventListener("scroll", this._boundSyncHeight);
+}
 }
 if (this._plannerMobileMQ && this._boundPlannerMQChange) {
 if (this._plannerMobileMQ.removeEventListener) {
@@ -3147,24 +3685,53 @@ this._privacyModeUnsub = null;
 }
 }
 _syncHeight() {
-// No longer measures the viewport or sets this card's own height at
-// all - household ask, verbatim: "make the calendar fill the card that
-// it has" instead of this card computing and assigning its own pixel
-// height via JS (the source of the on-screen-keyboard resize-and-
-// never-restore bug fixed earlier, and every other "renders taller/
-// shorter than the space it actually has" report before that). The
-// card now just fills whatever box Home Assistant's own layout gives
-// it via plain CSS (:host { height: 100%; }, ha-card { height: 100%; })
-// - exactly as normal a browser element as this card can be. The one
-// thing still computed here is purely informational/positional, not a
-// resize: --fh-header-offset, which the full-screen Recipe Viewer (a
-// position:fixed, viewport-anchored overlay) uses so its own heading
-// doesn't render underneath Home Assistant's top app bar on a non-kiosk
-// dashboard. Reading rect.top doesn't change this card's own size, so
-// none of the keyboard-resize issues apply to keeping this live.
+// Reverted back to actively measuring and setting this card's own pixel
+// height via JS - the plain-CSS "just fill whatever box HA hands us"
+// approach this replaced only ever worked with Sections view's manual
+// Auto height toggle on mobile widths (the only place a height:auto
+// override existed at all); at desktop/tablet widths it left the card
+// unable to report its own natural content height, which is what Auto
+// height needs. This restores the pre-fill-CSS behavior: compute the
+// actual available box (bounded by the nearest sane ancestor edge or
+// the viewport, whichever is smaller) and assign it directly, so Auto
+// height works at every width again, not just under 700px. If an
+// on-screen keyboard opening/closing ever fights with this again (the
+// original reason this was replaced), re-guard against that specifically
+// rather than reverting to the fixed-height approach.
 if (!this.isConnected) return;
 const rect = this.getBoundingClientRect();
-const headerOffset = Math.max(0, Math.round(rect.top));
+const vv = window.visualViewport;
+const viewportHeight = vv ? vv.height : window.innerHeight;
+const viewportTop = vv ? vv.offsetTop : 0;
+const viewportBottom = viewportTop + viewportHeight;
+// Reading the immediate parent's own rendered bottom edge (already net
+// of ITS padding/margin, whatever it is) and taking whichever of that or
+// the viewport's own bottom edge is smaller avoids assuming every pixel
+// from the card's own top edge down to the bottom of the viewport is
+// available - wrong whenever whatever actually contains the card (e.g.
+// Home Assistant's own Panel view wrapper) reserves some of its own
+// padding/margin below the card too, not just above it.
+const parentRect = this.parentElement ? this.parentElement.getBoundingClientRect() : null;
+// A parent that's just shrink-wrapping this card (its own rendered height
+// equal to ours, give or take a few px - seen on a Sections-view grid
+// cell with no fixed height of its own, only "however tall its child
+// renders") isn't a real constraint. Trusting its .bottom there creates a
+// self-chasing loop: we size to match the parent, the parent (wrapping
+// us) resizes to match the new us, forever - in practice this grew the
+// card (and anything position:absolute against it, like fab_position:
+// "card"'s FAB) a little further every ~1.5s poll until it hit the bottom
+// of the viewport, then snapped back to a small size on the next re-render
+// and started over - the exact "FAB drifts down, hits bottom, jumps back
+// to the top" symptom this guards against. Only trust the parent as a
+// genuine boundary when it's actually taller than this card currently
+// renders - i.e. it's imposing a box from outside, not mirroring us.
+const parentIsRealBoundary = parentRect && parentRect.bottom > rect.top && parentRect.height > rect.height + 4;
+const bottomBoundary = parentIsRealBoundary ? Math.min(parentRect.bottom, viewportBottom) : viewportBottom;
+const available = Math.max(300, Math.floor(bottomBoundary - rect.top));
+if (this.style.height !== `${available}px`) {
+this.style.height = `${available}px`;
+}
+const headerOffset = Math.max(0, Math.round(rect.top - viewportTop));
 this.style.setProperty("--fh-header-offset", `${headerOffset}px`);
 // Keeps the Privacy Mode lock badge (a body-level element - see
 // _ensurePrivacyModeOverlay's own comment) pinned to this card's own
@@ -3174,11 +3741,34 @@ this.style.setProperty("--fh-header-offset", `${headerOffset}px`);
 // A no-op when the overlay doesn't exist yet/isn't open.
 this._syncPrivacyModeOverlayRect();
 }
+// Reverted the v1.159.0/v1.160.0 dynamic 6-20 row sizing (_fhEstimatedRows,
+// which drove getGridOptions() off the current view mode) back to a flat
+// getCardSize() - that computed estimate was never the problem on its
+// own, _syncHeight's own JS height measurement fighting with it was (see
+// that method's own comment). getGridOptions() itself is back, though,
+// now with just static bounds instead of a computed default: household
+// ask was to be able to size this card freely in the Sections view's
+// visual editor (drag-resize), up to 32 columns wide and 24 rows tall,
+// rather than whatever narrower default Home Assistant falls back to
+// when a card omits getGridOptions() entirely. columns/rows below are
+// only the INITIAL size a newly-added card gets - min/max are what
+// actually govern the resize handles' range, and household can drag
+// anywhere inside them afterward; this doesn't reintroduce the dynamic-
+// row-estimate feedback issue since getGridOptions() is read once (on
+// add / when the editor opens), never polled the way _syncHeight is.
+// getCardSize() is the legacy masonry-view sizing hint (rough row
+// count); getLayoutOptions() is its Sections-dashboard-era companion,
+// read by anything that predates getGridOptions() - both keep their own
+// flat constants/bounds in step with getGridOptions() below by hand,
+// since nothing reads them in common.
 getCardSize() {
 return 8;
 }
 getLayoutOptions() {
-return { grid_rows: "auto", grid_columns: "full" };
+return { grid_rows: "auto", grid_min_rows: 4, grid_max_rows: 24, grid_columns: "full" };
+}
+getGridOptions() {
+return { columns: 12, rows: 8, min_columns: 4, max_columns: 32, min_rows: 4, max_rows: 24 };
 }
 _dateKey(d) {
 return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -3321,6 +3911,33 @@ d.setHours(0, 0, 0, 0);
 d.setDate(d.getDate() + (this._dayOffset || 0));
 return d;
 }
+// Agenda advances one DAY at a time per nav-prev/next press (not one
+// whole agendaDays-sized page at a time) - scrolling the rolling window
+// forward/back a day feels more natural for a continuous list than
+// paging through non-overlapping blocks, and matches Day view's own
+// step size exactly (see _setDayOffset just above) even though Agenda
+// is its own distinct _viewFamily, not aliased to Day's.
+_setAgendaOffset(n) {
+this._agendaOffset = n;
+// See _setWeekOffset's own comment for why this renders synchronously
+// instead of waiting on _fetchEvents().
+this._renderGrid();
+this._fetchEvents();
+this._updateNavLabel();
+}
+_agendaAnchor() {
+const d = new Date();
+d.setHours(0, 0, 0, 0);
+d.setDate(d.getDate() + (this._agendaOffset || 0));
+return d;
+}
+// settings.agendaDays is already clamped to 2-30 by _normalizeSettings -
+// this fallback only matters for a settings blob saved before this field
+// existed at all (an older backend/cache predating this feature).
+_getAgendaDays() {
+const n = this._getSettings().agendaDays;
+return Number.isInteger(n) && n >= 2 ? n : 7;
+}
 _goToWeekFromDate(date) {
 const now = new Date();
 const nowSunday = new Date(now);
@@ -3391,6 +4008,23 @@ diffDays === 0
 ? this._t("nav.label_yesterday", "Yesterday")
 : null;
 this._root.querySelector(".week-label").textContent = prefix ? `${prefix} · ${weekdayDate}` : weekdayDate;
+} else if (this._viewMode === "agenda") {
+// Same "no weeks-out framing, no shortcuts row" treatment as Day just
+// above - a rolling N-day window has no single "week" to jump to. Keyed
+// off this._viewMode directly (not _viewFamily) - Agenda's family is
+// "week" like Planner's, so the dropdown button still just says "Week",
+// but the date-range text here still needs to be Agenda's own, not a
+// plain "Week of ..." label.
+if (shortcuts) shortcuts.style.display = "none";
+this._closeWeekShortcuts();
+const anchor = this._agendaAnchor();
+const end = new Date(anchor);
+end.setDate(anchor.getDate() + this._getAgendaDays() - 1);
+const fmt = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+const today = new Date();
+today.setHours(0, 0, 0, 0);
+const prefix = anchor.getTime() === today.getTime() ? `${this._t("nav.label_today", "Today")} · ` : "";
+this._root.querySelector(".week-label").textContent = `${prefix}${fmt(anchor)} – ${fmt(end)}`;
 } else {
 if (shortcuts) shortcuts.style.display = "";
 // a 3/5-day window isn't a "week" at all - this._weekOffset
@@ -3479,7 +4113,7 @@ try {
 local = this._getScopedSettingItem("familyCalendarWeekViewVariantLocal");
 } catch (e) {
 }
-return ["week", "planner"].includes(local) ? local : "week";
+return ["week", "planner", "agenda"].includes(local) ? local : "week";
 }
 // v1.110.5+ task: "Display X days for smaller displays - In calendar
 // settings add a way to change how many days to view at a time this
@@ -3722,6 +4356,11 @@ return {
   familyCalendarMonthViewVariantLocal: { type: "enum", choices: ["month", "split"], default: "month", scope: "instance", label: this._t("settings.month_button_shows_label", "Month button shows") },
   familyCalendarShowTimelineLocal: { type: "enum", choices: ["on", "off"], default: "off", scope: "instance", label: this._t("settings.show_hours_label", "Show hours of the day (timeline)") },
   familyCalendarSmallScreenModeLocal: { type: "enum", choices: ["on", "off"], default: "off", scope: "instance", label: this._t("settings.small_screen_mode_label", "Small screen mode") },
+// The "Hidden" option of the General tab's "Calendar top bar
+// style" picker - its "Minimal" option is familyCalendarSmallScreenModeLocal
+// just above, this is purely the additional third choice. See
+// const.py's own DEVICE_SETTINGS_FIELDS copy for why this exists.
+familyCalendarHideTopBarDeviceLocal: { type: "enum", choices: ["on", "off"], default: "off", scope: "instance", label: this._t("settings.hide_top_bar_device_label", "Calendar top bar style: Hidden") },
   // See _getDeviceName's own comment for how this overrides the
   // auto-guessed browser/OS name once set, either right here in the
   // admin Devices tab (like any other field - edit, then Push to this
@@ -4376,6 +5015,67 @@ return this._events[entity] || [];
 _privacyReminders() {
 if (this._privacyModeEffectiveLocked()) return [];
 return this._reminders || [];
+}
+// --- Discreet Mode ---------------------------------------------------
+// Household ask, verbatim: "a mode ... that removes the names of people
+// and text on events ... hide all sense of information." Deliberately
+// lighter-weight than Privacy Mode above: Privacy Mode blanks every day
+// entirely behind a PIN; this just strips the identifying TEXT (event/
+// reminder titles, descriptions, locations, person names) while leaving
+// the colored blocks/times themselves visible, so the grid still reads
+// as "something's happening when" without saying what or for whom. A
+// plain household-wide Settings toggle, no PIN - see settings.discreetModeEnabled.
+// Deliberately NOT folded into _privacyEventsFor/_privacyReminders above -
+// those two are read before badge-match filtering and reminder-lane
+// routing happen (both need the REAL summary/name to work), so redaction
+// happens one step later, at each view's own "build the display item"
+// point, right alongside where "(untitled)" and similar fallbacks are
+// already decided.
+_isDiscreetMode() {
+return !!this._getSettings().discreetModeEnabled;
+}
+// Redacts one piece of free text (a title, description, or location).
+// The household chose "nothing at all" over a generic placeholder like
+// "Busy" - see this feature's own design note - so this returns a bare
+// empty string rather than inventing filler text.
+_discreetText(raw) {
+return this._isDiscreetMode() ? "" : raw;
+}
+// Stable per-entity "Person N" label, numbered by this person's own
+// position in the full _getPeople() list every caller already has as
+// `people` - so columns/legend/lanes stay as distinguishable from each
+// other as they were with real names, without revealing who's who.
+// Returns the real name unchanged when discreet mode is off.
+_discreetPersonName(person, people) {
+if (!this._isDiscreetMode() || !person) return person ? person.name : person;
+const idx = (people || []).findIndex((p) => p.entity === person.entity);
+return `Person ${idx >= 0 ? idx + 1 : "?"}`;
+}
+// Same idea as _discreetPersonName, but for a plain name STRING rather
+// than a person object - used for reminders' own r.personName field,
+// which is already just a string by the time it reaches a render
+// function (see _fetchReminders). `fallback` is whatever the
+// non-discreet call site already falls back to when realName is empty
+// (e.g. the shared family list's "Reminder" label) - returned as-is
+// when discreet, since a label that was never a real person's name has
+// nothing to anonymize.
+_discreetPersonNameByRealName(realName, people, fallback) {
+if (!this._isDiscreetMode()) return realName || fallback;
+if (!realName) return fallback;
+const match = (people || []).find((p) => p.name === realName);
+if (!match) return fallback;
+const idx = people.indexOf(match);
+return `Person ${idx + 1}`;
+}
+// Same "Person N" numbering as _discreetPersonName, but just the bare
+// number as a string - used wherever the non-discreet case shows a
+// single-letter initial badge (collage avatars). A shared initial
+// letter (two names starting with the same letter) would still
+// visually collide in a way distinct numbers don't.
+_discreetInitial(person, people) {
+if (!this._isDiscreetMode() || !person) return null;
+const idx = (people || []).findIndex((p) => p.entity === person.entity);
+return String(idx >= 0 ? idx + 1 : "?");
 }
 // Catch-up fetch on load/reload - the live subscribe below only covers
 // changes that happen while this card is already open, same two-call shape
@@ -5236,6 +5936,24 @@ this._setScopedSettingItem("familyCalendarSmallScreenModeLocal", legacyShared ? 
 }
 return legacyShared;
 }
+// "Calendar top bar style"'s third option (Hidden) - deliberately
+// simpler than Minimal/_getSmallScreenMode just above: this ONLY hides
+// the bar (.week-nav/.week-shortcuts, same elements the hideTopBar
+// CARD-CONFIG option already targets - see setConfig's own comment),
+// with none of Minimal's other side effects (no Settings-into-+-menu
+// fallback). Same this-device-only localStorage pattern as
+// _getWeekViewVariant/_getMonthViewVariant, not _getSmallScreenMode's
+// migration dance - there's no legacy shared value for a brand new
+// field to migrate off of.
+_getHideTopBarDevice() {
+if (this._getStaticLayoutAcrossDevices()) return !!this._getSettings().hideTopBarDeviceShared;
+let local = null;
+try {
+local = this._getScopedSettingItem("familyCalendarHideTopBarDeviceLocal");
+} catch (e) {
+}
+return local === "on";
+}
 // same idea as _getWeekViewVariant, for the Month
 // family. Originally only "month" existed - the getter/localStorage key
 // were put in place ahead of time so a future month variant could slot
@@ -5301,6 +6019,29 @@ blockMeal: 13,
 _defaultSettings() {
 return {
 blocks: ["Breakfast", "Lunch", "Dinner"],
+// EXTRA meal blocks for one SPECIFIC CALENDAR DATE, layered on top of
+// `blocks` above for just that one date - e.g. a Snack added only on
+// this coming Tuesday, or an extra Breakfast+Lunch pair added only for
+// this one Wednesday, not every week. Deliberately per-date, not
+// per-weekday - a household asked for "just this day," not "every
+// [weekday]." Added from the + button's own "Meal Block" entry (see
+// _openMealBlockModal) rather than buried in the big Settings form, so
+// it's quick to add/remove without a full Settings save. Keyed by
+// "YYYY-MM-DD" (this._dateKey's own format) - see _getBlocksForDay for
+// how this gets composed with `blocks` and the legacy weekendBreakfast
+// toggle just below.
+dateBlocks: {},
+// EXTRA meal blocks that recur every week on a given DAY OF THE WEEK -
+// e.g. Monday and Wednesday always get an extra Snack block, every
+// single week, with no end date. The inverse of dateBlocks just above
+// (which is one-off, tied to a single calendar date): this one is
+// "every [weekday]," dateBlocks is "just this day." Both layer on top
+// of `blocks` and can apply to the same date at once - see
+// _getBlocksForDay. Keyed by weekday number as a string, "0"
+// (Sunday) through "6" (Saturday), same convention as JS's own
+// Date.getDay(). Added from the same "Meal Block" modal as dateBlocks,
+// via its "Every week" mode.
+weekdayBlocks: {},
 fontSize: "medium",
 blockSize: "medium",
 showTimeline: false,
@@ -5324,6 +6065,12 @@ monthViewVariantShared: "split",
 weekDayCountShared: 7,
 weekRowsShared: 1,
 currentDayFirstShared: false,
+// Shared mirror for the "Calendar top bar style" setting's third option
+// (Hidden) - same exception shape as smallScreenMode just below: this
+// field is only ever consulted by a placement whose own Static layout
+// config option is on (see _getHideTopBarDevice), never read as a
+// generic fallback the way weekViewVariantShared etc. are.
+hideTopBarDeviceShared: false,
 // Two separate settings combine to land on that view: this
 // defaultView flag (Week family vs Month family - was "week") and
 // _getMonthViewVariant()'s own device-local fallback (Month vs Month+Day
@@ -5435,6 +6182,29 @@ alarmTtsEntityId: "",
 people: [],
 weekendBreakfast: false,
 showMealsInMonth: false,
+// How many days ahead the Agenda view's scrolling list shows, starting
+// from today (or wherever its own nav arrows have moved it to) - see
+// _renderAgendaGrid/_getAgendaDays. Household-wide like every other
+// Menu/View preference in this object, not per-device - unlike Week's
+// own day-count-shared field, there is no "device keeps its own value"
+// fallback here, since Agenda has nowhere to render that choice except
+// this one Settings field.
+agendaDays: 7,
+// Agenda shipped "calendar events only" by design - these two let a
+// household layer meals and/or standalone Reminders back in,
+// independently of each other, without losing that clean default for
+// everyone else. Household-wide, same as agendaDays itself.
+agendaShowMeals: false,
+agendaShowReminders: false,
+// Household ask, verbatim: "a mode ... that removes the names of
+// people and text on events ... hide all sense of information."
+// Deliberately lighter-weight than Privacy Mode above: that one blanks
+// every day entirely behind a PIN; this just strips the identifying
+// TEXT (titles, descriptions, locations, person names) while leaving
+// the colored blocks/times themselves visible, so the grid still reads
+// as "something's happening when" without saying what or for whom. No
+// PIN - turning it back off is just flipping this same Settings toggle.
+discreetModeEnabled: false,
 // Empty = not set, meaning every meal-plan read/
 // write (_fetchMealPlan/_upsertMealPlan/etc.) falls back to whatever
 // meal_plan_entity is set in this card's own YAML config (or that
@@ -5887,18 +6657,72 @@ const defaults = this._defaultSettings();
 if (!parsed || typeof parsed !== "object") return defaults;
 const blocks =
 Array.isArray(parsed.blocks) && parsed.blocks.length >= 0
-? parsed.blocks.slice(0, 3).map((b, i) => (b && String(b).trim()) || defaults.blocks[i] || `Block ${i + 1}`)
+? parsed.blocks.slice(0, 6).map((b, i) => (b && String(b).trim()) || defaults.blocks[i] || `Block ${i + 1}`)
 : defaults.blocks;
+// Date-specific extra blocks (see _defaultSettings' own comment on
+// dateBlocks) - only "YYYY-MM-DD"-shaped keys survive, each value a
+// deduped array of trimmed non-empty names, capped generously (6) per
+// date since these stack on top of `blocks` above and a date's total
+// still gets capped again in _getBlocksForDay. The whole map is also
+// capped at 200 dates (sorted, keeping the soonest/most recent) so years
+// of one-off additions can't blow up Settings' own render the same way
+// holidayBackgrounds/custom entries are capped just above.
+const dateBlocks = {};
+if (parsed.dateBlocks && typeof parsed.dateBlocks === "object") {
+Object.keys(parsed.dateBlocks)
+.filter((k) => /^\d{4}-\d{2}-\d{2}$/.test(k))
+.sort()
+.slice(0, 200)
+.forEach((dateKey) => {
+const raw = parsed.dateBlocks[dateKey];
+if (!Array.isArray(raw) || !raw.length) return;
+const seen = new Set();
+const names = [];
+raw.forEach((n) => {
+const name = typeof n === "string" ? n.trim() : "";
+const key = name.toLowerCase();
+if (!name || seen.has(key)) return;
+seen.add(key);
+names.push(name);
+});
+if (names.length) dateBlocks[dateKey] = names.slice(0, 6);
+});
+}
+// Recurring per-weekday extra blocks (see _defaultSettings'
+// weekdayBlocks comment) - same shape/validation as dateBlocks just
+// above, except the key is a weekday number "0".."6" instead of a
+// date string, and there's no need to cap the number of keys (there
+// are only ever 7 possible).
+const weekdayBlocks = {};
+if (parsed.weekdayBlocks && typeof parsed.weekdayBlocks === "object") {
+Object.keys(parsed.weekdayBlocks)
+.filter((k) => /^[0-6]$/.test(k))
+.forEach((weekdayKey) => {
+const raw = parsed.weekdayBlocks[weekdayKey];
+if (!Array.isArray(raw) || !raw.length) return;
+const seen = new Set();
+const names = [];
+raw.forEach((n) => {
+const name = typeof n === "string" ? n.trim() : "";
+const key = name.toLowerCase();
+if (!name || seen.has(key)) return;
+seen.add(key);
+names.push(name);
+});
+if (names.length) weekdayBlocks[weekdayKey] = names.slice(0, 6);
+});
+}
 const fontSize = ["small", "medium", "large"].includes(parsed.fontSize) ? parsed.fontSize : defaults.fontSize;
 const blockSize = ["small", "medium", "large"].includes(parsed.blockSize) ? parsed.blockSize : defaults.blockSize;
 const showTimeline = typeof parsed.showTimeline === "boolean" ? parsed.showTimeline : defaults.showTimeline;
-const weekViewVariantShared = ["week", "planner"].includes(parsed.weekViewVariantShared) ? parsed.weekViewVariantShared : defaults.weekViewVariantShared;
+const weekViewVariantShared = ["week", "planner", "agenda"].includes(parsed.weekViewVariantShared) ? parsed.weekViewVariantShared : defaults.weekViewVariantShared;
 const monthViewVariantShared = ["month", "split"].includes(parsed.monthViewVariantShared) ? parsed.monthViewVariantShared : defaults.monthViewVariantShared;
 const weekDayCountSharedRaw = parseInt(parsed.weekDayCountShared, 10);
 const weekDayCountShared = Number.isInteger(weekDayCountSharedRaw) && weekDayCountSharedRaw >= 1 && weekDayCountSharedRaw <= 36 ? weekDayCountSharedRaw : defaults.weekDayCountShared;
 const weekRowsSharedRaw = parseInt(parsed.weekRowsShared, 10);
 const weekRowsShared = Number.isInteger(weekRowsSharedRaw) && weekRowsSharedRaw >= 1 && weekRowsSharedRaw <= 7 ? weekRowsSharedRaw : defaults.weekRowsShared;
 const currentDayFirstShared = typeof parsed.currentDayFirstShared === "boolean" ? parsed.currentDayFirstShared : defaults.currentDayFirstShared;
+const hideTopBarDeviceShared = typeof parsed.hideTopBarDeviceShared === "boolean" ? parsed.hideTopBarDeviceShared : defaults.hideTopBarDeviceShared;
 let timelineStartHour = Number.isInteger(parsed.timelineStartHour) ? parsed.timelineStartHour : defaults.timelineStartHour;
 let timelineEndHour = Number.isInteger(parsed.timelineEndHour) ? parsed.timelineEndHour : defaults.timelineEndHour;
 timelineStartHour = Math.min(23, Math.max(0, timelineStartHour));
@@ -5975,6 +6799,11 @@ people = this._config.people.map((p) => ({ ...p, countdown: p.entity === this._c
 }
 const weekendBreakfast = typeof parsed.weekendBreakfast === "boolean" ? parsed.weekendBreakfast : defaults.weekendBreakfast;
 const showMealsInMonth = typeof parsed.showMealsInMonth === "boolean" ? parsed.showMealsInMonth : defaults.showMealsInMonth;
+const agendaDaysRaw = parseInt(parsed.agendaDays, 10);
+const agendaDays = Number.isInteger(agendaDaysRaw) && agendaDaysRaw >= 2 && agendaDaysRaw <= 30 ? agendaDaysRaw : defaults.agendaDays;
+const agendaShowMeals = typeof parsed.agendaShowMeals === "boolean" ? parsed.agendaShowMeals : defaults.agendaShowMeals;
+const agendaShowReminders = typeof parsed.agendaShowReminders === "boolean" ? parsed.agendaShowReminders : defaults.agendaShowReminders;
+const discreetModeEnabled = typeof parsed.discreetModeEnabled === "boolean" ? parsed.discreetModeEnabled : defaults.discreetModeEnabled;
 const mealPlanEntity = typeof parsed.mealPlanEntity === "string" ? parsed.mealPlanEntity.trim() : defaults.mealPlanEntity;
 const mealTemplatesEntity = typeof parsed.mealTemplatesEntity === "string" ? parsed.mealTemplatesEntity.trim() : defaults.mealTemplatesEntity;
 const weatherEntity = typeof parsed.weatherEntity === "string" ? parsed.weatherEntity.trim() : defaults.weatherEntity;
@@ -6107,6 +6936,8 @@ const alarmTtsEntityId = typeof parsed.alarmTtsEntityId === "string" ? parsed.al
 const holidayBackgrounds = this._normalizeHolidayBackgrounds(parsed.holidayBackgrounds);
 return {
 blocks,
+dateBlocks,
+weekdayBlocks,
 fontSize,
 blockSize,
 showTimeline,
@@ -6115,6 +6946,7 @@ monthViewVariantShared,
 weekDayCountShared,
 weekRowsShared,
 currentDayFirstShared,
+hideTopBarDeviceShared,
 timelineStartHour,
 timelineEndHour,
 defaultView,
@@ -6135,6 +6967,10 @@ notificationClickPath,
 people,
 weekendBreakfast,
 showMealsInMonth,
+agendaDays,
+agendaShowMeals,
+agendaShowReminders,
+discreetModeEnabled,
 mealPlanEntity,
 mealTemplatesEntity,
 weatherEntity,
@@ -6361,15 +7197,240 @@ return this._settingsCache || this._defaultSettings();
 _getBlocks() {
 return this._getSettings().blocks;
 }
-_getBlocksForDay(dayIndex) {
+_getBlocksForDay(dayDate) {
 const settings = this._getSettings();
 const blocks = settings.blocks.slice();
-if (!blocks.length) return blocks;
-const isWeekend = dayIndex === 0 || dayIndex === 6;
-if (settings.weekendBreakfast && isWeekend && !blocks.some((b) => /breakfast/i.test(b))) {
+const weekday = dayDate.getDay();
+const isWeekend = weekday === 0 || weekday === 6;
+if (blocks.length && settings.weekendBreakfast && isWeekend && !blocks.some((b) => /breakfast/i.test(b))) {
 blocks.unshift("Breakfast");
 }
+// Shared by both extra-block layers just below - skips a name already
+// present (case-insensitive) so re-adding the same block twice is a
+// no-op, and caps the total at 10 to keep a single day's column from
+// growing unbounded.
+const addExtras = (names) => {
+(names || []).forEach((name) => {
+if (blocks.length >= 10) return;
+if (!blocks.some((b) => b.toLowerCase() === name.toLowerCase())) blocks.push(name);
+});
+};
+// Recurring per-weekday extras (see _defaultSettings' weekdayBlocks
+// comment) - applied before the one-off date-specific extras just
+// below, so "every Monday" extras land before "just this Monday"
+// extras in the resulting list.
+addExtras(settings.weekdayBlocks && settings.weekdayBlocks[String(weekday)]);
+// Date-specific extras (see _defaultSettings' dateBlocks comment) -
+// layered on top of the household's default block list (plus any
+// recurring weekday extras above) for just this one calendar date,
+// added via the + button's "Meal Block" entry rather than the main
+// Settings form. Applies even when the default list itself is empty
+// (block count "None") - a date can have ONLY its own extra block(s)
+// and nothing else.
+const dateKey = this._dateKey(dayDate);
+addExtras(settings.dateBlocks && settings.dateBlocks[dateKey]);
 return blocks;
+}
+// Every block name currently in use anywhere - the household's default
+// list plus every date-specific extra already added (see dateBlocks) -
+// offered as quick-pick suggestions in the "Meal Block" modal's name
+// field so re-adding an existing block name (e.g. "Snack" already used
+// last Tuesday, now wanted again) doesn't require retyping it exactly.
+_getAllKnownBlockNames() {
+const settings = this._getSettings();
+const names = [];
+const seen = new Set();
+const add = (n) => {
+const name = (n || "").trim();
+const key = name.toLowerCase();
+if (!name || seen.has(key)) return;
+seen.add(key);
+names.push(name);
+};
+(settings.blocks || []).forEach(add);
+const weekdayBlocksAll = settings.weekdayBlocks || {};
+Object.keys(weekdayBlocksAll).forEach((d) => (weekdayBlocksAll[d] || []).forEach(add));
+const dateBlocksAll = settings.dateBlocks || {};
+Object.keys(dateBlocksAll).forEach((d) => (dateBlocksAll[d] || []).forEach(add));
+return names;
+}
+// The + button's "Meal Block" entry - lets ONE SPECIFIC CALENDAR DATE get
+// its own extra block(s) (a Snack this Tuesday, an extra Breakfast+Lunch
+// pair this Wednesday only) without touching the household's default
+// block list or opening the full Settings form - see dateBlocks' own
+// comment in _defaultSettings and _getBlocksForDay for how these layer
+// together. Deliberately per-DATE, not per-weekday.
+_openMealBlockModal() {
+const root = this._root;
+root.querySelectorAll(".mb-mode-btn").forEach((btn) => btn.classList.toggle("active", btn.dataset.mode === "once"));
+const onceField = root.querySelector(".mb-once-field");
+const recurringField = root.querySelector(".mb-recurring-field");
+if (onceField) onceField.style.display = "";
+if (recurringField) recurringField.style.display = "none";
+root.querySelectorAll(".mb-weekday-btn").forEach((btn) => btn.classList.remove("active"));
+const dateInput = root.querySelector(".mb-date-input");
+if (dateInput) dateInput.value = this._dateKey(new Date());
+root.querySelector(".mb-name-input").value = "";
+const datalist = root.querySelector("#mb-name-options");
+if (datalist) {
+datalist.innerHTML = this._getAllKnownBlockNames()
+.map((n) => `<option value="${n}"></option>`)
+.join("");
+}
+this._renderMealBlockExtrasList();
+this._openModal(root.querySelector(".meal-block-overlay"));
+}
+_closeMealBlockModal() {
+this._root.querySelector(".meal-block-overlay").classList.remove("open");
+}
+// Lists every date-specific extra block already set, grouped by date
+// (soonest first; past dates stay listed too so a stale one can still be
+// removed), each with its own small remove control - the only way to
+// see/undo one of these short of hand-editing the dashboard's stored
+// settings, since they don't show up anywhere in the main Settings form.
+_renderMealBlockExtrasList() {
+const root = this._root;
+const listEl = root.querySelector(".mb-extras-list");
+const fieldEl = root.querySelector(".mb-extras-field");
+if (!listEl || !fieldEl) return;
+const settings = this._getSettings();
+const weekdayBlocks = settings.weekdayBlocks || {};
+const dateBlocks = settings.dateBlocks || {};
+const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const chipsFor = (names, kind, key) =>
+names
+.map(
+(n) =>
+`<span class="mb-extra-chip">${n}<button type="button" class="mb-extra-remove" data-kind="${kind}" data-key="${key}" data-name="${n}" title="Remove">&#10005;</button></span>`
+)
+.join("");
+const rows = [];
+for (let w = 0; w <= 6; w += 1) {
+const names = weekdayBlocks[String(w)];
+if (!names || !names.length) continue;
+rows.push(
+`<div class="mb-extra-row"><div class="mb-extra-day">Every ${dayNames[w]}</div><div class="mb-extra-chips">${chipsFor(names, "weekday", String(w))}</div></div>`
+);
+}
+Object.keys(dateBlocks)
+.filter((k) => dateBlocks[k] && dateBlocks[k].length)
+.sort()
+.forEach((dateKey) => {
+const d = new Date(`${dateKey}T00:00:00`);
+const label = d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+rows.push(`<div class="mb-extra-row"><div class="mb-extra-day">${label}</div><div class="mb-extra-chips">${chipsFor(dateBlocks[dateKey], "date", dateKey)}</div></div>`);
+});
+if (!rows.length) {
+fieldEl.style.display = "none";
+listEl.innerHTML = "";
+return;
+}
+fieldEl.style.display = "";
+listEl.innerHTML = rows.join("");
+}
+// Reads the picked date + typed name out of the modal and layers the new
+// block onto that one date via _persistSettingsPatch (a merge on top of
+// current settings, not the big Settings form's full replace - see that
+// function's own comment) - so this never has to wait for, or interfere
+// with, a separate full Settings save. Refuses (with a toast explaining
+// why) if that date's resolved block list already has this name or is
+// already at the 10-block cap.
+async _saveMealBlockFromModal() {
+const root = this._root;
+const name = (root.querySelector(".mb-name-input").value || "").trim();
+if (!name) {
+this._showToast("Type a name for the block first.", true);
+return;
+}
+const modeBtn = root.querySelector(".mb-mode-btn.active");
+const recurring = !!(modeBtn && modeBtn.dataset.mode === "recurring");
+if (recurring) {
+const selectedWeekdays = Array.from(root.querySelectorAll(".mb-weekday-btn.active")).map((btn) => parseInt(btn.dataset.weekday, 10));
+if (!selectedWeekdays.length) {
+this._showToast("Pick at least one day of the week.", true);
+return;
+}
+const settings = this._getSettings();
+const weekdayBlocks = {};
+Object.keys(settings.weekdayBlocks || {}).forEach((d) => {
+weekdayBlocks[d] = (settings.weekdayBlocks[d] || []).slice();
+});
+let addedCount = 0;
+let skippedCount = 0;
+selectedWeekdays.forEach((w) => {
+const key = String(w);
+const current = weekdayBlocks[key] || [];
+const alreadyThere = settings.blocks.some((b) => b.toLowerCase() === name.toLowerCase()) || current.some((b) => b.toLowerCase() === name.toLowerCase());
+if (alreadyThere || settings.blocks.length + current.length >= 10) {
+skippedCount += 1;
+return;
+}
+weekdayBlocks[key] = current.concat([name]);
+addedCount += 1;
+});
+if (!addedCount) {
+this._showToast("Every picked day already has that block (or is full).", true);
+return;
+}
+await this._persistSettingsPatch({ weekdayBlocks });
+this._showToast(`${name} added to ${addedCount} weekday${addedCount === 1 ? "" : "s"}${skippedCount ? `, skipped ${skippedCount}` : ""}.`);
+this._closeMealBlockModal();
+return;
+}
+const dateStr = root.querySelector(".mb-date-input").value;
+if (!dateStr) {
+this._showToast("Pick a day first.", true);
+return;
+}
+const dayDate = new Date(`${dateStr}T00:00:00`);
+const resolved = this._getBlocksForDay(dayDate);
+if (resolved.some((b) => b.toLowerCase() === name.toLowerCase())) {
+this._showToast(`That day already has a ${name} block.`, true);
+return;
+}
+if (resolved.length >= 10) {
+this._showToast("That day already has the max number of meal blocks.", true);
+return;
+}
+const settings = this._getSettings();
+const dateBlocks = {};
+Object.keys(settings.dateBlocks || {}).forEach((d) => {
+dateBlocks[d] = (settings.dateBlocks[d] || []).slice();
+});
+if (!dateBlocks[dateStr]) dateBlocks[dateStr] = [];
+dateBlocks[dateStr].push(name);
+await this._persistSettingsPatch({ dateBlocks });
+this._showToast(`${name} added.`);
+this._closeMealBlockModal();
+}
+// The small x on each chip in the modal's "Already added" list - removes
+// just that one (date, name) pair, leaving every other date-specific
+// extra and the household's default block list untouched.
+async _removeMealBlockExtra(kind, key, name) {
+if (!kind || !key || !name) return;
+const settings = this._getSettings();
+if (kind === "weekday") {
+const weekdayBlocks = {};
+Object.keys(settings.weekdayBlocks || {}).forEach((d) => {
+weekdayBlocks[d] = (settings.weekdayBlocks[d] || []).slice();
+});
+if (weekdayBlocks[key]) {
+weekdayBlocks[key] = weekdayBlocks[key].filter((n) => n.toLowerCase() !== name.toLowerCase());
+if (!weekdayBlocks[key].length) delete weekdayBlocks[key];
+}
+await this._persistSettingsPatch({ weekdayBlocks });
+} else {
+const dateBlocks = {};
+Object.keys(settings.dateBlocks || {}).forEach((d) => {
+dateBlocks[d] = (settings.dateBlocks[d] || []).slice();
+});
+if (dateBlocks[key]) {
+dateBlocks[key] = dateBlocks[key].filter((n) => n.toLowerCase() !== name.toLowerCase());
+if (!dateBlocks[key].length) delete dateBlocks[key];
+}
+await this._persistSettingsPatch({ dateBlocks });
+}
+this._renderMealBlockExtrasList();
 }
 // Every meal-plan read/write call site below used to
 // go straight to this._config.meal_plan_entity (a card YAML config value,
@@ -7382,7 +8443,8 @@ return [
 { key: "can_add_rewards", group: "Rewards", label: "Add to catalog", hint: "Can add rewards to the catalog with a star cost. Without this, what they add is a suggestion that needs approval." },
 { key: "can_edit_menu", group: "Menu", label: "Edit the menu", hint: "Can edit the weekly meal plan. Without this they can still suggest a meal for any day - someone with this permission decides whether it goes on the menu." },
 { key: "can_see_wishlist_claims", group: "Wish Lists", label: "See claim status", hint: "Can see who's claimed what on a wish list they don't own themselves (the list's own owner never sees this regardless). Off by default for anyone not already using Family Hub when this permission was introduced - see PERMISSION_SEE_WISHLIST_CLAIMS in const.py - so an unidentified shared kiosk login can't spoil a surprise." },
-{ key: "can_delete_event", group: "Calendar", label: "Delete calendar events", hint: "Can delete an event from the calendar (when the calendar integration supports it - otherwise the Delete button is greyed out with an explanation for everyone, regardless of this permission)." },
+{ key: "can_delete_event", group: "Calendar", label: "Delete calendar events", hint: "Can delete an event from the calendar (when the calendar integration supports it - otherwise the Delete button is hidden for everyone, regardless of this permission)." },
+{ key: "can_edit_event", group: "Calendar", label: "Edit/move calendar events", hint: "Can edit an event's details, or drag it to a different day in Edit Meals mode (when the calendar integration supports it - otherwise the Edit affordance is hidden for everyone, regardless of this permission)." },
 // Before these, every routine-item write was gated on the single, broad
 // can_assign, so a non-admin without that grant couldn't even touch their
 // OWN routine checklist. These two are a narrower, ownership-aware
@@ -7436,6 +8498,69 @@ return `<div class="perm-group"><div class="perm-group-name">${group}</div><div 
 listEl.querySelectorAll(".perm-check").forEach((check) => {
 check.addEventListener("change", () => this._savePermissionCheck(check));
 });
+}
+// Fetches and renders the Notification debug accordion's three lists for
+// one person (family_hub/get_notify_debug - see __init__.py's
+// _build_user_notify_debug for what it actually computes). Admin-only
+// server-side too (same belt-and-suspenders note as every other
+// admin-only field in this file - hiding the accordion here is about a
+// clean non-admin view, the backend is what actually enforces it).
+// Reflects the last SAVED profile, not whatever's unsaved in
+// _settingsUserProfilesDraft right now - same "Save first, then check"
+// expectation as the Upcoming notifications screen in Configure that this
+// mirrors server-side (_build_upcoming_summary), called out in the
+// accordion's own hint text so it's not a surprise.
+async _fetchNotifyDebug(userId) {
+if (!userId || !this._hass) return;
+this._renderNotifyDebug(userId, null, true);
+try {
+const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/get_notify_debug", user_id: userId });
+// A different person's modal (or the same one, re-opened) may have
+// been opened while this was in flight - only paint if it's still
+// the one currently showing.
+if (this._notifyProfileEditingUserId === userId) this._renderNotifyDebug(userId, result, false);
+} catch (e) {
+if (this._notifyProfileEditingUserId === userId) this._renderNotifyDebug(userId, { error: true }, false);
+}
+}
+_renderNotifyDebug(userId, data, loading) {
+const root = this._root;
+if (!root) return;
+const calEl = root.querySelector(".notify-debug-calendars-list");
+const devEl = root.querySelector(".notify-debug-devices-list");
+const pendEl = root.querySelector(".notify-debug-pending-list");
+if (!calEl || !devEl || !pendEl) return;
+if (loading) {
+calEl.innerHTML = devEl.innerHTML = pendEl.innerHTML = `<div class="notify-profiles-empty-state">${this._t("settings.devices_loading", "Checking devices…")}</div>`;
+return;
+}
+if (!data || data.error) {
+const msg = `<div class="notify-profiles-empty-state">Couldn't load notification debug info - try &#128260; Refresh.</div>`;
+calEl.innerHTML = devEl.innerHTML = pendEl.innerHTML = msg;
+return;
+}
+const calendars = Array.isArray(data.subscribedCalendars) ? data.subscribedCalendars : [];
+calEl.innerHTML = calendars.length
+? calendars
+.map(
+(c) =>
+`<div class="notify-debug-row${c.monitored ? "" : " notify-debug-row-warn"}"><span class="notify-debug-row-main">${c.name}</span>${c.monitored ? "" : '<span class="notify-debug-row-flag" title="Not in \'Calendars to monitor\' under the General tab - this subscription will never fire.">&#9888; not monitored</span>'}</div>`
+)
+.join("")
+: `<div class="notify-profiles-empty-state">Not subscribed to any calendar.</div>`;
+const targets = Array.isArray(data.notifyTargets) ? data.notifyTargets : [];
+devEl.innerHTML = targets.length
+? targets.map((t) => `<div class="notify-debug-row"><span class="notify-debug-row-main">${t}</span></div>`).join("")
+: `<div class="notify-profiles-empty-state">No notify targets set - nothing can reach this person even if they're subscribed.</div>`;
+const pending = Array.isArray(data.pending) ? data.pending : [];
+pendEl.innerHTML = pending.length
+? pending
+.map(
+(p) =>
+`<div class="notify-debug-row"><span class="notify-debug-row-main">${p.when} - "${p.summary}" (${p.calendar})</span><span class="notify-debug-row-status notify-debug-row-status-${p.status}">${p.status}</span></div>`
+)
+.join("") + (data.pendingTotal > pending.length ? `<div class="remind-hint">...and ${data.pendingTotal - pending.length} more.</div>` : "")
+: `<div class="notify-profiles-empty-state">Nothing pending in the next ${7 * 24} hours.</div>`;
 }
 async _savePermissionCheck(check) {
 const userId = check.dataset.user;
@@ -7797,6 +8922,12 @@ if (family === "day") {
 const d = this._dayAnchor();
 return { start: d, end: d };
 }
+if (this._viewMode === "agenda") {
+const d = this._agendaAnchor();
+const end = new Date(d);
+end.setDate(d.getDate() + this._getAgendaDays() - 1);
+return { start: d, end };
+}
 if (family === "month") {
 const anchor = this._monthAnchor();
 const start = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
@@ -8151,6 +9282,10 @@ end = range.gridEnd;
 start = this._dayAnchor();
 end = new Date(start);
 end.setDate(start.getDate() + 1);
+} else if (this._viewMode === "agenda") {
+start = this._agendaAnchor();
+end = new Date(start);
+end.setDate(start.getDate() + this._getAgendaDays());
 } else {
 // This always fetched a fixed 7-day window
 // from the calendar API no matter how many day columns were actually
@@ -8205,18 +9340,22 @@ if (this._root.querySelector(".debug-overlay.open")) this._renderDebug();
 async _getCalendarDeleteSupport(entityId) {
 if (!this._calendarDeleteSupport) this._calendarDeleteSupport = {};
 if (this._calendarDeleteSupport[entityId]) return this._calendarDeleteSupport[entityId];
-if (!this._hass) return { supported: false, integrationName: "your calendar's own app" };
+if (!this._hass) return { supported: false, updateSupported: false, integrationName: "your calendar's own app" };
 let result;
 try {
 const res = await this._hass.connection.sendMessagePromise({
 type: "family_hub/calendar/delete_support",
 entity_id: entityId,
 });
-result = { supported: !!res.supported, integrationName: res.integration_name || "your calendar's own app" };
+result = {
+supported: !!res.supported,
+updateSupported: !!res.update_supported,
+integrationName: res.integration_name || "your calendar's own app",
+};
 } catch (e) {
 // An older backend (or a transient failure) means "assume unsupported"
-// - never silently offer a Delete button that might not actually work.
-result = { supported: false, integrationName: "your calendar's own app" };
+// - never silently offer a Delete/Edit button that might not actually work.
+result = { supported: false, updateSupported: false, integrationName: "your calendar's own app" };
 }
 this._calendarDeleteSupport[entityId] = result;
 return result;
@@ -8828,6 +9967,7 @@ name: it.summary,
 description: parsed.description,
 link: parsed.link,
 color: parsed.color,
+cook: parsed.cook || "",
 recur: parsed.recur,
 grocyRecipeId: parsed.grocyRecipeId,
 servings: parsed.servings,
@@ -8861,6 +10001,7 @@ name: it.summary,
 description: parsed.description,
 link: parsed.link,
 color: parsed.color,
+cook: parsed.cook || "",
 grocyRecipeId: parsed.grocyRecipeId,
 servings: parsed.servings,
 additionalRecipes: parsed.additionalRecipes,
@@ -8879,6 +10020,7 @@ name: it.summary,
 description: parsed.description,
 link: parsed.link,
 color: parsed.color,
+cook: parsed.cook || "",
 anchorDateKey: dateKey,
 grocyRecipeId: parsed.grocyRecipeId,
 servings: parsed.servings,
@@ -8923,6 +10065,7 @@ name: lo.name,
 description: lo.description,
 link: lo.link,
 color: lo.color,
+cook: lo.cook || "",
 grocyRecipeId: lo.grocyRecipeId,
 servings: lo.servings,
 leftoverDates: lo.dates,
@@ -8950,6 +10093,7 @@ name: best.name,
 description: best.description,
 link: best.link,
 color: best.color,
+cook: best.cook || "",
 recur: "weekly",
 grocyRecipeId: best.grocyRecipeId,
 servings: best.servings,
@@ -8987,9 +10131,9 @@ anchorDateKey: best.anchorDateKey,
 // _mealPlanEntityExists() up front catches this immediately, with no
 // round trip needed, rather than waiting to see whether HA happens to
 // reject the service call.
-async _upsertMealPlan(dateKey, blockIndex, name, description, link, color, recur, grocyRecipeId, servings, spanDays, additionalRecipes, leftoverDates) {
+async _upsertMealPlan(dateKey, blockIndex, name, description, link, color, recur, grocyRecipeId, servings, spanDays, additionalRecipes, leftoverDates, cook) {
 if (!this._mealPlanEntityExists()) return false;
-const payload = JSON.stringify({ description, link, color, block: blockIndex, recur: recur || null, grocyRecipeId: grocyRecipeId || null, servings: typeof servings === "number" ? servings : null, spanDays: typeof spanDays === "number" && spanDays > 1 ? spanDays : 1, additionalRecipes: Array.isArray(additionalRecipes) ? additionalRecipes : [], leftoverDates: Array.isArray(leftoverDates) ? leftoverDates : [] });
+const payload = JSON.stringify({ description, link, color, cook: cook || null, block: blockIndex, recur: recur || null, grocyRecipeId: grocyRecipeId || null, servings: typeof servings === "number" ? servings : null, spanDays: typeof spanDays === "number" && spanDays > 1 ? spanDays : 1, additionalRecipes: Array.isArray(additionalRecipes) ? additionalRecipes : [], leftoverDates: Array.isArray(leftoverDates) ? leftoverDates : [] });
 // Deliberately keyed off the EXPLICIT entry for this exact date, not
 // _getMealForDay's projection - if this date only has a projected
 // "repeat weekly" meal showing (no concrete item due here yet), this
@@ -9025,10 +10169,10 @@ return ok;
 // _upsertMealPlan, which always targets one specific date. Same
 // return-true/false-instead-of-swallowing-failures contract as
 // _upsertMealPlan above - see its comment for why.
-async _upsertMealPlanByUid(uid, blockIndex, name, description, link, color, recur, grocyRecipeId, servings, additionalRecipes) {
+async _upsertMealPlanByUid(uid, blockIndex, name, description, link, color, recur, grocyRecipeId, servings, additionalRecipes, cook) {
 if (!uid) return false;
 if (!this._mealPlanEntityExists()) return false;
-const payload = JSON.stringify({ description, link, color, block: blockIndex, recur: recur || null, grocyRecipeId: grocyRecipeId || null, servings: typeof servings === "number" ? servings : null, additionalRecipes: Array.isArray(additionalRecipes) ? additionalRecipes : [] });
+const payload = JSON.stringify({ description, link, color, cook: cook || null, block: blockIndex, recur: recur || null, grocyRecipeId: grocyRecipeId || null, servings: typeof servings === "number" ? servings : null, additionalRecipes: Array.isArray(additionalRecipes) ? additionalRecipes : [] });
 let ok = true;
 try {
 await this._hass.callService("todo", "update_item", {
@@ -9073,7 +10217,7 @@ for (let dayIndex = 0; dayIndex < 7; dayIndex++) {
 const dayDate = new Date(start);
 dayDate.setDate(start.getDate() + dayIndex);
 const dateKey = this._dateKey(dayDate);
-const dayBlocks = this._getBlocksForDay(dayIndex);
+const dayBlocks = this._getBlocksForDay(dayDate);
 dayBlocks.forEach((blockName, blockIndex) => {
 const m = this._getMealForDay(dateKey, dayDate, blockIndex);
 if (!m || !m.name || !m.name.trim()) return;
@@ -9085,6 +10229,7 @@ name: m.name,
 description: m.description || "",
 link: m.link || "",
 color: m.color || "",
+cook: m.cook || "",
 grocyRecipeId: m.grocyRecipeId || null,
 servings: typeof m.servings === "number" ? m.servings : null,
 additionalRecipes: m.additionalRecipes || [],
@@ -9119,7 +10264,7 @@ for (const b of template.blocks) {
 const dayDate = new Date(start);
 dayDate.setDate(start.getDate() + b.dayIndex);
 const dateKey = this._dateKey(dayDate);
-const saved = await this._upsertMealPlan(dateKey, b.blockIndex, b.name, b.description || "", b.link || "", b.color || "", null, b.grocyRecipeId || null, typeof b.servings === "number" ? b.servings : null, 1, b.additionalRecipes || []);
+const saved = await this._upsertMealPlan(dateKey, b.blockIndex, b.name, b.description || "", b.link || "", b.color || "", null, b.grocyRecipeId || null, typeof b.servings === "number" ? b.servings : null, 1, b.additionalRecipes || [], undefined, b.cook || null);
 if (!saved) ok = false;
 }
 return ok;
@@ -9157,7 +10302,7 @@ try {
 // _parseDishDescription treats a missing spanDays as 1 and a missing
 // leftoverDates as []. Falls back to 1/[] for pre-leftovers data that
 // never had the fields, same as _parseDishDescription's own defaults.
-const sourcePayload = JSON.stringify({ description: source.description, link: source.link, color: source.color, block: toBlockIndex, recur: source.recur || null, grocyRecipeId: source.grocyRecipeId || null, servings: typeof source.servings === "number" ? source.servings : null, spanDays: typeof source.spanDays === "number" ? source.spanDays : 1, additionalRecipes: source.additionalRecipes || [], leftoverDates: Array.isArray(source.leftoverDates) ? source.leftoverDates : [] });
+const sourcePayload = JSON.stringify({ description: source.description, link: source.link, color: source.color, cook: source.cook || null, block: toBlockIndex, recur: source.recur || null, grocyRecipeId: source.grocyRecipeId || null, servings: typeof source.servings === "number" ? source.servings : null, spanDays: typeof source.spanDays === "number" ? source.spanDays : 1, additionalRecipes: source.additionalRecipes || [], leftoverDates: Array.isArray(source.leftoverDates) ? source.leftoverDates : [] });
 await this._hass.callService("todo", "update_item", {
 item: source.uid,
 rename: source.name,
@@ -9165,7 +10310,7 @@ description: sourcePayload,
 due_date: toDateKey,
 }, { entity_id: this._mealPlanEntity() });
 if (dest) {
-const destPayload = JSON.stringify({ description: dest.description, link: dest.link, color: dest.color, block: fromBlockIndex, recur: dest.recur || null, grocyRecipeId: dest.grocyRecipeId || null, servings: typeof dest.servings === "number" ? dest.servings : null, spanDays: typeof dest.spanDays === "number" ? dest.spanDays : 1, additionalRecipes: dest.additionalRecipes || [], leftoverDates: Array.isArray(dest.leftoverDates) ? dest.leftoverDates : [] });
+const destPayload = JSON.stringify({ description: dest.description, link: dest.link, color: dest.color, cook: dest.cook || null, block: fromBlockIndex, recur: dest.recur || null, grocyRecipeId: dest.grocyRecipeId || null, servings: typeof dest.servings === "number" ? dest.servings : null, spanDays: typeof dest.spanDays === "number" ? dest.spanDays : 1, additionalRecipes: dest.additionalRecipes || [], leftoverDates: Array.isArray(dest.leftoverDates) ? dest.leftoverDates : [] });
 await this._hass.callService("todo", "update_item", {
 item: dest.uid,
 rename: dest.name,
@@ -9288,14 +10433,14 @@ display: block;
    _registerFabCoordinator's own comment. Harmless when unused (the
    default position:fixed doesn't care about its containing block). */
 position: relative;
-/* Fills whatever box Home Assistant's own layout gives this card -
-   household ask, verbatim: "make the calendar fill the card that it
-   has" instead of this card computing its own height via JS (see
-   _syncHeight's own comment). Relies on ha-card below also being
-   height:100% and on whatever actually contains this card (Home
-   Assistant's view/grid-cell/panel wrapper) having a real height of its
-   own to fill, same as any other ordinary custom card. */
-height: 100%;
+/* Reverted alongside _syncHeight's own restored JS height measurement -
+   this is just the initial/fallback value before _syncHeight's first
+   run sets an explicit inline pixel height (which then takes over via
+   normal CSS specificity); 100dvh (dynamic viewport height) wins in any
+   browser that supports it, with the plain 100vh line right above it as
+   the fallback for ones that don't. */
+height: 100vh;
+height: 100dvh;
 box-sizing: border-box;
 overflow: hidden;
 font-family: "Arial Rounded MT Std", "Arial Rounded MT", "Varela Round", -apple-system, "Segoe UI Rounded", "Segoe UI", Roboto, sans-serif;
@@ -9504,6 +10649,7 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .recipe-import-divider { text-align: center; font-size: 12px; color: var(--fc-text-secondary); margin: 10px 0; }
 .recipe-import-text-input { width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(0,0,0,0.15); font-size: 14px; margin-bottom: 8px; font-family: inherit; resize: vertical; background: var(--fc-surface-alt, #fff); color: var(--fc-text); }
 .recipe-import-manual-btn { display: block; width: 100%; border: none; background: none; color: var(--fc-accent, #7a4436); font-size: 13px; font-weight: 700; cursor: pointer; padding: 6px 2px; text-align: center; }
+.recipe-import-upload-image-preview { display: block; width: 100%; max-height: 140px; object-fit: cover; border-radius: 10px; margin: 4px 0 2px; }
 .recipe-import-image-input, .recipe-import-source-input { width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(0,0,0,0.15); font-size: 14px; background: var(--fc-surface-alt, #fff); color: var(--fc-text); }
 /* These text inputs never set their own background/text color before, so
    they silently rode on the browser's default white input background while
@@ -9528,6 +10674,11 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
    since the plain browser default [hidden]{display:none} UA rule alone
    would lose to the display:flex set above it. */
 .add-event-fab[hidden] { display: none; }
+/* hideFab card-config option (see setConfig) - a different, permanent
+   per-placement opt-out from the one above: that one is a temporary
+   "another card's modal is open" state, this one is "this placement
+   never shows a + button at all." */
+:host([hide-fab]) .add-event-fab { display: none; }
 /* settings.fabPosition "card" - anchors to THIS card's own
    box (position:absolute off :host, now position:relative above)
    instead of the viewport (position:fixed). Opts out of the shared
@@ -9543,6 +10694,13 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
    only localStorage, not the shared settings blob - see that method's own
    comment). */
 :host([small-screen-mode]) .week-nav { display: none; }
+/* hideTopBar card-config option (see setConfig) - a separate, explicit
+   per-placement opt-out from small-screen-mode just above (which also
+   relocates Settings into the + button's menu and is a this-device-only
+   localStorage flag, not a card-config option). Also hides the "jump to
+   a week" shortcuts row, since there's no nav bar left to reach its own
+   toggle from once this is on. */
+:host([hide-top-bar]) .week-nav, :host([hide-top-bar]) .week-shortcuts { display: none; }
 /* Settings moved into the + button's own menu - only shown there once
    small screen mode is actually on, since the top bar's own Settings
    button (⚙️) still handles it otherwise (no duplicate entry point). */
@@ -9625,6 +10783,24 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
    other day-column - same click-to-open, same past-graying, same
    drag-free hourly grid - with only the header swapped for an avatar. */
 .grid.mode-day { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 8px; }
+/* Agenda: a single scrolling list, no per-person columns at all - see
+   _renderAgendaGrid's own module comment for the full design note (built
+   for a narrow dashboard edge/sidebar placement where Week's columns or
+   Planner's per-person rows don't fit). Items reuse .msd-item's own
+   colored-pill-with-time look (see Month+Day split's detail panel) rather
+   than inventing a fourth visual language for "one calendar event". */
+.grid.mode-agenda { display: flex; flex-direction: column; overflow-y: auto; gap: 2px; }
+.agenda-day-group { display: flex; flex-direction: column; gap: 6px; padding: 10px 2px; border-bottom: 1px solid var(--fc-border); }
+.agenda-day-group:last-child { border-bottom: none; }
+.agenda-day-header { display: flex; align-items: baseline; gap: 8px; }
+.agenda-day-name { font-size: 13px; font-weight: 800; color: var(--fc-text); text-transform: uppercase; letter-spacing: 0.3px; }
+.agenda-day-date { font-size: 12px; font-weight: 700; color: var(--fc-text-secondary); }
+.agenda-day-group.agenda-today .agenda-day-name, .agenda-day-group.agenda-today .agenda-day-date { color: var(--fc-accent); }
+.agenda-day-items { display: flex; flex-direction: column; gap: 6px; }
+.agenda-item { border-radius: 8px; padding: 8px 10px; color: #3a352c; cursor: pointer; display: flex; align-items: baseline; gap: 10px; }
+.agenda-item-time { font-size: 11px; font-weight: 700; opacity: 0.85; flex: 0 0 auto; }
+.agenda-item-summary { font-size: 13px; overflow-wrap: anywhere; }
+.agenda-empty { font-size: 12px; color: var(--fc-text-secondary); font-style: italic; padding: 2px; }
 .person-lane-header { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-bottom: 4px; flex: 0 0 auto; }
 .person-lane-avatar { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; }
 .person-lane-name { font-size: 12px; font-weight: 700; color: var(--fc-text); text-transform: uppercase; letter-spacing: 0.3px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
@@ -9774,6 +10950,14 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .menu-banner.edit-mode:not(.empty) { cursor: grab; animation: meal-wiggle 0.32s ease-in-out infinite; touch-action: none; }
 .menu-banner.edit-mode.dragging-source { opacity: 0.3; animation: none; }
 .menu-banner.edit-mode.drop-target { outline-color: var(--fc-accent3); outline-width: 3px; transform: scale(1.04); }
+.event.event-draggable { cursor: grab; }
+.event.event-draggable.dragging-source { opacity: 0.3; }
+.day-col.drop-target { outline: 3px solid var(--fc-accent3); outline-offset: -2px; border-radius: 8px; }
+.menu-banner .cook-bar { position: absolute; left: 8px; right: 8px; bottom: 3px; height: 4px; border-radius: 3px; box-shadow: 0 0 0 1px rgba(0,0,0,0.18); pointer-events: none; }
+.cook-picker { display: flex; flex-wrap: wrap; gap: 8px; }
+.cook-block { border: 2px solid var(--cook-block-color, var(--fc-border)); border-radius: 10px; min-height: 40px; padding: 6px 14px; font-size: 13px; font-weight: 700; background: var(--fc-card); color: var(--fc-text); cursor: pointer; box-shadow: var(--fc-shadow); }
+.cook-block.active { background: var(--cook-block-color, var(--fc-accent)); color: var(--cook-block-text, var(--fc-accent-text)); border-color: var(--cook-block-color, var(--fc-accent)); }
+.cook-block-none { --cook-block-color: var(--fc-border); --cook-block-text: var(--fc-text); }
 .meal-drag-ghost { position: fixed; pointer-events: none; z-index: 2000; opacity: 0.92; box-shadow: 0 8px 20px rgba(58,53,44,0.4); transform: scale(1.05) rotate(-2deg); }
 @keyframes meal-wiggle { 0% { transform: rotate(-1deg); } 50% { transform: rotate(1deg); } 100% { transform: rotate(-1deg); } }
 .events { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 6px; overscroll-behavior: contain; }
@@ -9891,7 +11075,7 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .week-nav-center { justify-content: center; }
 }
 @media (max-width: 700px) {
-:host { height: 100%; overflow: hidden; }
+:host { height: auto !important; min-height: 100vh; min-height: 100dvh; overflow: hidden; }
 ha-card { height: auto; min-height: 100%; overflow: hidden; }
 /* The :host(.modal-open)/ha-card overflow:visible override that undoes
    the overflow:hidden above while a modal is open now lives unscoped by
@@ -10009,7 +11193,7 @@ the full width (see .grocy-recipe-viewer-columns). */
 .grocy-recipe-viewer-photo { display: none; flex: 1 1 260px; min-width: 220px; max-width: 100%; max-height: 320px; object-fit: cover; border-radius: 12px; align-self: flex-start; }
 .grocy-recipe-viewer-status { font-size: 12px; color: var(--fc-text-secondary); padding: 2px 2px 10px; text-align: center; }
 .grocy-recipe-viewer-status.is-error { color: #b5583c; }
-/* Prep/Cook/Total stat pills () - only ever populated with real
+/* Prep/Cook/Total stat pills (task #250) - only ever populated with real
 values parsed off the recipe (see _renderGrocyRecipeDetail); a recipe with
 none of the three published stays an empty, invisible row via :empty
 rather than showing a blank card, same treatment as every other optional
@@ -10019,7 +11203,7 @@ field on this page. */
 .grocy-recipe-stat { background: var(--fc-surface-alt); border: 1px solid var(--fc-border); border-radius: 10px; padding: 8px 18px; text-align: center; min-width: 78px; }
 .grocy-recipe-stat-label { display: block; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fc-text-secondary); margin-bottom: 2px; }
 .grocy-recipe-stat-value { display: block; font-size: 15px; font-weight: 800; color: var(--fc-text); }
-/* Two-column reading layout () - ingredients (with their own
+/* Two-column reading layout (task #251) - ingredients (with their own
 scaler) on one side, hero photo on the other; wraps to a single stacked
 column on narrow widths via flex-wrap, and the photo simply isn't in the
 DOM's visible flow at all when the recipe has none (display:none above),
@@ -10035,22 +11219,51 @@ leaving an empty gap next to it. */
 .grocy-recipe-viewer-ingredients { margin-bottom: 14px; }
 .grocy-recipe-ingredient-group { font-size: 12px; font-weight: 700; color: var(--fc-text-secondary); text-transform: uppercase; letter-spacing: 0.03em; margin: 10px 0 4px; }
 .grocy-recipe-ingredient-group:first-child { margin-top: 0; }
-.grocy-recipe-ingredient-row { display: flex; align-items: flex-start; gap: 10px; padding: 6px 0; font-size: 14px; color: var(--fc-text); border-bottom: 1px solid var(--fc-border); }
-/* Numbered circular badge (/mockup) standing in for the plain
+.grocy-recipe-ingredient-row { display: flex; align-items: flex-start; gap: 10px; padding: 6px 0; font-size: 14px; color: var(--fc-text); border-bottom: 1px solid var(--fc-border); cursor: pointer; }
+.grocy-recipe-ingredient-check { margin-top: 3px; width: 16px; height: 16px; flex-shrink: 0; cursor: pointer; }
+.grocy-recipe-ingredient-row.checked-off { opacity: 0.5; }
+.grocy-recipe-ingredient-row.checked-off .grocy-recipe-ingredient-amount,
+.grocy-recipe-ingredient-row.checked-off > span:last-child { text-decoration: line-through; }
+/* Numbered circular badge (task #251/mockup) standing in for the plain
 amount text that used to lead each row - the amount itself moved into the
 row's second line/span alongside the product name so nothing that used to
 be shown is lost, just restyled. */
 .grocy-recipe-ingredient-badge { flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
 .grocy-recipe-ingredient-amount { font-weight: 600; color: var(--fc-text-secondary); }
 .grocy-recipe-ingredient-note { font-size: 12px; color: var(--fc-text-secondary); font-style: italic; }
-/* Numbered Instructions steps () - parsed from the recipe's own
+/* Numbered Instructions steps (task #252) - parsed from the recipe's own
 "Preparation" block when it has one (see _renderGrocyRecipeDescription);
 recipes without that exact structure never populate this element at all,
 so it stays empty/invisible via :empty and the raw description below
 carries the full instructions instead, same as before this feature. */
 .grocy-recipe-viewer-instructions:empty { display: none; }
 .grocy-recipe-instructions-title { font-size: 1.1em; font-weight: 800; color: var(--fc-accent); margin: 6px 0 10px; }
-.grocy-recipe-instruction-row { display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; font-size: 14px; line-height: 1.5; color: var(--fc-text); }
+.grocy-recipe-instruction-row { display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; font-size: 14px; line-height: 1.5; color: var(--fc-text); cursor: pointer; }
+.grocy-recipe-instruction-check { margin-top: 5px; width: 16px; height: 16px; flex-shrink: 0; cursor: pointer; }
+.grocy-recipe-instruction-row.checked-off { opacity: 0.5; }
+.grocy-recipe-instruction-row.checked-off .grocy-recipe-instruction-text { text-decoration: line-through; }
+.grocy-recipe-step-header { font-size: 1.05em; font-weight: 800; color: var(--fc-text); margin: 14px 0 4px; }
+.grocy-recipe-step-divider { border: none; border-top: 1px solid var(--fc-border); margin: 14px 0; }
+.grocy-recipe-step-image-wrap { margin: 10px 0; }
+.grocy-recipe-step-image { max-width: 100%; border-radius: 10px; display: block; }
+.fh-step-editor-overlay { top: var(--fh-header-offset, 0px); z-index: 1002; align-items: stretch; justify-content: stretch; padding: 0; }
+.fh-step-editor-overlay .fh-step-editor-box { background: var(--fc-bg); width: 100%; max-width: 100%; height: calc(100vh - var(--fh-header-offset, 0px)); max-height: calc(100vh - var(--fh-header-offset, 0px)); border-radius: 0; box-shadow: none; box-sizing: border-box; padding: 28px max(22px, calc(50% - 380px)) 60px; overflow-y: auto; }
+.fh-step-editor-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 14px; }
+.fh-step-editor-row { display: flex; align-items: flex-start; gap: 8px; background: var(--fc-surface-alt, #f5f5f5); border-radius: 10px; padding: 8px; }
+.fh-step-editor-drag-handle { flex: 0 0 auto; cursor: grab; touch-action: none; padding: 4px 6px; margin-top: 4px; font-size: 18px; line-height: 1; color: var(--fc-text-secondary, #888); user-select: none; }
+.fh-step-editor-row.fh-step-editor-dragging { opacity: 0.5; box-shadow: 0 6px 16px rgba(0,0,0,0.25); }
+.fh-step-editor-text-input { flex: 1; min-height: 44px; resize: vertical; font-family: inherit; font-size: 14px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--fc-border); }
+.fh-step-editor-header-input { flex: 1; font-weight: 800; font-size: 14px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--fc-border); }
+.fh-step-editor-step-num { flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center; margin-top: 8px; }
+.fh-step-editor-divider-row { justify-content: space-between; align-items: center; }
+.fh-step-editor-divider-label { color: var(--fc-text-muted, #888); font-size: 13px; flex: 1; text-align: center; }
+.fh-step-editor-image-row { align-items: center; }
+.fh-step-editor-image-preview { flex: 1; max-width: 100%; max-height: 120px; border-radius: 8px; object-fit: cover; }
+.fh-step-editor-row-controls { display: flex; gap: 4px; flex-shrink: 0; }
+.fh-step-editor-row-controls button { width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--fc-border); background: var(--fc-bg); cursor: pointer; font-size: 13px; padding: 0; }
+.fh-step-editor-row-controls button:disabled { opacity: 0.35; cursor: default; }
+.fh-step-editor-add-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.fh-step-editor-add-row button { flex: 1 1 auto; }
 .grocy-recipe-instruction-badge { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 13px; font-weight: 800; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
 .grocy-recipe-instruction-text { padding-top: 3px; }
 .grocy-recipe-viewer-description { font-size: 14px; line-height: 1.5; color: var(--fc-text); }
@@ -10191,6 +11404,16 @@ comes later in paint order. */
 .notify-profile-calendar-swatch { width: 12px; height: 12px; border-radius: 50%; background: var(--cal-card-color, var(--fc-accent)); flex: 0 0 auto; }
 .notify-profile-calendar-name { flex: 1; }
 .notify-profile-calendar-primary-btn { border: none; background: none; font-size: 16px; line-height: 1; cursor: pointer; color: var(--fc-accent); padding: 2px 4px; }
+.notify-debug-calendars-list, .notify-debug-devices-list, .notify-debug-pending-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.notify-debug-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--fc-text); background: var(--fc-card); border: 1px solid var(--fc-border); border-radius: 8px; padding: 6px 10px; }
+.notify-debug-row-warn { border-color: #b5583c; }
+.notify-debug-row-main { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notify-debug-row-flag { flex: 0 0 auto; font-size: 11px; font-weight: 700; color: #b5583c; }
+.notify-debug-row-status { flex: 0 0 auto; font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 2px 6px; border-radius: 6px; background: var(--fc-surface-alt); color: var(--fc-text-secondary); }
+.notify-debug-row-status-sent { color: #4a7c59; }
+.notify-debug-row-status-pending { color: #8f5a00; }
+.notify-debug-refresh-btn { width: 100%; min-height: 36px; border-radius: 10px; border: none; background: var(--fc-surface-alt); color: var(--fc-text); font-size: 12px; font-weight: 700; cursor: pointer; }
+
 .notify-profile-reminders-lists { display: flex; flex-direction: column; gap: 8px; }
 .notify-profile-reminders-list-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--fc-text); background: var(--fc-card); border: 2px solid var(--fc-border); border-radius: 10px; padding: 8px 10px; }
 .notify-profile-reminders-list-swatch { width: 12px; height: 12px; border-radius: 50%; flex: 0 0 auto; }
@@ -10300,8 +11523,16 @@ comes later in paint order. */
 .additional-recipe-inline-save { background: #f2ddd4; color: #7a4436; }
 .additional-recipe-inline-save:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
 .size-btn-row { display: flex; gap: 8px; }
+.mb-weekday-row { flex-wrap: wrap; }
+.mb-weekday-row .mb-weekday-btn { flex: 1 1 auto; min-width: 40px; }
 .size-btn { flex: 1 1 auto; min-height: 44px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
 .size-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
+.mb-extra-row { margin-bottom: 10px; }
+.mb-extra-day { font-size: 12px; font-weight: 800; opacity: 0.7; margin-bottom: 4px; }
+.mb-extra-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.mb-extra-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--fc-surface-alt); border-radius: 14px; padding: 5px 6px 5px 12px; font-size: 13px; font-weight: 700; }
+.mb-extra-remove { border: none; background: none; cursor: pointer; font-size: 12px; padding: 2px; color: var(--fc-text); opacity: 0.6; }
+.mb-extra-remove:hover { opacity: 1; }
 /* The Alarm Devices "add a device" picker (see
    _renderAlarmDevicesSection) now renders each not-yet-registered device
    as its own tap-to-add button, styled like .size-btn above instead of a
@@ -10508,8 +11739,11 @@ instead of the usual stacked field layout. */
 .event-info-use-meal-btn:active { opacity: 0.7; }
 .event-info-use-meal-btn.done { border-color: var(--fc-accent); background: #f0e6c4; }
 .event-info-countdown-btn { min-height: 40px; padding: 6px 14px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
+.event-info-reminder-title { display: block; box-sizing: border-box; width: 100%; font-size: 14px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-family: inherit; margin-top: 8px; }
 .event-info-reminder-edit-row { display: flex; gap: 8px; margin-top: 8px; }
 .event-info-reminder-edit-row input { flex: 1 1 auto; box-sizing: border-box; font-size: 14px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-family: inherit; }
+.event-info-reminder-list-label { display: block; margin-top: 8px; font-size: 13px; font-weight: 700; }
+.event-info-reminder-list-select { display: block; width: 100%; box-sizing: border-box; margin-top: 4px; }
 .event-info-reminder-rollover-label { display: block; margin-top: 8px; font-size: 13px; }
 .event-info-reminder-actions { display: flex; gap: 8px; margin-top: 8px; }
 .event-info-reminder-save-btn, .event-info-reminder-done-btn { margin-top: 6px; min-height: 40px; padding: 6px 14px; border-radius: 10px; border: none; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
@@ -10522,6 +11756,17 @@ instead of the usual stacked field layout. */
 .event-info-delete-btn:active { opacity: 0.7; }
 .event-info-delete-btn:disabled { opacity: 0.6; cursor: default; }
 .event-info-delete-btn.unsupported { border: 2px dashed var(--fc-border); background: var(--fc-card); color: var(--fc-text-secondary); opacity: 0.7; cursor: pointer; }
+.event-info-edit-row { margin-top: 4px; }
+.event-info-edit-btn { min-height: 40px; padding: 6px 14px; border-radius: 10px; border: none; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
+.event-info-edit-btn:active { opacity: 0.7; }
+.event-info-edit-btn:disabled { opacity: 0.6; cursor: default; }
+.event-info-edit-form-row .event-info-edit-content { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; width: 100%; }
+.event-info-edit-content input[type="text"], .event-info-edit-content input[type="date"], .event-info-edit-content input[type="time"] { box-sizing: border-box; width: 100%; font-size: 14px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-family: inherit; }
+.event-info-edit-when-row { display: flex; gap: 8px; }
+.event-info-edit-when-row input { flex: 1 1 auto; min-width: 0; }
+.event-info-edit-actions { display: flex; gap: 8px; margin-top: 2px; }
+.event-info-edit-save-btn { min-height: 40px; padding: 6px 14px; border-radius: 10px; border: none; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
+.event-info-edit-save-btn:disabled { opacity: 0.6; cursor: default; }
 .people-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
 .person-row { display: flex; align-items: center; gap: 6px; }
 .person-row input[type="text"] { width: auto; }
@@ -10857,9 +12102,16 @@ instead of the usual stacked field layout. */
 <div class="field dish-only-field" style="display:none;">
 <label class="remind-check-opt"><input type="checkbox" class="input-add-suggestion" />&#128161; Also add to Meal Suggestions</label>
 </div>
+<div class="field dish-only-field" style="display:none;">
+<button type="button" class="pick-loved-btn dish-editor-edit-steps-btn">&#128221; Edit Steps</button>
+</div>
 <div class="field menu-link-quick-field">
 <label>Recipe link</label>
 <button type="button" class="menu-link-open-btn" title="Open link" disabled>&#128279;</button>
+</div>
+<div class="field dish-hide-field menu-edit-only-field">
+<label>&#128077; Who's cooking</label>
+<div class="cook-picker"></div>
 </div>
 <div class="field">
 <button type="button" class="accordion-toggle" data-target="menu-more-options-body">
@@ -10992,6 +12244,7 @@ instead of the usual stacked field layout. */
 <img class="dish-detail-photo" style="display:none;" alt="" />
 <div class="dish-detail-rating"></div>
 <div class="dish-detail-desc"></div>
+<div class="dish-detail-steps"></div>
 <div class="dish-detail-link-row"></div>
 <div class="modal-actions">
 <button class="btn-cancel dish-detail-suggest-btn">&#128161; Suggest this</button>
@@ -11043,6 +12296,16 @@ instead of the usual stacked field layout. */
 <div class="grocy-recipe-viewer-footer">
 <button type="button" class="suggestion-add-btn grocy-recipe-viewer-consume-btn">&#127860; Mark Consumed (deduct from Grocy stock)</button>
 <button type="button" class="suggestion-add-btn grocy-recipe-viewer-open-btn">&#128279; Open in Grocy</button>
+<!-- v1.157.0+ bug fix: this used to live inside .grocy-recipe-viewer-
+     recipe-actions below, which only shows when the viewer was opened
+     FROM a Recipe Box entry (has a _grocyRecipeViewerSourceRecipe) - so
+     a recipe opened from the calendar/menu card instead (a bare Grocy
+     recipe id, no source recipe) had no way to reach Edit Steps at all,
+     even though saving steps only ever needed the recipe id. Moved out
+     here, next to Open in Grocy/Mark Consumed, which are themselves
+     already unconditional on nothing but a loaded Grocy recipe - same
+     requirement Edit Steps actually has. -->
+<button type="button" class="suggestion-add-btn grocy-recipe-viewer-edit-steps-btn">&#128221; Edit Steps</button>
 <div class="modal-actions grocy-recipe-viewer-recipe-actions" style="display:none;">
 <button type="button" class="btn-cancel grocy-recipe-viewer-suggest-btn">&#128161; Suggest this</button>
 <button type="button" class="btn-cancel grocy-recipe-viewer-edit-btn">&#9999;&#65039; Edit</button>
@@ -11051,10 +12314,29 @@ instead of the usual stacked field layout. */
 </div>
 </div>
 </div>
+<div class="modal-overlay fh-step-editor-overlay">
+<div class="modal-box loved-box fh-step-editor-box">
+<button class="modal-close fh-step-editor-close" aria-label="Close">&#10005;</button>
+<h2 class="fh-step-editor-title">Edit Steps</h2>
+<div class="fh-step-editor-list"></div>
+<div class="fh-step-editor-add-row">
+<button type="button" class="pick-loved-btn fh-step-editor-add-step">&#43; Step</button>
+<button type="button" class="pick-loved-btn fh-step-editor-add-header">&#43; Header</button>
+<button type="button" class="pick-loved-btn fh-step-editor-add-divider">&#43; Divider</button>
+<button type="button" class="pick-loved-btn fh-step-editor-add-image">&#43; Photo</button>
+<input type="file" class="fh-step-editor-image-input" accept="image/*" style="display:none;" />
+</div>
+<div class="modal-actions">
+<button type="button" class="btn-cancel fh-step-editor-cancel-btn">Cancel</button>
+<button type="button" class="btn-save fh-step-editor-save-btn">Save</button>
+</div>
+</div>
+</div>
 <div class="modal-overlay recipe-import-overlay">
 <div class="modal-box loved-box recipe-import-box">
 <button class="modal-close recipe-import-close" aria-label="Close">&#10005;</button>
-<h2>&#128279; Import a Recipe</h2>
+<h2 class="recipe-import-title">&#128279; Import a Recipe</h2>
+<div class="recipe-import-source-section">
 <div class="recipe-import-hint">Paste a link to a recipe page - this reads the same structured data most recipe sites already publish for Google/Pinterest, no AI involved.</div>
 <input type="url" class="recipe-import-url-input" placeholder="https://example.com/some-recipe" />
 <button type="button" class="suggestion-add-btn recipe-import-fetch-btn">Fetch Recipe</button>
@@ -11062,10 +12344,15 @@ instead of the usual stacked field layout. */
 <div class="recipe-import-hint">Paste the recipe's text instead (e.g. copied from an email, note, or a page with no link). Works best with an "Ingredients" line and a "Directions"/"Instructions" line separating the two parts, but anything is fine to start from.</div>
 <textarea class="recipe-import-text-input" rows="4" placeholder="Paste the recipe text here…"></textarea>
 <button type="button" class="suggestion-add-btn recipe-import-parse-text-btn">Parse Text</button>
+<button type="button" class="recipe-import-manual-btn recipe-import-upload-image-btn">&#128247; Upload a photo for this recipe</button>
+<input type="file" class="recipe-import-upload-image-input" accept="image/*" style="display:none;" />
+<img class="recipe-import-upload-image-preview" style="display:none;" alt="" />
 <div class="recipe-import-divider">— or —</div>
 <button type="button" class="recipe-import-manual-btn">&#9998;&#65039; Skip this, I'll enter it by hand</button>
+</div>
 <div class="recipe-import-status"></div>
 <div class="recipe-import-review" style="display:none;">
+<div class="recipe-import-non-ingredient-fields">
 <img class="recipe-import-photo-preview" style="display:none;" alt="Recipe photo" />
 <div class="field">
 <label>Recipe name</label>
@@ -11085,6 +12372,7 @@ instead of the usual stacked field layout. */
 </div>
 <label class="remind-check-opt recipe-import-manage-ingredients-opt"><input type="checkbox" class="recipe-import-manage-ingredients-check" checked /> Manage Ingredients with Grocy</label>
 <div class="recipe-import-hint recipe-import-manage-ingredients-off-hint" style="display:none;">Ingredients won't be matched or linked to Grocy products - the recipe will still import with its plain ingredient text. Turn this back on any time to match ingredients against your Grocy products again.</div>
+</div>
 <div class="recipe-import-ingredients-section">
 <div class="recipe-import-ingredients-header">
 <span class="recipe-import-ingredients-label">Ingredients (matched against your Grocy products)</span>
@@ -11096,10 +12384,12 @@ instead of the usual stacked field layout. */
 <div class="recipe-import-ingredients-empty-filter" style="display:none;">No ingredients match your search.</div>
 <button type="button" class="recipe-import-add-ingredient-btn">&#10133; Add ingredient line</button>
 </div>
+<div class="recipe-import-instructions-block">
 <div class="recipe-import-instructions-label">Instructions</div>
 <textarea class="recipe-import-instructions-input" rows="6" placeholder="One step per line…"></textarea>
 <div class="recipe-import-hint">Quantities are carried over as plain text on each ingredient - worth a quick check in Grocy afterward if you plan to use this recipe's shopping list feature.</div>
 <label class="remind-check-opt"><input type="checkbox" class="recipe-import-include-ingredients-check" checked /> Include ingredients in the preparation text</label>
+</div>
 <button type="button" class="suggestion-add-btn recipe-import-create-btn">&#128190; Add to Grocy</button>
 <button type="button" class="recipe-import-debug-btn">&#128027; Copy debug info</button>
 </div>
@@ -11185,6 +12475,46 @@ instead of the usual stacked field layout. */
 <div class="loved-list templates-list"></div>
 </div>
 </div>
+<div class="modal-overlay meal-block-overlay">
+<div class="modal-box loved-box">
+<button class="modal-close meal-block-close" aria-label="Close">&#10005;</button>
+<h2>&#127870; Meal Block</h2>
+<div class="suggestions-hint">Add an extra meal block (like a Snack) to just one day, or make it repeat every week on certain days - without touching the household's default blocks.</div>
+<div class="field">
+<label>How often</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn mb-mode-btn active" data-mode="once">Just one day</button>
+<button type="button" class="size-btn mb-mode-btn" data-mode="recurring">Every week</button>
+</div>
+</div>
+<div class="field mb-once-field">
+<label>Which day</label>
+<input type="date" class="mb-date-input" />
+</div>
+<div class="field mb-recurring-field" style="display:none;">
+<label>Which day(s) of the week</label>
+<div class="size-btn-row mb-weekday-row">
+<button type="button" class="size-btn mb-weekday-btn" data-weekday="0">Sun</button>
+<button type="button" class="size-btn mb-weekday-btn" data-weekday="1">Mon</button>
+<button type="button" class="size-btn mb-weekday-btn" data-weekday="2">Tue</button>
+<button type="button" class="size-btn mb-weekday-btn" data-weekday="3">Wed</button>
+<button type="button" class="size-btn mb-weekday-btn" data-weekday="4">Thu</button>
+<button type="button" class="size-btn mb-weekday-btn" data-weekday="5">Fri</button>
+<button type="button" class="size-btn mb-weekday-btn" data-weekday="6">Sat</button>
+</div>
+</div>
+<div class="field">
+<label>Block name</label>
+<input type="text" class="mb-name-input" list="mb-name-options" placeholder="e.g. Snack" maxlength="30" />
+<datalist id="mb-name-options"></datalist>
+</div>
+<button type="button" class="suggestion-add-btn mb-add-btn">+ Add block</button>
+<div class="field mb-extras-field" style="display:none;">
+<label>Already added</label>
+<div class="mb-extras-list"></div>
+</div>
+</div>
+</div>
 <div class="modal-overlay debug-overlay">
 <div class="modal-box debug-box">
 <button class="modal-close debug-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
@@ -11208,13 +12538,11 @@ instead of the usual stacked field layout. */
 <div class="modal-box settings-box">
 <button class="modal-close settings-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
 <h2>&#9881;&#65039; <span data-i18n="settings.heading">Settings</span></h2>
-<button type="button" class="settings-debug-btn">&#128027; <span data-i18n="settings.debug_info">Debug Info</span></button>
-<button type="button" class="settings-backup-now-btn admin-only-setting">&#128190; <span data-i18n="settings.backup_now">Back up now</span></button>
-<div class="settings-backup-now-status admin-only-setting"></div>
 <div class="settings-tabs">
 <button type="button" class="settings-tab-btn active" data-settings-tab="general" data-i18n="settings.tab_general">General</button>
 <button type="button" class="settings-tab-btn" data-settings-tab="notifications" data-i18n="settings.tab_users">Users</button>
 <button type="button" class="settings-tab-btn admin-only-setting" data-settings-tab="devices" data-i18n="settings.tab_devices">Devices</button>
+<button type="button" class="settings-tab-btn admin-only-setting" data-settings-tab="developer" data-i18n="settings.tab_developer">Developer tools</button>
 </div>
 <div class="settings-tab-panel" data-settings-tab-panel="general">
 <div class="field this-device-field">
@@ -11278,6 +12606,7 @@ instead of the usual stacked field layout. */
 <div class="size-btn-row">
 <button type="button" class="size-btn week-variant-btn" data-value="week" data-i18n="nav.week">Week</button>
 <button type="button" class="size-btn week-variant-btn" data-value="planner" data-i18n="settings.planner">Planner</button>
+<button type="button" class="size-btn week-variant-btn" data-value="agenda" data-i18n="nav.agenda">Agenda</button>
 </div>
 </div>
 <div class="field">
@@ -11340,8 +12669,9 @@ instead of the usual stacked field layout. */
 <div class="size-btn-row">
 <button type="button" class="size-btn top-bar-style-btn" data-value="normal" data-i18n="settings.top_bar_style_normal">Normal</button>
 <button type="button" class="size-btn top-bar-style-btn" data-value="minimal" data-i18n="settings.top_bar_style_minimal">Minimal</button>
+<button type="button" class="size-btn top-bar-style-btn" data-value="hidden" data-i18n="settings.top_bar_style_hidden">Hidden</button>
 </div>
-<div class="remind-hint" data-i18n="settings.top_bar_style_hint">Minimal hides the top bar (Settings/Week/Month/Edit Meals/Suggestions/Recipe Box/More) to save space on a small device - Settings moves into the + button's menu instead, right alongside Calendar Entry/Reminder/Meal Suggestion/Recipe. Saved to THIS device/browser only, like the Days shown/Month button settings above - choosing Minimal here won't affect any other Family Hub tablet or screen in the household. (Becomes shared household-wide instead if this card's own "Static layout" config option, set from its Edit Card screen, is on.)</div>
+<div class="remind-hint" data-i18n="settings.top_bar_style_hint">Minimal hides the top bar (Settings/Week/Month/Edit Meals/Suggestions/Recipe Box/More) to save space on a small device - Settings moves into the + button's menu instead, right alongside Calendar Entry/Reminder/Meal Suggestion/Recipe. Hidden just hides the bar with nothing moved anywhere else - meant for a display-only placement that's never used to add or manage anything (keep Settings reachable from some OTHER placement of this card). Saved to THIS device/browser only, like the Days shown/Month button settings above - choosing Minimal or Hidden here won't affect any other Family Hub tablet or screen in the household. (Becomes shared household-wide instead if this card's own "Static layout" config option, set from its Edit Card screen, is on.)</div>
 </div>
 </div>
 </div>
@@ -11381,6 +12711,9 @@ instead of the usual stacked field layout. */
 <button type="button" class="size-btn block-count-btn" data-count="1">1</button>
 <button type="button" class="size-btn block-count-btn" data-count="2">2</button>
 <button type="button" class="size-btn block-count-btn" data-count="3">3</button>
+<button type="button" class="size-btn block-count-btn" data-count="4">4</button>
+<button type="button" class="size-btn block-count-btn" data-count="5">5</button>
+<button type="button" class="size-btn block-count-btn" data-count="6">6</button>
 </div>
 </div>
 <div class="field">
@@ -11405,6 +12738,24 @@ instead of the usual stacked field layout. */
 <button type="button" class="size-btn meals-in-month-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 </div>
+<div class="field">
+<label data-i18n="settings.agenda_days_label">Agenda view: days ahead</label>
+<input type="number" class="agenda-days-input" min="2" max="30" step="1" />
+</div>
+<div class="field">
+<label data-i18n="settings.agenda_show_meals_label">Agenda view: show meals</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn agenda-show-meals-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn agenda-show-meals-btn" data-value="on" data-i18n="common.on">On</button>
+</div>
+</div>
+<div class="field">
+<label data-i18n="settings.agenda_show_reminders_label">Agenda view: show reminders</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn agenda-show-reminders-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn agenda-show-reminders-btn" data-value="on" data-i18n="common.on">On</button>
+</div>
+</div>
 <div class="field block-name-field" data-index="0">
 <label data-i18n="settings.block_1_name">Block 1 name</label>
 <input type="text" class="block-name-input" data-index="0" placeholder="Breakfast" maxlength="30" />
@@ -11416,6 +12767,18 @@ instead of the usual stacked field layout. */
 <div class="field block-name-field" data-index="2">
 <label data-i18n="settings.block_3_name">Block 3 name</label>
 <input type="text" class="block-name-input" data-index="2" placeholder="Dinner" maxlength="30" />
+</div>
+<div class="field block-name-field" data-index="3">
+<label>Block 4 name</label>
+<input type="text" class="block-name-input" data-index="3" placeholder="Snack" maxlength="30" />
+</div>
+<div class="field block-name-field" data-index="4">
+<label>Block 5 name</label>
+<input type="text" class="block-name-input" data-index="4" placeholder="Dessert" maxlength="30" />
+</div>
+<div class="field block-name-field" data-index="5">
+<label>Block 6 name</label>
+<input type="text" class="block-name-input" data-index="5" placeholder="Block 6" maxlength="30" />
 </div>
 </div>
 </div>
@@ -11714,6 +13077,20 @@ instead of the usual stacked field layout. */
 </div>
 </div>
 </div>
+<div class="settings-tab-panel" data-settings-tab-panel="developer" style="display:none">
+<div class="field">
+<label data-i18n="settings.discreet_mode_label">Discreet mode (hide names &amp; event text)</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn discreet-mode-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn discreet-mode-btn" data-value="on" data-i18n="common.on">On</button>
+</div>
+</div>
+<div class="field">
+<button type="button" class="settings-debug-btn">&#128027; <span data-i18n="settings.debug_info">Debug Info</span></button>
+<button type="button" class="settings-backup-now-btn admin-only-setting">&#128190; <span data-i18n="settings.backup_now">Back up now</span></button>
+<div class="settings-backup-now-status admin-only-setting"></div>
+</div>
+</div>
 <div class="modal-actions">
 <span class="settings-save-status"></span>
 <button class="btn-cancel settings-cancel" data-i18n="common.cancel">Cancel</button>
@@ -11897,6 +13274,28 @@ instead of the usual stacked field layout. */
 </div>
 </div>
 </div>
+<div class="field notify-profile-notify-debug-accordion admin-only-block" style="display:none">
+<button type="button" class="accordion-toggle" data-target="notify-profile-notify-debug-body">
+<span class="theme-section-label" data-i18n="settings.section_notify_debug">Notification debug</span>
+<span class="accordion-chevron">&#9660;</span>
+</button>
+<div class="accordion-body" id="notify-profile-notify-debug-body">
+<div class="remind-hint" data-i18n="settings.notify_debug_hint">Traces what Family Hub actually sees for this person right now (as of their last Save, not whatever's unsaved above): which calendars they're subscribed to, which devices get notified, and what's pending or already fired. Admin-only.</div>
+<div class="field">
+<label data-i18n="settings.notify_debug_calendars_label">Subscribed calendars</label>
+<div class="notify-debug-calendars-list"></div>
+</div>
+<div class="field">
+<label data-i18n="settings.notify_debug_devices_label">Devices to notify</label>
+<div class="notify-debug-devices-list"></div>
+</div>
+<div class="field">
+<label data-i18n="settings.notify_debug_pending_label">Pending notifications</label>
+<div class="notify-debug-pending-list"></div>
+</div>
+<button type="button" class="notify-debug-refresh-btn" data-i18n="settings.notify_debug_refresh">&#128260; Refresh</button>
+</div>
+</div>
 <div class="field notify-profile-kiosk-accordion admin-only-block" style="display:none">
 <button type="button" class="accordion-toggle" data-target="notify-profile-kiosk-body">
 <span class="theme-section-label" data-i18n="settings.section_kiosk_pin">Kiosk PIN login</span>
@@ -12029,6 +13428,7 @@ instead of the usual stacked field layout. */
 <button type="button" class="add-fab-item add-fab-reminder">&#128276; Reminder</button>
 <button type="button" class="add-fab-item add-fab-suggestion">&#128161; Meal Suggestion</button>
 <button type="button" class="add-fab-item add-fab-recipe">&#127838; Recipe</button>
+<button type="button" class="add-fab-item add-fab-meal-block">&#127870; Meal Block</button>
 <button type="button" class="add-fab-item add-fab-settings">&#9881;&#65039; Settings</button>
 </div>
 </div>
@@ -12280,10 +13680,12 @@ const family = this._viewFamily(this._viewMode);
 if (dx < 0) {
 if (family === "month") this._setMonthOffset((this._monthOffset || 0) + 1);
 else if (family === "day") this._setDayOffset((this._dayOffset || 0) + 1);
+else if (this._viewMode === "agenda") this._setAgendaOffset((this._agendaOffset || 0) + 1);
 else this._setWeekOffset((this._weekOffset || 0) + 1);
 } else {
 if (family === "month") this._setMonthOffset((this._monthOffset || 0) - 1);
 else if (family === "day") this._setDayOffset((this._dayOffset || 0) - 1);
+else if (this._viewMode === "agenda") this._setAgendaOffset((this._agendaOffset || 0) - 1);
 else this._setWeekOffset((this._weekOffset || 0) - 1);
 }
 }
@@ -12294,18 +13696,21 @@ root.querySelector(".nav-prev").addEventListener("click", () => {
 const family = this._viewFamily(this._viewMode);
 if (family === "month") this._setMonthOffset((this._monthOffset || 0) - 1);
 else if (family === "day") this._setDayOffset((this._dayOffset || 0) - 1);
+else if (this._viewMode === "agenda") this._setAgendaOffset((this._agendaOffset || 0) - 1);
 else this._setWeekOffset((this._weekOffset || 0) - 1);
 });
 root.querySelector(".nav-next").addEventListener("click", () => {
 const family = this._viewFamily(this._viewMode);
 if (family === "month") this._setMonthOffset((this._monthOffset || 0) + 1);
 else if (family === "day") this._setDayOffset((this._dayOffset || 0) + 1);
+else if (this._viewMode === "agenda") this._setAgendaOffset((this._agendaOffset || 0) + 1);
 else this._setWeekOffset((this._weekOffset || 0) + 1);
 });
 root.querySelector(".week-label").addEventListener("click", () => {
 const family = this._viewFamily(this._viewMode);
 if (family === "month") this._setMonthOffset(0);
 else if (family === "day") this._setDayOffset(0);
+else if (this._viewMode === "agenda") this._setAgendaOffset(0);
 else this._setWeekOffset(0);
 });
 root.querySelector(".week-shortcuts-toggle").addEventListener("click", (e) => {
@@ -12358,11 +13763,23 @@ this._updateNavLabel();
 });
 });
 root.querySelector(".view-select-dropdown").addEventListener("click", () => this._closeViewSelectMenu());
-root.querySelector(".edit-meals-btn").addEventListener("click", () => {
+root.querySelector(".edit-meals-btn").addEventListener("click", async () => {
 this._mealEditMode = !this._mealEditMode;
 const btn = root.querySelector(".edit-meals-btn");
 btn.classList.toggle("active", this._mealEditMode);
 btn.innerHTML = this._mealEditMode ? "&#9989; Done" : "&#9999;&#65039; Edit";
+// Whether a calendar event can be dragged at all (CalendarEntityFeature.
+// UPDATE_EVENT support, same check the event-info popup's own Edit
+// button uses) is known async per-entity and cached in
+// this._calendarDeleteSupport - prefetched here, once, right as Edit
+// Meals mode turns on, so _attachMealDragHandlers (called synchronously
+// from _renderGrid -> _afterRenderDayColumns) already has every answer
+// it needs rather than silently treating every event as non-draggable
+// on the very first render after turning Edit on.
+if (this._mealEditMode && this._canEditEvent()) {
+const entities = this._getPeople().map((p) => p.entity).filter(Boolean);
+await Promise.allSettled(entities.map((e) => this._getCalendarDeleteSupport(e)));
+}
 this._renderGrid();
 });
 root.querySelector(".edit-overlay .modal-close").addEventListener("click", () => this._closeEditor());
@@ -12382,6 +13799,8 @@ this._currentRating = null;
 this._currentColor = "#f0e6c4";
 root.querySelector(".input-color-custom").value = "#f0e6c4";
 this._updateColorSwatches();
+this._currentCook = "";
+this._renderCookPicker();
 this._updateRatingButtons();
 // Clearing an already-set meal means there's nothing left to show a
 // view card for - go straight back to the empty-slot state (pick
@@ -12545,6 +13964,40 @@ root.querySelector(".recipe-import-close").addEventListener("click", () => this.
 root.querySelector(".recipe-import-fetch-btn").addEventListener("click", () => this._fetchImportedRecipe());
 root.querySelector(".recipe-import-parse-text-btn").addEventListener("click", () => this._parseImportedRecipeText());
 root.querySelector(".recipe-import-manual-btn").addEventListener("click", () => this._startManualRecipeEntry());
+root.querySelector(".recipe-import-upload-image-btn").addEventListener("click", () => {
+root.querySelector(".recipe-import-upload-image-input").click();
+});
+root.querySelector(".recipe-import-upload-image-input").addEventListener("change", async (e) => {
+const file = e.target.files && e.target.files[0];
+e.target.value = "";
+if (!file) return;
+const btn = root.querySelector(".recipe-import-upload-image-btn");
+const prevLabel = btn.textContent;
+btn.textContent = "Uploading\u2026";
+btn.disabled = true;
+const previewEl = root.querySelector(".recipe-import-upload-image-preview");
+try {
+const url = await this._fhUploadImage(file);
+this._recipeImport.pendingImage = url;
+// Already-parsed/manual-entry recipe with no photo of its own yet -
+// a photo uploaded here afterward should still land on it, not just
+// sit unused until the next fresh import.
+if (this._recipeImport.recipe && !this._recipeImport.recipe.image) {
+this._recipeImport.recipe.image = url;
+root.querySelector(".recipe-import-image-input").value = url;
+this._updateRecipeImportPhotoPreview();
+}
+if (previewEl) {
+previewEl.src = url;
+previewEl.style.display = "block";
+}
+} catch (err) {
+window.alert("Couldn't upload that photo: " + (err && err.message ? err.message : err));
+} finally {
+btn.textContent = prevLabel;
+btn.disabled = false;
+}
+});
 root.querySelector(".recipe-import-create-btn").addEventListener("click", () => this._createImportedGrocyRecipe());
 root.querySelector(".recipe-import-debug-btn").addEventListener("click", () => this._copyRecipeImportDebugInfo());
 root.querySelector(".recipe-import-add-ingredient-btn").addEventListener("click", () => this._addImportedIngredientLine());
@@ -12619,8 +14072,87 @@ btn.textContent = "\u{1F4A1} Suggest this";
 root.querySelector(".grocy-recipe-viewer-edit-btn").addEventListener("click", () => {
 const recipe = this._grocyRecipeViewerSourceRecipe;
 if (!recipe) return;
+if (recipe.grocyRecipeId) {
+this._openGrocyRecipeIngredientEditor(recipe);
+return;
+}
 this._closeGrocyRecipeViewer();
 this._openRecipeBoxEditor(recipe);
+});
+root.querySelector(".grocy-recipe-viewer-edit-steps-btn").addEventListener("click", () => {
+const recipeId = this._grocyRecipeViewerRecipeId;
+if (!recipeId) return;
+// This overlay lives in the shadow root, not the Grocy viewer's own
+// document.body portal (see _grocyViewerOverlay's portal comment) - so
+// on a grid dashboard where the viewer's portal is needed at all, it'd
+// otherwise open trapped behind/under that full-screen portal. Closing
+// the viewer first and reopening it fresh on Save/Cancel avoids that
+// entirely, same as _openGrocyRecipeIngredientEditor already does for
+// its own overlay.
+const titleEl = this._grocyViewerOverlay().querySelector(".grocy-recipe-viewer-title");
+const name = (titleEl && titleEl.textContent) || "Recipe";
+const link = this._grocyRecipeViewerFallbackLink;
+const sourceRecipe = this._grocyRecipeViewerSourceRecipe;
+this._closeGrocyRecipeViewer();
+this._fhOpenStepEditor(
+this._grocyRecipeViewerStepBlocks || [],
+(blocks) => {
+this._saveGrocyRecipeStepEdits(recipeId, blocks, name, link, sourceRecipe);
+},
+() => {
+this._openGrocyRecipeViewer(recipeId, name, link, false, null, sourceRecipe);
+}
+);
+});
+root.querySelector(".fh-step-editor-add-step").addEventListener("click", () => {
+this._fhStepEditorBlocks.push({ type: "step", text: "" });
+this._renderFhStepEditorList();
+});
+root.querySelector(".fh-step-editor-add-header").addEventListener("click", () => {
+this._fhStepEditorBlocks.push({ type: "header", text: "" });
+this._renderFhStepEditorList();
+});
+root.querySelector(".fh-step-editor-add-divider").addEventListener("click", () => {
+this._fhStepEditorBlocks.push({ type: "divider" });
+this._renderFhStepEditorList();
+});
+root.querySelector(".fh-step-editor-add-image").addEventListener("click", () => {
+this._fhStepEditorOverlay().querySelector(".fh-step-editor-image-input").click();
+});
+root.querySelector(".fh-step-editor-image-input").addEventListener("change", async (e) => {
+const file = e.target.files && e.target.files[0];
+e.target.value = "";
+if (!file) return;
+const addImageBtn = this._fhStepEditorOverlay().querySelector(".fh-step-editor-add-image");
+const prevLabel = addImageBtn.textContent;
+addImageBtn.textContent = "Uploading…";
+addImageBtn.disabled = true;
+try {
+const url = await this._fhUploadImage(file);
+this._fhStepEditorBlocks.push({ type: "image", url });
+this._renderFhStepEditorList();
+} catch (err) {
+window.alert("Couldn't upload that photo: " + (err && err.message ? err.message : err));
+} finally {
+addImageBtn.textContent = prevLabel;
+addImageBtn.disabled = false;
+}
+});
+root.querySelector(".fh-step-editor-close").addEventListener("click", () => {
+const onCancel = this._fhStepEditorOnCancel;
+this._closeFhStepEditor();
+if (onCancel) onCancel();
+});
+root.querySelector(".fh-step-editor-cancel-btn").addEventListener("click", () => {
+const onCancel = this._fhStepEditorOnCancel;
+this._closeFhStepEditor();
+if (onCancel) onCancel();
+});
+root.querySelector(".fh-step-editor-save-btn").addEventListener("click", () => {
+const blocks = (this._fhStepEditorBlocks || []).filter((b) => b.type === "divider" || b.type === "image" || (b.text && b.text.trim()));
+const onSave = this._fhStepEditorOnSave;
+this._closeFhStepEditor();
+if (onSave) onSave(blocks);
 });
 root.querySelector(".grocy-recipe-viewer-delete-btn").addEventListener("click", () => {
 const recipe = this._grocyRecipeViewerSourceRecipe;
@@ -12720,6 +14252,31 @@ this._openSuggestedRecipes();
 root.querySelector(".add-fab-recipe").addEventListener("click", () => {
 this._closeAddMenu();
 this._openRecipeImport();
+});
+root.querySelector(".add-fab-meal-block").addEventListener("click", () => {
+this._closeAddMenu();
+this._openMealBlockModal();
+});
+root.querySelector(".meal-block-close").addEventListener("click", () => this._closeMealBlockModal());
+root.querySelectorAll(".mb-mode-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".mb-mode-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+const recurring = btn.dataset.mode === "recurring";
+const onceField = root.querySelector(".mb-once-field");
+const recurringField = root.querySelector(".mb-recurring-field");
+if (onceField) onceField.style.display = recurring ? "none" : "";
+if (recurringField) recurringField.style.display = recurring ? "" : "none";
+});
+});
+root.querySelectorAll(".mb-weekday-btn").forEach((btn) => {
+btn.addEventListener("click", () => btn.classList.toggle("active"));
+});
+root.querySelector(".mb-add-btn").addEventListener("click", () => this._saveMealBlockFromModal());
+root.querySelector(".mb-extras-list").addEventListener("click", (e) => {
+const removeBtn = e.target.closest(".mb-extra-remove");
+if (!removeBtn) return;
+this._removeMealBlockExtra(removeBtn.dataset.kind, removeBtn.dataset.key, removeBtn.dataset.name);
 });
 // Small screen mode's own entry point to Settings - only
 // visible at all once smallScreenMode is on (see the CSS above), since
@@ -13057,6 +14614,7 @@ if (e.target.checked && idx === -1) this._settingsKioskLoginUserIdsDraft.push(us
 else if (!e.target.checked && idx !== -1) this._settingsKioskLoginUserIdsDraft.splice(idx, 1);
 });
 root.querySelector(".notify-profile-kiosk-set-pin-btn").addEventListener("click", () => this._openKioskSetPinModal());
+root.querySelector(".notify-debug-refresh-btn").addEventListener("click", () => { if (this._notifyProfileEditingUserId) this._fetchNotifyDebug(this._notifyProfileEditingUserId); });
 root.querySelector(".kiosk-pin-cancel-btn").addEventListener("click", () => this._closeKioskSetPinModal());
 root.querySelector(".kiosk-pin-save-btn").addEventListener("click", () => this._submitKioskSetPin());
 root.querySelector(".kiosk-pin-input").addEventListener("keydown", (e) => {
@@ -13174,6 +14732,24 @@ this._applySizeVars();
 root.querySelectorAll(".meals-in-month-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
 root.querySelectorAll(".meals-in-month-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+});
+});
+root.querySelectorAll(".discreet-mode-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".discreet-mode-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+});
+});
+root.querySelectorAll(".agenda-show-meals-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".agenda-show-meals-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+});
+});
+root.querySelectorAll(".agenda-show-reminders-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".agenda-show-reminders-btn").forEach((b) => b.classList.remove("active"));
 btn.classList.add("active");
 });
 });
@@ -13417,6 +14993,11 @@ const grocyNote = this._currentGrocyRecipeId ? " This will also delete it from G
 if (!window.confirm(`Delete "${name}" from the Recipe Box?${grocyNote}`)) return;
 this._deleteDish(uid, this._currentGrocyRecipeId);
 this._closeEditor();
+});
+root.querySelector(".dish-editor-edit-steps-btn").addEventListener("click", () => {
+this._fhOpenStepEditor(this._editingDishSteps || [], (blocks) => {
+this._editingDishSteps = blocks;
+});
 });
 this._updateNavLabel();
 }
@@ -13937,7 +15518,7 @@ this._renderNotifyProfilesList();
 // those two are hard-scoped to their own use cases.
 _setSettingsTab(tab) {
 const root = this._root;
-this._settingsActiveTab = tab === "notifications" || tab === "permissions" || tab === "devices" ? tab : "general";
+this._settingsActiveTab = tab === "notifications" || tab === "permissions" || tab === "devices" || tab === "developer" ? tab : "general";
 root.querySelectorAll(".settings-tab-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.settingsTab === this._settingsActiveTab);
 });
@@ -14039,6 +15620,16 @@ this._notifyProfileOpenUserId = userId;
 const permAccordion = root.querySelector(".notify-profile-permissions-accordion");
 if (permAccordion) permAccordion.style.display = isAdminForPin ? "" : "none";
 if (isAdminForPin) this._renderNotifyProfilePermissions(userId);
+// Notification debug accordion - same admin-only bar as Permissions/Kiosk
+// PIN just above (isAdminForPin), since it surfaces other people's
+// notify.* targets. Unlike Permissions (already fetched/cached by the
+// time Settings opens - see _fetchPermissionsData), this is fetched fresh
+// per person, on demand, since it's a live backend computation
+// (_build_user_notify_debug) rather than a stored value - no point
+// running it for every household member every time Settings opens.
+const notifyDebugAccordion = root.querySelector(".notify-profile-notify-debug-accordion");
+if (notifyDebugAccordion) notifyDebugAccordion.style.display = isAdminForPin ? "" : "none";
+if (isAdminForPin) this._fetchNotifyDebug(userId);
 // Grocy's two digest sections only make sense to show once the matching
 // household-wide feature is actually on - otherwise it's a checkbox for
 // a section that can never appear in anyone's digest. Reads the LIVE
@@ -14745,6 +16336,17 @@ btn.classList.toggle("active", btn.dataset.value === (settings.weekendBreakfast 
 root.querySelectorAll(".meals-in-month-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.showMealsInMonth ? "on" : "off"));
 });
+const agendaDaysInputEl = root.querySelector(".agenda-days-input");
+if (agendaDaysInputEl) agendaDaysInputEl.value = String(settings.agendaDays);
+root.querySelectorAll(".agenda-show-meals-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (settings.agendaShowMeals ? "on" : "off"));
+});
+root.querySelectorAll(".agenda-show-reminders-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (settings.agendaShowReminders ? "on" : "off"));
+});
+root.querySelectorAll(".discreet-mode-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (settings.discreetModeEnabled ? "on" : "off"));
+});
 const mealPlanEntityInputEl = root.querySelector(".meal-plan-entity-input");
 if (mealPlanEntityInputEl) {
 mealPlanEntityInputEl.value = settings.mealPlanEntity || "";
@@ -14766,7 +16368,7 @@ weatherEntityDatalistEl.innerHTML = this._entitiesForDomain("weather").map((e) =
 root.querySelectorAll(".grey-out-past-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.greyOutPastEvents ? "on" : "off"));
 });
-const topBarStyleValue = this._getSmallScreenMode() ? "minimal" : "normal";
+const topBarStyleValue = this._getSmallScreenMode() ? "minimal" : this._getHideTopBarDevice() ? "hidden" : "normal";
 root.querySelectorAll(".top-bar-style-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === topBarStyleValue);
 });
@@ -16347,7 +17949,48 @@ clearInterval(this._screenSaverDigitsClockInterval);
 this._screenSaverDigitsClockInterval = null;
 }
 this._resetScreenSaverIdleTimer();
+// v1.155.0+: household request, verbatim - "when you wake from
+// screensaver it automatically reenters the default view (week or
+// month)". Whoever last used the tablet may have left it on a Month
+// view, scrolled a week or two away from today, or mid "Edit Meals" -
+// none of that should still be showing to the next person who wakes it
+// with a tap. Done before _goToReturnDashboard() below so it's harmless
+// (just overwritten) on the path that's about to navigate elsewhere
+// anyway, and actually visible on the far more common "stay on this
+// dashboard" path (the default, blank returnDashboardPath).
+this._resetToDefaultView();
 this._goToReturnDashboard();
+}
+// See _hideScreenSaver's own comment above for why this runs on wake -
+// same "family (week vs month) is the shared setting, which variant
+// within it is this device's own choice" logic the very first render
+// uses (see this._viewMode's cold-start init near the top of _build/
+// first update), just re-applied on demand instead of only once per
+// page load. Also jumps back to today (offset 0) in whichever family
+// ends up showing - waking up to the default VIEW but still parked on
+// some other week/month someone navigated to before walking away would
+// only be half fixed.
+_resetToDefaultView() {
+if (!this._root) return;
+const s = this._getSettings();
+const mode = s.defaultView === "month" ? this._getMonthViewVariant() : this._getWeekViewVariant();
+if (mode !== "week" && this._mealEditMode) {
+this._mealEditMode = false;
+const editBtn = this._root.querySelector(".edit-meals-btn");
+if (editBtn) {
+editBtn.classList.remove("active");
+editBtn.innerHTML = "&#9999;&#65039; Edit";
+}
+}
+this._viewMode = mode;
+this._weekSelectedDate = null;
+this._weekOffset = 0;
+this._monthOffset = 0;
+this._dayOffset = 0;
+this._agendaOffset = 0;
+this._renderGrid();
+this._fetchEvents();
+this._updateNavLabel();
 }
 // Ported straight
 // from family-screensaver-card.js's own _goToReturnDashboard (same
@@ -16741,6 +18384,15 @@ const activeWeekendBreakfastBtn = root.querySelector(".weekend-breakfast-btn.act
 const weekendBreakfast = activeWeekendBreakfastBtn ? activeWeekendBreakfastBtn.dataset.value === "on" : false;
 const activeMealsInMonthBtn = root.querySelector(".meals-in-month-btn.active");
 const showMealsInMonth = activeMealsInMonthBtn ? activeMealsInMonthBtn.dataset.value === "on" : false;
+const agendaDaysInputForSave = root.querySelector(".agenda-days-input");
+const agendaDaysRawForSave = agendaDaysInputForSave ? parseInt(agendaDaysInputForSave.value, 10) : NaN;
+const agendaDays = Number.isInteger(agendaDaysRawForSave) && agendaDaysRawForSave >= 2 && agendaDaysRawForSave <= 30 ? agendaDaysRawForSave : this._getSettings().agendaDays;
+const activeDiscreetModeBtn = root.querySelector(".discreet-mode-btn.active");
+const discreetModeEnabled = activeDiscreetModeBtn ? activeDiscreetModeBtn.dataset.value === "on" : false;
+const activeAgendaShowMealsBtn = root.querySelector(".agenda-show-meals-btn.active");
+const agendaShowMeals = activeAgendaShowMealsBtn ? activeAgendaShowMealsBtn.dataset.value === "on" : false;
+const activeAgendaShowRemindersBtn = root.querySelector(".agenda-show-reminders-btn.active");
+const agendaShowReminders = activeAgendaShowRemindersBtn ? activeAgendaShowRemindersBtn.dataset.value === "on" : false;
 // Must be included in settingsObj
 // below (family_hub/set_settings is a full replace, not a merge - see
 // _mealPlanEntity's own comment) or this field would be silently wiped on
@@ -16762,8 +18414,13 @@ const greyOutPastEvents = activeGreyOutPastBtn ? activeGreyOutPastBtn.dataset.va
 // the exact bug being fixed).
 const activeTopBarStyleBtn = root.querySelector(".top-bar-style-btn.active");
 const smallScreenMode = activeTopBarStyleBtn ? activeTopBarStyleBtn.dataset.value === "minimal" : false;
+const hideTopBarDevice = activeTopBarStyleBtn ? activeTopBarStyleBtn.dataset.value === "hidden" : false;
 try {
 this._setScopedSettingItem("familyCalendarSmallScreenModeLocal", smallScreenMode ? "on" : "off");
+} catch (e) {
+}
+try {
+this._setScopedSettingItem("familyCalendarHideTopBarDeviceLocal", hideTopBarDevice ? "on" : "off");
 } catch (e) {
 }
 try {
@@ -16926,6 +18583,20 @@ returnDashboardPath: screenSaverReturnDashboardPath,
 };
 const settingsObj = {
 blocks,
+// Date-specific extra blocks (see _defaultSettings' dateBlocks comment) -
+// this form has no fields of its own for it (added/removed instead via
+// the + button's "Meal Block" entry and _persistSettingsPatch), so it's
+// carried through from the current cache unchanged, same pattern as
+// userProfiles/memberUserIds just below - otherwise a full Settings save
+// from this form would silently wipe out every date-specific block
+// someone added since (family_hub/set_settings is a full replace, not a
+// merge).
+dateBlocks: this._getSettings().dateBlocks || {},
+// Recurring per-weekday extra blocks (see _defaultSettings'
+// weekdayBlocks comment) - same "no field on this form, carry the
+// cache through unchanged" treatment as dateBlocks just above, for the
+// same reason (a full Settings save is a full replace, not a merge).
+weekdayBlocks: this._getSettings().weekdayBlocks || {},
 blockSize,
 showTimeline,
 // A mirror of every Week/Month view/layout field's CURRENT value
@@ -16948,7 +18619,7 @@ currentDayFirstShared: currentDayFirst,
 // would resurrect the exact v1.132.5 bug _getSmallScreenMode's own
 // comment documents fixing (turning it on on one tablet turning it on on
 // every device) for every household that leaves static mode off.
-...(this._getStaticLayoutAcrossDevices() ? { smallScreenMode } : {}),
+...(this._getStaticLayoutAcrossDevices() ? { smallScreenMode, hideTopBarDeviceShared: hideTopBarDevice } : {}),
 timelineStartHour,
 timelineEndHour,
 defaultView,
@@ -16967,6 +18638,10 @@ notificationClickPath,
 people,
 weekendBreakfast,
 showMealsInMonth,
+agendaDays,
+agendaShowMeals,
+agendaShowReminders,
+discreetModeEnabled,
 mealPlanEntity,
 mealTemplatesEntity,
 weatherEntity,
@@ -17093,7 +18768,7 @@ end.setDate(start.getDate() + (this._viewFamily(this._viewMode) === "week" ? thi
 const lines = [];
 lines.push(`hass connected: ${!!this._hass}`);
 lines.push(`Logged in user: ${this._hass && this._hass.user ? this._hass.user.name + (this._hass.user.is_admin ? " (admin)" : " (non-admin)") : "unknown"}`);
-lines.push(`View mode: ${this._viewMode} ${this._viewFamily(this._viewMode) === "month" ? `(month offset ${this._monthOffset || 0})` : `(week offset ${this._weekOffset || 0})`}`);
+lines.push(`View mode: ${this._viewMode} ${this._viewFamily(this._viewMode) === "month" ? `(month offset ${this._monthOffset || 0})` : this._viewMode === "agenda" ? `(agenda offset ${this._agendaOffset || 0})` : `(week offset ${this._weekOffset || 0})`}`);
 lines.push(`Query window: ${start.toISOString()} -> ${end.toISOString()}`);
 lines.push(`Browser local time now: ${new Date().toString()}`);
 lines.push(`Weather entity: ${this._weatherEntity()} (${Object.keys(this._forecast || {}).length} forecast days loaded)`);
@@ -17501,10 +19176,13 @@ if (detail.isReminder) {
 // (todo.update_item), or just as well from Home Assistant's own To-do UI.
 const fmtTimeInput = (d) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 section.innerHTML = `<div class="event-info-remind-none">&#128276; This is a reminder (a Home Assistant to-do item, not a calendar event) - it notifies once, at its scheduled time. Notify devices for reminders are set under Settings.</div>
+<input type="text" class="event-info-reminder-title" maxlength="200" placeholder="Reminder text" />
 <div class="event-info-reminder-edit-row">
 <input type="date" class="event-info-reminder-date" />
 <input type="time" class="event-info-reminder-time" />
 </div>
+<label class="event-info-reminder-list-label">List</label>
+<select class="hour-select event-info-reminder-list-select"></select>
 <label class="remind-check-opt event-info-reminder-rollover-label"><input type="checkbox" class="event-info-reminder-rollover" />&#128257; Roll over to next day if not completed</label>
 <div class="field rolldays-field event-info-reminder-rolldays-field">
 <div class="rolldays-hint">Applies only on these days (leave every day selected to roll over daily, same as before)</div>
@@ -17515,8 +19193,26 @@ section.innerHTML = `<div class="event-info-remind-none">&#128276; This is a rem
 <button type="button" class="event-info-reminder-done-btn">&#9989; Mark done</button>
 </div>
 <span class="event-info-remind-status"></span>`;
+section.querySelector(".event-info-reminder-title").value = detail.summary || "";
 section.querySelector(".event-info-reminder-date").value = this._dateKey(detail.start);
 section.querySelector(".event-info-reminder-time").value = fmtTimeInput(detail.start);
+// Which to-do list this reminder is saved on, changeable the same way
+// the Add Reminder form's own List picker works (_addableRemindersLists -
+// the shared family list, this user's own individual list, and anything
+// they're subscribed to). The reminder's CURRENT list is always included
+// even if it wouldn't otherwise be addable to this user (e.g. an admin
+// looking at someone else's reminder) - the picker should never silently
+// drop the option that's already selected.
+const currentListEntity = detail.calendarEntity || this._config.reminders_entity;
+const addableLists = this._addableRemindersLists();
+const listOptions = addableLists.some((l) => l.entity === currentListEntity)
+? addableLists
+: [...addableLists, { entity: currentListEntity, label: this._remindersListFriendlyName(currentListEntity) }];
+const listSelectEl = section.querySelector(".event-info-reminder-list-select");
+if (listSelectEl) {
+listSelectEl.innerHTML = listOptions.map((l) => `<option value="${l.entity}">${l.label}</option>`).join("");
+listSelectEl.value = currentListEntity;
+}
 section.querySelector(".event-info-reminder-rollover").checked = !!detail.rollover;
 // "Roll over to next day if not completed" restricted to specific
 // days (see _rolldaysBtnsHtml) - the day picker only shows once rollover
@@ -17534,32 +19230,60 @@ const statusEl = section.querySelector(".event-info-remind-status");
 const saveBtn = section.querySelector(".event-info-reminder-save-btn");
 if (saveBtn) {
 saveBtn.addEventListener("click", async () => {
+const titleVal = section.querySelector(".event-info-reminder-title").value.trim();
 const dateVal = section.querySelector(".event-info-reminder-date").value;
 const timeVal = section.querySelector(".event-info-reminder-time").value;
-if (!dateVal || !timeVal) return;
+if (!titleVal || !dateVal || !timeVal) return;
 const rollover = section.querySelector(".event-info-reminder-rollover").checked;
 const rolloverDays = this._readRolldaysFromContainer(section.querySelector(".event-info-reminder-rolldays"));
+const listSelectEl = section.querySelector(".event-info-reminder-list-select");
+const sourceEntity = detail.calendarEntity || this._config.reminders_entity;
+const targetEntity = (listSelectEl && listSelectEl.value) || sourceEntity;
+const movingLists = targetEntity !== sourceEntity;
 saveBtn.disabled = true;
 saveBtn.textContent = "Saving…";
 if (statusEl) statusEl.textContent = "";
 try {
+const finalDescription = this._buildReminderDescription(detail.description, rollover, rolloverDays);
+if (movingLists) {
+// Home Assistant's todo integration has no "move to another list"
+// service - an item belongs to exactly one entity. The only way to
+// change that is to recreate it on the target list, then remove the
+// original, same "no weaker fallback" shape this file already takes
+// around calendar event deletion elsewhere. Order matters: create
+// first, remove second, so a failure on either half never loses the
+// reminder outright - worst case it ends up on both lists instead of
+// neither.
+const addData = { item: titleVal, due_datetime: `${dateVal}T${timeVal}:00` };
+if (finalDescription) addData.description = finalDescription;
+await this._hass.callService("todo", "add_item", addData, { entity_id: targetEntity });
+await this._hass.callService("todo", "remove_item", { item: detail.todoUid }, { entity_id: sourceEntity });
+} else {
+const updateData = {
+item: detail.todoUid,
+due_datetime: `${dateVal}T${timeVal}:00`,
+description: finalDescription,
+};
+// `rename` only sent when the text actually changed - todo.
+// update_item treats a present `rename` as "change the item's own
+// text," so an unchanged title skips it entirely rather than
+// resending the same value every save.
+if (titleVal !== (detail.summary || "")) updateData.rename = titleVal;
 await this._hass.callService(
 "todo",
 "update_item",
-{
-item: detail.todoUid,
-due_datetime: `${dateVal}T${timeVal}:00`,
-description: this._buildReminderDescription(detail.description, rollover, rolloverDays),
-},
+updateData,
 // detail.calendarEntity is the specific list this reminder actually
 // lives on (the shared family list, or one of the individual lists) -
 // see _renderWeekGrid's reminder detail below.
-{ entity_id: detail.calendarEntity || this._config.reminders_entity }
+{ entity_id: sourceEntity }
 );
-// The due date may have moved this reminder to a different day/
-// position in the grid, so the synthetic event-info id keyed to its
-// old spot won't line up with anything after the refresh - closing
-// (like Mark done already does) avoids showing a stale popup.
+}
+// The due date (or list) may have moved this reminder to a
+// different day/position/entity in the grid, so the synthetic
+// event-info id keyed to its old spot won't line up with anything
+// after the refresh - closing (like Mark done already does) avoids
+// showing a stale popup.
 await this._fetchReminders();
 root.querySelector(".event-info-overlay").classList.remove("open");
 this._eventInfoOpenId = null;
@@ -18015,6 +19739,17 @@ rows.push(`<div class="event-info-row"><div class="label">${this._t("event_info.
 if (detail.location) {
 rows.push(`<div class="event-info-row"><div class="label">${this._t("event_info.location", "Location")}</div>${detail.location}</div>`);
 }
+// No row at all without can_edit_event - same "you don't even see the
+// affordance" shape as the Delete row just below; whether it then ends
+// up WORKING (vs. hidden entirely once _wireEventInfoEditButton learns
+// this calendar does not implement CalendarEntityFeature.UPDATE_EVENT)
+// is resolved async the same way Delete's own support check is.
+if (!detail.isReminder && this._canEditEvent()) {
+rows.push(
+`<div class="event-info-row event-info-edit-row"><div class="label">${this._t("event_info.edit", "Edit")}</div><button type="button" class="event-info-edit-btn" disabled>${this._t("event_info.checking", "Checking…")}</button></div>`
+);
+rows.push('<div class="event-info-row event-info-edit-form-row" style="display:none"><div class="event-info-edit-content"></div></div>');
+}
 // multi-person events - tag other people onto an event that
 // already lives on ONE calendar (see _renderEventInfoPeopleSection).
 // Standalone reminders are a to-do item, not a calendar event on
@@ -18034,8 +19769,7 @@ if (detail.description) {
 rows.push(`<div class="event-info-row"><div class="label">${this._t("event_info.details", "Details")}</div>${detail.description}</div>`);
 }
 const mealDateKey = this._dateKey(detail.start);
-const mealDayIndex = detail.start.getDay();
-const mealBlocks = this._getBlocksForDay(mealDayIndex);
+const mealBlocks = this._getBlocksForDay(detail.start);
 // Reminders aren't calendar events in the meal-planning sense - skip the
 // "use as meal" shortcut for them.
 if (!detail.isReminder) {
@@ -18084,6 +19818,7 @@ this._eventInfoPeopleDirty = false;
 if (!detail.isReminder) this._renderEventInfoPeopleSection(id);
 this._renderEventInfoChecklistSection(id);
 if (!detail.isReminder && this._canDeleteEvent()) this._wireEventInfoDeleteButton(id, detail);
+if (!detail.isReminder && this._canEditEvent()) this._wireEventInfoEditButton(id, detail);
 root.querySelectorAll(".event-info-use-meal-btn").forEach((btn) => {
 btn.addEventListener("click", async () => {
 const blockIndex = parseInt(btn.dataset.blockIndex, 10);
@@ -18152,22 +19887,15 @@ if (this._eventInfoOpenId !== id) return;
 const btn = this._root.querySelector(".event-info-delete-btn");
 if (!btn) return;
 const canActuallyDelete = support.supported && !!detail.uid;
-btn.disabled = false;
+const deleteRow = this._root.querySelector(".event-info-delete-row");
 if (!canActuallyDelete) {
-btn.classList.add("unsupported");
-btn.textContent = `\u{1F5D1} ${this._t("event_info.delete_unsupported_btn", "Delete (unsupported)")}`;
-btn.title = this._t("event_info.delete_unsupported_title", "This calendar integration doesn't support deleting events from here.");
-btn.addEventListener("click", () => {
-window.alert(
-this._t(
-"event_info.delete_unsupported_alert",
-`Delete is not supported with your current calendar integration. Please use ${support.integrationName} to delete this event.`,
-{ integration: support.integrationName }
-)
-);
-});
+// Hidden entirely rather than a greyed-out explanatory button - a
+// button that can never work here is just clutter; the household can
+// still delete the event from the integration's own app/site.
+if (deleteRow) deleteRow.style.display = "none";
 return;
 }
+btn.disabled = false;
 btn.textContent = `\u{1F5D1} ${this._t("event_info.delete_event_btn", "Delete event")}`;
 btn.addEventListener("click", async () => {
 if (
@@ -18189,9 +19917,134 @@ entity_id: detail.calendarEntity,
 uid: detail.uid,
 });
 } catch (e) {
-window.alert((e && e.message) || this._t("event_info.delete_failed", "Couldn't delete this event."));
+window.alert(
+this._t(
+"event_info.delete_failed",
+`Cannot delete: this function may not be supported by your calendar integration (${support.integrationName}).`,
+{ integration: support.integrationName }
+)
+);
 btn.disabled = false;
 btn.textContent = `\u{1F5D1} ${this._t("event_info.delete_event_btn", "Delete event")}`;
+return;
+}
+this._root.querySelector(".event-info-overlay").classList.remove("open");
+this._eventInfoOpenId = null;
+await this._fetchEvents();
+});
+}
+// Same support-check-then-draw shape as _wireEventInfoDeleteButton just
+// above, but gated on update_supported (CalendarEntityFeature.UPDATE_EVENT)
+// instead of delete support, and opens an inline edit form rather than
+// mutating immediately - editing has several fields worth double-checking
+// before sending, where deleting is a single confirm.
+async _wireEventInfoEditButton(id, detail) {
+const support = await this._getCalendarDeleteSupport(detail.calendarEntity);
+if (this._eventInfoOpenId !== id) return;
+const btn = this._root.querySelector(".event-info-edit-btn");
+if (!btn) return;
+const editRow = this._root.querySelector(".event-info-edit-row");
+const formRow = this._root.querySelector(".event-info-edit-form-row");
+const canActuallyEdit = support.updateSupported && !!detail.uid;
+if (!canActuallyEdit) {
+// Hidden entirely, same reasoning as Delete's own hide-when-unsupported
+// - most calendar platforms (Google among them) don't implement
+// CalendarEntityFeature.UPDATE_EVENT at all, so this is "no" far more
+// often than "yes."
+if (editRow) editRow.style.display = "none";
+if (formRow) formRow.style.display = "none";
+return;
+}
+btn.disabled = false;
+btn.textContent = `\u{270F}\u{FE0F} ${this._t("event_info.edit_event_btn", "Edit event")}`;
+btn.addEventListener("click", () => {
+if (!formRow) return;
+const nowOpen = formRow.style.display !== "none";
+if (nowOpen) {
+formRow.style.display = "none";
+return;
+}
+this._renderEventInfoEditForm(id, detail);
+formRow.style.display = "";
+});
+}
+// Builds (once per click-to-open) the inline edit form - title, date,
+// start/end time (or just a date for an all-day event), and location -
+// pre-filled from `detail`, saving via family_hub/calendar/update_event.
+// Deliberately a flat field set rather than the full Add Event modal
+// (recurrence, checklist, reminder tab, etc.) - this is for fixing a
+// typo'd title or nudging a time, not rebuilding the event from scratch;
+// anything bigger is still one tap away in the calendar's own app.
+_renderEventInfoEditForm(id, detail) {
+const content = this._root.querySelector(".event-info-edit-content");
+if (!content) return;
+const fmtTimeInput = (d) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+const allDay = !!detail.allDay;
+content.innerHTML = `
+<input type="text" class="event-info-edit-title" maxlength="120" placeholder="${this._t("add_event.title_placeholder", "Title")}" />
+<div class="event-info-edit-when-row">
+<input type="date" class="event-info-edit-date" />
+${allDay ? "" : '<input type="time" class="hour-select event-info-edit-start-time" />'}
+${allDay ? "" : '<input type="time" class="hour-select event-info-edit-end-time" />'}
+</div>
+<input type="text" class="event-info-edit-location" maxlength="120" placeholder="${this._t("add_event.location_placeholder", "Location (optional)")}" />
+<div class="event-info-edit-actions">
+<button type="button" class="event-info-edit-save-btn">\u{1F4BE} ${this._t("common.save", "Save")}</button>
+</div>
+<span class="event-info-edit-status"></span>
+`;
+content.querySelector(".event-info-edit-title").value = detail.summary || "";
+content.querySelector(".event-info-edit-date").value = this._dateKey(detail.start);
+if (!allDay) {
+content.querySelector(".event-info-edit-start-time").value = fmtTimeInput(detail.start);
+content.querySelector(".event-info-edit-end-time").value = fmtTimeInput(detail.end);
+}
+content.querySelector(".event-info-edit-location").value = detail.location || "";
+const statusEl = content.querySelector(".event-info-edit-status");
+const saveBtn = content.querySelector(".event-info-edit-save-btn");
+saveBtn.addEventListener("click", async () => {
+const title = content.querySelector(".event-info-edit-title").value.trim();
+const dateVal = content.querySelector(".event-info-edit-date").value;
+if (!title || !dateVal) return;
+const eventFields = { summary: title };
+const locationVal = content.querySelector(".event-info-edit-location").value.trim();
+if (locationVal) eventFields.location = locationVal;
+if (allDay) {
+const endDate = new Date(`${dateVal}T00:00:00`);
+endDate.setDate(endDate.getDate() + 1);
+eventFields.start_date = dateVal;
+eventFields.end_date = this._dateKey(endDate);
+} else {
+const startTimeVal = content.querySelector(".event-info-edit-start-time").value;
+const endTimeVal = content.querySelector(".event-info-edit-end-time").value;
+if (!startTimeVal || !endTimeVal) return;
+eventFields.start_date_time = `${dateVal}T${startTimeVal}:00`;
+let endDateVal = dateVal;
+// An end time earlier than the start time on the same date picker
+// means the event actually runs past midnight - roll the end date
+// forward a day rather than silently submitting an end before the
+// start, which the real calendar.update_event service would reject.
+if (endTimeVal <= startTimeVal) {
+const d = new Date(`${dateVal}T00:00:00`);
+d.setDate(d.getDate() + 1);
+endDateVal = this._dateKey(d);
+}
+eventFields.end_date_time = `${endDateVal}T${endTimeVal}:00`;
+}
+saveBtn.disabled = true;
+saveBtn.textContent = this._t("event_info.saving", "Saving…");
+if (statusEl) statusEl.textContent = "";
+try {
+await this._hass.connection.sendMessagePromise({
+type: "family_hub/calendar/update_event",
+entity_id: detail.calendarEntity,
+uid: detail.uid,
+event: eventFields,
+});
+} catch (e) {
+saveBtn.disabled = false;
+saveBtn.textContent = `\u{1F4BE} ${this._t("common.save", "Save")}`;
+if (statusEl) statusEl.textContent = (e && e.message) || this._t("event_info.edit_failed", "Couldn't save - try again");
 return;
 }
 this._root.querySelector(".event-info-overlay").classList.remove("open");
@@ -18757,6 +20610,60 @@ listEl.querySelectorAll(".menu-suggestion-remove").forEach((btn) => {
 btn.addEventListener("click", () => this._removeMenuSuggestion(btn.closest(".menu-suggestion-row").dataset.uid));
 });
 }
+// Fills the "Who's cooking" dropdown with this household's current
+// people list (same source _colorByName/_colorFor use for the colored
+// bar on the meal banner itself - see _buildDayColumnHtml) every time the
+// day/menu editor opens, so a household member added/renamed/removed
+// since the last open is always reflected rather than stale options
+// baked in at _build time. Keeps "Not set" plus whichever name this slot
+// already has saved (even if that name no longer matches a current
+// household member - e.g. someone was removed - so an old selection is
+// never silently dropped out from under the person editing).
+_renderCookPicker() {
+const root = this._root;
+const container = root && root.querySelector(".cook-picker");
+if (!container) return;
+const people = this._getPeople();
+const colorMap = this._colorByName(people);
+// Real household members only - see this function's own comment above
+// for why _getPeople()'s full calendar-column list (which can include
+// non-person calendars like Holidays or a household's own test/dev
+// calendar) isn't the right source by itself.
+const settings = this._getSettings();
+const profiles = (settings && settings.userProfiles) || {};
+const memberEntities = new Set(
+Object.values(profiles)
+.map((p) => p && p.primaryCalendar)
+.filter((entity) => typeof entity === "string" && entity)
+);
+const names = [];
+const seen = new Set();
+for (const p of people) {
+if (!memberEntities.has(p.entity)) continue;
+const name = (p.name || "").trim();
+if (!name || seen.has(name)) continue;
+seen.add(name);
+names.push(name);
+}
+if (this._currentCook && !seen.has(this._currentCook)) names.push(this._currentCook);
+const noneActive = this._currentCook ? "" : " active";
+let html = `<button type="button" class="cook-block cook-block-none${noneActive}" data-name="">Not set</button>`;
+html += names
+.map((n) => {
+const color = colorMap[n.trim().toLowerCase()] || "#d9bf7e";
+const textColor = this._textColorFor(color);
+const active = this._currentCook === n ? " active" : "";
+return `<button type="button" class="cook-block${active}" data-name="${n}" style="--cook-block-color:${color};--cook-block-text:${textColor}">${n}</button>`;
+})
+.join("");
+container.innerHTML = html;
+container.querySelectorAll(".cook-block").forEach((btn) => {
+btn.addEventListener("click", () => {
+this._currentCook = btn.dataset.name || "";
+container.querySelectorAll(".cook-block").forEach((b) => b.classList.toggle("active", b === btn));
+});
+});
+}
 _openEditorForDate(dayDate, blockIndex) {
 const dateKey = this._dateKey(dayDate);
 const root = this._root;
@@ -18771,7 +20678,7 @@ el.style.display = "none";
 root.querySelector(".btn-delete-dish").style.display = "none";
 this._editingDateKey = dateKey;
 this._editingBlockIndex = blockIndex || 0;
-const blocks = this._getBlocksForDay(dayDate.getDay());
+const blocks = this._getBlocksForDay(dayDate);
 const blockName = blocks[this._editingBlockIndex] || `Block ${this._editingBlockIndex + 1}`;
 const dateLabel = dayDate.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
 root.querySelector(".modal-day-title").textContent = `Edit ${blockName} — ${dateLabel}`;
@@ -18840,6 +20747,8 @@ this._updateRatingButtons();
 this._currentColor = (existing && existing.color) || "#f0e6c4";
 root.querySelector(".input-color-custom").value = this._currentColor;
 this._updateColorSwatches();
+this._currentCook = (existing && existing.cook) || "";
+this._renderCookPicker();
 // Once a meal is actually set for this slot, the "pick a starting point"
 // buttons (From suggested/loved/Grocy) have already done their job -
 // showing them again would just invite accidentally picking a wholly
@@ -18861,6 +20770,22 @@ this._openModal(root.querySelector(".edit-overlay"));
 }
 _closeEditor() {
 this._root.querySelector(".edit-overlay").classList.remove("open");
+// v1.161.4+: household ask, verbatim - "when you get done editing the
+// recipe, it should go back to the recipe viewer". This editor is
+// reused for both the day/menu slot editor and the Recipe Box's own
+// dish editor (see _dishEditorMode) - the ordinary day/menu editor's
+// idea of "close" is unrelated and stays exactly as it was. Only when
+// this really was the dish editor AND there's an existing recipe uid to
+// show (_saveDishEditor sets this to the just-saved recipe's uid, new
+// or existing, right before calling this) does closing now reopen that
+// recipe's detail view instead of dropping the household back on the
+// bare Recipe Box list. Cancelling out of a brand-new, never-saved
+// recipe (_editingDishUid still null) has nothing to show, so that case
+// is unchanged - straight back to the list.
+if (this._dishEditorMode && this._editingDishUid) {
+const recipe = this._recipes.find((r) => r.uid === this._editingDishUid);
+if (recipe) this._openDishDetail(recipe);
+}
 }
 // "adding a recipe to grocery, clicking add doesnt give you
 // any feedback the modal stays open there is no confirmation, we should
@@ -18910,6 +20835,7 @@ _openDishEditor(recipe) {
 const root = this._root;
 this._dishEditorMode = true;
 this._editingDishUid = recipe ? recipe.uid : null;
+this._editingDishSteps = recipe ? recipe.steps || [] : [];
 root.querySelectorAll(".dish-hide-field").forEach((el) => {
 el.style.display = "none";
 });
@@ -18953,6 +20879,7 @@ this._updateRatingButtons();
 this._currentColor = "#f0e6c4";
 root.querySelector(".input-color-custom").value = this._currentColor;
 this._updateColorSwatches();
+this._currentCook = "";
 // The Loved Dishes / Recipe Box editor is a reusable template, not a
 // specific dated meal - it always shows the editable fields directly,
 // never the calendar-slot view card (there's no "already planned" state
@@ -18974,7 +20901,7 @@ this._openModal(root.querySelector(".edit-overlay"));
 // leftover Grocy recipe can always be cleaned up from Grocy's own UI.
 async _saveEditor() {
 if (this._dishEditorMode) {
-this._saveDishEditor();
+await this._saveDishEditor();
 return;
 }
 // belt-and-braces. _applyMenuEditPermissionUi already hides
@@ -19033,12 +20960,12 @@ const applyToAll = window.confirm(
 `Cancel - only change this one occurrence`
 );
 if (applyToAll) {
-saveOk = await this._upsertMealPlanByUid(this._editingMealAnchorUid, blockIndex, name, description, link, this._currentColor, recur, this._currentGrocyRecipeId, servings, this._editingAdditionalRecipes);
+saveOk = await this._upsertMealPlanByUid(this._editingMealAnchorUid, blockIndex, name, description, link, this._currentColor, recur, this._currentGrocyRecipeId, servings, this._editingAdditionalRecipes, this._currentCook);
 } else {
-saveOk = await this._upsertMealPlan(dateKey, blockIndex, name, description, link, this._currentColor, null, this._currentGrocyRecipeId, servings, 1, this._editingAdditionalRecipes, leftoverDates);
+saveOk = await this._upsertMealPlan(dateKey, blockIndex, name, description, link, this._currentColor, null, this._currentGrocyRecipeId, servings, 1, this._editingAdditionalRecipes, leftoverDates, this._currentCook);
 }
 } else {
-saveOk = await this._upsertMealPlan(dateKey, blockIndex, name, description, link, this._currentColor, recur, this._currentGrocyRecipeId, servings, 1, this._editingAdditionalRecipes, leftoverDates);
+saveOk = await this._upsertMealPlan(dateKey, blockIndex, name, description, link, this._currentColor, recur, this._currentGrocyRecipeId, servings, 1, this._editingAdditionalRecipes, leftoverDates, this._currentCook);
 }
 if (!saveOk) {
 // Stop here on purpose - the editor stays open (its typed values
@@ -19077,7 +21004,7 @@ this._removeMealPlan(dateKey, blockIndex);
 }
 this._closeEditor();
 }
-_saveDishEditor() {
+async _saveDishEditor() {
 const root = this._root;
 const name = root.querySelector(".input-name").value.trim();
 const description = root.querySelector(".input-description").value.trim();
@@ -19096,7 +21023,7 @@ if (name) {
 // _openDishEditor default above was fixed to leave it null - see that
 // comment. Save now just persists whatever the heart/thumbsdown buttons
 // actually reflect, null included.
-this._upsertDish(name, description, link, this._currentRating, this._editingDishUid, this._currentGrocyRecipeId, category, image, true);
+const savedRecord = await this._upsertDish(name, description, link, this._currentRating, this._editingDishUid, this._currentGrocyRecipeId, category, image, true, this._editingDishSteps);
 // "Also add to Meal Suggestions" - the other half of "search for a
 // recipe and tap 💡, or add one and check this box" (see
 // _suggestDish and the now-removed Suggestions box free-text add).
@@ -19107,6 +21034,12 @@ if (addAsSuggestion) {
 this._addSuggestion(name, description, link, this._currentGrocyRecipeId);
 }
 this._showToast(`\u{1F37D}\u{FE0F} "${name}" ${this._editingDishUid ? "updated" : "added to your Recipe Box"}`);
+// _upsertDish returns undefined when the fuzzy-duplicate confirm() above
+// was declined (nothing was actually saved) - _editingDishUid is left
+// alone in that case, same as the no-name no-op above, so _closeEditor
+// falls back to its old "just close" behavior rather than trying to
+// show a recipe that was never created.
+if (savedRecord) this._editingDishUid = savedRecord.uid;
 }
 this._closeEditor();
 }
@@ -20310,10 +22243,27 @@ this._renderGrocyPicker();
 // all the working state for one import attempt (cleared each time the
 // modal opens fresh).
 _openRecipeImport(prefillUrl) {
-this._recipeImport = { recipe: null, matches: [], products: [], units: [], locations: [], choices: [], creatingIdx: null, configured: true, newLocationChoice: {}, ingredientFilter: "" };
+// pendingImage: a photo uploaded straight from the paste screen, before
+// there's even a parsed recipe yet to attach it to (household request:
+// "add an upload image button under the paste recipe box") - carried
+// into whichever recipe eventually gets parsed/entered (see
+// _renderRecipeImportReview's own fallback) rather than requiring the
+// photo to come from a URL or wait until after parsing.
+this._recipeImport = { recipe: null, matches: [], products: [], units: [], locations: [], choices: [], creatingIdx: null, configured: true, newLocationChoice: {}, ingredientFilter: "", editingRecipeId: null, pendingImage: "" };
 const root = this._root;
+root.querySelector(".recipe-import-title").textContent = "\u{1F4E1} Import a Recipe";
+root.querySelector(".recipe-import-source-section").style.display = "";
+root.querySelector(".recipe-import-non-ingredient-fields").style.display = "";
+root.querySelector(".recipe-import-instructions-block").style.display = "";
+root.querySelector(".recipe-import-create-btn").textContent = "\u{1F4BE} Add to Grocy";
 root.querySelector(".recipe-import-url-input").value = prefillUrl || "";
 root.querySelector(".recipe-import-text-input").value = "";
+const uploadPreviewEl = root.querySelector(".recipe-import-upload-image-preview");
+if (uploadPreviewEl) {
+uploadPreviewEl.removeAttribute("src");
+uploadPreviewEl.style.display = "none";
+}
+root.querySelector(".recipe-import-upload-image-input").value = "";
 const statusEl = root.querySelector(".recipe-import-status");
 statusEl.textContent = "";
 statusEl.classList.remove("is-error");
@@ -20673,7 +22623,7 @@ if (!recipe) return;
 root.querySelector(".recipe-import-review").style.display = "block";
 root.querySelector(".recipe-import-name-input").value = recipe.name || "";
 root.querySelector(".recipe-import-servings-input").value = recipe.servings || "";
-root.querySelector(".recipe-import-image-input").value = recipe.image || "";
+root.querySelector(".recipe-import-image-input").value = recipe.image || state.pendingImage || "";
 root.querySelector(".recipe-import-source-input").value = recipe.source_url || "";
 root.querySelector(".recipe-import-instructions-input").value = (recipe.instructions || []).join("\n");
 this._updateRecipeImportPhotoPreview();
@@ -21158,7 +23108,173 @@ statusEl.classList.add("is-error");
 }
 });
 }
+// Opens the same Import/Review modal as "Import a recipe from a link",
+// but pre-loaded with an EXISTING Grocy recipe's own current ingredients
+// instead of a freshly parsed one, and with everything except the
+// ingredients section hidden - this is the recipe editor's "edit
+// ingredients" entry point (reached from a Grocy-linked recipe's own
+// Recipe Viewer "Edit" button), not a general recipe editor. Name,
+// description/instructions, servings, and photo are deliberately left
+// untouched by this flow (see _saveGrocyRecipeIngredientEdits, which
+// echoes them back exactly as fetched) - editing those still goes
+// through the plain Recipe Box editor, or Grocy itself.
+async _openGrocyRecipeIngredientEditor(recipe) {
+if (!this._hass || !recipe || !recipe.grocyRecipeId) return;
+const root = this._root;
+this._recipeImport = { recipe: null, matches: [], products: [], units: [], locations: [], choices: [], creatingIdx: null, configured: true, newLocationChoice: {}, ingredientFilter: "", editingRecipeId: recipe.grocyRecipeId };
+const state = this._recipeImport;
+root.querySelector(".recipe-import-title").textContent = "\u270F\uFE0F Edit Ingredients";
+root.querySelector(".recipe-import-source-section").style.display = "none";
+root.querySelector(".recipe-import-non-ingredient-fields").style.display = "none";
+root.querySelector(".recipe-import-instructions-block").style.display = "none";
+root.querySelector(".recipe-import-create-btn").textContent = "\u{1F4BE} Save Changes";
+root.querySelector(".recipe-import-review").style.display = "none";
+const statusEl = root.querySelector(".recipe-import-status");
+statusEl.textContent = "Loading this recipe's ingredients…";
+statusEl.classList.remove("is-error");
+this._closeGrocyRecipeViewer();
+this._openModal(root.querySelector(".recipe-import-overlay"));
+let detailResult, catalogResult;
+try {
+[detailResult, catalogResult] = await Promise.all([
+this._hass.connection.sendMessagePromise({ type: "family_hub/get_grocy_recipe_detail", recipe_id: recipe.grocyRecipeId }),
+// Empty ingredients list - this call is only used here to fetch the
+// full products/units/locations catalogs the ingredient rows' own
+// dropdowns need, not to match anything (every row below already
+// has a real, linked product_id straight from Grocy).
+this._hass.connection.sendMessagePromise({ type: "family_hub/match_recipe_ingredients", ingredients: [] }),
+]);
+} catch (e) {
+statusEl.textContent = "Couldn't reach the backend.";
+statusEl.classList.add("is-error");
+return;
+}
+if (detailResult.configured === false || catalogResult.configured === false) {
+statusEl.textContent = "Grocy isn't connected - check Settings > Devices & Services > Family Hub > Configure > Grocy.";
+statusEl.classList.add("is-error");
+return;
+}
+if (!detailResult.recipe) {
+statusEl.textContent = detailResult.error || "Couldn't load that recipe from Grocy.";
+statusEl.classList.add("is-error");
+return;
+}
+const detail = detailResult.recipe;
+// Stashed so the save step can echo these straight back unchanged -
+// this editor only ever touches ingredients, see this method's own
+// top comment.
+state.editingRecipeName = detail.name || recipe.name || "";
+state.editingRecipeDescription = detail.description || "";
+state.editingRecipeServings = detail.base_servings || 1;
+state.products = Array.isArray(catalogResult.products) ? catalogResult.products : [];
+state.units = Array.isArray(catalogResult.units) ? catalogResult.units : [];
+state.locations = Array.isArray(catalogResult.locations) ? catalogResult.locations : [];
+state.configured = catalogResult.configured !== false;
+state.recipe = { name: detail.name, ingredients: [], instructions: [], servings: detail.base_servings, image: detail.image || "", source_url: "" };
+state.matches = (detail.ingredients || []).map((ing) => {
+const amountText = ing.variable_amount || (typeof ing.amount_value === "number" ? String(ing.amount_value) : "");
+const raw = (ing.note && ing.note.trim())
+|| `${amountText} ${ing.product || ""}`.trim()
+|| ing.product || "";
+return {
+raw,
+product_id: ing.product_id || null,
+product_name: ing.product || null,
+unit_id: ing.qu_id || null,
+unit_name: ing.unit_name || null,
+amount_text: amountText,
+amount_value: typeof ing.amount_value === "number" ? ing.amount_value : null,
+no_stock: !!ing.not_check_stock_fulfillment,
+score: ing.product_id ? 1 : 0,
+};
+});
+state.choices = state.matches.map((m) => m.product_id || "");
+this._renderRecipeImportReview();
+root.querySelector(".recipe-import-review").style.display = "block";
+statusEl.textContent = state.matches.length
+? "Edit, add, or remove ingredients below, then save."
+: "This recipe has no ingredients yet - add some below.";
+statusEl.classList.remove("is-error");
+}
+// Save step for _openGrocyRecipeIngredientEditor - a full replace of
+// this recipe's recipes_pos rows (see family_hub/update_grocy_recipe's
+// own docstring for why it's delete-then-recreate rather than a diff).
+// Name/description/servings/photo are echoed back exactly as fetched -
+// this editor never shows or touches those fields (see
+// recipe-import-non-ingredient-fields being hidden in
+// _openGrocyRecipeIngredientEditor), so there's nothing of theirs to
+// lose here.
+async _saveGrocyRecipeIngredientEdits() {
+const root = this._root;
+const state = this._recipeImport;
+const statusEl = root.querySelector(".recipe-import-status");
+if (!state.editingRecipeId) return;
+const filledMatches = state.matches.filter((m) => (m.raw || "").trim());
+const ingredients = filledMatches.map((m) => ({
+raw: m.raw,
+amount_text: m.amount_text || "",
+amount: typeof m.amount_value === "number" && isFinite(m.amount_value) && m.amount_value > 0 ? m.amount_value : null,
+not_check_stock_fulfillment: !!m.no_stock,
+product_id: state.choices[state.matches.indexOf(m)] || null,
+unit_id: m.unit_id || null,
+}));
+if (ingredients.length) {
+const totalCount = ingredients.length;
+const matchedCount = ingredients.filter((ing) => ing.product_id).length;
+if (matchedCount < totalCount) {
+const unmatchedCount = totalCount - matchedCount;
+const proceed = window.confirm(
+`Matched ${matchedCount} out of ${totalCount} ingredients to Grocy. Continue? ` +
+`The ${unmatchedCount} unmatched ingredient${unmatchedCount === 1 ? "" : "s"} will be left out of this recipe's ingredient list in Grocy (still shown here, just not linked).`
+);
+if (!proceed) return;
+}
+}
+statusEl.textContent = "Saving…";
+statusEl.classList.remove("is-error");
+if (!this._hass) return;
+let result;
+try {
+result = await this._hass.connection.sendMessagePromise({
+type: "family_hub/update_grocy_recipe",
+recipe_id: state.editingRecipeId,
+name: state.editingRecipeName,
+description: state.editingRecipeDescription,
+servings: state.editingRecipeServings,
+ingredients,
+});
+} catch (e) {
+statusEl.textContent = "Couldn't reach the backend.";
+statusEl.classList.add("is-error");
+return;
+}
+if (result.configured === false) {
+statusEl.textContent = "Grocy isn't connected - check Settings > Devices & Services > Family Hub > Configure > Grocy.";
+statusEl.classList.add("is-error");
+return;
+}
+if (!result.success) {
+statusEl.textContent = result.error || "Couldn't save those changes.";
+statusEl.classList.add("is-error");
+return;
+}
+let text = `Saved - ${result.added} ingredient${result.added === 1 ? "" : "s"} now linked in Grocy.`;
+if (result.skipped && result.skipped.length) {
+text += ` ${result.skipped.length} need${result.skipped.length === 1 ? "s" : ""} a product match: ${result.skipped.join(", ")}.`;
+}
+statusEl.textContent = text;
+statusEl.classList.remove("is-error");
+const recipeId = state.editingRecipeId;
+const sourceRecipe = this._grocyRecipeViewerSourceRecipe;
+setTimeout(() => {
+this._closeRecipeImport();
+this._openGrocyRecipeViewer(recipeId, state.editingRecipeName, this._grocyRecipeViewerFallbackLink, false, null, sourceRecipe);
+}, 900);
+}
 async _createImportedGrocyRecipe() {
+if (this._recipeImport && this._recipeImport.editingRecipeId) {
+return this._saveGrocyRecipeIngredientEdits();
+}
 const root = this._root;
 const state = this._recipeImport;
 const statusEl = root.querySelector(".recipe-import-status");
@@ -22096,7 +24212,7 @@ const groups = {};
 for (const p of people) {
 const key = (p.name || p.entity || "").trim().toLowerCase();
 if (!groups[key]) {
-groups[key] = { name: p.name, color: p.color, count: 0 };
+groups[key] = { name: this._discreetPersonName(p, people), initial: this._discreetInitial(p, people), color: p.color, count: 0 };
 order.push(key);
 }
 groups[key].count += this._privacyEventsFor(p.entity).length;
@@ -22117,7 +24233,7 @@ const typeFilter = this._eventTypeFilter || [];
 const identityChipsHtml = order
 .map((key) => {
 const g = groups[key];
-const initial = (g.name || "?").trim().charAt(0).toUpperCase();
+const initial = g.initial || (g.name || "?").trim().charAt(0).toUpperCase();
 const isActive = activeKeys.includes(key);
 const isDimmed = activeKeys.length > 0 && !isActive;
 return `<div class="chip${isActive ? " active-filter" : ""}${isDimmed ? " dimmed" : ""}" data-key="${key}" style="background:${g.color}"><span class="avatar">${initial}</span>${g.name} ${g.count}</div>`;
@@ -22171,6 +24287,8 @@ this._renderMonthSplitGrid();
 this._renderPlannerGrid();
 } else if (this._viewMode === "day") {
 this._renderDayGrid();
+} else if (this._viewMode === "agenda") {
+this._renderAgendaGrid();
 } else {
 this._renderWeekGrid();
 }
@@ -22282,7 +24400,7 @@ if (personIsBirthdays) hasBirthday = true;
 // cell's day or keeps going past it) apart from an ordinary same-day one,
 // for the "continues" pill styling a few lines down.
 dayEvents.push({
-summary: ev.summary || "(untitled)",
+summary: this._discreetText(ev.summary || "(untitled)"),
 color: personColor,
 bg: this._eventCollageStyle(peopleEntities, people, colorMap),
 isReminder,
@@ -22306,7 +24424,7 @@ const remColor = r.color || REMINDER_COLOR;
 // multi-day, so allDay stays false and end is just a nominal
 // point right after start (matches the identical pattern in
 // _buildMonthSplitDetailHtml/_buildDayColumnHtml).
-dayEvents.push({ summary: r.summary, color: remColor, bg: `background:${remColor};color:${this._textColorFor(remColor)}`, isReminder: true, allDay: false, start: r.due, end: new Date(r.due.getTime() + 60000) });
+dayEvents.push({ summary: this._discreetText(r.summary), color: remColor, bg: `background:${remColor};color:${this._textColorFor(remColor)}`, isReminder: true, allDay: false, start: r.due, end: new Date(r.due.getTime() + 60000) });
 }
 }
 }
@@ -22359,7 +24477,7 @@ return `<div class="mc-pill${e.isReminder ? " mc-reminder-pill" : ""}${continueC
 // get pushed to the bottom of a busy cell where they were easy to miss.
 let mealsHtml = "";
 if (settings.showMealsInMonth) {
-const dayBlocks = this._getBlocksForDay(cellDate.getDay());
+const dayBlocks = this._getBlocksForDay(cellDate);
 mealsHtml = dayBlocks
 .map((blockName, bi) => {
 const m = this._getMealForDay(dateKey, cellDate, bi);
@@ -22475,17 +24593,17 @@ const eventId = `msd-${dateKey}-${items.length}-${person.entity}`;
 const evBg = this._eventCollageStyle(peopleEntities, people, colorMap);
 const allDay = this._isAllDay(ev);
 this._eventDetails[eventId] = {
-summary: ev.summary || "(untitled)",
+summary: this._discreetText(ev.summary || "(untitled)"),
 start: evStart,
 end: evEnd,
 allDay,
 color: personColor,
-personName: person.name,
+personName: this._discreetPersonName(person, people),
 calendarEntity: person.entity,
-description: reminderInfo.clean,
+description: this._discreetText(reminderInfo.clean),
 reminderMinutesList: reminderInfo.minutesList,
 isReminder: reminderInfo.isReminder,
-location: ev.location || "",
+location: this._discreetText(ev.location || ""),
 // The one identifier that lets a delete call
 // target this exact occurrence rather than guessing by (entity,
 // start, summary) - see _openEventInfo's delete button wiring.
@@ -22496,7 +24614,7 @@ uid: ev.uid || null,
 };
 items.push({
 id: eventId,
-summary: ev.summary || "(untitled)",
+summary: this._discreetText(ev.summary || "(untitled)"),
 start: evStart,
 allDay,
 bg: evBg,
@@ -22513,19 +24631,19 @@ if (r.due >= dayStart && r.due < dayEnd) {
 const remColor = r.color || REMINDER_COLOR;
 const reminderId = `msd-rem-${dateKey}-${items.length}-${r.uid}`;
 this._eventDetails[reminderId] = {
-summary: r.summary,
+summary: this._discreetText(r.summary),
 start: r.due,
 end: new Date(r.due.getTime() + 60000),
 allDay: false,
 color: remColor,
-personName: r.personName || "Reminder",
+personName: this._discreetPersonNameByRealName(r.personName, people, "Reminder"),
 calendarEntity: r.listEntity || this._config.reminders_entity,
-description: r.description || "",
+description: this._discreetText(r.description || ""),
 reminderMinutesList: [],
 isReminder: true,
 todoUid: r.uid,
 };
-items.push({ id: reminderId, summary: r.summary, start: r.due, allDay: false, bg: `background:${remColor};color:${this._textColorFor(remColor)}`, color: remColor, isReminder: true });
+items.push({ id: reminderId, summary: this._discreetText(r.summary), start: r.due, allDay: false, bg: `background:${remColor};color:${this._textColorFor(remColor)}`, color: remColor, isReminder: true });
 }
 }
 }
@@ -22544,7 +24662,7 @@ const itemsHtml = items.length
 : `<div class="msd-empty">Nothing scheduled</div>`;
 let mealsHtml = "";
 if (settings.showMealsInMonth) {
-const dayBlocks = this._getBlocksForDay(cellDate.getDay());
+const dayBlocks = this._getBlocksForDay(cellDate);
 mealsHtml = dayBlocks
 .map((blockName, bi) => {
 const m = this._getMealForDay(dateKey, cellDate, bi);
@@ -22656,7 +24774,7 @@ matchedHolidayBg
 ? ` style="background-image: linear-gradient(rgba(0,0,0,0.32), rgba(0,0,0,0.32)), url('${matchedHolidayBg.imageUrl.replace(/'/g, "%27")}'); background-size: cover; background-position: center;"`
 : "";
 const dayColHolidayDark = matchedHolidayBg ? this._isHolidayBackgroundDark(matchedHolidayBg.imageUrl) : false;
-const blocks = this._getBlocksForDay(i);
+const blocks = this._getBlocksForDay(dayStart);
 const forecast = this._forecast ? this._forecast[dateKey] : null;
 const wxIconHtml = forecast
 ? `<span class="wx-icon" title="${(forecast.condition || "").replace(/-/g, " ")}">${this._wxIcon(forecast.condition)}</span>`
@@ -22674,6 +24792,17 @@ const flagChar = recipe && recipe.rating === "up" ? "❤️" : recipe && recipe.
 const bannerColor = hasName ? plan.color || "#f0e6c4" : null;
 const bannerTextColor = bannerColor ? this._textColorFor(bannerColor) : null;
 const bannerStyle = bannerColor ? ` style="background:${bannerColor};color:${bannerTextColor}"` : "";
+// Who's cooking - a thin colored bar along the bottom of the banner,
+// matching that household member's own profile color (same colorMap
+// _buildWeekLikeContext already built via _colorByName for events/badges
+// - see this function's destructured ctx). Looked up by name rather than
+// by re-resolving a full person object, since that's all a saved meal
+// plan entry's own `cook` field ever stores (see _parseDishDescription).
+// Silently renders nothing if the name doesn't match any current
+// household member (removed/renamed since the meal was planned) rather
+// than falling back to some arbitrary color.
+const cookColor = hasName && plan.cook ? colorMap[plan.cook.trim().toLowerCase()] || null : null;
+const cookBarHtml = cookColor ? `<span class="cook-bar" style="background:${cookColor}" title="${plan.cook}"></span>` : "";
 const editClass = this._mealEditMode ? " edit-mode" : "";
 const recurClass = plan && plan.recur === "weekly" ? " recurring-meal" : "";
 const recurIcon = plan && plan.recur === "weekly" ? "\u{1F501} " : "";
@@ -22684,6 +24813,7 @@ bannersHtml += `
 ${flagChar ? `<span class="rating-flag">${flagChar}</span>` : ""}
 <span class="block-label">${blockName}</span>
 <span class="menu-text">${hasName ? `${recurIcon}${leftoverIcon}${plan.name}` : `Tap to add ${blockName.toLowerCase()}`}</span>
+${cookBarHtml}
 </div>
 `;
 });
@@ -22755,28 +24885,28 @@ const eventId = `ev-${i}-${dayEvents.length}-${person.entity}`;
 const evColor = personColor;
 const evBg = this._eventCollageStyle(peopleEntities, people, colorMap);
 this._eventDetails[eventId] = {
-summary: ev.summary || "(untitled)",
+summary: this._discreetText(ev.summary || "(untitled)"),
 start: evStart,
 end: evEnd,
 allDay: this._isAllDay(ev),
 color: evColor,
-personName: person.name,
+personName: this._discreetPersonName(person, people),
 calendarEntity: person.entity,
-description: reminderInfo.clean,
+description: this._discreetText(reminderInfo.clean),
 reminderMinutesList: reminderInfo.minutesList,
 isReminder: reminderInfo.isReminder,
-location: ev.location || "",
+location: this._discreetText(ev.location || ""),
 uid: ev.uid || null,
 };
 dayEvents.push({
 id: eventId,
-summary: ev.summary || "(untitled)",
+summary: this._discreetText(ev.summary || "(untitled)"),
 start: evStart,
 end: evEnd,
 allDay: this._isAllDay(ev),
 color: evColor,
 bg: evBg,
-initial: (person.name || "?").trim().charAt(0).toUpperCase(),
+initial: this._discreetInitial(person, people) || (person.name || "?").trim().charAt(0).toUpperCase(),
 isReminder: reminderInfo.isReminder,
 });
 }
@@ -22792,14 +24922,14 @@ if (r.due >= dayStart && r.due < dayEnd) {
 const remColor = r.color || REMINDER_COLOR;
 const reminderId = `rem-${i}-${dayEvents.length}-${r.uid}`;
 this._eventDetails[reminderId] = {
-summary: r.summary,
+summary: this._discreetText(r.summary),
 start: r.due,
 end: new Date(r.due.getTime() + 60000),
 allDay: false,
 color: remColor,
-personName: r.personName || "Reminder",
+personName: this._discreetPersonNameByRealName(r.personName, people, "Reminder"),
 calendarEntity: r.listEntity || this._config.reminders_entity,
-description: r.description || "",
+description: this._discreetText(r.description || ""),
 reminderMinutesList: [],
 isReminder: true,
 todoUid: r.uid,
@@ -22809,7 +24939,7 @@ location: "",
 };
 dayEvents.push({
 id: reminderId,
-summary: r.summary,
+summary: this._discreetText(r.summary),
 start: r.due,
 end: new Date(r.due.getTime() + 60000),
 allDay: false,
@@ -22982,7 +25112,7 @@ headerHtml += columns
 .map((person) => {
 if (!person) return `<div class="planner-header-cell planner-empty-header">No calendars configured yet</div>`;
 const color = this._colorFor(person, colorMap);
-return `<div class="planner-header-cell" style="border-bottom-color:${color}"><span class="planner-person-dot" style="background:${color}"></span>${person.name}</div>`;
+return `<div class="planner-header-cell" style="border-bottom-color:${color}"><span class="planner-person-dot" style="background:${color}"></span>${this._discreetPersonName(person, people)}</div>`;
 })
 .join("");
 
@@ -23097,20 +25227,20 @@ for (const pooled of dayPool) {
 if (!pooled.peopleEntities.includes(person.entity)) continue;
 const eventId = `pl-${i}-${dayEvents.length}-${pooled.ownerEntity}-${person.entity}`;
 this._eventDetails[eventId] = {
-summary: pooled.ev.summary || "(untitled)",
+summary: this._discreetText(pooled.ev.summary || "(untitled)"),
 start: pooled.evStart,
 end: pooled.evEnd,
 allDay: this._isAllDay(pooled.ev),
 color: pooled.ownerColor,
-personName: person.name,
+personName: this._discreetPersonName(person, people),
 calendarEntity: pooled.ownerEntity,
-description: pooled.reminderInfo.clean,
+description: this._discreetText(pooled.reminderInfo.clean),
 reminderMinutesList: pooled.reminderInfo.minutesList,
 isReminder: pooled.reminderInfo.isReminder,
-location: pooled.ev.location || "",
+location: this._discreetText(pooled.ev.location || ""),
 uid: pooled.ev.uid || null,
 };
-dayEvents.push({ id: eventId, summary: pooled.ev.summary || "(untitled)", start: pooled.evStart, allDay: this._isAllDay(pooled.ev), isReminder: pooled.reminderInfo.isReminder, bg: pooled.bg });
+dayEvents.push({ id: eventId, summary: this._discreetText(pooled.ev.summary || "(untitled)"), start: pooled.evStart, allDay: this._isAllDay(pooled.ev), isReminder: pooled.reminderInfo.isReminder, bg: pooled.bg });
 }
 dayEvents.sort((a, b) => (a.allDay === b.allDay ? a.start - b.start : a.allDay ? -1 : 1));
 const cellHtml = dayEvents
@@ -23127,7 +25257,7 @@ rowsHtml += `<div class="planner-person-cell">${cellHtml}</div>`;
 // so an empty section would just be dead space to scroll past.
 if (isMobile && dayEvents.length) {
 const dotColor = this._colorFor(person, colorMap);
-dayMobileSections += `<div class="planner-mobile-person"><div class="planner-mobile-person-name"><span class="planner-person-dot" style="background:${dotColor}"></span>${person.name}</div><div class="planner-mobile-person-events">${cellHtml}</div></div>`;
+dayMobileSections += `<div class="planner-mobile-person"><div class="planner-mobile-person-name"><span class="planner-person-dot" style="background:${dotColor}"></span>${this._discreetPersonName(person, people)}</div><div class="planner-mobile-person-events">${cellHtml}</div></div>`;
 }
 }
 if (isMobile) {
@@ -23223,7 +25353,7 @@ return { dayStart, dayEnd, today, isToday, settings, people, colorMap, filterKey
 // reminders belong in it ("family" for the shared reminders list, an
 // entity id for a real person).
 _buildPersonLaneHtml(person, ctx) {
-const { dayStart, dayEnd, colorMap, PX_PER_HOUR, rangeStart, rangeEnd, rangeStartMin, rangeEndMin, settings, isToday, today } = ctx;
+const { dayStart, dayEnd, colorMap, PX_PER_HOUR, rangeStart, rangeEnd, rangeStartMin, rangeEndMin, settings, isToday, today, people } = ctx;
 const matchedHolidayBg = this._matchHolidayBackgroundForDate(settings, dayStart, isToday);
 const dayColHolidayStyle =
 matchedHolidayBg
@@ -23232,30 +25362,30 @@ matchedHolidayBg
 const dayColHolidayDark = matchedHolidayBg ? this._isHolidayBackgroundDark(matchedHolidayBg.imageUrl) : false;
 const isFamily = !person;
 const laneColor = isFamily ? REMINDER_COLOR : this._colorFor(person, colorMap);
-const laneName = isFamily ? this._t("day_view.family_lane", "Family") : person.name;
-const laneInitial = (laneName || "?").trim().charAt(0).toUpperCase();
+const laneName = isFamily ? this._t("day_view.family_lane", "Family") : this._discreetPersonName(person, people);
+const laneInitial = isFamily ? (laneName || "?").trim().charAt(0).toUpperCase() : (this._discreetInitial(person, people) || (laneName || "?").trim().charAt(0).toUpperCase());
 let laneEvents = [];
 if (!isFamily) {
 for (const pooled of ctx.pool) {
 if (!pooled.peopleEntities.includes(person.entity)) continue;
 const eventId = `day-${person.entity}-${laneEvents.length}-${pooled.ownerEntity}`;
 this._eventDetails[eventId] = {
-summary: pooled.ev.summary || "(untitled)",
+summary: this._discreetText(pooled.ev.summary || "(untitled)"),
 start: pooled.evStart,
 end: pooled.evEnd,
 allDay: this._isAllDay(pooled.ev),
 color: pooled.ownerColor,
-personName: person.name,
+personName: this._discreetPersonName(person, people),
 calendarEntity: pooled.ownerEntity,
-description: pooled.reminderInfo.clean,
+description: this._discreetText(pooled.reminderInfo.clean),
 reminderMinutesList: pooled.reminderInfo.minutesList,
 isReminder: pooled.reminderInfo.isReminder,
-location: pooled.ev.location || "",
+location: this._discreetText(pooled.ev.location || ""),
 uid: pooled.ev.uid || null,
 };
 laneEvents.push({
 id: eventId,
-summary: pooled.ev.summary || "(untitled)",
+summary: this._discreetText(pooled.ev.summary || "(untitled)"),
 start: pooled.evStart,
 end: pooled.evEnd,
 allDay: this._isAllDay(pooled.ev),
@@ -23271,14 +25401,14 @@ if (!belongsHere) continue;
 const remColor = r.color || REMINDER_COLOR;
 const reminderId = `day-rem-${isFamily ? "family" : person.entity}-${laneEvents.length}-${r.uid}`;
 this._eventDetails[reminderId] = {
-summary: r.summary,
+summary: this._discreetText(r.summary),
 start: r.due,
 end: new Date(r.due.getTime() + 60000),
 allDay: false,
 color: remColor,
-personName: isFamily ? this._t("day_view.family_lane", "Family") : person.name,
+personName: isFamily ? this._t("day_view.family_lane", "Family") : this._discreetPersonName(person, people),
 calendarEntity: r.listEntity || this._config.reminders_entity,
-description: r.description || "",
+description: this._discreetText(r.description || ""),
 reminderMinutesList: [],
 isReminder: true,
 todoUid: r.uid,
@@ -23288,7 +25418,7 @@ location: "",
 };
 laneEvents.push({
 id: reminderId,
-summary: r.summary,
+summary: this._discreetText(r.summary),
 start: r.due,
 end: new Date(r.due.getTime() + 60000),
 allDay: false,
@@ -23367,6 +25497,154 @@ evEl.scrollTop = (targetHour - rangeStart) * PX_PER_HOUR;
 });
 }
 
+// Agenda: a flat, scrolling list of upcoming calendar events grouped by
+// day, with NO per-person columns - the digital equivalent of a paper
+// fridge agenda list, built specifically for a narrow dashboard edge or
+// sidebar placement where Week's columns and Planner's per-person rows
+// don't fit. Deliberately narrower in scope than every other view, same
+// reasoning _renderPlannerGrid's own comment gives for Planner: just
+// calendar events, no meal-plan banners, no Reminders to-do items (a
+// household that wants those back in view still has Week/Day/Planner/
+// Month for that) - see _getAgendaDays/settings.agendaDays for the
+// household's own choice of how many days ahead to show. Each day's
+// events reuse the exact same per-person collection (privacy filtering,
+// a calendar's own badge hide/match rules, the legend's person filter,
+// the event-type filter) every other view already applies - this is a
+// different RENDERING of that same data, not a different data source.
+// Items are built with the "event" class alongside "agenda-item" so the
+// existing delegated click handler (".event, .tl-event, .all-day-chip")
+// opens the same Event Info popup clicking an event anywhere else does,
+// with no agenda-specific click wiring needed - same trick
+// _buildMonthSplitDetailHtml's own .msd-item.event rows already use.
+_renderAgendaGrid() {
+const gridEl = this._root.querySelector(".grid");
+gridEl.className = "grid mode-agenda";
+const start = this._agendaAnchor();
+const days = this._getAgendaDays();
+const settings = this._getSettings();
+const people = this._getPeople();
+const colorMap = this._colorByName(people);
+const filterKeys = this._legendFilterKeys || [];
+const eventPeople = filterKeys.length ? people.filter((p) => filterKeys.includes((p.name || p.entity || "").trim().toLowerCase())) : people;
+const filterEntitySet = filterKeys.length ? new Set(eventPeople.map((p) => p.entity)) : null;
+const typeFilter = this._eventTypeFilter || [];
+const today = new Date();
+today.setHours(0, 0, 0, 0);
+const fmtTime = (d) => d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+let groupsHtml = "";
+for (let i = 0; i < days; i++) {
+const dayStart = new Date(start);
+dayStart.setDate(start.getDate() + i);
+const dayEnd = new Date(dayStart);
+dayEnd.setDate(dayStart.getDate() + 1);
+const dateKey = this._dateKey(dayStart);
+const isToday = dayStart.getTime() === today.getTime();
+let items = [];
+for (const person of people) {
+const evs = this._privacyEventsFor(person.entity);
+const personIsBirthdays = person.entity === this._config.birthdays_entity;
+const personBadges = person.badges || [];
+const personColor = this._colorFor(person, colorMap);
+for (const ev of evs) {
+const evStart = this._toDate(ev.start);
+const evEnd = this._toDate(ev.end) || evStart;
+if (!evStart) continue;
+if (!(evEnd > dayStart && evStart < dayEnd)) continue;
+const summaryLower = (ev.summary || "").toLowerCase();
+const hideMatched = personBadges.some((b) => {
+const hideMatch = (b.hideMatch || "").trim().toLowerCase();
+return hideMatch && summaryLower.includes(hideMatch);
+});
+if (hideMatched) continue;
+let matchedBadge = false;
+for (const b of personBadges) {
+const badgeMatch = (b.match || "").trim().toLowerCase();
+if (badgeMatch && summaryLower.includes(badgeMatch)) matchedBadge = true;
+}
+if (matchedBadge) continue;
+const reminderInfo = this._parseReminderMarker(ev.description);
+if (typeFilter.length && !typeFilter.includes(reminderInfo.isReminder ? "reminder" : "event")) continue;
+const peopleEntities = this._eventPeopleEntities(person.entity, evStart, ev.summary, people);
+if (filterEntitySet && !peopleEntities.some((e) => filterEntitySet.has(e))) continue;
+const eventId = `agenda-${dateKey}-${items.length}-${person.entity}`;
+const evBg = this._eventCollageStyle(peopleEntities, people, colorMap);
+const allDay = this._isAllDay(ev);
+this._eventDetails[eventId] = {
+summary: this._discreetText(ev.summary || "(untitled)"),
+start: evStart,
+end: evEnd,
+allDay,
+color: personColor,
+personName: this._discreetPersonName(person, people),
+calendarEntity: person.entity,
+description: this._discreetText(reminderInfo.clean),
+reminderMinutesList: reminderInfo.minutesList,
+isReminder: reminderInfo.isReminder,
+location: this._discreetText(ev.location || ""),
+uid: ev.uid || null,
+};
+items.push({ id: eventId, summary: this._discreetText(ev.summary || "(untitled)"), start: evStart, allDay, bg: evBg, color: personColor, isReminder: reminderInfo.isReminder, isBirthday: personIsBirthdays });
+}
+}
+if (settings.agendaShowReminders && (!typeFilter.length || typeFilter.includes("reminder"))) {
+for (const r of this._privacyReminders()) {
+if (r.due >= dayStart && r.due < dayEnd) {
+const remColor = r.color || REMINDER_COLOR;
+const reminderId = `agenda-rem-${dateKey}-${items.length}-${r.uid}`;
+this._eventDetails[reminderId] = {
+summary: this._discreetText(r.summary),
+start: r.due,
+end: new Date(r.due.getTime() + 60000),
+allDay: false,
+color: remColor,
+personName: this._discreetPersonNameByRealName(r.personName, people, "Reminder"),
+calendarEntity: r.listEntity || this._config.reminders_entity,
+description: this._discreetText(r.description || ""),
+reminderMinutesList: [],
+isReminder: true,
+todoUid: r.uid,
+rollover: !!r.rollover,
+rolloverDays: r.rolloverDays || [],
+location: "",
+};
+items.push({ id: reminderId, summary: this._discreetText(r.summary), start: r.due, allDay: false, bg: `background:${remColor};color:${this._textColorFor(remColor)}`, color: remColor, isReminder: true, isBirthday: false });
+}
+}
+}
+items.sort((a, b) => (a.allDay === b.allDay ? a.start - b.start : a.allDay ? -1 : 1));
+const itemsHtml = items.length
+? items
+.map(
+(it) =>
+`<div class="agenda-item event" data-event-id="${it.id}" style="${it.bg || `background:${it.color}`}">
+<span class="agenda-item-time">${it.allDay ? "All day" : fmtTime(it.start)}</span>
+<span class="agenda-item-summary">${it.isReminder ? "&#128276; " : ""}${it.isBirthday ? "\u{1F382} " : ""}${it.summary}</span>
+</div>`
+)
+.join("")
+: `<div class="agenda-empty">Nothing scheduled</div>`;
+let mealsHtml = "";
+if (settings.agendaShowMeals) {
+const dayBlocks = this._getBlocksForDay(dayStart);
+mealsHtml = dayBlocks
+.map((blockName, bi) => {
+const m = this._getMealForDay(dateKey, dayStart, bi);
+if (!m || !m.name || !m.name.trim()) return "";
+const repeatIcon = m.recur === "weekly" ? "\u{1F501} " : "";
+const leftoverIcon = m.leftover ? "\u{267B}\u{FE0F} " : "";
+return `<div class="agenda-item mc-meal-pill" style="background:${m.color || "#f0e6c4"}" data-date="${dateKey}" data-block-index="${bi}">\u{1F37D}\u{FE0F} ${repeatIcon}${leftoverIcon}${m.name}</div>`;
+})
+.join("");
+}
+const dayName = dayStart.toLocaleDateString(undefined, { weekday: "short" });
+const dateLabel = dayStart.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+groupsHtml += `<div class="agenda-day-group${isToday ? " agenda-today" : ""}">
+<div class="agenda-day-header"><span class="agenda-day-name">${dayName}</span><span class="agenda-day-date">${dateLabel}</span></div>
+<div class="agenda-day-items">${mealsHtml}${itemsHtml}</div>
+</div>`;
+}
+gridEl.innerHTML = groupsHtml;
+}
 _renderDayGrid() {
 const gridEl = this._root.querySelector(".grid");
 gridEl.className = "grid mode-day";
@@ -23389,6 +25667,25 @@ const banners = root.querySelectorAll(".menu-banner.edit-mode:not(.empty)");
 banners.forEach((banner) => {
 banner.addEventListener("pointerdown", (e) => this._startMealDrag(e, banner));
 });
+// Calendar events only pick up dragging once Edit Meals mode's own
+// prefetch (see the .edit-meals-btn click handler) has learned which
+// calendars actually support CalendarEntityFeature.UPDATE_EVENT - most
+// don't, so this is "no draggable events at all" far more often than not,
+// same "far more often no than yes" shape _wireEventInfoEditButton
+// already lives with. Reminders (isReminder) are never draggable here -
+// they're a to-do item, not a position on this grid, and already have
+// their own date/time editor in the event-info popup.
+if (this._canEditEvent()) {
+root.querySelectorAll(".day-col .events .event").forEach((el) => {
+const eventId = el.dataset.eventId;
+const detail = eventId && this._eventDetails ? this._eventDetails[eventId] : null;
+if (!detail || detail.isReminder || !detail.uid) return;
+const support = this._calendarDeleteSupport && this._calendarDeleteSupport[detail.calendarEntity];
+if (!support || !support.updateSupported) return;
+el.classList.add("event-draggable");
+el.addEventListener("pointerdown", (e) => this._startEventDrag(e, el, eventId));
+});
+}
 }
 _startMealDrag(e, banner) {
 if (e.button !== undefined && e.button !== 0) return;
@@ -23449,6 +25746,97 @@ const toDate = new Date(start);
 toDate.setDate(start.getDate() + toDayIndex);
 await this._moveMealPlan(this._dateKey(fromDate), fromBlockIndex, this._dateKey(toDate), toBlockIndex);
 }
+// Same pointerdown/ghost/elementFromPoint shape as _startMealDrag, just
+// dropping onto any point inside a *day-col* (read via its .day-header's
+// own data-date, same convention _renderWeekGrid already stamps every
+// column with) rather than a specific .menu-banner slot - an event has a
+// day, not a day+block-index pair to land in.
+_startEventDrag(e, el, eventId) {
+if (e.button !== undefined && e.button !== 0) return;
+e.preventDefault();
+e.stopPropagation();
+const root = this._root;
+const rect = el.getBoundingClientRect();
+const ghost = el.cloneNode(true);
+ghost.classList.add("meal-drag-ghost");
+ghost.style.width = `${rect.width}px`;
+ghost.style.height = `${rect.height}px`;
+ghost.style.left = `${rect.left}px`;
+ghost.style.top = `${rect.top}px`;
+ghost.style.margin = "0";
+root.appendChild(ghost);
+el.classList.add("dragging-source");
+const offsetX = e.clientX - rect.left;
+const offsetY = e.clientY - rect.top;
+let currentCol = null;
+const onMove = (ev) => {
+ghost.style.left = `${ev.clientX - offsetX}px`;
+ghost.style.top = `${ev.clientY - offsetY}px`;
+const under = root.elementFromPoint ? root.elementFromPoint(ev.clientX, ev.clientY) : document.elementFromPoint(ev.clientX, ev.clientY);
+const targetCol = under && under.closest ? under.closest(".day-col") : null;
+if (targetCol !== currentCol) {
+if (currentCol) currentCol.classList.remove("drop-target");
+currentCol = targetCol;
+if (currentCol) currentCol.classList.add("drop-target");
+}
+};
+const onUp = () => {
+window.removeEventListener("pointermove", onMove);
+window.removeEventListener("pointerup", onUp);
+window.removeEventListener("pointercancel", onUp);
+ghost.remove();
+el.classList.remove("dragging-source");
+if (currentCol) {
+currentCol.classList.remove("drop-target");
+const header = currentCol.querySelector(".day-header");
+const toDateKey = header ? header.dataset.date : null;
+if (toDateKey) this._dragMoveEvent(eventId, toDateKey);
+}
+};
+window.addEventListener("pointermove", onMove);
+window.addEventListener("pointerup", onUp);
+window.addEventListener("pointercancel", onUp);
+}
+// Moves an event to a different day, keeping its own time-of-day and
+// duration (an all-day event stays all-day, just on the new date) -
+// dragging within the SAME day is a no-op, same "nothing actually
+// changed" guard _dragMoveMeal has for its own day+block pair. Reuses
+// the exact same family_hub/calendar/update_event command the event-info
+// popup's own Edit form calls.
+async _dragMoveEvent(eventId, toDateKey) {
+const detail = this._eventDetails && this._eventDetails[eventId];
+if (!detail || !detail.uid) return;
+const fromDateKey = this._dateKey(detail.start);
+if (fromDateKey === toDateKey) return;
+const eventFields = { summary: detail.summary };
+if (detail.location) eventFields.location = detail.location;
+if (detail.allDay) {
+const durationDays = Math.max(1, Math.round((detail.end.getTime() - detail.start.getTime()) / 86400000));
+const endDate = new Date(`${toDateKey}T00:00:00`);
+endDate.setDate(endDate.getDate() + durationDays);
+eventFields.start_date = toDateKey;
+eventFields.end_date = this._dateKey(endDate);
+} else {
+const durationMs = detail.end.getTime() - detail.start.getTime();
+const fmtTime = (d) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+const newStart = new Date(`${toDateKey}T${fmtTime(detail.start)}`);
+const newEnd = new Date(newStart.getTime() + durationMs);
+eventFields.start_date_time = `${toDateKey}T${fmtTime(detail.start)}`;
+eventFields.end_date_time = `${this._dateKey(newEnd)}T${fmtTime(newEnd)}`;
+}
+try {
+await this._hass.connection.sendMessagePromise({
+type: "family_hub/calendar/update_event",
+entity_id: detail.calendarEntity,
+uid: detail.uid,
+event: eventFields,
+});
+} catch (e) {
+window.alert((e && e.message) || this._t("event_info.edit_failed", "Couldn't move this event - try again."));
+return;
+}
+await this._fetchEvents();
+}
 }
 
 // Minimal GUI editor for HA's native Edit Card screen, covering ONLY the
@@ -23487,6 +25875,14 @@ selector: { select: { mode: "dropdown", options: [
 { value: "card", label: "This card's own corner" },
 ] } },
 },
+{
+name: "hide_fab",
+selector: { boolean: {} },
+},
+{
+name: "hide_top_bar",
+selector: { boolean: {} },
+},
 ];
 }
 _render() {
@@ -23505,13 +25901,19 @@ this._form.data = this._config;
 this._form.schema = this._schema();
 this._form.computeLabel = (s) => (
 s.name === "static_layout_across_devices" ? "Static layout across devices" :
-s.name === "fab_position" ? "+ button position" : undefined
+s.name === "fab_position" ? "+ button position" :
+s.name === "hide_fab" ? "Hide the + button" :
+s.name === "hide_top_bar" ? "Hide the top bar" : undefined
 );
 this._form.computeHelper = (s) => (
 s.name === "static_layout_across_devices"
 ? "When on, every device/dashboard showing this card placement shares one Week/Month view and layout, instead of each device keeping its own."
 : s.name === "fab_position"
 ? "\"Dashboard corner\" pins the + button to the bottom-right of the whole screen (today's behavior). \"This card's own corner\" anchors it to the bottom-right of THIS card instead - useful when this card shares a dashboard row/column with other cards."
+: s.name === "hide_fab"
+? "Hides this placement's own + button entirely. Use when this placement is display-only - Settings and Add Event stay reachable from any other placement of this card."
+: s.name === "hide_top_bar"
+? "Hides the Settings/Week-Month-Day/nav arrows/Suggestions/Recipe Box/More bar at the top of this placement, along with its \"jump to a week\" row."
 : undefined
 );
 }

@@ -46,6 +46,23 @@ import aiohttp
 import voluptuous as vol
 
 from homeassistant.components import panel_custom, websocket_api
+# CalendarEntityFeature/DATA_COMPONENT - needed to delete/update/create
+# calendar events directly against the entity (entity.async_delete_event/
+# async_update_event/async_create_event), the same way Home Assistant's
+# OWN frontend does via its calendar/event/delete, calendar/event/update
+# and calendar/event/create websocket commands. There is NO public
+# `calendar.delete_event` or `calendar.update_event` SERVICE to call via
+# hass.services.async_call - confirmed directly against a live instance
+# (ha_list_services for the calendar domain only ever lists create_event
+# and get_events) - delete/update only ever existed as those websocket
+# commands, which only the frontend that sent them (HA's own Lovelace,
+# never a custom integration) can call. Going straight at the entity via
+# DATA_COMPONENT, exactly like those core websocket handlers themselves
+# do, is the only way to reach delete/update (and the only way to pass an
+# rrule into create_event at all, since the public create_event SERVICE's
+# own schema has no rrule field - rrule is websocket/entity-only too).
+from homeassistant.components.calendar import CalendarEntityFeature
+from homeassistant.components.calendar.const import DATA_COMPONENT
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import __version__ as HA_CORE_VERSION
@@ -176,7 +193,9 @@ from .const import (
     PERMISSION_EDIT_MENU,
     PERMISSION_SEE_WISHLIST_CLAIMS,
     PERMISSION_DELETE_EVENT,
+    PERMISSION_EDIT_EVENT,
     CALENDAR_ENTITY_FEATURE_DELETE_EVENT,
+    CALENDAR_ENTITY_FEATURE_UPDATE_EVENT,
     CALENDAR_PLATFORM_FRIENDLY_NAMES,
     SCREENSAVER_CARD_JS_URL,
     SUGGESTIONS_STORAGE_KEY_PREFIX,
@@ -3042,6 +3061,44 @@ async def _ws_remove_menu_suggestion(
 # ---------------------------------------------------------------------------
 
 
+def _coerce_calendar_datetime(value: str, *, is_date_only: bool):
+    """Turn one of the card's own ISO-ish strings into a real Python
+    date/datetime object - CalendarEntity.async_create_event/
+    async_update_event (unlike the old public create_event SERVICE, which
+    did this coercion itself via voluptuous's cv.date/cv.datetime) expect
+    an actual date/datetime object under "dtstart"/"dtend", not a string.
+    Naive (no tzinfo) is correct here - each platform's own entity method
+    attaches whatever timezone it needs itself (see google/calendar.py's
+    own async_create_event, which wraps a naive datetime in its own
+    DateOrDatetime using hass.config.time_zone)."""
+    if is_date_only:
+        return date.fromisoformat(value)
+    return datetime.fromisoformat(value.replace(" ", "T", 1))
+
+
+def _build_entity_event_fields(raw: dict) -> dict:
+    """Shared by _ws_update_calendar_event and _ws_create_calendar_event -
+    see the module comment just above this function for why the
+    translation from the card's own flat field names to dtstart/dtend
+    exists at all."""
+    fields: dict[str, Any] = {}
+    if raw.get("summary"):
+        fields["summary"] = raw["summary"]
+    if raw.get("description"):
+        fields["description"] = raw["description"]
+    if raw.get("location"):
+        fields["location"] = raw["location"]
+    if raw.get("start_date_time") and raw.get("end_date_time"):
+        fields["dtstart"] = _coerce_calendar_datetime(raw["start_date_time"], is_date_only=False)
+        fields["dtend"] = _coerce_calendar_datetime(raw["end_date_time"], is_date_only=False)
+    elif raw.get("start_date") and raw.get("end_date"):
+        fields["dtstart"] = _coerce_calendar_datetime(raw["start_date"], is_date_only=True)
+        fields["dtend"] = _coerce_calendar_datetime(raw["end_date"], is_date_only=True)
+    if raw.get("rrule"):
+        fields["rrule"] = raw["rrule"]
+    return fields
+
+
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "family_hub/calendar/delete_support",
@@ -3098,11 +3155,26 @@ async def _ws_get_calendar_delete_support(
         except (TypeError, ValueError):
             supported_features = 0
     supported = bool(supported_features & CALENDAR_ENTITY_FEATURE_DELETE_EVENT)
+    # Same bit-check, same state attribute, just the UPDATE_EVENT bit
+    # instead of DELETE_EVENT - see const.py's own comment on why this
+    # one additional check lives in the same handler rather than a
+    # second websocket command: it's the same entity_id, same state
+    # lookup, same registry lookup, and the card already calls this
+    # once per calendar entity and caches the result (_getCalendarDeleteSupport
+    # in the card's JS), so a second round trip would just be two
+    # network calls doing the exact same lookup twice.
+    update_supported = bool(supported_features & CALENDAR_ENTITY_FEATURE_UPDATE_EVENT)
     integration_name = CALENDAR_PLATFORM_FRIENDLY_NAMES.get(platform) if platform else None
     if integration_name is None:
         integration_name = platform.replace("_", " ").title() if platform else "your calendar's own app"
     connection.send_result(
-        msg["id"], {"supported": supported, "platform": platform, "integration_name": integration_name}
+        msg["id"],
+        {
+            "supported": supported,
+            "update_supported": update_supported,
+            "platform": platform,
+            "integration_name": integration_name,
+        },
     )
 
 
@@ -3146,16 +3218,159 @@ async def _ws_delete_calendar_event(
             "You don't have permission to delete calendar events - ask someone who does.",
         )
         return
-    call_data: dict[str, Any] = {"entity_id": msg["entity_id"], "uid": msg["uid"]}
-    if msg.get("recurrence_id"):
-        call_data["recurrence_id"] = msg["recurrence_id"]
+    # There is no public `calendar.delete_event` SERVICE to call -
+    # confirmed against a live instance's own ha_list_services, which only
+    # ever lists create_event/get_events for the calendar domain. Deletion
+    # only ever existed as HA's own calendar/event/delete WEBSOCKET
+    # command, reachable only by going straight at the entity the same way
+    # that command itself does (see this file's own DATA_COMPONENT/
+    # CalendarEntityFeature import comment).
+    entity = hass.data[DATA_COMPONENT].get_entity(msg["entity_id"])
+    if entity is None:
+        connection.send_error(msg["id"], "not_found", "That calendar entity isn't available right now.")
+        return
+    if not entity.supported_features or not (entity.supported_features & CalendarEntityFeature.DELETE_EVENT):
+        connection.send_error(msg["id"], "not_supported", "This calendar doesn't support deleting events.")
+        return
     try:
-        await hass.services.async_call("calendar", "delete_event", call_data, blocking=True)
+        await entity.async_delete_event(msg["uid"], recurrence_id=msg.get("recurrence_id"))
     except Exception as err:  # noqa: BLE001 - surfaced to the caller as-is, nothing here to recover
         _LOGGER.warning("Family Hub: failed to delete calendar event on %s: %s", msg["entity_id"], err)
         connection.send_error(msg["id"], "unknown_error", f"Could not delete this event: {err}")
         return
     connection.send_result(msg["id"], {"deleted": True})
+
+
+# ---------------------------------------------------------------------------
+# _ws_update_calendar_event - the genuinely-enforced half of calendar event
+# editing, same split as _ws_delete_calendar_event above: the card already
+# knows (from _ws_get_calendar_delete_support's update_supported flag)
+# whether this is even worth attempting before it draws a working Edit
+# affordance or a drag-enabled event pill at all; this handler re-derives
+# PERMISSION_EDIT_EVENT server-side regardless, since a card showing the
+# affordance is just UX, never the actual authority to mutate anything.
+# Calls HA core's own `calendar.update_event` service (CalendarEntityFeature.
+# UPDATE_EVENT / async_update_event on the entity - see const.py's own
+# comment), which takes the fields to change nested under "event" rather
+# than flat on the call, mirroring calendar.create_event's own shape for
+# date/time (start_date_time+end_date_time for timed events, start_date+
+# end_date for all-day ones - never both pairs at once).
+# ---------------------------------------------------------------------------
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/calendar/update_event",
+        vol.Required("entity_id"): str,
+        vol.Required("uid"): str,
+        vol.Optional("recurrence_id"): vol.Any(str, None),
+        vol.Required("event"): dict,
+    }
+)
+@websocket_api.async_response
+async def _ws_update_calendar_event(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Move/edit a single calendar event - see the section comment above.
+    `event` is whatever subset of calendar.update_event's own fields the
+    card wants to change (summary, description, location, and exactly one
+    of the start_date_time/end_date_time or start_date/end_date pairs); it
+    is passed through to the service call largely as-is, since HA core's
+    own service schema is the thing that actually validates it - this
+    handler's own job is just the permission gate, not field-by-field
+    revalidation of something the real service already checks."""
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    if not chores_ws_api._has_permission(entry_data, connection, PERMISSION_EDIT_EVENT):
+        connection.send_error(
+            msg["id"],
+            "forbidden",
+            "You don't have permission to edit calendar events - ask someone who does.",
+        )
+        return
+    raw_event_fields = msg.get("event") or {}
+    if not raw_event_fields:
+        connection.send_error(msg["id"], "invalid_format", "Nothing to update.")
+        return
+    # Same "no public service for this" situation as delete above - only
+    # reachable via the entity itself, not hass.services.async_call. See
+    # _build_entity_event_fields for the dtstart/dtend translation this
+    # needs (CalendarEntity.async_update_event's own `event` dict expects
+    # those keys, not the card's flat start_date_time/end_date_time names).
+    entity = hass.data[DATA_COMPONENT].get_entity(msg["entity_id"])
+    if entity is None:
+        connection.send_error(msg["id"], "not_found", "That calendar entity isn't available right now.")
+        return
+    if not entity.supported_features or not (entity.supported_features & CalendarEntityFeature.UPDATE_EVENT):
+        connection.send_error(msg["id"], "not_supported", "This calendar doesn't support editing events.")
+        return
+    try:
+        event_fields = _build_entity_event_fields(raw_event_fields)
+        await entity.async_update_event(msg["uid"], event_fields, recurrence_id=msg.get("recurrence_id"))
+    except Exception as err:  # noqa: BLE001 - surfaced to the caller as-is, nothing here to recover
+        _LOGGER.warning("Family Hub: failed to update calendar event on %s: %s", msg["entity_id"], err)
+        connection.send_error(msg["id"], "unknown_error", f"Could not update this event: {err}")
+        return
+    connection.send_result(msg["id"], {"updated": True})
+
+
+# ---------------------------------------------------------------------------
+# _ws_create_calendar_event - ONLY used for a recurring event (a plain
+# one-off still goes through the public `calendar.create_event` SERVICE
+# exactly as before, unchanged - that path already works and is already
+# in production use, so there is no reason to move it onto this newer,
+# less-exercised one). A repeating event needs `rrule`, and the public
+# create_event service's own schema (CREATE_EVENT_SCHEMA) has no rrule
+# field at all - confirmed directly against a live instance's
+# ha_list_services for the calendar domain - rrule only ever reaches an
+# entity through CalendarEntity.async_create_event itself (the same way
+# HA's own calendar/event/create websocket command does it), so recurring
+# creation has to go through the entity here the same way delete/update
+# now do above. Deliberately NO permission gate, matching the existing
+# create_event service call this mirrors for the one-off case - adding
+# events has never been gated by a permission in this card.
+# ---------------------------------------------------------------------------
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/calendar/create_event",
+        vol.Required("entity_id"): str,
+        vol.Required("event"): dict,
+    }
+)
+@websocket_api.async_response
+async def _ws_create_calendar_event(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Create a (recurring) calendar event - see the section comment
+    above for why this exists alongside the still-unchanged plain
+    create_event service call for a non-recurring event."""
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    raw_event_fields = msg.get("event") or {}
+    if not raw_event_fields.get("summary"):
+        connection.send_error(msg["id"], "invalid_format", "An event needs a title.")
+        return
+    entity = hass.data[DATA_COMPONENT].get_entity(msg["entity_id"])
+    if entity is None:
+        connection.send_error(msg["id"], "not_found", "That calendar entity isn't available right now.")
+        return
+    if not entity.supported_features or not (entity.supported_features & CalendarEntityFeature.CREATE_EVENT):
+        connection.send_error(msg["id"], "not_supported", "This calendar doesn't support adding events.")
+        return
+    try:
+        event_fields = _build_entity_event_fields(raw_event_fields)
+        await entity.async_create_event(**event_fields)
+    except Exception as err:  # noqa: BLE001 - surfaced to the caller as-is, nothing here to recover
+        _LOGGER.warning("Family Hub: failed to create calendar event on %s: %s", msg["entity_id"], err)
+        connection.send_error(msg["id"], "unknown_error", f"Could not save this event: {err}")
+        return
+    connection.send_result(msg["id"], {"created": True})
 
 
 @websocket_api.websocket_command({vol.Required("type"): "family_hub/list_users"})
@@ -3803,6 +4018,12 @@ async def _fetch_one_grocy_recipe_detail(
             "unit_name": str(unit.get("name") or "").strip(),
             "unit_name_plural": str(unit.get("name_plural") or unit.get("name") or "").strip(),
             "variable_amount": variable_amount,
+            # Raw ids, additive for the recipe editor (/#ingredient-editor)
+            # to prefill an editable row keyed the same way the import
+            # review screen's own ingredient rows are - never read by the
+            # read-only Recipe Viewer's display/scaling code above.
+            "product_id": pos.get("product_id"),
+            "qu_id": pos.get("qu_id"),
             # surfaced purely as informational metadata - "don't
             # count toward stock" (_ws_create_grocy_recipe's not_check_stock,
             # written onto the recipes_pos row itself in Grocy) is a
@@ -8461,6 +8682,229 @@ async def _ws_create_grocy_recipe(
 
 @websocket_api.websocket_command(
     {
+        vol.Required("type"): "family_hub/update_grocy_recipe",
+        vol.Required("recipe_id"): vol.Coerce(int),
+        vol.Required("name"): str,
+        vol.Optional("description", default=""): str,
+        vol.Optional("servings", default=1): vol.Coerce(int),
+        # None (the default, via vol.Optional with no "default") means
+        # "leave the existing photo alone" - unlike creation, an edit pass
+        # that doesn't touch the photo field at all must not wipe it, so
+        # this is deliberately NOT the same "" default create_grocy_recipe
+        # uses (which there just means "no photo yet").
+        vol.Optional("image"): str,
+        vol.Required("ingredients"): [dict],
+    }
+)
+@websocket_api.async_response
+async def _ws_update_grocy_recipe(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Saves edits to an EXISTING Grocy recipe's name/description/servings/
+    photo and its full ingredient list - the save step of the recipe
+    editor's ingredients tab (/#ingredient-editor).
+
+    Deliberately NOT an incremental diff against the recipe's current
+    recipes_pos rows: every existing row for this recipe_id is deleted and
+    the full `ingredients` list sent here is re-created from scratch, using
+    the exact same per-ingredient unit-resolution logic as
+    _ws_create_grocy_recipe (amount/unit matching, the standard-ratio
+    fallback, not_check_stock_fulfillment) - see that function's own
+    docstring for why each of those exists. Delete-then-recreate is simpler
+    and safer than trying to match "this edited row" back to "that existing
+    recipes_pos id" (the editor can reorder, add, and remove rows freely,
+    with no stable identity to diff against), at the cost of each saved
+    edit getting fresh recipes_pos row ids - nothing in this codebase reads
+    those ids as stable across saves.
+    """
+    entry = _get_family_hub_entry(hass)
+    url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
+    api_key = (entry.options.get(CONF_GROCY_API_KEY) if entry else "") or ""
+    if not url or not api_key:
+        connection.send_result(msg["id"], {"configured": False})
+        return
+
+    session = async_get_clientsession(hass)
+    recipe_id = msg["recipe_id"]
+
+    try:
+        existing = await _grocy_api_get(session, url, api_key, f"/api/objects/recipes/{recipe_id}")
+    except Exception as err:  # noqa: BLE001
+        connection.send_result(msg["id"], {"configured": True, "success": False, "error": str(err)})
+        return
+    if not isinstance(existing, dict) or not existing.get("id"):
+        connection.send_result(msg["id"], {"configured": True, "success": False, "error": "That recipe no longer exists in Grocy."})
+        return
+
+    try:
+        units = await _grocy_api_get(session, url, api_key, "/api/objects/quantity_units")
+    except Exception as err:  # noqa: BLE001
+        connection.send_result(msg["id"], {"configured": True, "success": False, "error": str(err)})
+        return
+    units_by_id = {u["id"]: u for u in units if isinstance(u, dict) and "id" in u}
+    fallback_unit_id = next((u["id"] for u in units if isinstance(u, dict) and "id" in u), None)
+    if fallback_unit_id is None:
+        connection.send_result(
+            msg["id"],
+            {"configured": True, "success": False, "error": "Grocy has no quantity units set up yet - add at least one in Grocy first."},
+        )
+        return
+
+    servings = msg.get("servings") or 1
+    try:
+        await _grocy_api_put(
+            session,
+            url,
+            api_key,
+            f"/api/objects/recipes/{recipe_id}",
+            {
+                "name": msg["name"],
+                "description": msg.get("description") or "",
+                "base_servings": servings,
+                "desired_servings": servings,
+            },
+        )
+    except Exception as err:  # noqa: BLE001
+        connection.send_result(msg["id"], {"configured": True, "success": False, "error": str(err)})
+        return
+
+    # Photo: only touched when the editor actually supplied one - "image"
+    # being absent entirely (None, see this command's own schema comment)
+    # means the person didn't change it in this save, so the recipe's
+    # existing picture_file_name in Grocy is left exactly as-is. Same
+    # download-then-upload-to-Grocy's-file-store approach as
+    # _ws_create_grocy_recipe's own photo handling, including the same
+    # non-fatal treatment of a failure - a bad photo URL must not undo an
+    # otherwise-successful save of the rest of the edit.
+    picture_error = None
+    image_url = msg.get("image")
+    if image_url:
+        try:
+            async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=15)) as img_resp:
+                if img_resp.status != 200:
+                    raise RuntimeError(f"couldn't download the recipe photo (HTTP {img_resp.status})")
+                content_type = img_resp.content_type or ""
+                image_bytes = await img_resp.read()
+            if len(image_bytes) > 8 * 1024 * 1024:
+                raise RuntimeError("the recipe photo was too large to import (over 8 MB)")
+            # A fresh filename per save (not reused from creation) - Grocy's
+            # file store opens for exclusive create (see
+            # _grocy_api_upload_file's own docstring) and re-uploading the
+            # same name a second time fails outright, so an edited photo
+            # needs a name that's never been used for this recipe before.
+            file_name = f"family_hub_recipe_{recipe_id}_{int(dt_util.utcnow().timestamp())}{_guess_image_extension(image_url, content_type)}"
+            await _grocy_api_upload_file(session, url, api_key, "recipepictures", file_name, image_bytes, content_type)
+            await _grocy_api_put(session, url, api_key, f"/api/objects/recipes/{recipe_id}", {"picture_file_name": file_name})
+        except Exception as err:  # noqa: BLE001 - the rest of the edit already saved; don't undo that over a photo
+            picture_error = str(err)
+
+    # Delete every existing ingredient row for this recipe before
+    # re-creating the submitted list - see this function's own docstring
+    # for why this is a full replace rather than a diff.
+    try:
+        existing_positions = await _grocy_api_get(
+            session, url, api_key, f"/api/objects/recipes_pos?query[]=recipe_id={recipe_id}"
+        )
+    except Exception as err:  # noqa: BLE001
+        connection.send_result(msg["id"], {"configured": True, "success": False, "error": str(err)})
+        return
+    for pos in existing_positions if isinstance(existing_positions, list) else []:
+        if not isinstance(pos, dict) or not pos.get("id"):
+            continue
+        try:
+            await _grocy_api_delete(session, url, api_key, f"/api/objects/recipes_pos/{pos['id']}")
+        except Exception:  # noqa: BLE001 - best-effort; a row that fails to delete just gets recreated alongside, harmless duplicate rather than a blocked save
+            pass
+
+    # Same unit-conversion resolution as _ws_create_grocy_recipe's own
+    # ingredient loop - see that function's docstring for the full
+    # reasoning (standard-ratio fallback, not_check_stock_fulfillment,
+    # variable_amount construction). Kept as its own copy here rather than
+    # factored out, so this command's behavior can't shift silently if
+    # the creation path is ever changed for reasons specific to a
+    # brand-new recipe.
+    try:
+        products = await _grocy_api_get(session, url, api_key, "/api/objects/products")
+        conversions = await _grocy_api_get(session, url, api_key, "/api/objects/quantity_unit_conversions")
+    except Exception:  # noqa: BLE001
+        products = []
+        conversions = []
+    products_by_id = {p["id"]: p for p in products if isinstance(p, dict) and "id" in p} if isinstance(products, list) else {}
+    conversion_rows = [c for c in conversions if isinstance(c, dict)] if isinstance(conversions, list) else []
+
+    skipped = []
+    added = 0
+    for ing in msg["ingredients"]:
+        product_id = ing.get("product_id")
+        raw_text = str(ing.get("raw") or "").strip()
+        if not product_id:
+            skipped.append(raw_text or "(unnamed ingredient)")
+            continue
+        raw_amount = ing.get("amount")
+        amount_value = raw_amount if isinstance(raw_amount, (int, float)) and raw_amount > 0 else 1
+        chosen_qu_id = ing.get("unit_id") or fallback_unit_id
+        not_check_stock = bool(ing.get("not_check_stock_fulfillment"))
+        product = products_by_id.get(product_id)
+        stock_qu_id = product.get("qu_id_stock") if product else None
+        if (
+            stock_qu_id
+            and chosen_qu_id != stock_qu_id
+            and not _has_grocy_unit_conversion(chosen_qu_id, stock_qu_id, product_id, conversion_rows)
+        ):
+            standard_factor = _resolve_standard_unit_conversion_factor(
+                (units_by_id.get(chosen_qu_id) or {}).get("name", ""),
+                (units_by_id.get(stock_qu_id) or {}).get("name", ""),
+            )
+            if standard_factor is not None:
+                final_qu_id = stock_qu_id
+                amount_value = round(amount_value * standard_factor, 6)
+            else:
+                final_qu_id = stock_qu_id
+                not_check_stock = True
+        else:
+            final_qu_id = chosen_qu_id
+        amount_text = str(ing.get("amount_text") or "").strip()
+        original_unit_name = str((units_by_id.get(ing.get("unit_id")) or {}).get("name", "")).strip() if ing.get("unit_id") else ""
+        if amount_text and original_unit_name:
+            variable_amount = f"{amount_text} {original_unit_name}"
+        else:
+            variable_amount = amount_text or raw_text
+        try:
+            await _grocy_api_post(
+                session,
+                url,
+                api_key,
+                "/api/objects/recipes_pos",
+                {
+                    "recipe_id": recipe_id,
+                    "product_id": product_id,
+                    "amount": amount_value,
+                    "qu_id": final_qu_id,
+                    "variable_amount": variable_amount,
+                    "note": raw_text,
+                    "not_check_stock_fulfillment": not_check_stock,
+                },
+            )
+            added += 1
+        except Exception as err:  # noqa: BLE001 - one bad line must not abort the whole save
+            skipped.append(f"{raw_text} ({err})")
+
+    result = {
+        "configured": True,
+        "success": True,
+        "recipe_id": recipe_id,
+        "added": added,
+        "skipped": skipped,
+    }
+    if picture_error:
+        result["picture_error"] = (
+            f"Saved, but couldn't update the recipe photo ({picture_error})."
+        )
+    connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command(
+    {
         vol.Required("type"): "family_hub/set_daily_digest",
         vol.Required("enabled"): bool,
         vol.Required("time"): str,
@@ -10388,6 +10832,197 @@ async def _build_upcoming_summary(
     return warning + "\n".join(lines)
 
 
+async def _build_user_notify_debug(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    entry_data: dict[str, Any],
+    user_id: str,
+) -> dict[str, Any]:
+    """Per-person notification debug data for the Users tab's own
+    Notification debug accordion - a scoped, structured sibling of
+    _build_upcoming_summary above (same dry-run event/override resolution
+    _run_poll actually uses to decide what fires - reminder_overrides and
+    notified are read straight off entry_data, same as that function's own
+    config_flow.py call site does), but answers a narrower, UI-facing
+    question for ONE person instead of a text dump of the whole household:
+    which calendars are THEY subscribed to (and is each one even in
+    "Calendars to monitor," since an unmonitored subscription silently
+    never fires - same mismatch _build_upcoming_summary's own warning
+    already surfaces, just scoped per-person here), which notify.* targets
+    are set on THEIR profile, and what's actually pending or already fired
+    for them specifically. Read-only - marks nothing, sends nothing.
+    """
+    options = entry.options
+    calendars = options.get(CONF_CALENDARS, [])
+    _settings, profiles = await _get_settings_and_profiles(hass, entry_data)
+    profile = profiles.get(user_id) or {}
+    subscribed = set(profile.get("subscribedCalendars", []))
+    reminders_enabled = bool(profile.get("remindersEnabled"))
+    notify_targets = list(profile.get("notifyTargets", []))
+
+    settings = _settings if isinstance(_settings, dict) else {}
+    raw_people = settings.get("people")
+    name_by_entity: dict[str, str] = {}
+    if isinstance(raw_people, list):
+        for person in raw_people:
+            if isinstance(person, dict) and isinstance(person.get("entity"), str) and person["entity"].strip():
+                name_by_entity[person["entity"]] = person.get("name") or person["entity"]
+
+    subscribed_calendars = [
+        {
+            "entity": entity,
+            "name": name_by_entity.get(entity, entity),
+            "monitored": entity in calendars,
+        }
+        for entity in sorted(subscribed)
+    ]
+
+    reminder_overrides = entry_data.get("reminder_overrides", {}) if entry_data else {}
+    notified = entry_data.get("notified", {}) if entry_data else {}
+
+    now = dt_util.utcnow()
+    query_start = now - timedelta(minutes=POLL_QUERY_GRACE_MINUTES)
+    window_end = now + timedelta(hours=DEFAULT_LOOKAHEAD_HOURS)
+    pending: list[dict[str, Any]] = []
+
+    for calendar_entity in calendars:
+        if calendar_entity not in subscribed:
+            continue
+        try:
+            response = await hass.services.async_call(
+                "calendar",
+                "get_events",
+                {
+                    "entity_id": calendar_entity,
+                    "start_date_time": query_start.isoformat(),
+                    "end_date_time": window_end.isoformat(),
+                },
+                blocking=True,
+                return_response=True,
+            )
+        except Exception:  # noqa: BLE001 - one bad calendar must not blank the whole debug view
+            continue
+        events = ((response or {}).get(calendar_entity) or {}).get("events", [])
+        for event in events:
+            start_raw = event.get("start")
+            if not start_raw or "T" not in str(start_raw):
+                continue
+            event_start = dt_util.parse_datetime(str(start_raw))
+            if event_start is None:
+                continue
+            if event_start.tzinfo is None:
+                event_start = dt_util.as_utc(event_start)
+            summary = event.get("summary") or "(untitled)"
+            description = event.get("description") or ""
+            if _is_reminder_type_event(description):
+                # standalone reminders are a separate household-wide source,
+                # handled below via remindersEnabled rather than per-calendar
+                # subscription - see _targets_for_reminders' own docstring.
+                continue
+            override_key = _event_override_key(calendar_entity, int(event_start.timestamp()), summary)
+            lead_minutes_list = (
+                reminder_overrides[override_key] if override_key in reminder_overrides else _parse_reminder_minutes(description)
+            )
+            if not lead_minutes_list:
+                continue
+            if now >= event_start:
+                continue
+            local_start = dt_util.as_local(event_start)
+            for lead_minutes in lead_minutes_list:
+                reminder_time = event_start - timedelta(minutes=lead_minutes)
+                key = _dedup_key(calendar_entity, event, lead_minutes)
+                status = "sent" if key in notified else "pending"
+                pending.append(
+                    {
+                        "calendar": name_by_entity.get(calendar_entity, calendar_entity),
+                        "summary": summary,
+                        "when": local_start.strftime("%a %b %-d, %-I:%M %p"),
+                        "fireAt": reminder_time.isoformat(),
+                        "leadMinutes": lead_minutes,
+                        "status": status,
+                    }
+                )
+
+    if reminders_enabled:
+        reminders_entity = options.get(CONF_REMINDERS_ENTITY)
+        if reminders_entity:
+            try:
+                reminder_response = await hass.services.async_call(
+                    "todo",
+                    "get_items",
+                    {"entity_id": reminders_entity, "status": ["needs_action"]},
+                    blocking=True,
+                    return_response=True,
+                )
+                reminder_items = ((reminder_response or {}).get(reminders_entity) or {}).get("items", [])
+            except Exception:  # noqa: BLE001 - the to-do list may not exist (yet)
+                reminder_items = []
+            for item in reminder_items:
+                uid = item.get("uid")
+                due_raw = item.get("due")
+                summary = item.get("summary") or "(untitled)"
+                if not uid or not due_raw:
+                    continue
+                due_dt = dt_util.parse_datetime(str(due_raw))
+                if due_dt is None:
+                    continue
+                if due_dt.tzinfo is None:
+                    due_dt = dt_util.as_utc(due_dt)
+                key = f"{reminders_entity}|{uid}|{int(due_dt.timestamp())}"
+                status = "sent" if key in notified else "pending"
+                local_time = dt_util.as_local(due_dt)
+                pending.append(
+                    {
+                        "calendar": "Reminders",
+                        "summary": summary,
+                        "when": local_time.strftime("%a %b %-d, %-I:%M %p"),
+                        "fireAt": due_dt.isoformat(),
+                        "leadMinutes": 0,
+                        "status": status,
+                    }
+                )
+
+    pending.sort(key=lambda r: r["fireAt"])
+
+    return {
+        "subscribedCalendars": subscribed_calendars,
+        "notifyTargets": notify_targets,
+        "remindersEnabled": reminders_enabled,
+        "pending": pending[:50],
+        "pendingTotal": len(pending),
+    }
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/get_notify_debug",
+        vol.Required("user_id"): str,
+    }
+)
+@websocket_api.async_response
+async def _ws_get_notify_debug(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Backs the Users tab's own per-person Notification debug accordion -
+    admin-only (real hass.user.is_admin, same bar _ws_get_permissions in
+    chores_websocket_api.py already sets for "can see device targets/other
+    people's data" - this exposes exactly that, notify.* targets and
+    calendar subscriptions, for whichever person's profile is open) since
+    an ordinary household member has no reason to see every other
+    household member's notify targets or subscriptions."""
+    if not (connection.user and getattr(connection.user, "is_admin", False)):
+        connection.send_error(msg["id"], "forbidden", "Only a Home Assistant admin account can view notification debug info.")
+        return
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    entry = _get_family_hub_entry(hass)
+    if entry is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    debug = await _build_user_notify_debug(hass, entry, entry_data, msg["user_id"])
+    connection.send_result(msg["id"], debug)
+
+
 # ---------------------------------------------------------------------------
 # Chores + Routines: sensor-driven triggers + native services
 # ---------------------------------------------------------------------------
@@ -10868,6 +11503,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     websocket_api.async_register_command(hass, _ws_get_notify_config)
     websocket_api.async_register_command(hass, _ws_set_notify_overrides)
     websocket_api.async_register_command(hass, _ws_get_reminder_overrides)
+    websocket_api.async_register_command(hass, _ws_get_notify_debug)
     websocket_api.async_register_command(hass, _ws_set_reminder_override)
     websocket_api.async_register_command(hass, _ws_get_event_people_overrides)
     websocket_api.async_register_command(hass, _ws_set_event_people_override)
@@ -10921,6 +11557,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     websocket_api.async_register_command(hass, _ws_pantry_extras_update)
     websocket_api.async_register_command(hass, _ws_pantry_extras_delete)
     websocket_api.async_register_command(hass, _ws_create_grocy_recipe)
+    websocket_api.async_register_command(hass, _ws_update_grocy_recipe)
     websocket_api.async_register_command(hass, _ws_set_daily_digest)
     websocket_api.async_register_command(hass, _ws_send_daily_digest_now)
     websocket_api.async_register_command(hass, _ws_get_daily_digest)
@@ -10944,6 +11581,8 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     websocket_api.async_register_command(hass, _ws_remove_menu_suggestion)
     websocket_api.async_register_command(hass, _ws_get_calendar_delete_support)
     websocket_api.async_register_command(hass, _ws_delete_calendar_event)
+    websocket_api.async_register_command(hass, _ws_update_calendar_event)
+    websocket_api.async_register_command(hass, _ws_create_calendar_event)
     websocket_api.async_register_command(hass, _ws_list_users)
     websocket_api.async_register_command(hass, _ws_detect_notify_target)
     websocket_api.async_register_command(hass, _ws_get_recipes)
