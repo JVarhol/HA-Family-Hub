@@ -6667,7 +6667,8 @@ const now = new Date();
 if (this._getCurrentDayFirst && this._getCurrentDayFirst()) {
 const start = new Date(now);
 start.setHours(0, 0, 0, 0);
-start.setDate(start.getDate() + (this._weekOffset || 0) * n);
+const step = this._isRollingDayStep && this._isRollingDayStep() ? 1 : n;
+start.setDate(start.getDate() + (this._weekOffset || 0) * step);
 return start;
 }
 // Any whole-week multiple (7, 14, ...) Sunday-aligns the window's FIRST
@@ -6779,8 +6780,25 @@ return d;
 // page at a time and respects Days shown/Current day first/Rows shown
 // exactly like Week and Planner do. See _setWeekOffset for navigation -
 // nothing agenda-specific is needed here anymore.
+_isRollingDayStep() {
+return !!(this._getCurrentDayFirst && this._getCurrentDayFirst() && (!this._getCurrentDayFirstStep || this._getCurrentDayFirstStep() === "day"));
+}
 _goToWeekFromDate(date) {
 const now = new Date();
+if (this._getCurrentDayFirst && this._getCurrentDayFirst()) {
+const today = new Date(now);
+today.setHours(0, 0, 0, 0);
+const clicked = new Date(date);
+clicked.setHours(0, 0, 0, 0);
+const diffDays = Math.round((clicked - today) / 86400000);
+const n = this._weekViewDayCount ? this._weekViewDayCount() : 7;
+this._viewMode = "week";
+this._weekOffset = this._isRollingDayStep() ? diffDays : Math.floor(diffDays / n);
+this._renderGrid();
+this._fetchEvents();
+this._updateNavLabel();
+return;
+}
 const nowSunday = new Date(now);
 nowSunday.setHours(0, 0, 0, 0);
 nowSunday.setDate(now.getDate() - now.getDay());
@@ -6864,7 +6882,8 @@ const start = this._weekStart();
 const end = new Date(start);
 end.setDate(start.getDate() + dayCount - 1);
 const fmt = (d) => this._fmtDate(d, { month: "short", day: "numeric" });
-if (dayCount === 7) {
+const rollingDayStep = this._isRollingDayStep && this._isRollingDayStep();
+if (dayCount === 7 && !rollingDayStep) {
 const prefix =
 this._weekOffset === 0
 ? this._t("nav.label_this_week", "This Week")
@@ -6875,12 +6894,28 @@ this._weekOffset === 0
 : this._t("nav.label_weeks_ago", `${Math.abs(this._weekOffset)} Week(s) Ago`, { n: String(Math.abs(this._weekOffset)) });
 this._root.querySelector(".week-label").textContent = `${prefix} · ${fmt(start)} – ${fmt(end)}`;
 if (shortcuts) shortcuts.style.display = "";
+} else if (dayCount === 7 && rollingDayStep) {
+const offset = this._weekOffset || 0;
+const prefix =
+offset === 0
+? this._t("nav.label_this_week", "This Week")
+: offset === 7
+? this._t("nav.label_next_week", "Next Week")
+: offset > 0 && offset % 7 === 0
+? this._t("nav.label_weeks_out", `${offset / 7} Weeks Out`, { n: String(offset / 7) })
+: offset < 0 && offset % 7 === 0
+? this._t("nav.label_weeks_ago", `${Math.abs(offset) / 7} Week(s) Ago`, { n: String(Math.abs(offset) / 7) })
+: null;
+this._root.querySelector(".week-label").textContent = prefix ? `${prefix} · ${fmt(start)} – ${fmt(end)}` : `${fmt(start)} – ${fmt(end)}`;
+if (shortcuts) shortcuts.style.display = "";
 } else {
 this._root.querySelector(".week-label").textContent = `${fmt(start)} – ${fmt(end)}`;
 if (shortcuts) shortcuts.style.display = "none";
 }
 this._root.querySelectorAll(".week-shortcut").forEach((btn) => {
-btn.classList.toggle("active", parseInt(btn.dataset.weeks, 10) === this._weekOffset);
+const targetWeeks = parseInt(btn.dataset.weeks, 10);
+const targetOffset = rollingDayStep ? targetWeeks * 7 : targetWeeks;
+btn.classList.toggle("active", targetOffset === (this._weekOffset || 0));
 });
 }
 }
@@ -7075,7 +7110,21 @@ try {
 local = this._getScopedSettingItem("familyCalendarCurrentDayFirstLocal");
 } catch (e) {
 }
-return local === "on";
+if (local === "on") return true;
+if (local === "off") return false;
+return !!this._getSettings().currentDayFirstShared;
+}
+_getCurrentDayFirstStep() {
+if (this._getStaticLayoutAcrossDevices()) {
+return this._getSettings().currentDayFirstStepShared === "window" ? "window" : "day";
+}
+let local = null;
+try {
+local = this._getScopedSettingItem("familyCalendarCurrentDayFirstStepLocal");
+} catch (e) {
+}
+if (local === "day" || local === "window") return local;
+return this._getSettings().currentDayFirstStepShared === "window" ? "window" : "day";
 }
 // Same this-device-only localStorage pattern as the other Week-view
 // display settings above. See _renderWeekGrid for how this splits the
@@ -7271,6 +7320,7 @@ statusEl.classList.toggle("is-error", !!isError);
 _deviceSettingsFieldRegistry() {
 return {
   familyCalendarCurrentDayFirstLocal: { type: "enum", choices: ["on", "off"], default: "off", scope: "instance", label: this._t("settings.current_day_first_label", "Current day always first") },
+  familyCalendarCurrentDayFirstStepLocal: { type: "enum", choices: ["day", "window"], default: "day", scope: "instance", label: this._t("settings.current_day_first_step_label", "Current day first navigation step") },
   familyCalendarWeekDayCountLocal: { type: "int", min: 1, max: 36, default: 7, scope: "instance", label: this._t("settings.days_shown_label", "Days shown in Week view") },
   familyCalendarWeekRowsLocal: { type: "int", min: 1, max: 7, default: 1, scope: "instance", label: this._t("settings.week_rows_label", "Rows shown in Week view") },
   familyCalendarWeekViewVariantLocal: { type: "enum", choices: ["week", "planner", "agenda"], default: "week", scope: "instance", label: this._t("settings.week_button_shows_label", "Week button shows") },
@@ -9158,6 +9208,7 @@ monthViewVariantShared: "split",
 weekDayCountShared: 7,
 weekRowsShared: 1,
 currentDayFirstShared: false,
+currentDayFirstStepShared: "day",
 // Shared mirror for the "Calendar top bar style" setting's third option
 // (Hidden) - same exception shape as smallScreenMode just below: this
 // field is only ever consulted by a placement whose own Static layout
@@ -10188,6 +10239,7 @@ const weekDayCountShared = Number.isInteger(weekDayCountSharedRaw) && weekDayCou
 const weekRowsSharedRaw = parseInt(parsed.weekRowsShared, 10);
 const weekRowsShared = Number.isInteger(weekRowsSharedRaw) && weekRowsSharedRaw >= 1 && weekRowsSharedRaw <= 7 ? weekRowsSharedRaw : defaults.weekRowsShared;
 const currentDayFirstShared = typeof parsed.currentDayFirstShared === "boolean" ? parsed.currentDayFirstShared : defaults.currentDayFirstShared;
+const currentDayFirstStepShared = ["day", "window"].includes(parsed.currentDayFirstStepShared) ? parsed.currentDayFirstStepShared : defaults.currentDayFirstStepShared;
 const hideTopBarDeviceShared = typeof parsed.hideTopBarDeviceShared === "boolean" ? parsed.hideTopBarDeviceShared : defaults.hideTopBarDeviceShared;
 const rightNowTopBarEnabledShared = typeof parsed.rightNowTopBarEnabledShared === "boolean" ? parsed.rightNowTopBarEnabledShared : defaults.rightNowTopBarEnabledShared;
 const rightNowTopBarPositionShared = ["top", "left", "right"].includes(parsed.rightNowTopBarPositionShared) ? parsed.rightNowTopBarPositionShared : defaults.rightNowTopBarPositionShared;
@@ -10428,6 +10480,7 @@ monthViewVariantShared,
 weekDayCountShared,
 weekRowsShared,
 currentDayFirstShared,
+currentDayFirstStepShared,
 hideTopBarDeviceShared,
 rightNowTopBarEnabledShared,
 rightNowTopBarPositionShared,
@@ -15032,10 +15085,17 @@ ${FAMILY_HUB_SHARED_STYLE_BLOCK}
 </div>
 </div>
 <div class="field">
-<label data-i18n="settings.current_day_first_label">Current day always first — this device only</label>
+<label data-i18n="settings.current_day_first_label">Current day always first</label>
 <div class="size-btn-row">
 <button type="button" class="size-btn current-day-first-btn" data-value="off" data-i18n="common.off">Off</button>
 <button type="button" class="size-btn current-day-first-btn" data-value="on" data-i18n="common.on">On</button>
+</div>
+</div>
+<div class="field current-day-first-step-field" style="display:none;">
+<label data-i18n="settings.current_day_first_step_label">Navigation step (when Current day always first is On)</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn current-day-first-step-btn" data-value="day" data-i18n="settings.step_one_day">1 day</button>
+<button type="button" class="size-btn current-day-first-step-btn" data-value="window" data-i18n="settings.step_full_window">Full window</button>
 </div>
 </div>
 <div class="field">
@@ -16235,7 +16295,9 @@ this._toggleWeekShortcuts();
 });
 root.querySelectorAll(".week-shortcut").forEach((btn) => {
 btn.addEventListener("click", () => {
-this._setWeekOffset(parseInt(btn.dataset.weeks, 10));
+const weeks = parseInt(btn.dataset.weeks, 10);
+const rollingDayStep = this._isRollingDayStep && this._isRollingDayStep();
+this._setWeekOffset(rollingDayStep ? weeks * 7 : weeks);
 this._closeWeekShortcuts();
 });
 });
@@ -17444,6 +17506,14 @@ btn.classList.add("active");
 root.querySelectorAll(".current-day-first-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
 root.querySelectorAll(".current-day-first-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+const stepFieldEl = root.querySelector(".current-day-first-step-field");
+if (stepFieldEl) stepFieldEl.style.display = btn.dataset.value === "on" ? "" : "none";
+});
+});
+root.querySelectorAll(".current-day-first-step-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".current-day-first-step-btn").forEach((b) => b.classList.remove("active"));
 btn.classList.add("active");
 });
 });
@@ -19828,8 +19898,15 @@ const weekDayCountInputEl = root.querySelector(".week-day-count-input");
 if (weekDayCountInputEl) weekDayCountInputEl.value = String(this._getWeekViewDayCount());
 const bottomPaddingInputEl = root.querySelector(".bottom-padding-input");
 if (bottomPaddingInputEl) bottomPaddingInputEl.value = String(settings.bottomPadding || 0);
+const isCurrentDayFirstOn = this._getCurrentDayFirst();
 root.querySelectorAll(".current-day-first-btn").forEach((btn) => {
-btn.classList.toggle("active", btn.dataset.value === (this._getCurrentDayFirst() ? "on" : "off"));
+btn.classList.toggle("active", btn.dataset.value === (isCurrentDayFirstOn ? "on" : "off"));
+});
+const currentDayFirstStepFieldEl = root.querySelector(".current-day-first-step-field");
+if (currentDayFirstStepFieldEl) currentDayFirstStepFieldEl.style.display = isCurrentDayFirstOn ? "" : "none";
+const currentDayFirstStepVal = this._getCurrentDayFirstStep ? this._getCurrentDayFirstStep() : "day";
+root.querySelectorAll(".current-day-first-step-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === currentDayFirstStepVal);
 });
 const weekRowsInputEl = root.querySelector(".week-rows-input");
 if (weekRowsInputEl) weekRowsInputEl.value = String(this._getWeekRows());
@@ -22037,8 +22114,18 @@ this._setScopedSettingItem("familyCalendarWeekDayCountLocal", weekViewDayCount);
 // clarified - see _getCurrentDayFirst's own comment.
 const activeCurrentDayFirstBtn = root.querySelector(".current-day-first-btn.active");
 const currentDayFirst = activeCurrentDayFirstBtn ? activeCurrentDayFirstBtn.dataset.value === "on" : false;
+const activeCurrentDayFirstStepBtn = root.querySelector(".current-day-first-step-btn.active");
+const currentDayFirstStep = activeCurrentDayFirstStepBtn && activeCurrentDayFirstStepBtn.dataset.value === "window" ? "window" : "day";
+const prevOffsetWasRollingDay = this._isRollingDayStep && this._isRollingDayStep();
+const nextOffsetIsRollingDay = currentDayFirst && currentDayFirstStep === "day";
+if (prevOffsetWasRollingDay !== nextOffsetIsRollingDay) this._weekOffset = 0;
 try {
-this._setScopedSettingItem("familyCalendarCurrentDayFirstLocal", currentDayFirst ? "on" : "off");
+const instanceKey1 = this._storageKeyFor("familyCalendarCurrentDayFirstLocal");
+localStorage.removeItem(instanceKey1);
+localStorage.removeItem("familyCalendarCurrentDayFirstLocal");
+const instanceKey2 = this._storageKeyFor("familyCalendarCurrentDayFirstStepLocal");
+localStorage.removeItem(instanceKey2);
+localStorage.removeItem("familyCalendarCurrentDayFirstStepLocal");
 } catch (e) {
 }
 // This-device-only, same precedent as the day-count input just above.
@@ -22194,6 +22281,7 @@ monthViewVariantShared: monthViewVariant,
 weekDayCountShared: parseInt(weekViewDayCount, 10),
 weekRowsShared: parseInt(weekRows, 10),
 currentDayFirstShared: currentDayFirst,
+currentDayFirstStepShared: currentDayFirstStep,
 // smallScreenMode is the one exception - it stays OUT of settingsObj
 // (same as before this feature) unless THIS card placement's own static-
 // mode config is actually on, since including it unconditionally again

@@ -46,7 +46,8 @@ Four one-tap presets (**Week**, **Portrait**, **Agenda**, **Two-Week Ahead**) th
 - **Agenda view: show meals**: Agenda follows the Days shown setting below and always includes reminders; turn this on to list meals too.
 - **Days shown in Week view**: 1–36 columns, for narrower screens that can't fit all 7 days.
 - **Rows shown at once in Week view**: 1–7, for the Two-Week-style layouts.
-- **Current day always first**: keeps today in the leftmost column instead of a fixed Sunday/Monday start.
+- **Current day always first**: keeps today in the leftmost column instead of a fixed Sunday/Monday start (synced household-wide by default, with optional per-device override via the Devices tab).
+- **Navigation step** (when Current day always first is On): choose whether Previous/Next advances by **1 day** at a time (rolling 7-day window) or by a **Full window** (7 days).
 
 ### Month view options
 

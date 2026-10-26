@@ -1606,6 +1606,10 @@ DEVICE_SETTINGS_FIELDS = {
         "type": "enum", "choices": ["on", "off"], "default": "off",
         "label": "Current day always first", "scope": "instance",
     },
+    "familyCalendarCurrentDayFirstStepLocal": {
+        "type": "enum", "choices": ["day", "window"], "default": "day",
+        "label": "Current day first navigation step", "scope": "instance",
+    },
     "familyCalendarWeekDayCountLocal": {
         "type": "int", "min": 1, "max": 36, "default": 7,
         "label": "Days shown in Week view", "scope": "instance",
