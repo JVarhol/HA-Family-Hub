@@ -1,33 +1,4 @@
-"""Core chore business logic - assignment, the completion/verification
-state machine, dependencies, overdue penalties, streaks, and the sensor-
-driven recurring-chore lifecycle.
-
-State machine (also see CHORE_STATUS_* in const.py):
-
-    open --(complete_chore)--> pending_verification --(approve_chore)--> approved
-     ^                                                                       |
-     `---------------- reset_recurring_chore (auto_create_trigger fires) ---'
-
-"open" covers both "unclaimed in the Chore Bin" (assigned_to ==
-CHORE_BIN_SENTINEL) and "assigned to someone, not yet done" - assigned_to is
-what distinguishes those, not status. A chore with no auto_create_trigger is
-a one-off: once approved, it just stays approved forever (nothing resets
-it) - recreate a similar chore by hand for "next time." A chore WITH an
-auto_create_trigger is a reusable template: the same record cycles back to
-open (a new occurrence) each time its trigger fires again while it's
-sitting approved from the previous cycle - see reset_recurring_chore and
-__init__.py's sensor-trigger listener that calls it.
-
-Every function here assumes the CALLER (chores_websocket_api.py, services, the
-sensor-trigger listener) has already resolved permissions - nothing in this
-module checks hass.user.is_admin or the Permissions store itself, keeping
-the state machine logic independent of who's allowed to invoke it.
-
-Every mutating function fires CHORE_EVENT_TYPE via hass.bus.async_fire and
-returns the updated chore record; none of them save the Store themselves -
-callers own exactly one async_save per websocket/service call so a batch of
-engine calls (e.g. the overdue sweep touching many chores) writes once.
-"""
+"""Core chore business logic - assignment, the completion/verification state machine, dependencies, overdue penalties, streaks"""
 from __future__ import annotations
 
 import calendar
@@ -43,6 +14,8 @@ from homeassistant.util import dt as dt_util
 from . import timer_engine
 
 from .const import (
+    CHORE_KEY_STAR_REQUEST,
+    STAR_REQUEST_MAX_STARS,
     CHORE_ASSIGNMENT_MODE_AUTO_ROTATION,
     CHORE_ASSIGNMENT_MODE_CHORE_BIN,
     CHORE_ASSIGNMENT_MODE_DIRECT,
@@ -93,34 +66,14 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class ChoreError(Exception):
-    """Raised for any invalid chore operation (bad state, missing
-    dependency, unknown chore id, etc.) - always carries a short machine-
-    readable `code` alongside the human-readable message, so
-    chores_websocket_api.py can send_error(msg["id"], err.code, str(err)) without
-    a big if/elif ladder guessing at the reason from the text."""
+    """Raised for any invalid chore operation (bad state, missing dependency, unknown chore id, etc.)"""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
 
 
-# Passed in (never imported) by every caller that wants assignment
-# eligibility enforced - a user_id -> bool check. Chores callers are always
-# handed chores_websocket_api.py's _make_is_chores_eligible (Family Hub
-# membership AND not explicitly excluded via userProfiles[uid].
-# includeInChores - see const.py's SETTINGS_KEY_MEMBER_USER_IDS docstring
-# and its "v121+" follow-up right after it); Routines' own create_item uses
-# a plain membership-only check instead (see routine_engine.py), since that
-# narrower exclusion deliberately doesn't apply there. Same dependency-
-# injection shape as send_nudge's split_notify_target parameter below:
-# chore_engine.py stays self-contained (no import of __init__.py or the
-# Settings store), and a caller that doesn't care - a test, or code that
-# genuinely wants to bypass the check - just omits it, in which case every
-# function below skips the check entirely (None means "not enforced here").
-# Named IsUserEnabled/is_user_enabled rather than something more specific
-# because this same plumbing predates memberUserIds (it used to gate the
-# now-retired per-user choresEnabled toggle) and every call site below
-# still reads naturally either way.
+# Passed in (never imported) by every caller that wants assignment eligibility enforced - a user_id -> bool check.
 IsUserEnabled = Callable[[str], bool]
 
 
@@ -148,11 +101,7 @@ def new_chore_id() -> str:
 
 
 def new_group_id() -> str:
-    """one of these is generated per multi-assignee create request
-    (chores_websocket_api.ws_create_chore's fan-out) and stamped onto every
-    chore created from it, via CHORE_KEY_GROUP_ID - see that constant's own
-    docstring in const.py for why fan-out (N independent single-assignee
-    chores) rather than one multi-assignee record."""
+    """one of these is generated per multi-assignee create request (chores_websocket_api.ws_create_chore's fan-out) and stamped onto every chore created from it"""
     return f"grp_{uuid.uuid4().hex[:12]}"
 
 
@@ -184,12 +133,7 @@ def _normalize_recur_interval_unit(value: Any) -> str:
 
 
 def _add_months(dt: datetime, months: int) -> datetime:
-    """Adds `months` calendar months to `dt`, clamping the day-of-month to
-    the target month's own last day when the original day doesn't exist
-    there (e.g. Jan 31 + 1 month lands on Feb 28, or Feb 29 in a leap
-    year) - the same "always resolvable, never skip/crash" philosophy
-    _nth_weekday_of_month's own docstring describes for its 1-4/-1 values.
-    Preserves hour/minute/second/tzinfo exactly, only year/month/day move."""
+    """Adds `months` calendar months to `dt`, clamping the day-of-month to the target month's own last day when the original day doesn't exist there"""
     total_month_index = dt.month - 1 + months
     year = dt.year + total_month_index // 12
     month = total_month_index % 12 + 1
@@ -224,11 +168,7 @@ def _normalize_quantity_total(value: Any) -> Optional[int]:
 
 
 def _normalize_recur_weekdays(value: Any) -> list[int]:
-    """0=Monday..6=Sunday, matching Python's own date.weekday()/datetime.
-    weekday() exactly - so these same integers plug directly into
-    _compute_next_recur_due's date-math with no day-of-week convention
-    translation needed anywhere, frontend included (the card sends/receives
-    the identical 0-6 numbers)."""
+    """0=Monday..6=Sunday, matching Python's own date.weekday()/datetime."""
     days: list[int] = []
     for d in value or []:
         try:
@@ -259,17 +199,7 @@ def _normalize_recur_month_nth(value: Any) -> Optional[int]:
 
 
 def _nth_weekday_of_month(year: int, month: int, weekdays: set[int], nth: int) -> Optional[date]:
-    """Every date in (year, month) whose weekday() is in `weekdays`, sorted,
-    then the nth one (1-indexed) or the last one (nth == -1). Returns None
-    only if `weekdays` is empty - nth 1-4 always exists because every
-    weekday occurs at least 4 times in any month (see CHORE_RECUR_MONTH_NTH_
-    VALUES's own comment), so this never has to "skip" a month the way a
-    literal 5th-occurrence request would.
-    this is also how "the first weekend of the month" is expressed -
-    weekdays={5, 6} (Sat+Sun), nth=1 - a plain date-by-date scan naturally
-    lands on the month's first Saturday (or, in the rare case the month
-    itself starts on a Sunday, that Sunday) without needing a dedicated
-    "weekend" concept of its own."""
+    """Every date in (year, month) whose weekday() is in `weekdays`, sorted, then the nth one (1-indexed) or the last one (nth == -1)."""
     if not weekdays:
         return None
     days_in_month = calendar.monthrange(year, month)[1]
@@ -287,13 +217,7 @@ def _nth_weekday_of_month(year: int, month: int, weekdays: set[int], nth: int) -
 
 
 def _normalize_reminder_minutes(value: Any) -> list[int]:
-    """A chore's own reminder_minutes - deliberately as permissive
-    as the calendar card's own event-reminder marker parsing (_parse_
-    reminder_minutes in __init__.py): any positive integer is accepted, not
-    just the fixed 5/10/15/30/60/120/1440 set the Create/Edit Chore modal's
-    own checkboxes happen to offer - same "the UI offers a fixed menu, the
-    backend doesn't gatekeep against it" relationship the calendar's own
-    reminder marker already has. Deduped and sorted, same as that function."""
+    """A chore's own reminder_minutes - deliberately as permissive as the calendar card's own event-reminder marker parsing"""
     minutes: list[int] = []
     for v in value or []:
         try:
@@ -306,25 +230,10 @@ def _normalize_reminder_minutes(value: Any) -> list[int]:
 
 
 def _compute_next_recur_due(chore: dict[str, Any], from_dt: datetime) -> Optional[datetime]:
-    """Computes when a just-approved recurring chore should pop back open -
-    called exactly once, at the moment it's approved (see approve_chore),
-    never recomputed while it just sits waiting, so its "next occurrence"
-    can't silently drift from a late poll tick or a clock change. Always
-    strictly after from_dt (at least a day out), so a chore can never loop
-    back to the very day it was just finished. Returns None for a chore
-    with no recur_type (recurs only via its own auto_create_trigger, if
-    any - see chore_engine's module docstring) or a weekdays chore with an
-    empty weekday selection (nothing to compute against)."""
+    """Computes when a just-approved recurring chore should pop back open - called exactly once, at the moment it's approved (see approve_chore)"""
     recur_type = chore.get("recur_type")
     if recur_type == CHORE_RECUR_TYPE_INTERVAL:
-        # N
-        # (recur_interval_days, kept as the field name for backward
-        # compatibility) now pairs with a unit (recur_interval_unit) -
-        # days is the pre-existing/default behavior ("every other day" was
-        # already just N=2), weeks/months are new. Months uses _add_months
-        # rather than a flat 30-day multiply so "every 2 months" actually
-        # lands on the same day-of-month each time (clamped at short
-        # months), the way a household actually means it.
+        # N (recur_interval_days, kept as the field name for backward compatibility) now pairs with a unit (recur_interval_unit)
         n = max(1, int(chore.get("recur_interval_days") or 0))
         unit = _normalize_recur_interval_unit(chore.get(CHORE_KEY_RECUR_INTERVAL_UNIT))
         if unit == CHORE_RECUR_INTERVAL_UNIT_WEEKS:
@@ -342,14 +251,7 @@ def _compute_next_recur_due(chore: dict[str, Any], from_dt: datetime) -> Optiona
                 return candidate
         return None
     if recur_type == CHORE_RECUR_TYPE_MONTHLY_NTH:
-        # Reuses recur_weekdays (one or more weekdays - see _nth_weekday_
-        # of_month's own comment on how "first weekend" falls out of that)
-        # plus recur_month_nth (which occurrence). Scans forward month by
-        # month from from_dt's own month - capped at 24 so a malformed/
-        # cleared selection can't loop forever - taking the first candidate
-        # that's still strictly after from_dt (this month's occurrence, if
-        # it hasn't happened yet, otherwise next month's, exactly like the
-        # weekdays branch above never returns something on/before from_dt).
+        # Reuses recur_weekdays (one or more weekdays - see _nth_weekday_ of_month's own comment on how "first weekend" falls out of that) plus
         weekdays = set(_normalize_recur_weekdays(chore.get("recur_weekdays")))
         nth = _normalize_recur_month_nth(chore.get(CHORE_KEY_RECUR_MONTH_NTH))
         if not weekdays or nth is None:
@@ -370,13 +272,7 @@ def _compute_next_recur_due(chore: dict[str, Any], from_dt: datetime) -> Optiona
 
 
 def _normalize_recur_due_offset_minutes(value: Any) -> int:
-    """How long
-    AFTER each recurrence reset_recurring_chore should set the fresh
-    due_date to. Same "opt-in numeric field, anything blank/invalid
-    collapses to the harmless default" style as star_value/overdue_penalty
-    - here the harmless default is 0 ("due the moment it reopens"), never
-    negative (a due date before the chore even exists again is
-    meaningless)."""
+    """How long AFTER each recurrence reset_recurring_chore should set the fresh due_date to."""
     if value in (None, ""):
         return 0
     try:
@@ -432,6 +328,7 @@ def default_chore(**overrides: Any) -> dict[str, Any]:
         CHORE_KEY_IMPORTANT: False,
         CHORE_KEY_IN_PROGRESS: False,
         CHORE_KEY_GROUP_ID: None,
+        CHORE_KEY_STAR_REQUEST: False,
     }
     chore.update(overrides)
     return chore
@@ -477,10 +374,7 @@ def _resolve_initial_assignment(chore: dict[str, Any]) -> None:
             chore["assigned_to"] = group[pointer]
         else:
             chore["assigned_to"] = CHORE_BIN_SENTINEL
-    # CHORE_ASSIGNMENT_MODE_DIRECT: leave assigned_to exactly as given -
-    # a direct chore with no assigned_to is a data error the caller (the
-    # create-chore form) should have prevented, but engine code never
-    # crashes over it; it just sits assigned to nobody until fixed.
+    # CHORE_ASSIGNMENT_MODE_DIRECT: leave assigned_to exactly as given - a direct chore with no assigned_to is a data error the caller
 
 
 def create_chore(
@@ -508,10 +402,7 @@ def create_chore(
             f"Depends on chore(s) that don't exist: {', '.join(unknown_deps)}",
         )
 
-    # a free-text description, shown in the click-to-open chore
-    # detail modal (family-hub-chores-card.js's _openChoreDetailModal) -
-    # purely informational, never validated/interpreted by the engine
-    # itself (unlike e.g. dependencies), so just trimmed like title.
+    # a free-text description, shown in the click-to-open chore detail modal (family-hub-chores-card.js's _openChoreDetailModal)
     notes = str(payload.get("notes") or "").strip()
 
     rotation_group = [str(u) for u in (payload.get("rotation_group") or []) if u]
@@ -523,15 +414,9 @@ def create_chore(
 
     recur_type = _normalize_recur_type(payload.get("recur_type"))
     quantity_total = _normalize_quantity_total(payload.get(CHORE_KEY_QUANTITY_TOTAL))
-    # optional countdown length. None (the default, and every
-    # pre-v1.110.0 chore) means "no timer" and changes nothing - see
-    # timer_engine.normalize_timer_minutes.
+    # optional countdown length.
     timer_minutes = timer_engine.normalize_timer_minutes(payload.get(CHORE_KEY_TIMER_MINUTES))
-    # who/what rings when this chore's timer alarms - see
-    # const.py's CHORE_KEY_ALARM_AUDIENCE for the full picture. Defaults to
-    # "self" (timer_engine.normalize_alarm_audience's own fallback), which
-    # is exactly today's pre-existing behaviour, so a chore that never sets
-    # this is completely unaffected.
+    # who/what rings when this chore's timer alarms - see const.py's CHORE_KEY_ALARM_AUDIENCE for the full picture.
     alarm_audience = timer_engine.normalize_alarm_audience(payload.get(CHORE_KEY_ALARM_AUDIENCE))
 
     chore = default_chore(
@@ -558,22 +443,12 @@ def create_chore(
         **{
             CHORE_KEY_NO_APPROVAL_REQUIRED: bool(payload.get(CHORE_KEY_NO_APPROVAL_REQUIRED)),
             CHORE_KEY_QUANTITY_TOTAL: quantity_total,
-            # A fresh chore's remaining count always starts equal to its
-            # total - there's no partial progress to speak of yet. None
-            # (quantity_total unset) means an ordinary chore, so remaining
-            # stays None too - see chore_skips_verification's sibling check
-            # in complete_chore, which only branches on quantity at all
-            # when quantity_total is actually set.
+            # A fresh chore's remaining count always starts equal to its total - there's no partial progress to speak of yet.
             CHORE_KEY_QUANTITY_REMAINING: quantity_total,
             CHORE_KEY_TIMER_MINUTES: timer_minutes,
             CHORE_KEY_ALARM_AUDIENCE: alarm_audience,
             CHORE_KEY_IMPORTANT: bool(payload.get(CHORE_KEY_IMPORTANT)),
-            # set by chores_websocket_api's multi-assignee fan-out
-            # (ws_create_chore, when the request names more than one
-            # assignee) - the SAME group_id is passed in this same payload
-            # dict for every one of the N create_chore calls that request
-            # makes, one per assignee. An ordinary single-assignee create
-            # never sets this, so it stays None (see default_chore).
+            # set by chores_websocket_api's multi-assignee fan-out (ws_create_chore, when the request names more than one assignee)
             CHORE_KEY_GROUP_ID: payload.get(CHORE_KEY_GROUP_ID) or None,
         },
     )
@@ -583,6 +458,42 @@ def create_chore(
 
     chores[chore["id"]] = chore
     _fire_chore_event(hass, chore, previous_status=None)
+    return chore
+
+
+def create_star_request(
+    chores: dict[str, dict[str, Any]],
+    hass: HomeAssistant,
+    title: str,
+    stars: Any,
+    for_user: str,
+    requested_by: Optional[str],
+    notes: str = "",
+    is_user_enabled: Optional[IsUserEnabled] = None,
+) -> dict[str, Any]:
+    """Someone asks for stars for a task that isn't on the chart: a one-off chore for `for_user`,
+    already waiting for approval (Pending Verification), worth `stars`."""
+    try:
+        stars = int(stars)
+    except (TypeError, ValueError):
+        stars = 0
+    if stars < 1 or stars > STAR_REQUEST_MAX_STARS:
+        raise ChoreError("invalid_stars", f"Ask for between 1 and {STAR_REQUEST_MAX_STARS} stars.")
+    if not for_user or for_user == CHORE_BIN_SENTINEL:
+        raise ChoreError("missing_assignee", "Pick who the stars are for.")
+    chore = create_chore(
+        chores, hass,
+        {"title": title, "assigned_to": for_user, "assignment_mode": CHORE_ASSIGNMENT_MODE_DIRECT, "star_value": stars, "notes": notes},
+        is_user_enabled,
+    )
+    previous = chore["status"]
+    now = _now_iso()
+    chore[CHORE_KEY_STAR_REQUEST] = True
+    chore["status"] = CHORE_STATUS_PENDING_VERIFICATION
+    chore[CHORE_KEY_COMPLETED_BY] = requested_by or for_user
+    chore[CHORE_KEY_COMPLETED_AT] = now
+    chore[CHORE_KEY_UPDATED_AT] = now
+    _fire_chore_event(hass, chore, previous_status=previous, actor=requested_by, extra={"event": "star_request"})
     return chore
 
 
@@ -601,24 +512,13 @@ def assign_chore(
     actor: Optional[str],
     is_user_enabled: Optional[IsUserEnabled] = None,
 ) -> dict[str, Any]:
-    """Move a chore between the Chore Bin and a specific person (or back to
-    the bin, if target is CHORE_BIN_SENTINEL) - the drag-and-drop action on
-    family-hub-chores-card. Does not change status; a chore can be
-    reassigned freely while still "open" (unclaimed or claimed but not yet
-    done), but never once it's pending_verification/approved - re-open it
-    first (there is no "un-approve," by design, matching the verification
-    gate: approval already disbursed stars)."""
+    """Move a chore between the Chore Bin and a specific person (or back to the bin, if target is CHORE_BIN_SENTINEL)"""
     chore = _get_chore(chores, chore_id)
     if chore["status"] != CHORE_STATUS_OPEN:
         raise ChoreError("not_open", "Only an open (not-yet-completed) chore can be reassigned.")
     _check_user_enabled(is_user_enabled, target)
     chore["assigned_to"] = target
     chore[CHORE_KEY_UPDATED_AT] = _now_iso()
-    # Household ask: "mark in progress" belongs to whoever's actually
-    # doing the chore right now - reassigning it to someone else means
-    # nobody's doing it yet, so clear a stale in_progress flag left over
-    # from the previous assignee rather than silently handing it to the
-    # new one.
     chore[CHORE_KEY_IN_PROGRESS] = False
     _fire_chore_event(hass, chore, previous_status=CHORE_STATUS_OPEN, actor=actor, extra={"event": "assigned"})
     return chore
@@ -631,17 +531,7 @@ def claim_chore(
     user_id: str,
     is_user_enabled: Optional[IsUserEnabled] = None,
 ) -> dict[str, Any]:
-    """Self-serve claim from the Chore Bin - the action anyone (not just an
-    admin) can take on a first_come_first_served chore, or on a chore_bin
-    chore nobody has drag-and-dropped out yet (a household is free to let
-    kids grab those too; assign_chore is for a *specific* admin-directed
-    assignment, this is "first tap wins"). Race-safe: the check and the
-    mutation happen with no `await` between them, so two claims arriving
-    back-to-back on Home Assistant's single-threaded event loop can never
-    both win - whichever websocket message this function runs for first
-    simply sees assigned_to still CHORE_BIN_SENTINEL and the second one
-    doesn't.
-    """
+    """Self-serve claim from the Chore Bin - the action anyone (not just an admin) can take on a first_come_first_served chore"""
     chore = _get_chore(chores, chore_id)
     if chore["assigned_to"] != CHORE_BIN_SENTINEL:
         raise ChoreError("already_claimed", "Someone already claimed this chore.")
@@ -684,26 +574,7 @@ def set_chore_in_progress(
 
 
 def chore_skips_verification(chore: dict[str, Any], permissions: Optional[dict[str, dict[str, Any]]] = None) -> bool:
-    """True when a completion of THIS chore should go straight from open to
-    approved with no pending_verification stop at all. Either of two
-    independent exemptions is enough:
-
-    - the chore itself has CHORE_KEY_NO_APPROVAL_REQUIRED set (the Add/Edit
-      Chore modal's "Doesn't require approval" checkbox) - applies no
-      matter who completes it, or
-    - its current assignee has been granted PERMISSION_AUTO_APPROVE in the
-      Permissions store (the "doesn't require approval" toggle on a
-      person's own entry in the Users tab) - applies no matter which chore
-      it is.
-
-    This is a plain data lookup, not an authorization check - it doesn't
-    decide who's ALLOWED to complete the chore (that's still ws_complete_chore's
-    job), only whether the completion that's already been allowed also
-    clears verification. That keeps it consistent with this module's
-    docstring promise that the state machine doesn't reach into the
-    Permissions store itself: callers hand it that store's contents
-    (or leave it out, e.g. todo.py/services that don't have it handy - the
-    chore-level exemption still applies) rather than this module fetching it."""
+    """True when a completion of THIS chore should go straight from open to approved with no pending_verification stop at all."""
     if chore.get(CHORE_KEY_NO_APPROVAL_REQUIRED):
         return True
     if not permissions:
@@ -715,13 +586,7 @@ def chore_skips_verification(chore: dict[str, Any], permissions: Optional[dict[s
 
 
 def _apply_approval(chore: dict[str, Any], rewards: dict[str, Any], approver: Optional[str]) -> int:
-    """The state-changing core shared by approve_chore (the normal, human-
-    in-the-loop path) and complete_chore's auto-approve shortcut
-    (chore_skips_verification) - both need the exact same streak/status/
-    recurrence/star bookkeeping, differing only in what got them here and
-    what event they fire afterward, which stays the caller's job. Returns
-    the star_value actually disbursed (0 if none) purely so the caller can
-    put an accurate stars_disbursed on its own event without recomputing it."""
+    """The state-changing core shared by approve_chore (the normal, human- in-the-loop path) and complete_chore's auto-approve shortcut (chore_skips_verification)"""
     due = _parse_dt(chore.get("due_date"))
     completed = _parse_dt(chore.get(CHORE_KEY_COMPLETED_AT))
     on_time = due is None or completed is None or completed <= due
@@ -764,17 +629,7 @@ def complete_chore(
     actor: Optional[str],
     permissions: Optional[dict[str, dict[str, Any]]] = None,
 ) -> dict[str, Any]:
-    """Mark a chore done, entering pending_verification - the first half of
-    the verification gate (Completed -> Pending Verification). Blocked by
-    any not-yet-approved dependency.
-
-    Takes `rewards` and an optional `permissions` now (previously just
-    took `chores`/`hass`) so it can go straight on to _apply_approval
-    itself when chore_skips_verification says this one's exempt from the
-    gate entirely - see that function's docstring. Every existing caller
-    that doesn't care about the exemption (or doesn't have a permissions
-    dict handy) can still just pass permissions=None; the chore-level
-    CHORE_KEY_NO_APPROVAL_REQUIRED exemption still applies either way."""
+    """Mark a chore done, entering pending_verification - the first half of the verification gate (Completed -> Pending Verification)."""
     chore = _get_chore(chores, chore_id)
     if chore["status"] != CHORE_STATUS_OPEN:
         raise ChoreError("not_open", "This chore isn't open (already completed, or awaiting approval).")
@@ -797,12 +652,7 @@ def complete_chore(
             remaining = quantity_total
         remaining -= 1
         if remaining > 0:
-            # Still units left in this batch ("3 loads of laundry" -> 2 ->
-            # 1) - one unit just got done, but the chore stays "open" and
-            # nothing else (verification gate, streak, stars) happens until
-            # the count actually reaches zero. complete_chore gets called
-            # once per unit; only the LAST call falls through to the
-            # ordinary completion flow below.
+            # Still units left in this batch ("3 loads of laundry" -> 2 -> 1) - one unit just got done, but the chore stays "open" and nothing else
             chore[CHORE_KEY_QUANTITY_REMAINING] = remaining
             chore[CHORE_KEY_UPDATED_AT] = _now_iso()
             _fire_chore_event(
@@ -810,9 +660,7 @@ def complete_chore(
                 extra={"event": "quantity_decremented", "quantity_remaining": remaining},
             )
             return chore
-        # Last unit - record the count hitting zero, then fall through to
-        # the normal completion flow right below exactly as if this were
-        # an ordinary (non-quantity) chore.
+        # Last unit - record the count hitting zero, then fall through to the normal completion flow right below exactly as if this were an ordinary
         chore[CHORE_KEY_QUANTITY_REMAINING] = 0
 
     chore["status"] = CHORE_STATUS_PENDING_VERIFICATION
@@ -843,14 +691,7 @@ def approve_chore(
     chore_id: str,
     approver: Optional[str],
 ) -> dict[str, Any]:
-    """The second half of the verification gate: Pending Verification ->
-    Approved -> Stars Disbursed. On-time (completed_at <= due_date, or no
-    due_date set at all) extends the streak by one; overdue resets it to
-    zero rather than leaving a stale streak from before the miss. Disburses
-    star_value to the assignee's balance via reward_engine.add_stars.
-    Advances rotation_pointer for an auto_rotation chore so the *next*
-    occurrence (see reset_recurring_chore) goes to the next person in line,
-    regardless of who actually ended up completing this one."""
+    """The second half of the verification gate: Pending Verification -> Approved -> Stars Disbursed."""
     chore = _get_chore(chores, chore_id)
     if chore["status"] != CHORE_STATUS_PENDING_VERIFICATION:
         raise ChoreError("not_pending", "This chore isn't waiting on approval.")
@@ -871,17 +712,7 @@ def reject_chore(
     rejecter: Optional[str],
     reason: Optional[str] = None,
 ) -> dict[str, Any]:
-    """The other way out of the verification gate: Pending Verification ->
-    back to Open, for the SAME assignee to redo (unlike reset_recurring_chore,
-    this never re-resolves assignment - it's not a fresh occurrence, it's
-    the same one bounced back). No stars disbursed, no streak/rotation
-    change - approve_chore is the only place either of those ever happens,
-    and this function never reaches it. Clears completed_by/completed_at so
-    the chore looks freshly open again and complete_chore's own "must be
-    open" guard is satisfied on the redo; records rejected_by/rejected_at
-    plus an optional free-text reason (see const.py's CHORE_KEY_REJECT_REASON
-    docstring for why these persist through the redo-and-resubmit cycle
-    instead of being cleared here)."""
+    """The other way out of the verification gate: Pending Verification -> back to Open, for the SAME assignee to redo (unlike reset_recurring_chore"""
     chore = _get_chore(chores, chore_id)
     if chore["status"] != CHORE_STATUS_PENDING_VERIFICATION:
         raise ChoreError("not_pending", "This chore isn't waiting on approval.")
@@ -902,20 +733,7 @@ def reject_chore(
 
 
 def reset_recurring_chore(chores: dict[str, dict[str, Any]], hass: HomeAssistant, chore_id: str) -> Optional[dict[str, Any]]:
-    """Called when a chore's own auto_create_trigger fires again (see the
-    sensor-trigger listener in __init__.py) - the mechanism behind e.g.
-    "Dryer finished creates chore." A chore with an auto_create_trigger IS
-    its own reusable template: this doesn't spawn a new record, it cycles
-    the SAME one back to a fresh "open" occurrence, re-resolving assignment
-    (advancing an auto_rotation chore to whoever rotation_pointer now
-    points at, re-dropping a chore_bin/first_come_first_served chore back
-    into the bin) so the same completion/verification gate runs again next
-    time. Only fires the reset when the chore is currently "approved"
-    (last cycle actually finished) - a trigger firing again while a chore
-    is still open or pending_verification is a no-op, so an in-progress
-    cycle is never silently clobbered. Returns None (and does nothing) for
-    that no-op case; returns the updated record when it did reset.
-    """
+    """Called when a chore's own auto_create_trigger fires again (see the sensor-trigger listener in __init__.py)"""
     chore = _get_chore(chores, chore_id)
     if chore["status"] != CHORE_STATUS_APPROVED:
         _LOGGER.debug(
@@ -933,31 +751,14 @@ def reset_recurring_chore(chores: dict[str, dict[str, Any]], hass: HomeAssistant
     chore[CHORE_KEY_OVERDUE_PENALTY_APPLIED] = False
     # A fresh occurrence hasn't been started by anyone yet.
     chore[CHORE_KEY_IN_PROGRESS] = False
-    # A quantity-based chore's next occurrence starts with the full count
-    # again ("3 loads of laundry" every week, not "0 loads" forever after
-    # the first cycle used them all up) - ordinary chores have
-    # quantity_total=None so this is a no-op for them.
+    # A quantity-based chore's next occurrence starts with the full count again ("3 loads of laundry" every week
     if chore.get(CHORE_KEY_QUANTITY_TOTAL):
         chore[CHORE_KEY_QUANTITY_REMAINING] = chore[CHORE_KEY_QUANTITY_TOTAL]
-    # A fresh occurrence deserves a fresh shot at its own reminder_minutes,
-    # same reasoning update_chore already applies when due_date/reminder_
-    # minutes themselves change - see CHORE_KEY_REMINDERS_FIRED's own
-    # docstring in const.py.
+    # A fresh occurrence deserves a fresh shot at its own reminder_minutes
     chore[CHORE_KEY_REMINDERS_FIRED] = []
-    # No longer "waiting" once it's active again - recur_next_due only ever
-    # describes an approved chore sitting idle (see CHORE_KEY_RECUR_NEXT_DUE
-    # in const.py); it gets recomputed fresh the next time this same chore
-    # is approved again (see approve_chore).
+    # No longer "waiting" once it's active again - recur_next_due only ever describes an approved chore sitting idle
     chore[CHORE_KEY_RECUR_NEXT_DUE] = None
-    # Every
-    # occurrence of a recurring chore (schedule-based via sweep_due_
-    # recurrences, or sensor-triggered via its own auto_create_trigger -
-    # this function is the single reset point for both) gets a fresh
-    # due_date anchored to right now, offset by CHORE_KEY_RECUR_DUE_OFFSET_
-    # MINUTES (0 = due the moment it reopens). Replaces whatever due_date
-    # was left over from the previous cycle (or from creation, the very
-    # first time this chore ever recurs) - a stale due_date that never
-    # moved was exactly the reported problem.
+    # Every occurrence of a recurring chore (schedule-based via sweep_due_ recurrences, or sensor-triggered via its own auto_create_trigger
     now = dt_util.utcnow()
     offset_minutes = int(chore.get(CHORE_KEY_RECUR_DUE_OFFSET_MINUTES) or 0)
     chore["due_date"] = (now + timedelta(minutes=offset_minutes)).isoformat()
@@ -970,15 +771,7 @@ def reset_recurring_chore(chores: dict[str, dict[str, Any]], hass: HomeAssistant
 def sweep_due_recurrences(
     chores: dict[str, dict[str, Any]], hass: HomeAssistant, now: Optional[datetime] = None
 ) -> list[dict[str, Any]]:
-    """Poll-tick sweep (see __init__.py's _poll, alongside
-    sweep_overdue_chores) - the other half of plain-schedule recurrence:
-    finds every approved chore whose recur_next_due has arrived and resets
-    it back to open via reset_recurring_chore, exactly as if its
-    auto_create_trigger sensor had just fired. A chore with no recur_type
-    (recur_next_due never got set - see approve_chore) is simply never
-    matched here; it only ever recurs via its own sensor trigger, if any.
-    Returns the list of chores that were actually reset this sweep, so the
-    caller can save/log once for the whole batch."""
+    """Poll-tick sweep (see __init__.py's _poll, alongside sweep_overdue_chores)"""
     now = now or dt_util.utcnow()
     recurred: list[dict[str, Any]] = []
     for chore_id in list(chores.keys()):
@@ -997,15 +790,7 @@ def sweep_due_recurrences(
 def sweep_overdue_chores(
     chores: dict[str, dict[str, Any]], rewards: dict[str, Any], hass: HomeAssistant, now: Optional[datetime] = None
 ) -> list[dict[str, Any]]:
-    """Poll-tick sweep (see __init__.py's _poll): applies each open, past-
-    due chore's overdue_penalty exactly once (tracked by
-    CHORE_KEY_OVERDUE_PENALTY_APPLIED, the same "never re-fire" pattern the
-    reminders poller already uses for its own notified dict) rather than on
-    every tick the chore remains overdue. Does not change `status` - being
-    overdue is a computed condition against due_date, not a pipeline stage
-    - so a penalized chore can still be completed normally afterward.
-    Returns the list of chores that were actually penalized this sweep, so
-    the caller can log/save once for the whole batch."""
+    """Poll-tick sweep (see __init__.py's _poll): applies each open, past- due chore's overdue_penalty exactly once (tracked by CHORE_KEY_OVERDUE_PENALTY_APPLIED"""
     now = now or dt_util.utcnow()
     penalized: list[dict[str, Any]] = []
     for chore in chores.values():
@@ -1101,13 +886,7 @@ def update_chore(
     fields: dict[str, Any],
     is_user_enabled: Optional[IsUserEnabled] = None,
 ) -> dict[str, Any]:
-    """Edit an open chore's details (never while pending_verification/
-    approved - re-open it via reset_recurring_chore or create a fresh one
-    instead, same reasoning as assign_chore). Only touches keys the caller
-    actually passed in `fields`; only fields in _EDITABLE_FIELDS are
-    honored, so e.g. `status`/`streak_count` can never be smuggled in
-    through this path - id/assignment_mode/created_at are permanently
-    fixed once a chore exists."""
+    """Edit an open chore's details (never while pending_verification/ approved - re-open it via reset_recurring_chore or create a fresh one instead"""
     chore = _get_chore(chores, chore_id)
     if chore["status"] != CHORE_STATUS_OPEN:
         raise ChoreError("not_open", "Only an open (not-yet-completed) chore can be edited.")
@@ -1117,9 +896,7 @@ def update_chore(
             raise ChoreError("invalid_title", "A chore needs a title.")
         chore["title"] = title
     if CHORE_KEY_TIMER_MINUTES in fields:
-        # Normalized (and so clearable back to None) exactly like it is on
-        # create - editing a chore's timer to blank must genuinely remove
-        # it, not leave a stale length behind.
+        # Normalized (and so clearable back to None) exactly like it is on create - editing a chore's timer to blank must genuinely remove it
         chore[CHORE_KEY_TIMER_MINUTES] = timer_engine.normalize_timer_minutes(fields[CHORE_KEY_TIMER_MINUTES])
     if CHORE_KEY_ALARM_AUDIENCE in fields:
         chore[CHORE_KEY_ALARM_AUDIENCE] = timer_engine.normalize_alarm_audience(fields[CHORE_KEY_ALARM_AUDIENCE])
@@ -1130,11 +907,7 @@ def update_chore(
         chore[CHORE_KEY_OVERDUE_PENALTY_APPLIED] = False
     if "due_date" in fields:
         chore["due_date"] = fields["due_date"] or None
-        # A new deadline is effectively a new reminder schedule - clear any
-        # already-fired lead times so the (possibly identical) reminder_
-        # minutes list gets a fresh chance against the new due_date, same
-        # "settings changed, un-apply the old bookkeeping" reasoning as
-        # overdue_penalty's own reset right above.
+        # A new deadline is effectively a new reminder schedule - clear any already-fired lead times so the
         chore[CHORE_KEY_REMINDERS_FIRED] = []
     if CHORE_KEY_REMINDER_MINUTES in fields:
         chore[CHORE_KEY_REMINDER_MINUTES] = _normalize_reminder_minutes(fields[CHORE_KEY_REMINDER_MINUTES])
@@ -1144,11 +917,7 @@ def update_chore(
     if CHORE_KEY_QUANTITY_TOTAL in fields:
         new_total = _normalize_quantity_total(fields[CHORE_KEY_QUANTITY_TOTAL])
         chore[CHORE_KEY_QUANTITY_TOTAL] = new_total
-        # Editing the count resets progress on the current (still-open,
-        # per the guard above) cycle - same "definition changed, invalidate
-        # old bookkeeping" reasoning as due_date/reminder_minutes just
-        # above. There's no partial-progress number that would still make
-        # sense against a different total anyway.
+        # Editing the count resets progress on the current (still-open, per the guard above) cycle - same "definition changed
         chore[CHORE_KEY_QUANTITY_REMAINING] = new_total
     if "dependencies" in fields:
         dependencies = [str(d) for d in (fields["dependencies"] or []) if d and d != chore_id]

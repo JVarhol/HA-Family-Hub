@@ -1,106 +1,4 @@
-"""Chore/reward countdown timers.
-
-The household's ask: "We need to be able to make chores and rewards have
-timer associated to them. This would allow some interesting things like 2
-hours of gaming, when you click use reward a timer would start and then a
-timer would go off at the end of the 2 hours. Or if you have a chore thats
-like clean for 30 minutes, at the end of 30 minutes it would set off a
-timer, and either go to approval mode or complete the award."
-
-Same shape as every other *_engine.py in this integration: pure functions
-over a plain dict, no Home Assistant imports, no I/O. Whoever calls these
-owns loading/saving the dict (see chores_websocket_api.py's timers
-commands and __init__.py's sweep registration) - which is what makes all of
-this straightforwardly unit-testable without standing up hass.
-
-The state dict is `{"timers": [ {...}, ... ]}` where each entry is one
-RUNNING timer:
-
-    {
-      "uid":              opaque id, generated here
-      "kind":             "chore" | "reward"
-      "chore_id":         set when kind == "chore"
-      "item_id":          set when kind == "reward" (catalog item id)
-      "title":            snapshot of the chore/reward title, for the
-                          end-of-timer notification - snapshotted on
-                          purpose so a renamed (or deleted) chore still
-                          produces a sensible message
-      "user_id":          whose timer this is
-      "started_at":       ISO-8601 UTC
-      "duration_minutes": int
-      "notify_targets":   list of notify.* targets, snapshotted at start
-                          for the same reason as title
-      "entity_id":        the native HA `timer.*` helper entity
-                          actually running this countdown, when one was
-                          free to adopt at start time. None/absent means
-                          this timer runs off the store plus the backend
-                          sweep exactly as it did before native support
-                          existed. See const.py's TIMER_ENTITY_PREFIX for
-                          the full research note on why Family Hub adopts
-                          native timer entities rather than creating them.
-      "alarm":            snapshot of the owner's own
-                          notifyTimerAlarm profile flag at start time (same
-                          "snapshot, don't re-check later" reasoning as
-                          notify_targets/title above). When true, firing
-                          this timer sends an alarm-style push (Android
-                          alarm-stream channel / iOS critical alert)
-                          instead of the plain one - see
-                          chores_websocket_api.py's _send_alarm_notification.
-      "alarm_audience":   snapshot of the chore's/reward's own
-                          alarm_audience field at start time (chore/reward
-                          timers only - a standalone timer always gets
-                          "self", see ws_start_standalone_timer). Governs
-                          SCOPE (who/what else rings beyond the owner's own
-                          phone) the same way "alarm" above governs STYLE -
-                          see const.py's CHORE_KEY_ALARM_AUDIENCE for the
-                          full picture and chores_websocket_api.py's
-                          _dispatch_timer_alarm for where it's actually
-                          used, at FIRE time rather than here (unlike every
-                          other snapshotted field, WHO currently counts as
-                          a registered alarm device/kiosk is deliberately
-                          read live when the timer fires, not frozen at
-                          start - a speaker or kiosk login added mid-
-                          countdown should still ring).
-      "origin_client_id": an opaque per-browser-tab id the
-                          frontend generates once (sessionStorage-backed,
-                          so it's stable across a reload but gone once that
-                          tab actually closes) and sends when starting a
-                          timer. Lets the ORIGINATING tab - and only that
-                          one, not every open Family Hub screen in the
-                          house - recognize "this is my timer" on its own
-                          local per-second countdown and pop a same-device
-                          sound+modal alarm the instant it hits zero,
-                          without waiting on a round trip to the backend
-                          sweep (which only runs every TIMER_SWEEP_SECONDS
-                          and doesn't push anything to the frontend at
-                          all). Empty/absent for a timer nobody's tab
-                          claimed (or an old timer from before this field
-                          existed) - just means no tab treats it as "mine."
-    }
-
-A timer exists ONLY while it is counting down. Firing or cancelling
-removes it - this store is never a history log, because both outcomes are
-already recorded elsewhere (a fired chore timer's result is on the chore
-itself; a fired reward timer's is in the redemption log).
-
-Two rules worth stating explicitly, because they are decisions and not
-accidents:
-
-  - ONE ACTIVE TIMER PER PERSON PER KIND. Only one
-    running reward timer per person is allowed ("2 hours of gaming" shouldn't be
-    startable twice), and the same reasoning applies to chore timers - you
-    cannot "clean for 30 minutes" at two different things simultaneously,
-    and without the cap a kid can start five timers and wander off. The
-    two kinds are independent of each other though: someone can be 10
-    minutes into a cleaning timer AND have an hour of screen time running,
-    which is a perfectly ordinary afternoon. See has_active_timer.
-  - BLOCK, DON'T QUEUE, when a second one is attempted. Queuing was the
-    alternative, and it's worse here: you would tap Redeem, be charged the
-    stars, and see nothing happen for up to two hours, with no natural
-    place in either card to show a pending queue. Refusing with "you've
-    already got X running, N minutes left" is honest, immediately
-    understandable, and recoverable (cancel it and start the other).
-"""
+"""Chore/reward countdown timers."""
 from __future__ import annotations
 
 import uuid
@@ -258,9 +156,7 @@ def ends_at(timer: dict[str, Any]) -> Optional[datetime]:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     minutes = timer.get("duration_minutes")
-    # this used to truncate via int(minutes), which silently
-    # dropped a sub-minute timer's seconds (0.5 -> 0). timedelta() accepts
-    # a float minutes value directly, so keep it as one.
+    # this used to truncate via int(minutes), which silently dropped a sub-minute timer's seconds (0.5 -> 0).
     try:
         minutes = float(minutes)
     except (TypeError, ValueError):
@@ -269,11 +165,7 @@ def ends_at(timer: dict[str, Any]) -> Optional[datetime]:
 
 
 def remaining_seconds(timer: dict[str, Any], now: Optional[datetime] = None) -> int:
-    """Never negative - an overdue timer reads as 0 left, not -240. The
-    frontend does this same arithmetic itself from started_at +
-    duration_minutes so the visible countdown ticks smoothly between
-    backend sweeps; this copy is what the backend's own expiry check and
-    the "N minutes left" refusal message use."""
+    """Never negative - an overdue timer reads as 0 left, not -240."""
     end = ends_at(timer)
     if end is None:
         return 0
@@ -310,22 +202,14 @@ def start_timer(
     nothing started."""
     if kind not in TIMER_KINDS:
         raise TimerError("invalid_kind", f"Unknown timer kind: {kind!r}")
-    # a standalone timer may be UNASSIGNED - "optional assign to
-    # user" - because plenty of household timers belong to the kitchen
-    # rather than to a person. Chore and reward timers still must have an
-    # owner: a chore timer completes somebody's chore and a reward timer
-    # spends somebody's stars, so "nobody's" is meaningless for both.
+    # a standalone timer may be UNASSIGNED - "optional assign to user"
     if not user_id and kind != TIMER_KIND_STANDALONE:
         raise TimerError("no_user", "A timer needs to belong to somebody.")
     minutes = normalize_timer_minutes(duration_minutes)
     if minutes is None:
         raise TimerError("invalid_duration", "That timer needs a length in minutes.")
 
-    # An unassigned standalone timer has nobody to be "the one running
-    # timer" for, so the per-person cap simply doesn't apply - a household
-    # can have the oven, the pasta and a board game all counting down at
-    # once, which is the whole point of the board. An ASSIGNED standalone
-    # timer is capped like the others.
+    # An unassigned standalone timer has nobody to be "the one running timer" for, so the per-person cap simply doesn't apply
     existing = has_active_timer(state, user_id, kind) if user_id else None
     if existing is not None:
         left = max(1, round(remaining_seconds(existing, now) / 60))

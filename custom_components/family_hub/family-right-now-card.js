@@ -1,16 +1,84 @@
-// ---- Family Hub shared translation helper (v1.168.76) -------------------
-// __fhT(key, english, vars, mode) looks a string up in Home Assistant's
-// loaded "fh_ui" translations (translations/<language>.json → fh_ui.text.*)
-// and falls back to the English text written right here in the source.
-// vars fill %0%, %1%, ... placeholders. mode "h" escapes the translated
-// text (not the vars, which callers already prepared) for use inside HTML
-// markup or an attribute value. Identical copy in every Family Hub card and
-// in the Theme Builder panel - whichever loads first sets it up.
-// __fhSweep(root) re-translates markup that was drawn before the language
-// file finished loading (elements tagged data-fh-t / data-fh-title /
-// data-fh-placeholder / data-fh-aria / data-fh-alt), but only while they
-// still show the English original, so text a card later replaced with
-// something else is never overwritten.
+// Holiday themes, shared by every Family Hub card: a holiday background can switch the theme
+// while it's showing. The backend works out the dates (family_hub/holiday_themes/get); this
+// checks today against them, refreshes every 30 minutes, and tells cards to re-theme when the
+// answer changes (including at midnight).
+if (!window.__fhHolidayTheme) {
+  window.__fhHolidayTheme = (function () {
+    let schedule = null;
+    let fetchedAt = 0;
+    let loading = null;
+    let midnightTimer = null;
+    let lastId = null;
+    const listeners = new Set();
+    const todayKey = () => {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    };
+    const span = (s) => (Date.parse(s.end) - Date.parse(s.start)) || 0;
+    function current() {
+      if (!Array.isArray(schedule)) return "";
+      const k = todayKey();
+      // the most specific wins: a day beats a week, a week beats a month (same rule as the backgrounds)
+      const hits = schedule.filter((s) => s && s.theme_id && s.start <= k && k <= s.end).sort((a, b) => span(a) - span(b));
+      return hits.length ? hits[0].theme_id : "";
+    }
+    function notify() {
+      const id = current();
+      if (id === lastId) return;
+      lastId = id;
+      listeners.forEach((cb) => {
+        try {
+          cb();
+        } catch (e) {
+          // one card's error never stops the others
+        }
+      });
+    }
+    function armMidnight() {
+      clearTimeout(midnightTimer);
+      const now = new Date();
+      const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+      midnightTimer = setTimeout(() => {
+        notify();
+        armMidnight();
+      }, next.getTime() - now.getTime());
+    }
+    function refresh(hass) {
+      if (!hass || !hass.connection) return Promise.resolve();
+      if (loading) return loading;
+      loading = hass.connection
+        .sendMessagePromise({ type: "family_hub/holiday_themes/get" })
+        .then((r) => {
+          schedule = (r && Array.isArray(r.schedule) && r.schedule) || [];
+        })
+        .catch(() => {
+          schedule = schedule || [];
+        })
+        .then(() => {
+          fetchedAt = Date.now();
+          loading = null;
+          armMidnight();
+          notify();
+        });
+      return loading;
+    }
+    return {
+      themeId(hass) {
+        if (hass && !loading && Date.now() - fetchedAt > 30 * 60 * 1000) refresh(hass);
+        return current();
+      },
+      subscribe(cb) {
+        listeners.add(cb);
+        return () => listeners.delete(cb);
+      },
+      invalidate(hass) {
+        fetchedAt = 0;
+        return refresh(hass);
+      },
+    };
+  })();
+}
+// --- Family Hub shared translation helper (v1.168.76) ------------------- __fhT(key, english, vars
 var __fhI18n = (window.__familyHubI18n = window.__familyHubI18n || { hass: null, fb: {}, loading: null, loaded: null });
 var __fhEsc = function (s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -75,25 +143,7 @@ var __fhSweep = function (root) {
   document.head.appendChild(link);
 })();
 
-// A small, fully independent companion card - "what's going on for
-// everyone, right now". Reads the exact same settings_entity (the shared
-// "Settings" to-do item) as the full Family Week Calendar card and
-// family-today-card.js, so it automatically matches the household's
-// people/colors/badges/theme with nothing new to configure. Deliberately
-// built the same way family-today-card.js is - an independent card that
-// fetches its own data straight from hass - rather than the "find a live
-// calendar card on the page and clone its DOM" approach the new top bar
-// card (v1.168.17) uses: that approach exists there only because the top
-// bar has to mirror another card's exact interactive buttons. This card
-// renders its own computed content, so it works on any dashboard even
-// with no full calendar card present at all, same as the Today card.
-//
-// Each person's presence pill reads settings.userProfiles[userId].
-// presenceEntity (see const.py's SETTINGS_KEY_USER_PROFILES docstring) -
-// resolved to a calendar entity the same way primaryCalendar's color
-// override already is: a profile whose primaryCalendar matches this
-// person's calendar entity "owns" that person row, and (only when set)
-// its own presenceEntity is what this card reads for the Home/Away pill.
+// A small, fully independent companion card - "what's going on for everyone, right now".
 
 if (!window.__familyHubThemeCache) {
   window.__familyHubThemeCache = (function () {
@@ -134,25 +184,9 @@ class FamilyRightNowCard extends HTMLElement {
       weather_entity: "weather.forecast_home",
     };
   }
-  // Household ask: "we also got rid of the settings todo card [...] this
-  // should not be an option of the family right now card" - the shared
-  // Settings to-do entity is now a fixed internal implementation detail
-  // (see FIXED_SETTINGS_ENTITY below), not something exposed for someone
-  // to pick on this card's own Edit Card screen, since there's no longer
-  // any visible settings to-do card on the dashboard for them to point it
-  // at. The entity id itself hasn't changed underneath - only whether a
-  // person can see/edit it here.
   static _configSchema() {
     return [
       { name: "title", selector: { text: {} } },
-      // Household ask: "the right now card needs a way to select what
-      // people are on it" - picks straight from the same calendar.*
-      // entities every person row already keys off of (person.entity -
-      // see _getPeople/_normalizeSettings), so there's nothing new to
-      // configure in Settings, just filter this card's own display of
-      // whoever's already set up there. Left empty (the default) shows
-      // everyone, same as every dashboard using this card before this
-      // option existed.
       { name: "people_entities", selector: { entity: { domain: "calendar", multiple: true } } },
       { name: "weather_entity", selector: { entity: { domain: "weather" } } },
       { name: "show_clock", selector: { boolean: {} } },
@@ -192,10 +226,7 @@ class FamilyRightNowCard extends HTMLElement {
   static getConfigElement() {
     return document.createElement("family-right-now-card-editor");
   }
-  // Fixed internal settings store - not a config field (see _configSchema's
-  // own comment above). Reused verbatim from the pre-existing
-  // config.settings_entity default of every other Family Hub companion
-  // card, so this still reads the exact same household Settings data.
+  // Fixed internal settings store - not a config field (see _configSchema's own comment above).
   static FIXED_SETTINGS_ENTITY = "todo.family_calendar_settings";
   setConfig(config) {
     config = config || {};
@@ -211,34 +242,11 @@ class FamilyRightNowCard extends HTMLElement {
       calendar_dashboard_path: (config.calendar_dashboard_path || "").toString().trim(),
       calendar_button_label: (config.calendar_button_label || "").toString().trim(),
       theme_override: typeof config.theme_override === "string" ? config.theme_override : "",
-      // Household ask: "should use the same background as the calendar
-      // card" - set ONLY by the Family Week Calendar card's own
-      // _syncRightNowTopBarMount when it creates this card embedded in
-      // its own top bar/sidebar (see .card-root.embedded below) -
-      // deliberately not part of _configSchema/getStubConfig above, so
-      // a standalone placement of this card on an ordinary dashboard is
-      // completely unaffected and keeps its own normal card look.
       embedded: config.embedded === true,
-      // v1.168.61 (Right Now bar pass): when embedded, the Family Week
-      // Calendar card now TELLS this card how big to be and what shape it
-      // is (a horizontal "bar" across the top/phone strip, or a vertical
-      // "sidebar"), instead of this card guessing from its own measured
-      // height (the rows-1/2/3 ResizeObserver tiers - still used, unchanged,
-      // for every standalone placement). Guessing from height is what
-      // caused the fixed-height bar to leave dead space under the tiles on
-      // Large and to clip tiles on phones/portrait tablets.
+      // (Right Now bar pass): when embedded, the Family Week Calendar card now TELLS this card how big to be and what shape it is
       embedded_size: ["small", "medium", "large"].includes(config.embedded_size) ? config.embedded_size : "",
       embedded_layout: ["bar", "sidebar"].includes(config.embedded_layout) ? config.embedded_layout : "",
-      // v1.168.59: the embedded top bar's people, already resolved by the
-      // Family Week Calendar card's own _getPeople() (profile-only members,
-      // their extra calendars, profile-locked colors, minus the top bar's
-      // exclusion list). Before this, the embedded card re-derived people
-      // from settings.people alone, so a member set up only from the Users
-      // tab never got a tile, extra calendars were ignored, colors could
-      // differ from the calendar columns, and excluding everyone produced
-      // an empty people_entities list - which this card reads as "show
-      // everyone". null (the default, and every standalone placement)
-      // keeps the original settings.people behavior.
+      // the embedded top bar's people, already resolved by the Family Week Calendar card's own _getPeople() (profile-only members
       people_override: Array.isArray(config.people_override)
         ? config.people_override
             .filter((p) => p && typeof p.entity === "string" && p.entity)
@@ -259,19 +267,14 @@ class FamilyRightNowCard extends HTMLElement {
     if (this._firstLoadPromise === undefined) this._firstLoadPromise = null;
     if (!this._built) this._build();
     this._applyEmbeddedLayoutClasses();
-    // A changed people set (someone un-hidden in the calendar card's top
-    // bar Settings, a calendar linked/unlinked) needs that person's events
-    // fetched now, not up to a minute later on the next poll.
+    // A changed people set (someone un-hidden in the calendar card's top bar Settings
     const peopleSig = JSON.stringify(this._config.people_override ? this._config.people_override.map((p) => [p.entity, p.extraEntities]) : this._config.people_entities);
     const peopleChanged = this._peopleSig !== undefined && this._peopleSig !== peopleSig;
     this._peopleSig = peopleSig;
     if (peopleChanged && this._hass && this._settingsCache) this._fetchEvents();
     this._render();
   }
-  // v1.168.61: see embedded_size/embedded_layout in setConfig. Only ever
-  // adds the emb-* classes for an embedded card that was given an explicit
-  // size; a standalone card (or an older calendar card that doesn't send
-  // these) keeps the measured rows-1/2/3 tiers exactly as before.
+  // see embedded_size/embedded_layout in setConfig.
   _usesExplicitEmbeddedLayout() {
     return !!(this._config && this._config.embedded && this._config.embedded_size && this._config.embedded_layout);
   }
@@ -291,10 +294,7 @@ class FamilyRightNowCard extends HTMLElement {
     if (first) {
       this._firstLoadPromise = this._initFirstLoad();
     } else {
-      // presence pills read this._hass.states directly - no separate
-      // fetch needed, Home Assistant already pushes a fresh hass object
-      // whenever a watched entity's state changes - so every ordinary
-      // hass update re-renders the pills live.
+      // presence pills read this._hass.states directly - no separate fetch needed
       this._render();
     }
   }
@@ -323,15 +323,17 @@ class FamilyRightNowCard extends HTMLElement {
     if (!this._hass || typeof this._hass.loadBackendTranslation !== "function") return;
     const lang = this._baseLanguage(this._hass.language);
     if (this._i18nLoadedLang === lang) {
-      // v1.168.67 fix (GitHub issue #10 - "German localization on buttons
-      // only after click on settings"): Home Assistant hands cards the hass
-      // object that actually knows the newly loaded strings a moment AFTER
-      // loadBackendTranslation resolves, so the redraw in .then() below
-      // still ran with the old, English-only localize. Redraw once more
-      // whenever a new localize arrives for the already-loaded language.
+      // Home Assistant hands cards the hass object that actually knows the newly loaded strings a moment AFTER loadBackendTranslation resolves
       if (this._hass.localize !== this._i18nLocalize) {
         this._i18nLocalize = this._hass.localize;
-        this._onTranslationsReady();
+        // redraw only when our strings changed - a new localize function alone made cards flicker (GitHub issue #16)
+        let probe = "";
+        try { probe = this._hass.localize("component.family_hub.fh_ui.nav.settings") || ""; } catch (e) { probe = ""; }
+        probe = `${this._hass.language}|${probe}`;
+        if (probe !== this._i18nLastProbe) {
+          this._i18nLastProbe = probe;
+          this._onTranslationsReady();
+        }
       }
       return;
     }
@@ -350,9 +352,7 @@ class FamilyRightNowCard extends HTMLElement {
         console.warn('[family_hub] failed to load "' + lang + '" translations - staying on English fallback text', e);
       });
   }
-  // v1.168.67 (GitHub issue #10): dates and times follow the Home
-  // Assistant user's own language and time format (Profile > Language /
-  // Time format), not the browser's.
+  // (GitHub issue #10): dates and times follow the Home Assistant user's own language and time format (Profile > Language / Time format)
   _uiLocale() {
     const h = this._hass;
     const lang = (h && h.locale && h.locale.language) || (h && h.language) || "";
@@ -442,9 +442,7 @@ class FamilyRightNowCard extends HTMLElement {
       }, 60 * 1000);
     }
     if (!this._tickInterval) {
-      // A separate 1-second tick keeps the clock, the "Free"/"until"
-      // progress bars, and current-vs-next status live between the
-      // once-a-minute data re-fetches above, without hitting hass again.
+      // A separate 1-second tick keeps the clock, the "Free"/"until" progress bars
       this._tickInterval = setInterval(() => this._render(), 1000);
     }
   }
@@ -480,27 +478,9 @@ class FamilyRightNowCard extends HTMLElement {
       this._sizeObserver = null;
     }
   }
-  // Household ask: "we want the right now to scale to fit its space 1
-  // row, 2 row, 3 row etc" (follow-up on the earlier, now superseded,
-  // single on/off "compact" breakpoint). Watches this card's own
-  // rendered height (not the viewport, not a fixed breakpoint - whatever
-  // the dashboard's grid/layout actually assigned it) and steps through
-  // explicit size tiers, trimming progressively more chrome the more
-  // it's squeezed instead of one abrupt cutover. Thresholds are tuned to
-  // HA's own sections-view row sizing (see below). A ResizeObserver
-  // rather than a one-time check because a dashboard can resize this
-  // card's row/column span live in the layout editor without a page
-  // reload.
   _startSizeObserving() {
     if (this._sizeObserver || typeof ResizeObserver === "undefined") return;
-    // HA's sections view sizes a `rows: N` card at 64*N - 8 px (the
-    // same formula the topbar card's own "2 rows = 120px" height cap is
-    // built on: 1 row=56px, 2 rows=120px, 3 rows=184px, 4 rows=248px).
-    // Thresholds sit at the midpoint between consecutive row counts so
-    // each real row assignment lands squarely inside its own tier,
-    // rather than a round-number guess that let an actual 3-row card
-    // (184px) fall just short of the rows-3 tier and get stuck in
-    // rows-2 instead.
+    // HA's sections view sizes a `rows: N` card at 64*N - 8 px
     const ROWS_1_MAX = 88;  // below the 1-row/2-row midpoint (56, 120)
     const ROWS_2_MAX = 152; // below the 2-row/3-row midpoint (120, 184)
     const ROWS_3_MAX = 216; // below the 3-row/4-row midpoint (184, 248)
@@ -523,10 +503,7 @@ class FamilyRightNowCard extends HTMLElement {
   getCardSize() {
     return 3;
   }
-  // --- Theme (same resolution/caching convention as every other themed
-  // Family Hub card file - see family-today-card.js's own identical copy
-  // for the full "why" comments; kept byte-equivalent in spirit, trimmed
-  // of the per-device-override lookup this card has no concept of). ---
+  // -- Theme (same resolution/caching convention as every other themed Family Hub card file
   _defaultTheme() {
     return {
       colors: {
@@ -549,16 +526,14 @@ class FamilyRightNowCard extends HTMLElement {
     return {
       people: [],
       userProfiles: {},
+      memberUserIds: [],
       theme: this._defaultTheme(),
       useGlobalTheme: true,
       globalThemeId: "slate",
       discreetModeEnabled: false,
     };
   }
-  // Lenient/forward-compatible, same as family-today-card.js's own
-  // _normalizeSettings - only reads the handful of fields this card
-  // actually needs (people, a trimmed userProfiles, theme); anything else
-  // in the shared settings blob is simply ignored.
+  // Lenient/forward-compatible, same as family-today-card.js's own _normalizeSettings
   _normalizeSettings(parsed) {
     const defaults = this._defaultSettings();
     if (!parsed || typeof parsed !== "object") return defaults;
@@ -580,13 +555,10 @@ class FamilyRightNowCard extends HTMLElement {
     const useGlobalTheme = typeof parsed.useGlobalTheme === "boolean" ? parsed.useGlobalTheme : defaults.useGlobalTheme;
     const globalThemeId = typeof parsed.globalThemeId === "string" ? parsed.globalThemeId : defaults.globalThemeId;
     const discreetModeEnabled = typeof parsed.discreetModeEnabled === "boolean" ? parsed.discreetModeEnabled : defaults.discreetModeEnabled;
-    return { people, userProfiles, theme: { colors, fonts }, useGlobalTheme, globalThemeId, discreetModeEnabled };
+    const memberUserIds = Array.isArray(parsed.memberUserIds) ? parsed.memberUserIds.filter((u) => typeof u === "string" && u) : [];
+    return { people, userProfiles, memberUserIds, theme: { colors, fonts }, useGlobalTheme, globalThemeId, discreetModeEnabled };
   }
-  // Only ever needs primaryCalendar (to find which profile "owns" a
-  // calendar row) and presenceEntity (what to show) out of the full
-  // user-profile shape family-week-calendar-card.js's own
-  // _normalizeUserProfiles knows about - every other profile field this
-  // card doesn't render is simply dropped.
+  // Only ever needs primaryCalendar (to find which profile "owns" a calendar row) and presenceEntity
   _normalizeUserProfiles(raw) {
     const result = {};
     if (!raw || typeof raw !== "object") return result;
@@ -595,10 +567,9 @@ class FamilyRightNowCard extends HTMLElement {
       if (!p || typeof p !== "object") return;
       result[userId] = {
         primaryCalendar: typeof p.primaryCalendar === "string" ? p.primaryCalendar.trim() : "",
+        extraCalendars: Array.isArray(p.extraCalendars) ? p.extraCalendars.filter((e) => typeof e === "string" && e.trim()).map((e) => e.trim()) : [],
+        color: typeof p.color === "string" && /^#[0-9a-fA-F]{6}$/.test(p.color) ? p.color : "",
         presenceEntity: typeof p.presenceEntity === "string" ? p.presenceEntity.trim() : "",
-        // Household ask: "make Right Now support multiple sensors too,
-        // not just presence" - same shape/order-preserving rules as the
-        // full card's own _normalizeUserProfiles copy of this field.
         extraSensors: Array.isArray(p.extraSensors)
           ? p.extraSensors.map((e) => (typeof e === "string" ? e.trim() : "")).filter(Boolean)
           : [],
@@ -609,14 +580,7 @@ class FamilyRightNowCard extends HTMLElement {
   _getSettings() {
     return this._settingsCache || this._defaultSettings();
   }
-  // Discreet Mode - household-wide toggle (settings.discreetModeEnabled),
-  // same shared setting family-week-calendar-card.js's own Discreet Mode
-  // reads and writes from its Settings modal: "hide all sense of
-  // information" by stripping event/reminder TEXT and person NAMES while
-  // leaving the colored tiles/times themselves visible. Ported here with
-  // the exact same semantics/numbering (never re-derived independently)
-  // so a household that turns it on sees consistent redaction across
-  // every Family Hub card, this one included.
+  // Discreet Mode - household-wide toggle (settings.discreetModeEnabled)
   _isDiscreetMode() {
     return !!this._getSettings().discreetModeEnabled;
   }
@@ -625,19 +589,13 @@ class FamilyRightNowCard extends HTMLElement {
   _discreetText(raw) {
     return this._isDiscreetMode() ? "" : raw;
   }
-  // Stable per-entity "Person N" label, numbered by this person's own
-  // position in the full people list every caller already has - so tiles
-  // stay as distinguishable from each other as they were with real names,
-  // without revealing who's who. Returns the real name unchanged when
-  // discreet mode is off.
+  // Stable per-entity "Person N" label, numbered by this person's own position in the full people list every caller already has
   _discreetPersonName(person, people) {
     if (!this._isDiscreetMode() || !person) return person ? person.name : person;
     const idx = (people || []).findIndex((p) => p.entity === person.entity);
     return `Person ${idx >= 0 ? idx + 1 : "?"}`;
   }
-  // Same "Person N" numbering, but just the bare number as a string - for
-  // the avatar's single-letter initial, which would otherwise still spell
-  // out a name's first letter even with the full name hidden elsewhere.
+  // Same "Person N" numbering, but just the bare number as a string - for the avatar's single-letter initial
   _discreetInitial(person, people) {
     if (!this._isDiscreetMode() || !person) return null;
     const idx = (people || []).findIndex((p) => p.entity === person.entity);
@@ -652,23 +610,60 @@ class FamilyRightNowCard extends HTMLElement {
       return this._config.people_override.map((p, i) => ({ ...p, color: p.color || palette[i % palette.length] }));
     }
     const selected = (this._config && this._config.people_entities) || [];
-    return (settings.people || [])
-      .filter((p) => p && p.entity)
-      // Empty selection (the default) shows everyone - see _configSchema's
-      // own comment on this option.
+    // Empty selection (the default) shows everyone - see _configSchema's own comment on this option.
+    return FamilyRightNowCard.householdPeople(settings, this._userNames || {})
       .filter((p) => !selected.length || selected.includes(p.entity))
-      .map((p, i) => ({
-        entity: p.entity,
-        name: p.name || p.entity,
-        color: p.color || palette[i % palette.length],
-        badges: Array.isArray(p.badges) ? p.badges : [],
-      }));
+      .map((p, i) => Object.assign({}, p, { color: p.color || palette[i % palette.length] }));
   }
-  // {calendarEntity -> presenceEntity}, built the same way the full
-  // card's own _primaryCalendarColorByEntity derives a per-entity map from
-  // whichever profile's primaryCalendar links to it - see that file's own
-  // comment on the pattern. Only entries with both a link AND a
-  // presenceEntity actually set are included.
+  // The people shown: household members (Settings > Users) with their own calendar(s), like the
+  // calendar's "Also for" - so a shared calendar such as Holidays isn't a person. Each is keyed by
+  // their main calendar (so card configs that pick people by calendar keep working). Falls back to
+  // the calendar list when nobody's been linked to a calendar yet.
+  static householdPeople(settings, names) {
+    const rows = (settings && Array.isArray(settings.people) ? settings.people : []).filter((p) => p && p.entity);
+    const byEntity = {};
+    rows.forEach((p) => {
+      byEntity[p.entity] = p;
+    });
+    const profiles = (settings && settings.userProfiles) || {};
+    const out = [];
+    const seen = new Set();
+    ((settings && settings.memberUserIds) || []).forEach((uid) => {
+      const profile = profiles[uid] || {};
+      const entity = profile.primaryCalendar;
+      if (!entity || !byEntity[entity] || seen.has(entity)) return;
+      seen.add(entity);
+      const row = byEntity[entity];
+      out.push({
+        entity,
+        userId: uid,
+        name: (names && names[uid]) || row.name || entity,
+        color: profile.color || row.color || "",
+        badges: Array.isArray(row.badges) ? row.badges : [],
+        extraEntities: (profile.extraCalendars || []).filter((e) => e !== entity),
+      });
+    });
+    if (out.length) return out;
+    // a holiday calendar (Settings > Calendars > Holidays, or one named "holiday") isn't a person
+    const isHoliday = (p) => (typeof p.holiday === "boolean" ? p.holiday : /holiday|feiertag|festivo|feriado|f[ée]ri[ée]|feestdag|święt|swiet/i.test(`${p.entity} ${p.name || ""}`));
+    return rows.filter((p) => !isHoliday(p)).map((p) => ({ entity: p.entity, name: p.name || p.entity, color: p.color || "", badges: Array.isArray(p.badges) ? p.badges : [] }));
+  }
+  async _fetchUserNames() {
+    if (!this._hass || this._userNamesLoaded) return;
+    this._userNamesLoaded = true;
+    try {
+      const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/list_users" });
+      const names = {};
+      ((result && result.users) || []).forEach((u) => {
+        if (u && u.id) names[u.id] = u.name || u.id;
+      });
+      this._userNames = names;
+      this._render();
+    } catch (e) {
+      this._userNamesLoaded = false;
+    }
+  }
+  // {calendarEntity -> presenceEntity}, built the same way the full card's own _primaryCalendarColorByEntity derives a per-entity map from
   _presenceByCalendarEntity() {
     const settings = this._getSettings();
     const map = {};
@@ -679,9 +674,7 @@ class FamilyRightNowCard extends HTMLElement {
     });
     return map;
   }
-  // Sibling of _presenceByCalendarEntity above, same linkage - any
-  // entity at all (battery sensors, door sensors, whatever a household
-  // wants a quick glance at next to this person's presence pill).
+  // Sibling of _presenceByCalendarEntity above, same linkage - any entity at all (battery sensors, door sensors
   _sensorsByCalendarEntity() {
     const settings = this._getSettings();
     const map = {};
@@ -694,22 +687,12 @@ class FamilyRightNowCard extends HTMLElement {
     });
     return map;
   }
-  // A battery sensor is identified by device_class (the reliable signal
-  // when hass is available) or, failing that, an entity id ending in
-  // "_battery" (still correct often enough to be worth the fallback for
-  // a sensor whose state object hasn't loaded yet). Anything else is
-  // just shown as its raw state + unit.
+  // A battery sensor is identified by device_class (the reliable signal when hass is available) or, failing that
   _isBatterySensor(entity, stateObj) {
     if (stateObj && stateObj.attributes && stateObj.attributes.device_class === "battery") return true;
     return /_battery$/i.test(entity);
   }
-  // Small pill for one configured sensor's current value - battery
-  // sensors get a numeric check parsed out (so "72" and "72%" both
-  // render consistently as "72%") and a low-battery color below 20%,
-  // same threshold Home Assistant's own low-battery binary sensors use
-  // as a rule of thumb. Anything else just shows state + unit_of_measurement
-  // as-is (a friendly-enough default for a generic sensor with no
-  // special-cased rendering of its own).
+  // Small pill for one configured sensor's current value - battery sensors get a numeric check parsed out
   _sensorPillHtml(entity) {
     if (!entity || !this._hass || !this._hass.states || !this._hass.states[entity]) return "";
     const stateObj = this._hass.states[entity];
@@ -725,12 +708,6 @@ class FamilyRightNowCard extends HTMLElement {
     if (raw === undefined || raw === null || raw === "") return "";
     return `<span class="sensor-pill" data-entity="${entity}">${raw}${unit ? ` ${unit}` : ""}</span>`;
   }
-  // Household ask: "can the pills support actions like toggle, more
-  // info etc" - a tap toggles an entity whose domain actually has an
-  // on/off state worth flipping (same default Home Assistant's own tile
-  // card uses: toggle for these domains, more-info for everything
-  // else) and otherwise opens the standard Home Assistant more-info
-  // dialog, same as tapping any entity row elsewhere in the frontend.
   _isToggleableEntity(entity) {
     const domain = (entity.split(".")[0] || "").toLowerCase();
     return ["switch", "light", "fan", "input_boolean", "siren", "humidifier", "valve", "cover"].includes(domain);
@@ -743,10 +720,7 @@ class FamilyRightNowCard extends HTMLElement {
     }
     this._fireMoreInfo(entity);
   }
-  // Standard Home Assistant frontend convention for a custom card to
-  // open the built-in more-info dialog without reimplementing it -
-  // composed:true so the event crosses this card's own shadow DOM
-  // boundary and reaches the dashboard's listener for it.
+  // Standard Home Assistant frontend convention for a custom card to open the built-in more-info dialog without reimplementing it
   _fireMoreInfo(entity) {
     const event = new CustomEvent("hass-more-info", {
       bubbles: true,
@@ -779,6 +753,13 @@ class FamilyRightNowCard extends HTMLElement {
       const list = Array.isArray(this._globalThemes) ? this._globalThemes : [];
       const g = list.find((t) => t && t.id === cardOverride);
       if (g) return this._themeFromGlobalEntry(g);
+    }
+    // a holiday background set to change the theme wins while it's showing
+    if (window.__fhHolidayTheme) {
+      if (!this.__fhHolidaySub) this.__fhHolidaySub = window.__fhHolidayTheme.subscribe(() => { if (this.isConnected) this._applyThemeVars(); });
+      const holidayThemeId = window.__fhHolidayTheme.themeId(this._hass);
+      const hg = holidayThemeId && (this._globalThemes || []).find((t) => t && t.id === holidayThemeId);
+      if (hg) return this._themeFromGlobalEntry(hg);
     }
     if (!settings.useGlobalTheme || !settings.globalThemeId) return local;
     const list = Array.isArray(this._globalThemes) ? this._globalThemes : [];
@@ -813,9 +794,7 @@ class FamilyRightNowCard extends HTMLElement {
   _applyThemeVars() {
     const settings = this._getSettings();
     const theme = this._resolveTheme(settings);
-    // v1.168.79 - Liquid Glass support (cardOpacity/glassBlur), same as
-    // the other Family Hub cards: translucent card color + a blur on the
-    // person tiles. 100/0 (every other theme) leaves them exactly as before.
+    // Liquid Glass support (cardOpacity/glassBlur), same as the other Family Hub cards: translucent card color + a blur on the person tiles.
     const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
     const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
     this.classList.toggle("fh-glass", glassBlur > 0 || cardOpacity < 100);
@@ -838,27 +817,12 @@ class FamilyRightNowCard extends HTMLElement {
       "--fs-chip": `${theme.fonts.chip}px`,
       "--fs-wx-temp": `${theme.fonts.wxTemp}px`,
     };
-        // v1.168.79 - the theme's own background image (the Liquid Glass
-    // aurora, or any image a theme sets in Theme Builder) now paints
-    // behind this card too, not just the calendar/Today cards - without
-    // it a glass theme's translucent surfaces only had a flat color to
-    // show through, so nothing looked like glass. Always set (to "none"
-    // when there's no image) so a cached earlier theme can't leave a
-    // stale image behind.
+        // the theme's own background image (the Liquid Glass aurora, or any image a theme sets in Theme Builder) now paints behind this card too
     Object.assign(vars, this._fhThemeBgVars(theme.background));
     Object.keys(vars).forEach((name) => this.style.setProperty(name, vars[name]));
     if (window.__familyHubThemeCache) window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
     this._applyHeaderContrast(theme.colors.bg);
   }
-  // v1.168.66 - household ask: "the heading for right now should be
-  // background depending and be white if the background is dark". The
-  // heading (title, clock, date, weather) sits straight on the background
-  // (this card's own, or the calendar's when embedded - the same theme
-  // color either way), while a theme's text color is often picked for
-  // its light cards rather than a dark page background. So the heading
-  // alone turns white whenever that background color is dark. A photo
-  // background (holiday image) is still decided by the calendar's own
-  // .bg-dark sampling instead (see the CSS).
   _isDarkColor(color) {
     if (typeof color !== "string") return null;
     const c = color.trim().toLowerCase();
@@ -988,21 +952,13 @@ class FamilyRightNowCard extends HTMLElement {
   }
   async _fetchSettings() {
     if (!this._hass) return;
-    // v1.168.61 fix: this card used to read ONLY the legacy "Settings" item
-    // on the to-do list - which stopped being updated when Settings moved
-    // into Family Hub's own storage (family_hub/get_settings - see
-    // __init__.py's _ws_set_settings: "the old to-do item is left untouched
-    // ... not kept in sync going forward"). So it was working from a frozen,
-    // often empty copy: no presence/sensor pills (userProfiles), stale
-    // people and badges. Now the live store comes first, the same source
-    // the calendar and screensaver cards already use; the legacy item is
-    // only read when the store has nothing (an older backend, or an
-    // install that has never saved Settings yet).
+    // this card used to read ONLY the legacy "Settings" item on the to-do list
     try {
       const live = await this._hass.connection.sendMessagePromise({ type: "family_hub/get_settings" });
       const liveSettings = live && live.settings && typeof live.settings === "object" ? live.settings : null;
       if (liveSettings && Object.keys(liveSettings).length) {
         this._settingsCache = this._normalizeSettings(liveSettings);
+        if (!(this._config && Array.isArray(this._config.people_override))) this._fetchUserNames();
         this._applyThemeVars();
         this._render();
         return;
@@ -1046,13 +1002,7 @@ class FamilyRightNowCard extends HTMLElement {
     if (part.date) return new Date(part.date + "T00:00:00");
     return null;
   }
-  // A keyword match against a person's own badges (same shape/semantics
-  // as family-today-card.js's own agenda badge matching): a "hideMatch"
-  // keyword drops the event from this card entirely (e.g. a background
-  // custody-schedule calendar), while a "match" keyword just prefixes the
-  // event's own title with that badge's text (an emoji, typically) -
-  // unlike the Today card's agenda, this card never collapses the whole
-  // event into a separate bubble, since the icon IS the event line here.
+  // A keyword match against a person's own badges (same shape/semantics as family-today-card.js's own agenda badge matching): a "hideMatch"
   _badgePrefixFor(person, summaryLower) {
     for (const b of person.badges || []) {
       const match = (b.match || "").trim().toLowerCase();
@@ -1060,25 +1010,13 @@ class FamilyRightNowCard extends HTMLElement {
     }
     return "";
   }
-  // Household ask: "we currently have a do not include in digest button
-  // for badges, this should also keep it out of the family now card" -
-  // same digestHide filtering __init__.py's own _build_daily_digest_message
-  // already applies to the daily digest (see that function's docstring):
-  // a badge with digestHide=True hides the event when EITHER its own
-  // `match` (the text that makes the badge show) or its `hideMatch` (the
-  // text that already hides the event from the calendar grid) is found
-  // in the event summary - kept byte-equivalent in spirit to that
-  // backend check so "hide from digest" means the same thing everywhere.
   _isHiddenByBadge(person, summaryLower) {
     return (person.badges || []).some((b) => {
       const hideMatch = (b.hideMatch || "").trim().toLowerCase();
       // hideMatch always hides, independent of digestHide (pre-existing
       // behavior - a background custody-schedule calendar, say).
       if (hideMatch && summaryLower.includes(hideMatch)) return true;
-      // digestHide additionally hides on its own `match` keyword (the
-      // same one that would otherwise just prefix the event with this
-      // badge's text) - see this method's own comment above for why
-      // that mirrors the backend digest's identical check exactly.
+      // digestHide additionally hides on its own `match` keyword (the same one that would otherwise just prefix the event with this badge's text)
       if (b.digestHide) {
         const match = (b.match || "").trim().toLowerCase();
         if (match && summaryLower.includes(match)) return true;
@@ -1086,38 +1024,23 @@ class FamilyRightNowCard extends HTMLElement {
       return false;
     });
   }
-  // Same (calendar_entity, start, summary) composite identity
-  // __init__.py's own _event_override_key uses (calendar.get_events has
-  // no stable uid to key off instead) - matching it exactly is what lets
-  // this card look up the same "Also for" overrides the main calendar
-  // card's event-info popup saves.
+  // Same (calendar_entity, start, summary) composite identity __init__.py's own _event_override_key uses
   _eventOverrideKey(calendarEntity, start, summary) {
     const startTs = Math.floor((start instanceof Date ? start.getTime() : start) / 1000);
     return `${calendarEntity}|${startTs}|${summary}`;
   }
-  // Fetched alongside events every refresh (see _fetchEvents below) -
-  // same "Also for" override store the main calendar card's event-info
-  // popup writes to (family_hub/set_event_people_override), read here so
-  // this card can merge a tagged event onto every OTHER person it's
-  // tagged for, not just color it differently.
+  // Fetched alongside events every refresh (see _fetchEvents below)
   async _fetchEventPeopleOverrides() {
     if (!this._hass) return;
     try {
       const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/get_event_people_overrides" });
       this._eventPeopleOverrides = (result && result.overrides && typeof result.overrides === "object") ? result.overrides : {};
     } catch (e) {
-      // Family Hub not installed, or an older version without this command -
-      // every event just shows on its own calendar's tile, same as before
-      // this feature existed.
+      // Family Hub not installed, or an older version without this command - every event just shows on its own calendar's tile
       this._eventPeopleOverrides = {};
     }
   }
-  // Fetches a 2-day window (today through the start of the day after
-  // tomorrow) per person, same calendars/{entity}?start=&end= endpoint the
-  // full card and the Today card both already use. Two days rather than
-  // just today so "Next: ..." still has something to find for a person
-  // whose next event isn't until tomorrow - e.g. late at night once
-  // today's own events are all done.
+  // Fetches a 2-day window (today through the start of the day after tomorrow) per person
   async _fetchEvents() {
     if (!this._hass) return;
     await this._fetchEventPeopleOverrides();
@@ -1132,12 +1055,7 @@ class FamilyRightNowCard extends HTMLElement {
       people.map(async (person) => {
         if (!person.entity) return;
         try {
-          // v1.168.59: a person's "also show events from" calendars
-          // (extraEntities, only ever set via people_override) count toward
-          // their Right Now status too, same as they're merged into that
-          // person's column on the calendar card. Only the primary
-          // calendar failing blanks the tile; a failed overlay just adds
-          // nothing.
+          // a person's "also show events from" calendars (extraEntities, only ever set via people_override) count toward their Right Now status too
           const sourceEntities = Array.from(new Set([person.entity, ...(person.extraEntities || [])]));
           const fetched = await Promise.all(
             sourceEntities.map((entity, idx) =>
@@ -1181,16 +1099,6 @@ class FamilyRightNowCard extends HTMLElement {
         }
       })
     );
-    // Household ask: "we should make the now card compatible with the
-    // also for on events, if one user has something on their calendar
-    // but its also for someone else, we should see it as an event for
-    // both" - for every event already fetched above, look up whether
-    // it's tagged "Also for" anyone else currently shown on this card
-    // and, if so, merge a copy of it onto THEIR list too, so it counts
-    // as a genuine current/next event for both people rather than only
-    // showing (in a different color) on the calendar it actually lives
-    // on, which is as far as the main week-grid's own version of this
-    // feature goes.
     people.forEach((owner) => {
       if (!owner.entity) return;
       (byEntity[owner.entity] || []).forEach((ev) => {
@@ -1201,11 +1109,7 @@ class FamilyRightNowCard extends HTMLElement {
           const taggedPerson = people.find((p) => p.entity === taggedEntity);
           if (!taggedPerson) return;
           const summaryLower = ev.summary.toLowerCase();
-          // The tagged person's OWN badges still apply - someone who's
-          // tagged "Also for" them but matches one of their own hideMatch
-          // badges (e.g. a background custody calendar) stays hidden from
-          // their tile exactly like it would if it were on their own
-          // calendar directly.
+          // The tagged person's OWN badges still apply - someone who's tagged "Also for" them but matches one of their own hideMatch badges
           if (this._isHiddenByBadge(taggedPerson, summaryLower)) return;
           const taggedList = byEntity[taggedEntity] || (byEntity[taggedEntity] = []);
           const alreadyThere = taggedList.some((e) => e.start.getTime() === ev.start.getTime() && e.summary === ev.summary);
@@ -1228,11 +1132,7 @@ class FamilyRightNowCard extends HTMLElement {
     this._personEvents = byEntity;
     this._render();
   }
-  // Picks "current" (the earliest-ending event that covers `now`,
-  // preferring a timed event over an all-day one so a workout block still
-  // takes priority over a multi-day "Fall Break" calendar entry sitting in
-  // the background) and "next" (the earliest event that starts after
-  // `now`, skipping the current one) out of a person's own fetched list.
+  // Picks "current" (the earliest-ending event that covers `now`
   _statusFor(entity, now) {
     const events = this._personEvents[entity] || [];
     const timedCurrent = events
@@ -1314,10 +1214,7 @@ class FamilyRightNowCard extends HTMLElement {
     const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
     return luminance > 0.6 ? "#3a352c" : "#ffffff";
   }
-  // Same helper every other themed Family Hub card file duplicates (see
-  // the full calendar card's own copy) - used here to tint each person
-  // tile's background/left border by their own color, rather than every
-  // tile sharing one flat surface color.
+  // Same helper every other themed Family Hub card file duplicates (see the full calendar card's own copy)
   _hexToRgba(hex, alpha) {
     const h = (hex || "#000000").replace("#", "");
     if (h.length !== 6) return "rgba(0,0,0,0)";
@@ -1712,12 +1609,6 @@ ha-card.embedded {
         menuDropdown.classList.remove("open");
       }
     });
-    // Household ask: "can the pills support actions like toggle, more
-    // info etc" - presence/sensor pills (see _renderPersonTile) now
-    // each carry data-entity, and a single delegated listener here
-    // handles taps for every pill in every tile, present now or added
-    // later by a re-render of .people-grid (a per-pill listener would
-    // need re-wiring on every single render).
     root.addEventListener("click", (e) => {
       if (e.target.closest(".empty-people-goto")) {
         this._goToCalendar();
@@ -1752,10 +1643,6 @@ ha-card.embedded {
       const isHome = state === "home";
       presenceHtml = `<span class="presence-pill ${isHome ? "home" : "away"}" data-entity="${presenceEntity}">${isHome ? this._t("right_now.home", "Home") : this._t("right_now.away", "Away")}</span>`;
     }
-    // Household ask: "Right Now only supports presence, make it support
-    // multiple sensors too (battery, etc.)" - zero or more extra pills
-    // right after the presence pill, one per configured sensor, skipping
-    // any whose entity isn't currently known to hass (see _sensorPillHtml).
     const sensorEntities = this._sensorsByCalendarEntity()[person.entity] || [];
     const sensorsHtml = sensorEntities.map((e) => this._sensorPillHtml(e)).join("");
     let currentHtml;
@@ -1807,9 +1694,7 @@ ha-card.embedded {
         if (dateEl && dateEl.textContent !== dateText) dateEl.textContent = dateText;
       }
     }
-    // v1.168.72: the card editor's Title was never shown - the heading
-    // was always the translated "Right Now". A title of your own now wins;
-    // the default (or none) still follows the Home Assistant language.
+    // the card editor's Title was never shown - the heading was always the translated "Right Now".
     const titleEl = this._root.querySelector(".rn-title");
     if (titleEl) {
       const custom = this._customTitle();
@@ -1886,25 +1771,13 @@ ha-card.embedded {
       } else {
         gridHtml = people.map((p) => this._renderPersonTile(p, now, people)).join("");
       }
-      // v1.168.59: this runs every second (the clock tick) and on every
-      // Home Assistant state push, and used to tear down and rebuild every
-      // person tile each time. Tile markup only actually changes when an
-      // event starts/ends, a progress bar crosses a whole percent, or a
-      // presence/sensor pill changes - so skip the DOM rebuild whenever
-      // the freshly built markup is identical to what's already showing.
-      // Matters now that this card is embedded in the always-on calendar
-      // as the Right Now top bar on wall tablets. Pill click handling is
-      // delegated on the grid (see _build), so nothing is lost by keeping
-      // the existing tile nodes.
+      // this runs every second (the clock tick) and on every Home Assistant state push
       if (gridHtml !== this._lastGridHtml || gridEl.childElementCount === 0) {
         gridEl.innerHTML = gridHtml;
         this._lastGridHtml = gridHtml;
       }
     }
-    // The tiles carry no data-i18n markers (they're built with _t()
-    // directly), so only the static header/menu markup needs this pass -
-    // once after the first render, and again by _ensureTranslationsLoaded
-    // itself whenever a language's strings finish loading.
+    // The tiles carry no data-i18n markers (they're built with _t() directly), so only the static header/menu markup needs this pass
     if (!this._staticI18nApplied) {
       this._staticI18nApplied = true;
       this._applyTranslations();
@@ -1916,9 +1789,7 @@ if (!customElements.get("family-right-now-card")) {
   customElements.define("family-right-now-card", FamilyRightNowCard);
 }
 
-// native "Edit Card" config editor - same thin <ha-form> wrapper pattern
-// as FamilyTodayCardEditor in family-today-card.js, needed only because
-// the theme_override field's option list has to be fetched live.
+// native "Edit Card" config editor - same thin <ha-form> wrapper pattern as FamilyTodayCardEditor in family-today-card.js
 class FamilyRightNowCardEditor extends HTMLElement {
   setConfig(config) {
     this._config = config || {};
@@ -1960,16 +1831,6 @@ class FamilyRightNowCardEditor extends HTMLElement {
       .forEach((name) => this._themeOptions.push({ value: "ha:" + name, label: "Home Assistant: " + name }));
     this._render();
   }
-  // Household report: "when you open card settings for right now people
-  // to show shows calendars not family hub users" - the field was a
-  // plain entity picker scoped to domain:calendar, so it listed every
-  // calendar.* entity in Home Assistant by its raw entity id/friendly
-  // name, not the household's own configured people (their actual names,
-  // from the same Settings blob every other card reads). Fetches that
-  // list the same way _fetchThemeOptions fetches themes - once per
-  // editor instance, re-rendering when it resolves - and _schema() below
-  // swaps it in as a labeled multi-select instead of the generic entity
-  // selector.
   async _fetchPeopleOptions() {
     this._peopleOptions = [];
     if (!this._hass) {
@@ -1996,10 +1857,19 @@ class FamilyRightNowCardEditor extends HTMLElement {
           parsed = null;
         }
       }
-      const people = (parsed && Array.isArray(parsed.people)) ? parsed.people : [];
-      this._peopleOptions = people
-        .filter((p) => p && p.entity)
-        .map((p) => ({ value: p.entity, label: p.name || p.entity }));
+      let settings = parsed;
+      let names = {};
+      try {
+        const live = await this._hass.connection.sendMessagePromise({ type: "family_hub/get_settings" });
+        if (live && live.settings && typeof live.settings === "object" && Object.keys(live.settings).length) settings = live.settings;
+        const users = await this._hass.connection.sendMessagePromise({ type: "family_hub/list_users" });
+        ((users && users.users) || []).forEach((u) => {
+          if (u && u.id) names[u.id] = u.name || u.id;
+        });
+      } catch (e) {
+        // older backend: the saved copy above
+      }
+      this._peopleOptions = FamilyRightNowCard.householdPeople(settings || {}, names).map((p) => ({ value: p.entity, label: p.name }));
     } catch (e) {
       this._peopleOptions = [];
     }

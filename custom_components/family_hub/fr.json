@@ -64,16 +64,9 @@
           "digest_recipients": "Envoyer à"
         }
       },
-      "dashboard": {
-        "title": "Tableau de bord (facultatif)",
-        "description": "Souhaitez-vous un tableau de bord Family Hub dédié - un écran où la carte calendrier remplit toute la vue, la même disposition plein écran que ce projet a toujours recommandée ? Home Assistant ne peut pas le créer automatiquement, donc répondre oui prépare simplement le YAML exact à coller à l'écran suivant (Paramètres > Tableaux de bord > Ajouter un tableau de bord > Modifier en YAML), déjà rempli avec les calendriers et listes choisis jusqu'ici.",
-        "data": {
-          "add_dashboard": "Préparer un tableau de bord Family Hub"
-        }
-      },
       "finish": {
         "title": "Tout est prêt",
-        "description": "Cible par défaut des rappels : {default_notify}\nRésumé quotidien : {daily_digest}\n\nYAML du tableau de bord (Paramètres > Tableaux de bord > Ajouter un tableau de bord > Modifier en YAML, collez ceci et enregistrez) :\n{dashboard_yaml}\n\nLa configuration est terminée - ajoutez la carte Family Week Calendar à un tableau de bord pour commencer, ou cliquez sur Configurer à tout moment pour modifier les rappels ou Grocy."
+        "description": "⚙️ **Les paramètres se trouvent sur la carte Family Week Calendar.** Ajoutez d'abord cette carte à un tableau de bord : son bouton ⚙️ est le seul endroit pour modifier les paramètres de Family Hub (personnes, autorisations, calendriers, thèmes et plus), pour toutes les cartes.\n\nFamily Hub est prêt. Voici un rapide tour des cartes - ajoutez-les à un tableau de bord (Modifier le tableau de bord > Ajouter une carte, puis cherchez \"Family\") :\n\n- 📅 **Family Week Calendar** - les calendriers, rappels et menus de tout le monde en vue semaine, mois, jour ou planning, plus les Paramètres de tout Family Hub.\n- ☀️ **Family Today** - la journée en un coup d'œil : événements, repas et rappels à faire.\n- 🕒 **Family Right Now** - ce que fait chacun en ce moment et la suite, avec À la maison/Absent.\n- ✅ **Family Hub Chores** - une colonne par personne plus la Réserve de tâches ; les tâches faites rapportent des étoiles, avec des routines quotidiennes.\n- ⭐ **Family Hub Rewards** - les étoiles de chacun et les récompenses à s'offrir.\n- 🎯 **Family Hub My Goals** - de plus grands objectifs avec une récompense au bout, comme \"travailler le piano 5 fois\".\n- 📝 **Family Hub To-Do Lists** - vos listes de tâches Home Assistant côte à côte, listes d'envies comprises.\n- 📖 **Family Hub Recipe Box** - les plats préférés de la famille - à chercher et ajouter au menu.\n- 🥫 **Family Hub My Pantry** - ce qu'il y a en stock, depuis Grocy (si vous l'utilisez).\n- ⏲️ **Family Hub Active Timers** - tous les minuteurs de la maison, et des minuteurs rapides.\n- 🖼️ **Family Hub Screen Saver** - des photos ou une horloge quand l'écran est inactif.\n- 🎨 **Theme Builder: Theme Selector** - permet à chaque écran de choisir son thème.\n\nLes rappels vont à : {default_notify}\nRésumé quotidien : {daily_digest}\n\nVous pouvez changer cela à tout moment via Configurer ou dans les Paramètres de la carte calendrier."
       }
     },
     "abort": {
@@ -291,7 +284,20 @@
       "checklist_no_items": "Aucun élément - ajoutez ci-dessous ce qu'il faut retenir.",
       "checklist_no_todo_lists": "Aucune liste de tâches trouvée",
       "title_placeholder": "Titre",
-      "location_placeholder": "Lieu (facultatif)"
+      "location_placeholder": "Lieu (facultatif)",
+      "category_label": "Catégorie",
+      "category_none": "Aucune catégorie",
+      "repeat_every_n_days": "Tous les %n% jours",
+      "repeat_every_n_weeks": "Toutes les %n% semaines",
+      "repeat_every_n_months": "Tous les %n% mois",
+      "repeat_every_n_years": "Tous les %n% ans",
+      "category_setup_hint": "Aucune catégorie pour l'instant. Ajoutez-en dans Paramètres → Général → Calendriers.",
+      "enddate_short_label": "Date de fin (facultatif)",
+      "checklist_short_label": "Liste",
+      "remind_custom": "Autre",
+      "remind_unit_minutes": "minutes avant",
+      "remind_unit_hours": "heures avant",
+      "remind_unit_days": "jours avant"
     },
     "event_info": {
       "duplicate_event_btn": "Dupliquer l'événement",
@@ -352,7 +358,12 @@
       "dup_when_next_week": "Semaine prochaine",
       "dup_when_date": "Date",
       "dup_when_start": "Début",
-      "dup_when_end": "Fin"
+      "dup_when_end": "Fin",
+      "also_for_needs_users": "Ajoutez des personnes dans Paramètres > Utilisateurs et choisissez l'agenda de chacune pour pouvoir les associer ici.",
+      "category": "Catégorie",
+      "repeat_current": "actuel",
+      "repeat_left": "encore %n%",
+      "repeat_until": "jusqu'au %d%"
     },
     "more_menu_tpl": {
       "blank_name": "Vide",
@@ -735,7 +746,7 @@
       "five_days": "5 jours",
       "seven_days": "7 jours",
       "days_shown_hint": "jours (1–36)",
-      "current_day_first_label": "Jour actuel toujours en premier — cet appareil uniquement",
+      "current_day_first_label": "Jour actuel toujours en premier",
       "week_rows_label": "Lignes affichées à la fois en vue semaine — cet appareil uniquement",
       "week_rows_hint": "lignes (1–7)",
       "this_device_label": "Cet appareil",
@@ -794,7 +805,7 @@
       "no_more_alarm_devices": "Aucun autre appareil trouvé.",
       "tab_developer": "Outils de développement",
       "prevent_duplicate_events_label": "Éviter les événements en double",
-      "prevent_duplicate_events_hint": "Repère un calendrier qui apparaît dans plusieurs colonnes (par ex. associé à un utilisateur comme calendrier secondaire alors que sa propre ligne est encore affichée) et n'affiche ses événements qu'une fois. Activé par défaut - désactivez-le seulement pour vérifier si un apparent doublon est en fait un second événement réellement différent.",
+      "prevent_duplicate_events_hint": "Affiche une seule fois un événement présent dans plusieurs agendas - la même invitation, ou exactement le même nom à la même heure - dans la colonne de la première personne. Désactivé par défaut. Donnez des noms différents aux événements distincts (« Sam Foot », « Taylor Foot ») pour que les deux s'affichent.",
       "top_bar_style_hidden": "Masquée",
       "top_bar_style_right_now": "En ce moment",
       "right_now_topbar_position_label": "Emplacement de En ce moment",
@@ -864,7 +875,46 @@
       "more_menu_unifi_enable_btn": "Activer les QR codes UniFi",
       "more_menu_unifi_enabling": "Activation…",
       "more_menu_unifi_enabled_wait": "Activés. Home Assistant met environ 30 secondes à les démarrer ; le changement se fera tout seul.",
-      "more_menu_unifi_enable_failed": "Impossible de les activer : seul un administrateur Home Assistant le peut. Dans Home Assistant, ouvrez Paramètres > Appareils et services > UniFi Network et activez les entités « QR code »."
+      "more_menu_unifi_enable_failed": "Impossible de les activer : seul un administrateur Home Assistant le peut. Dans Home Assistant, ouvrez Paramètres > Appareils et services > UniFi Network et activez les entités « QR code ».",
+      "current_day_first_step_label": "Pas de navigation (quand « Jour actuel toujours en premier » est activé)",
+      "step_one_day": "1 jour",
+      "step_full_window": "Fenêtre entière",
+      "dup_merge_info_title": "Les événements en double ne s'affichent qu'une fois",
+      "dup_merge_info_text": "Quand le même événement figure dans plusieurs agendas - la même invitation, ou des événements portant exactement le même nom à la même heure - il n'est affiché qu'une fois, dans la colonne de la première personne.",
+      "dup_merge_info_tip": "Si deux personnes ont vraiment des événements distincts du même nom à la même heure, donnez-leur des noms différents pour que les deux s'affichent - par exemple « Sam Foot » et « Taylor Foot » au lieu de « Foot ».",
+      "categories_add": "+ Ajouter une catégorie",
+      "categories_hint": "Les événements et rappels avec une catégorie affichent une barre de sa couleur.",
+      "categories_label": "Catégories d'événements et de rappels",
+      "categories_name_placeholder": "ex. Sport",
+      "categories_remove": "Retirer",
+      "calendar_countdown_short": "Compte à rebours",
+      "calendar_add_badge_short": "Ajouter un badge",
+      "calendar_remove_short": "Retirer",
+      "holiday_backgrounds_hint_v2": "Activez une fête ou ajoutez votre propre date, puis une photo et, si vous voulez, un thème à appliquer. Si deux se chevauchent, le plus court l'emporte (un jour avant une semaine, une semaine avant un mois).",
+      "holiday_theme_keep": "Garder le thème habituel",
+      "holiday_cover_label": "Afficher la photo",
+      "holiday_cover_column": "Derrière son jour",
+      "holiday_cover_day": "Plein écran, ce jour-là",
+      "holiday_cover_week": "Plein écran, cette semaine",
+      "holiday_cover_month": "Plein écran, ce mois",
+      "holiday_date_label": "Date",
+      "holiday_photo_label": "Photo",
+      "holiday_no_photo_hint": "Pas encore de photo - le thème peut quand même changer.",
+      "holiday_theme_label": "Thème",
+      "holiday_theme_hint": "Applique ce thème à toutes les cartes Family Hub pendant l'affichage de la fête.",
+      "holiday_date_label_placeholder": "Qui ou quoi (facultatif)",
+      "holiday_dates_label": "Dates",
+      "holiday_add_date": "Ajouter une date",
+      "holiday_remove_date": "Retirer cette date",
+      "name_pills_label": "Pastilles de noms — cet appareil uniquement",
+      "name_pills_show": "Afficher",
+      "name_pills_hide": "Masquer",
+      "name_pills_hint": "La rangée de noms avec compteurs au-dessus du calendrier (et la pastille Rappels). Masquez-la pour gagner de la place ; le calendrier montre alors tout le monde.",
+      "name_pills_device_label": "Masquer les pastilles de noms",
+      "calendar_holiday_short": "Jours fériés",
+      "calendar_holiday_title": "Calendrier de jours fériés : ses jours s'affichent en bandeau sous la date au lieu d'événements",
+      "hashtags_hint": "Astuce : tapez #Nom ou #Catégorie dans le titre ou les notes d'un événement, même depuis Google ou Apple Calendar sur votre téléphone. #Emma l'affiche aussi dans le calendrier d'Emma, #Sport lui donne la catégorie Sport, et vous pouvez en mettre plusieurs.",
+      "kiosk_account_note": "Les comptes kiosque ne sont pas sur le tableau des tâches ni dans les récompenses, et n'ont ni rappels ni listes à eux."
     },
     "common": {
       "close": "Fermer",
@@ -879,7 +929,8 @@
       "edit": "Modifier",
       "ha_starting_banner": "Home Assistant démarre - tout n'est peut-être pas encore disponible.",
       "more": "Plus",
-      "delete": "Supprimer"
+      "delete": "Supprimer",
+      "ok": "OK"
     },
     "chores": {
       "achieved": "Atteint",
@@ -998,7 +1049,23 @@
       "alarm_audience_label": "Qui entend cette alarme",
       "alarm_audience_self": "Seulement eux",
       "alarm_audience_kiosks": "Eux + kiosques",
-      "alarm_audience_everyone": "Tout le monde"
+      "alarm_audience_everyone": "Tout le monde",
+      "star_balance": "Étoiles",
+      "previous_person": "Précédent",
+      "next_person": "Suivant",
+      "ask_for_stars": "Demander des étoiles",
+      "ask_for_stars_for_x": "Demander des étoiles pour %x%",
+      "star_request": "Demande d'étoiles",
+      "star_request_what": "Qu'as-tu fait ?",
+      "star_request_what_placeholder": "J'ai aidé à rentrer les courses",
+      "star_request_how_many": "Combien d'étoiles ?",
+      "star_request_note": "Autre chose ? (facultatif)",
+      "star_request_hint": "Une personne qui peut valider les tâches l'acceptera ou la renverra.",
+      "star_request_send": "Envoyer la demande",
+      "star_request_need_title": "Dis pour quoi c'était.",
+      "star_request_need_stars": "Demande entre 1 et 100 étoiles.",
+      "star_request_failed": "Impossible d'envoyer la demande.",
+      "star_request_for": "Pour"
     },
     "daily_digest": {
       "title": "Résumé quotidien",
@@ -2367,7 +2434,29 @@
       "pin_placeholder": "PIN",
       "unlock_submit": "Déverrouiller",
       "pin_required": "Saisissez un PIN.",
-      "incorrect_pin": "PIN incorrect."
+      "incorrect_pin": "PIN incorrect.",
+      "no_pin_warn_title": "Personne ne peut déverrouiller avec un code",
+      "no_pin_warn_text": "Aucune personne autorisée à désactiver le mode Confidentialité n'a encore de code kiosque : une fois activé, il ne pourra pas être désactivé depuis cet écran.",
+      "no_pin_warn_how": "Pour le désactiver, il faudra passer par Home Assistant : éteignez %entity% (Paramètres > Appareils et services > Family Hub). Ou définissez d'abord un code kiosque dans Paramètres > Utilisateurs.",
+      "no_pin_warn_go": "Activer quand même"
+    },
+    "library": {
+      "add": "Ajouter un élément",
+      "chores_title": "Bibliothèque de tâches",
+      "rewards_title": "Bibliothèque de récompenses",
+      "routines_title": "Bibliothèque de routines",
+      "cost": "Coût en étoiles",
+      "stars": "Étoiles",
+      "edit": "Modifier la bibliothèque",
+      "failed": "Impossible d'enregistrer.",
+      "hint": "Les modifications sont enregistrées au fur et à mesure. Tout le monde choisit dans cette liste.",
+      "item_name": "Nom",
+      "pick": "Choisir dans la bibliothèque… (facultatif)",
+      "remove": "Retirer",
+      "reset": "Rétablir les éléments par défaut supprimés",
+      "saved": "Enregistré.",
+      "restored": "%n% élément(s) par défaut rétabli(s).",
+      "nothing_to_restore": "Tous les éléments par défaut sont déjà là."
     }
   }
 }

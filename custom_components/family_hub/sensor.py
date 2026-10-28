@@ -1,51 +1,4 @@
-"""sensor platform: one read-only sensor entity per currently-ACTIVE Family
-Hub timer.
-
-Why this exists - the household's own words: "We also need to have a way to
-understand what the timer is doing to tie into automations, maybe there is
-a timer for screen time when its up the computer locks, how do we know what
-the reward or chore behind the timer is so we can use them in automations?"
-
-The gap this closes: a Family Hub timer adopted onto a native `timer.*`
-helper (see chores_websocket_api.py's _adopt_native_timer, v1.110.2+) is a
-real, automatable HA entity - but HA's own `timer` domain has a FIXED
-schema (duration/remaining/finishes_at only). It has no room for "this is
-Sam's screen-time reward" or "this is the Saturday chores timer for Emma".
-That mapping only ever lived in Family Hub's own in-memory timers Store,
-which a plain HA automation has no way to see. Two complementary fixes
-ship together (see also __init__.py's EVENT_FAMILY_HUB_TIMER_FINISHED
-firing, in chores_websocket_api.py's _fire_timer):
-
-  1. THIS FILE - one sensor per RUNNING timer, so "what's currently
-     counting down and what's it for" is queryable at any time, from
-     Developer Tools > States or a template. State is the timer's `kind`
-     (chore/reward/standalone) - stable and simple to match on
-     (`state == 'reward'`) - and every other identifying fact lives in
-     attributes: chore_id/item_id, title, user_id/user_name,
-     native_timer_entity_id (the timer.* helper it's adopted onto, if any -
-     the cross-reference an automation triggering off THAT entity's own
-     timer.finished event needs to answer "which one was this?"),
-     started_at, duration_minutes, finishes_at.
-  2. The custom `family_hub_timer_finished` EVENT - fired the instant any
-     of the three kinds completes, carrying the same metadata. That is the
-     natural "trigger: event" for "when Sam's screen-time reward ends, lock
-     his computer" - no sensor lookup required at all. See README.md's
-     Timers section for a full example automation.
-
-Entities here are created/removed DYNAMICALLY as timers start and end
-(there is no fixed count - a household with three timers running has three
-of these, and none while nothing is counting down) rather than being
-pre-declared, which is why this platform stores `async_add_entities` in
-entry_data instead of calling it once here. Created alongside the SAME
-call sites that already start/adopt a native timer in
-chores_websocket_api.py, and removed alongside every place that already
-calls timer_engine.remove_timer/remove_timers_for_chore - see
-create_timer_sensor/remove_timer_sensor below, and their call sites.
-
-Self-contained like todo.py: no imports from `.` (the package __init__.py),
-so it has no circular-import exposure and is forwarded the same way
-(hass.config_entries.async_forward_entry_setups(entry, ["sensor"])).
-"""
+"""sensor platform: one read-only sensor entity per currently-ACTIVE Family Hub timer."""
 from __future__ import annotations
 
 import logging
@@ -68,10 +21,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         return
     entry_data["timer_sensor_add_entities"] = async_add_entities
     entry_data.setdefault("timer_sensor_entities", {})
-    # A restart can land here with timers already running (they are
-    # persisted in the Store, unlike these sensors which are recreated from
-    # scratch every setup) - backfill one for each so a mid-countdown
-    # restart doesn't leave automations blind until the next start/adopt.
+    # A restart can land here with timers already running (they are persisted in the Store
     timers = (entry_data.get("timers") or {}).get("timers") or []
     entities = [FamilyHubTimerSensor(entry_data, timer) for timer in timers]
     if entities:
@@ -83,16 +33,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 def create_timer_sensor(
     hass: HomeAssistant, entry_data: dict[str, Any], timer: dict[str, Any], user_name: Optional[str] = None
 ) -> None:
-    """Add a sensor for a timer that just started. Best-effort and silent
-    if the sensor platform hasn't finished loading yet (very first setup,
-    before async_forward_entry_setups resolves) - the timer itself still
-    runs and fires normally either way, this is purely the automation-
-    visibility layer on top.
-
-    `user_name` is resolved by the caller (which already has an async
-    context and, in every real call site, has just looked it up anyway for
-    the end-of-timer notification) rather than here, since a HA user
-    lookup is async and Entity property getters cannot be."""
+    """Add a sensor for a timer that just started."""
     add_entities = entry_data.get("timer_sensor_add_entities")
     if add_entities is None:
         return
@@ -117,12 +58,7 @@ def remove_timer_sensor(entry_data: dict[str, Any], uid: Optional[str]) -> None:
     entity = entities.pop(uid, None)
     if entity is None:
         return
-    # `hass`/`async_remove` are only present once HA has actually added the
-    # entity to the platform (real Entity base class behavior - our own
-    # FamilyHubTimerSensor never sets either itself). Getting here before
-    # that has happened, or in a unit test with no real HA underneath,
-    # should just drop our own bookkeeping rather than raise - the entity
-    # already reads unavailable (see `available` above) either way.
+    # `hass`/`async_remove` are only present once HA has actually added the entity to the platform (real Entity base class behavior
     hass = getattr(entity, "hass", None)
     remove = getattr(entity, "async_remove", None)
     if hass is not None and callable(remove):

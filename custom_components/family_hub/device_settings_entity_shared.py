@@ -1,49 +1,4 @@
-"""Shared helpers for the per-device settings entity platforms (select.py,
-number.py, text.py) and the Sync button(s) in button.py - together these
-expose the existing Device Settings admin backend (see device_settings_
-websocket_api.py's own module docstring for the storage shape and the
-admin dashboard commands this mirrors) as native Home Assistant entities,
-so any automation, script, or other integration can read or change a
-Family Hub device's settings using HA's own select.select_option/number.
-set_value/text.set_value/button.press services, with no custom websocket
-call required.
-
-v1.139.0+: a Family Hub device's settings split into two scopes (see
-const.py's own "scope" comment on DEVICE_SETTINGS_FIELDS) - DEVICE-scoped
-fields (the physical screen's own identity: its custom name, the Daily
-Digest button toggle) live on the device record itself, same as before;
-INSTANCE-scoped fields (the Week/Month view/layout fields) live one level
-deeper, one settings dict per dashboard/view the card is embedded on (see
-the card's own _getCardInstanceId). Every entity function below takes an
-optional `instance_id` - omitted (None), it reads/writes the device-level
-settings dict exactly as this module always has; given, it reads/writes
-that one instance's own settings dict instead. Every entity for one
-Family Hub device - device-scoped AND every instance's own - is still
-grouped under the SAME Home Assistant device-registry entry via DeviceInfo
-(one physical screen is still one HA device, however many dashboards are
-embedded on it); an instance's own entities are told apart by their name
-being prefixed with that instance's own label.
-
-Writing a settings entity (select_option/set_native_value/set_value) stores
-the new value directly into the target settings dict (device- or instance-
-level) and persists it immediately, so reading the entity back afterward
-(from this integration or any automation) always reflects what was just
-set. It deliberately does NOT push anything to the device itself - no
-pending_seq bump, no live DEVICE_SETTINGS_EVENT_PUSH. Only a Sync button
-(button.py's FamilyHubDeviceSyncButton for the device scope, FamilyHubDevice
-InstanceSyncButton for one instance) stages and live-broadcasts that
-scope's current settings, the same effect device_settings_websocket_api.py's
-own _push_settings/_push_instance_settings has for the admin dashboard's
-own Push action. This two-step shape lets several settings entities be
-changed in one automation run and finish with a single Sync press, rather
-than pushing to the device once per changed field.
-
-Deliberately self-contained like device_settings_websocket_api.py itself
-(no import of `.`'s own __init__.py, only `.const`) - a local copy of the
-small device/instance-record and push helpers that module also defines, so
-neither file has to import the other or agree on load order. See that
-module's own _get_entry docstring for the same reasoning applied there.
-"""
+"""Shared helpers for the per-device settings entity platforms (select.py, number.py, text.py) and the Sync button(s) in button.py"""
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -73,17 +28,9 @@ def _device_record(devices: dict[str, Any], device_id: str) -> dict[str, Any]:
     record.setdefault("pending_settings", None)
     record.setdefault("device_name", None)
     record.setdefault("instances", {})
-    # see DEVICE_SETTINGS_EVENT_SCREENSAVER_TOGGLE's own comment in const.py
-    # - True (screensaver stays whatever the household's own screenSaver
-    # settings already say) is the only default that doesn't silently
-    # disable every existing household's screensaver the moment this field
-    # was introduced.
+    # see DEVICE_SETTINGS_EVENT_SCREENSAVER_TOGGLE's own comment in const.py - True
     record.setdefault("screensaver_enabled", True)
-    # see DEVICE_SETTINGS_EVENT_PRIVACY_PARTICIPATION_TOGGLE's own comment
-    # in const.py - True (this device keeps participating in the
-    # household's single privacy_mode flag) is the only default that
-    # doesn't silently exempt every existing household's devices the
-    # moment this field was introduced.
+    # see DEVICE_SETTINGS_EVENT_PRIVACY_PARTICIPATION_TOGGLE's own comment in const.py - True
     record.setdefault("privacy_participates", True)
     return record
 
@@ -167,17 +114,7 @@ async def async_write_setting(entry_data: dict[str, Any], device_id: str, key: s
 
 
 def push_settings_to_target(hass: HomeAssistant, entry_data: dict[str, Any], device_id: str, instance_id: Optional[str] = None) -> int:
-    """Stages and live-broadcasts the current settings snapshot for one
-    scope - the device itself (instance_id omitted) or one of its
-    instances - used by the matching Sync button. Functionally the same
-    effect as device_settings_websocket_api.py's own _push_settings/
-    _push_instance_settings, except it snapshots whatever's already
-    current (kept up to date by async_write_setting above) instead of
-    merging in a caller-supplied settings argument - there's nothing left
-    to merge, the entities already hold whatever should be pushed. Returns
-    the new seq. The live event always carries a device_id; instance_id is
-    only included when this push targets one, so a device-scope push's
-    payload shape is unchanged from before instances existed."""
+    """Stages and live-broadcasts the current settings snapshot for one scope - the device itself (instance_id omitted) or one of its instances"""
     blob = entry_data["device_settings"]
     device_record = _device_record(blob["devices"], device_id)
     target = _instance_record(device_record, instance_id) if instance_id else device_record
@@ -205,15 +142,7 @@ def screensaver_enabled_for(entry_data: dict[str, Any], device_id: str) -> bool:
 
 
 async def async_set_screensaver_enabled(hass: HomeAssistant, entry_data: dict[str, Any], device_id: str, enabled: bool) -> None:
-    """The one shared write path for the screensaver toggle - called
-    directly by FamilyHubDeviceScreenSaverSwitch's own async_turn_on/
-    async_turn_off (an automation flipping the switch needs no admin
-    dashboard involved at all) AND by device_settings_websocket_api.py's
-    ws_set_screensaver_enabled (the admin Devices tab's own toggle control).
-    Unlike async_write_setting above, this ALWAYS fires the live event
-    immediately - there is no staged/Sync-button step for this field, since
-    "automations can control screen saver" only makes sense if flipping it
-    takes effect right away."""
+    """The one shared write path for the screensaver toggle - called directly by FamilyHubDeviceScreenSaverSwitch's own async_turn_on/ async_turn_off"""
     blob = entry_data["device_settings"]
     record = _device_record(blob["devices"], device_id)
     record["screensaver_enabled"] = bool(enabled)
@@ -233,13 +162,7 @@ def privacy_participates_for(entry_data: dict[str, Any], device_id: str) -> bool
 
 
 async def async_set_privacy_participates(hass: HomeAssistant, entry_data: dict[str, Any], device_id: str, enabled: bool) -> None:
-    """The one shared write path for the per-device Privacy Mode
-    participation toggle - called directly by
-    FamilyHubDevicePrivacyParticipatesSwitch's own async_turn_on/
-    async_turn_off AND by device_settings_websocket_api.py's
-    ws_set_privacy_participates (the admin Devices tab's own toggle
-    control). Same "always fires immediately, no Sync step" shape as
-    async_set_screensaver_enabled above."""
+    """The one shared write path for the per-device Privacy Mode participation toggle"""
     blob = entry_data["device_settings"]
     record = _device_record(blob["devices"], device_id)
     record["privacy_participates"] = bool(enabled)

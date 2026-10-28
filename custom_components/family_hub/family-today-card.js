@@ -1,3 +1,139 @@
+// Holiday themes, shared by every Family Hub card: a holiday background can switch the theme
+// while it's showing. The backend works out the dates (family_hub/holiday_themes/get); this
+// checks today against them, refreshes every 30 minutes, and tells cards to re-theme when the
+// answer changes (including at midnight).
+if (!window.__fhHolidayTheme) {
+  window.__fhHolidayTheme = (function () {
+    let schedule = null;
+    let fetchedAt = 0;
+    let loading = null;
+    let midnightTimer = null;
+    let lastId = null;
+    const listeners = new Set();
+    const todayKey = () => {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    };
+    const span = (s) => (Date.parse(s.end) - Date.parse(s.start)) || 0;
+    function current() {
+      if (!Array.isArray(schedule)) return "";
+      const k = todayKey();
+      // the most specific wins: a day beats a week, a week beats a month (same rule as the backgrounds)
+      const hits = schedule.filter((s) => s && s.theme_id && s.start <= k && k <= s.end).sort((a, b) => span(a) - span(b));
+      return hits.length ? hits[0].theme_id : "";
+    }
+    function notify() {
+      const id = current();
+      if (id === lastId) return;
+      lastId = id;
+      listeners.forEach((cb) => {
+        try {
+          cb();
+        } catch (e) {
+          // one card's error never stops the others
+        }
+      });
+    }
+    function armMidnight() {
+      clearTimeout(midnightTimer);
+      const now = new Date();
+      const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+      midnightTimer = setTimeout(() => {
+        notify();
+        armMidnight();
+      }, next.getTime() - now.getTime());
+    }
+    function refresh(hass) {
+      if (!hass || !hass.connection) return Promise.resolve();
+      if (loading) return loading;
+      loading = hass.connection
+        .sendMessagePromise({ type: "family_hub/holiday_themes/get" })
+        .then((r) => {
+          schedule = (r && Array.isArray(r.schedule) && r.schedule) || [];
+        })
+        .catch(() => {
+          schedule = schedule || [];
+        })
+        .then(() => {
+          fetchedAt = Date.now();
+          loading = null;
+          armMidnight();
+          notify();
+        });
+      return loading;
+    }
+    return {
+      themeId(hass) {
+        if (hass && !loading && Date.now() - fetchedAt > 30 * 60 * 1000) refresh(hass);
+        return current();
+      },
+      subscribe(cb) {
+        listeners.add(cb);
+        return () => listeners.delete(cb);
+      },
+      invalidate(hass) {
+        fetchedAt = 0;
+        return refresh(hass);
+      },
+    };
+  })();
+}
+// --- Family Hub shared translation helper (v1.168.76) ------------------- __fhT(key, english, vars
+var __fhI18n = (window.__familyHubI18n = window.__familyHubI18n || { hass: null, fb: {}, loading: null, loaded: null });
+var __fhEsc = function (s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+};
+var __fhT = function (key, fb, vars, mode) {
+  var g = window.__familyHubI18n || __fhI18n;
+  if (g.fb[key] === undefined) g.fb[key] = fb;
+  var str = "";
+  try {
+    if (g.hass && typeof g.hass.localize === "function") str = g.hass.localize("component.family_hub.fh_ui." + key) || "";
+  } catch (e) {
+    str = "";
+  }
+  if (!str) str = fb;
+  if (mode === "h") str = __fhEsc(str);
+  if (vars) {
+    Object.keys(vars).forEach(function (k) {
+      var v = vars[k];
+      str = str.split("%" + k + "%").join(v === null || v === undefined ? "" : String(v));
+    });
+  }
+  return str;
+};
+var __fhUseHass = function (hass) {
+  if (hass && typeof hass.localize === "function") (window.__familyHubI18n || __fhI18n).hass = hass;
+};
+var __fhSweep = function (root) {
+  if (!root || typeof root.querySelectorAll !== "function") return;
+  var g = window.__familyHubI18n || __fhI18n;
+  root.querySelectorAll("[data-fh-t]").forEach(function (el) {
+    var key = el.getAttribute("data-fh-t");
+    var fb = g.fb[key];
+    if (fb === undefined) return;
+    var cur = (el.textContent || "").trim();
+    if (cur !== fb && cur !== el.__fhShown) return;
+    var next = __fhT(key, fb);
+    if (cur !== next) el.textContent = next;
+    el.__fhShown = next;
+  });
+  [["data-fh-title", "title"], ["data-fh-placeholder", "placeholder"], ["data-fh-aria", "aria-label"], ["data-fh-alt", "alt"]].forEach(function (pair) {
+    root.querySelectorAll("[" + pair[0] + "]").forEach(function (el) {
+      var key = el.getAttribute(pair[0]);
+      var fb = g.fb[key];
+      if (fb === undefined) return;
+      var cur = el.getAttribute(pair[1]);
+      var shownKey = "__fhShown_" + pair[1];
+      if (cur !== fb && cur !== el[shownKey]) return;
+      var next = __fhT(key, fb);
+      if (cur !== next) el.setAttribute(pair[1], next);
+      el[shownKey] = next;
+    });
+  });
+};
+// -------------------------------------------------------------------------
+
 (function () {
   if (window.__familyCalendarFontLoaded) return;
   window.__familyCalendarFontLoaded = true;
@@ -7,47 +143,34 @@
   document.head.appendChild(link);
 })();
 
-// A fixed accent color for reminder rows - reminders aren't tied to any
-// one calendar (and so have no calendar color of their own), but still
-// need to look consistent wherever they show up. Matches the same
-// constant in family-week-calendar-card.js so the two cards agree.
+// A fixed accent color for reminder rows - reminders aren't tied to any one calendar (and so have no calendar color of their own)
 const TODAY_REMINDER_COLOR = "#b58cd9";
 
-// the 7 Mon-Sun day-toggle buttons used by the new Add Event
-// modal's reminder rollover-days picker - identical list to family-week-
-// calendar-card.js's own REMINDER_WEEKDAY_LABELS, kept as its own copy
-// since these are independently-loaded Lovelace resources, not ES modules
-// (see this file's own window.__familyHubTimerAlarm comment just below for
-// the same reasoning applied to a different shared piece of logic).
+// the 7 Mon-Sun day-toggle buttons used by the new Add Event modal's reminder rollover-days picker
 const REMINDER_WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-// A small, single-day companion to the full Family Week Calendar card -
-// meant to be pasted onto any dashboard (a phone's default view, a small
-// tile next to other cards, etc.) to see just "what's going on today"
-// without the week/month grid. Reads the exact same config + settings_entity
-// as the full card, so it automatically matches its theme, calendars, meal
-// blocks, and entities - there is nothing new to configure if you're
-// already running the full card.
-// Household-wide timer alarm sound+modal (v1.119.0+, widened in
-// v1.132.55+) - see family-hub-active-timers-card.js's own top comment
-// above this same block for the full design note. Added here in
-// v1.132.59+ after a - this card never carried this singleton or subscribed to
-// the widened-alarm broadcast at all, so a kiosk whose dashboard shows
-// it silently never rang for anyone else's widened timer alarm. Kept
-// byte-identical to every other card's copy on purpose.
+// A small, single-day companion to the full Family Week Calendar card - meant to be pasted onto any dashboard (a phone's default view
 if (!window.__familyHubTimerAlarm) {
+  // (timer + alarm overhaul): the on-screen half of a Family Hub timer alarm
   window.__familyHubTimerAlarm = (function () {
     let modalEl = null;
     let audioCtx = null;
     let beepHandle = null;
-    let activeUid = null;
-    // A timer's uid, once dismissed, stays dismissed - otherwise the very
-    // next poll's countdown tick (still <= 0 for a few more seconds until
-    // the backend's own sweep, up to TIMER_SWEEP_SECONDS later, actually
-    // removes it from family_hub/timers/list) would immediately re-open
-    // the modal a person just tapped Stop on. Unbounded but negligible: a
-    // few bytes per timer this ONE tab ever alarmed for in its lifetime.
+    const ringing = new Map(); // uid -> {title, body}
     const dismissedUids = new Set();
+    let lastHass = null;
+    function myClientId() {
+      try {
+        let id = sessionStorage.getItem("family_hub_client_id");
+        if (!id) {
+          id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+          sessionStorage.setItem("family_hub_client_id", id);
+        }
+        return id;
+      } catch (e) {
+        return "";
+      }
+    }
     function ensureModal() {
       if (modalEl) return modalEl;
       modalEl = document.createElement("div");
@@ -58,28 +181,57 @@ if (!window.__familyHubTimerAlarm) {
         background: "rgba(20,16,8,0.78)",
       });
       modalEl.innerHTML =
-        '<div style="background:#fff8ea;color:#3a352c;border-radius:22px;padding:38px 30px;max-width:360px;width:88vw;text-align:center;box-shadow:0 14px 46px rgba(0,0,0,0.45);font-family:-apple-system,\'Segoe UI\',Roboto,sans-serif;">' +
-        '<div style="font-size:48px;margin-bottom:12px;">&#9200;</div>' +
-        '<div class="fh-timer-alarm-title" style="font-size:1.3em;font-weight:800;margin-bottom:6px;"></div>' +
-        '<div style="font-size:14px;color:#96877a;margin-bottom:24px;">Time\'s up!</div>' +
-        '<button type="button" class="fh-timer-alarm-stop" style="min-height:54px;width:100%;border:none;border-radius:14px;background:#8f5a00;color:#fff8ea;font-size:19px;font-weight:800;cursor:pointer;">Stop</button>' +
+        '<div class="fh-timer-alarm-box" role="alertdialog" aria-live="assertive" style="background:#fff8ea;color:#3a352c;border-radius:22px;padding:30px 26px;max-width:400px;width:88vw;max-height:86vh;overflow:auto;text-align:center;box-shadow:0 14px 46px rgba(0,0,0,0.45);font-family:-apple-system,\'Segoe UI\',Roboto,sans-serif;">' +
+        '<div style="font-size:48px;margin-bottom:6px;">&#9200;</div>' +
+        ('<div data-fh-t="text.time_s_up" class="fh-timer-alarm-head" style="font-size:14px;color:#96877a;margin-bottom:14px;font-weight:700;">' + __fhT("text.time_s_up", "Time's up!", null, "h") + '</div>') +
+        '<div class="fh-timer-alarm-list" style="display:flex;flex-direction:column;gap:12px;"></div>' +
+        ('<button data-fh-t="text.stop_all" type="button" class="fh-timer-alarm-stop-all" style="display:none;margin-top:16px;min-height:46px;width:100%;border:2px solid #8f5a00;border-radius:14px;background:transparent;color:#8f5a00;font-size:16px;font-weight:800;cursor:pointer;">' + __fhT("text.stop_all", "Stop all", null, "h") + '</button>') +
         "</div>";
       document.body.appendChild(modalEl);
-      modalEl.querySelector(".fh-timer-alarm-stop").addEventListener("click", () => stop());
+      modalEl.addEventListener("click", (e) => {
+        const btn = e.target.closest && e.target.closest("button");
+        if (!btn) return;
+        if (btn.classList.contains("fh-timer-alarm-stop-all")) {
+          Array.from(ringing.keys()).forEach((uid) => stop(uid));
+        } else if (btn.dataset.uid) {
+          stop(btn.dataset.uid);
+        }
+      });
       return modalEl;
     }
-    // A plain oscillator beep via the Web Audio API - deliberately not a
-    // bundled sound file: no extra media asset for HACS/manual installs to
-    // ship or for a self-hosted install's network policy to worry about,
-    // and it sounds identical on every install.
-    //
-    // The original v1.119.0+ sound was one
-    // flat square-wave tone repeated once a second - metronomic, which is
-    // exactly what read as a countdown-bomb tick rather than an alarm. This
-    // plays a quick alternating two-pitch TRIPLET (a classic digital-alarm-
-    // clock trill) each cycle instead of a single tone, which is what
-    // actually reads as "alarm" to the ear - the alternating pitch is what
-    // a lone repeated tone can't give you, no matter how loud.
+    function render() {
+      const el = ensureModal();
+      if (!ringing.size) {
+        el.style.display = "none";
+        return;
+      }
+      const list = el.querySelector(".fh-timer-alarm-list");
+      list.innerHTML = "";
+      ringing.forEach((info, uid) => {
+        const row = document.createElement("div");
+        const title = document.createElement("div");
+        title.className = "fh-timer-alarm-title";
+        title.style.cssText = "font-size:1.3em;font-weight:800;margin-bottom:4px;overflow-wrap:anywhere;";
+        title.textContent = info.title || __fhT("text.timer", "Timer");
+        row.appendChild(title);
+        if (info.body) {
+          const body = document.createElement("div");
+          body.style.cssText = "font-size:14px;color:#6b5f52;margin-bottom:10px;overflow-wrap:anywhere;";
+          body.textContent = info.body;
+          row.appendChild(body);
+        }
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "fh-timer-alarm-stop";
+        btn.dataset.uid = uid;
+        btn.textContent = __fhT("text.stop", "Stop");
+        btn.style.cssText = "min-height:54px;width:100%;border:none;border-radius:14px;background:#8f5a00;color:#fff8ea;font-size:19px;font-weight:800;cursor:pointer;";
+        row.appendChild(btn);
+        list.appendChild(row);
+      });
+      el.querySelector(".fh-timer-alarm-stop-all").style.display = ringing.size > 1 ? "" : "none";
+      el.style.display = "flex";
+    }
     function playBeep(atTime, freq) {
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
@@ -93,10 +245,7 @@ if (!window.__familyHubTimerAlarm) {
       osc.start(atTime);
       osc.stop(atTime + 0.15);
     }
-    // Scheduled via Web Audio's own clock (osc.start(atTime)) rather than
-    // three back-to-back setTimeout calls, so the triplet's timing stays
-    // tight even if the main JS thread is briefly busy - it's the crisp,
-    // even spacing that makes it read as a trill instead of a stutter.
+    // A two-pitch alarm-clock trill via Web Audio (no sound file to ship).
     function beepOnce() {
       try {
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -104,57 +253,11 @@ if (!window.__familyHubTimerAlarm) {
         const now = audioCtx.currentTime;
         [[0, 1046], [0.15, 1318], [0.3, 1046]].forEach(([offset, freq]) => playBeep(now + offset, freq));
       } catch (e) {
-        // Autoplay blocked, or no Web Audio at all - the modal is still
-        // the primary alarm; sound is a bonus on top of it, not required.
+        // Autoplay blocked or no Web Audio - the modal is still the alarm.
       }
     }
-    // which hass connection to tell "dismiss this everywhere"
-    // when Stop is tapped - set by whichever card most recently called
-    // ring()/check() with one, since this singleton is shared across every
-    // card on the dashboard and any of them may have `hass` by now. Best-
-    // effort only (see stop() below): a same-tab-only local alarm (the
-    // original v1.119.0+ behavior this singleton already had) never had a
-    // server-side record to begin with, so the dismiss call below simply
-    // no-ops for it (ws_dismiss_timer_alarm pops a uid that was never
-    // registered - see its own docstring for why that's silent, not an
-    // error).
-    let lastHass = null;
-    function stop() {
-      if (activeUid) dismissedUids.add(activeUid);
-      const uid = activeUid;
-      activeUid = null;
-      if (beepHandle) {
-        clearInterval(beepHandle);
-        beepHandle = null;
-      }
-      if (modalEl) modalEl.style.display = "none";
-      // household's explicit choice - "first tap wins, from
-      // anyone" - so tapping Stop here also clears the alarm everywhere
-      // else (other kiosks, other people's phones-that-are-dashboards)
-      // rather than just silencing this one tab. No permission gate, by
-      // design.
-      if (uid && lastHass && lastHass.connection && lastHass.connection.sendMessagePromise) {
-        lastHass.connection.sendMessagePromise({ type: "family_hub/timers/dismiss_alarm", uid }).catch(() => {});
-      }
-    }
-    // This modal already outranks the screensaver's own overlay (z-index
-    // 2147483647 vs 2147483000, set in ensureModal() above), so it was
-    // always painting on top of it - but a screensaver left running
-    // underneath still means its video/camera poll keeps going, so it
-    // needs to actually END, not just be covered up.
-    // There are THREE independent screensaver implementations in this
-    // project (the calendar card's own, the shared window.__familyHub
-    // ScreenSaver controller used by Chores/Rewards/My Chores/etc., and the
-    // standalone family-screensaver-card.js) and this singleton has no
-    // reference to whichever one might be running on this particular
-    // dashboard. Rather than importing all three, every one of them marks
-    // its overlay element with the same data-family-hub-screensaver
-    // attribute and already dismisses itself (hides, stops video/camera
-    // polling, navigates to its configured return dashboard) on its own
-    // overlay's "pointerdown" listener - so a synthetic pointerdown on
-    // whichever overlay is actually showing reuses each implementation's
-    // own real dismiss path for free, with zero coupling to which one it
-    // is.
+    // Ends whichever Family Hub screensaver is showing (they all close on
+    // pointerdown on their own overlay).
     function wakeAnyScreenSaver() {
       try {
         const overlay = document.querySelector("[data-family-hub-screensaver]");
@@ -162,124 +265,76 @@ if (!window.__familyHubTimerAlarm) {
           overlay.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
         }
       } catch (e) {
-        // Best-effort - worst case the alarm modal still shows ON TOP of a
-        // running screensaver rather than ending it outright.
+        // best-effort
       }
     }
-    function start(timer, hass) {
+    function start(uid, title, body, hass) {
       if (hass) lastHass = hass;
-      if (activeUid === timer.uid) return;
-      activeUid = timer.uid;
+      if (!uid || dismissedUids.has(uid)) return;
+      const isNew = !ringing.has(uid);
+      ringing.set(uid, { title: title || (ringing.get(uid) || {}).title || "Timer", body: body || (ringing.get(uid) || {}).body || "" });
+      if (!isNew) return;
       wakeAnyScreenSaver();
-      const el = ensureModal();
-      el.querySelector(".fh-timer-alarm-title").textContent = timer.title || "Timer";
-      el.style.display = "flex";
-      beepOnce();
-      if (beepHandle) clearInterval(beepHandle);
-      // Shorter gap than the old single-tone version (1200ms) since each
-      // cycle is now a ~450ms triplet, not a single ~340ms tone - this
-      // keeps the alarm feeling urgent/continuous rather than sparse.
-      beepHandle = setInterval(beepOnce, 950);
+      render();
+      if (!beepHandle) {
+        beepOnce();
+        beepHandle = setInterval(beepOnce, 950);
+      }
+    }
+    function stop(uid) {
+      if (!uid) return;
+      dismissedUids.add(uid);
+      const had = ringing.delete(uid);
+      if (!ringing.size && beepHandle) {
+        clearInterval(beepHandle);
+        beepHandle = null;
+      }
+      render();
+      if (had && lastHass && lastHass.connection && lastHass.connection.sendMessagePromise) {
+        lastHass.connection.sendMessagePromise({ type: "family_hub/timers/dismiss_alarm", uid }).catch(() => {});
+      }
     }
     return {
-      // Call once a second from a card's own countdown ticker (the same
-      // tick that already repaints the visible "X:XX left" text), passing:
-      //   timers        - that card's own freshly-fetched timers list
-      //   clientId      - this tab's own id (see _familyHubClientId below)
-      //   remainingSecondsFn - a (timer) => seconds function, so this
-      //                   singleton reuses the CALLING card's own
-      //                   native-timer-aware math (_timerRemainingSeconds)
-      //                   instead of a second, potentially-drifting copy
-      //                   of it living here with no access to `hass`.
-      // Only a timer whose origin_client_id matches THIS tab's own id and
-      // whose alarm flag is on can ever trigger anything - a timer someone
-      // else started, or one this same tab started but didn't opt into
-      // alarms for, is silently ignored here exactly as before this
-      // feature existed.
+      // From a card's 1-second countdown tick: the tab that started a timer rings the moment it reaches zero (any timer it started
       check(timers, clientId, remainingSecondsFn, hass) {
-        if (!clientId) return;
-        const mine = (timers || []).find((t) => t.alarm && t.origin_client_id && t.origin_client_id === clientId);
-        if (!mine || dismissedUids.has(mine.uid)) return;
-        if (remainingSecondsFn(mine) <= 0) start(mine, hass);
+        if (hass) lastHass = hass;
+        const me = clientId || myClientId();
+        if (!me) return;
+        (timers || []).forEach((t) => {
+          if (t && t.origin_client_id && t.origin_client_id === me && !dismissedUids.has(t.uid) && remainingSecondsFn(t) <= 0) {
+            start(t.uid, t.title || "Timer", "", hass);
+          }
+        });
       },
-      // the WIDENED half - a household_timer_alarm_ring bus
-      // event (fired by chores_websocket_api.py's _dispatch_timer_alarm/
-      // _reannounce_active_alarms) that THIS login should also ring for,
-      // because it's either the timer's own owner, a login flagged as an
-      // always-on alarm kiosk, or the tier was "everyone." Unlike check()
-      // above (which only ever recognizes the ONE tab that started the
-      // timer, by origin_client_id), this recognizes a login/account -
-      // every open tab logged in as a matching user rings, on every
-      // dashboard, which is the whole point of the widened tiers. Re-fired
-      // on every re-announcement (see _reannounce_active_alarms), so
-      // calling this again for an already-ringing uid is a deliberate
-      // no-op (start() already short-circuits on activeUid === timer.uid).
+      // The backend's ring event (and list_active_alarms on load).
       ringBroadcast(payload, hass, myUserId) {
         if (!payload || !payload.uid || dismissedUids.has(payload.uid)) return;
         const targets = payload.target_user_ids || [];
-        const shouldRing = !!payload.broadcast_all || (myUserId && targets.includes(myUserId));
+        const fromHere = !!payload.origin_client_id && payload.origin_client_id === myClientId();
+        const shouldRing = !!payload.broadcast_all || fromHere || (myUserId && targets.includes(myUserId));
         if (!shouldRing) return;
-        start({ uid: payload.uid, title: payload.title }, hass);
+        start(payload.uid, payload.timer_title || payload.title, payload.body, hass);
       },
-      // The STOP half of the same broadcast pair - fired the instant
-      // ANY device dismisses (see ws_dismiss_timer_alarm's own "first tap
-      // wins" docstring), including a dismiss that originated from THIS
-      // singleton's own stop() above (that call's own dismiss already
-      // covers this tab; the event still arrives here a moment later and
-      // is a harmless no-op via stop()'s own activeUid !== uid guard, or
-      // via dismissedUids already containing it).
+      // Someone stopped it somewhere else.
       stopFromServer(uid) {
-        if (uid) dismissedUids.add(uid);
-        if (activeUid === uid) stop();
+        if (!uid) return;
+        dismissedUids.add(uid);
+        if (ringing.delete(uid)) {
+          if (!ringing.size && beepHandle) {
+            clearInterval(beepHandle);
+            beepHandle = null;
+          }
+          render();
+        }
+      },
+      _ringing() {
+        return Array.from(ringing.keys());
       },
     };
   })();
 }
 
-// Theme flash-of-default fix - Root cause: EVERY themed card's first paint happens
-// with no theme CSS vars set at all (falls back to _defaultTheme()'s own
-// hardcoded palette), because resolving the household's actual theme
-// takes two sequential, awaited websocket round trips after `hass` is
-// first set - family_hub/get_settings (_fetchSettings), THEN
-// theme_builder/list (_fetchGlobalThemes, which is what a Global Theme
-// selection actually needs to resolve into real colors) - both happening
-// well after `_build()` has already rendered the card once. There was no
-// way to know the real colors before those round trips finished.
-//
-// Fix: cache the last set of CSS var values this device actually applied
-// (in memory for the rest of this page load, in localStorage across
-// reloads), and apply that cache SYNCHRONOUSLY in `_build()` - before the
-// very first paint, before any fetch has even started - so a reload shows
-// last-known-good colors immediately instead of _defaultTheme()'s
-// hardcoded ones. Once the real fetches resolve, `_applyThemeVars()` runs
-// as it always has and reconciles - a no-op re-application (no visible
-// change) if nothing changed since last time, which is the overwhelmingly
-// common case on an ordinary refresh; a visible switch only when the
-// household's theme has genuinely changed since this device last saw it,
-// which is unavoidable (nothing can know about a change before asking).
-//
-// Same shared-singleton, "only the first card whose script actually runs
-// this block sets it up" pattern as window.__familyHubFabCoordinator/
-// __familyHubKioskSession/__familyHubScreenSaver/__familyHubTimerAlarm
-// above - copy-pasted byte-identically into every themed card file, since
-// these are independently-loaded Lovelace resources rather than ES
-// modules that could import one shared file (same reasoning as those).
-//
-// Cached under a KEY, not one single blob, because different cards (or
-// even the SAME card on a different dashboard placement) can legitimately
-// resolve to different colors at once - a per-card-placement Theme
-// override (`_config.theme_override`) or a per-device override
-// (`_getDeviceThemeOverride()`) both exist specifically so one card can
-// look different from the household's shared theme. Caching under one
-// shared key would "fix" the flash for the common case but introduce a
-// WRONG flash for an overridden card (briefly showing the household's
-// theme before its own override kicks in) - a strictly worse bug than
-// the one being fixed. The key is derived the same way every time
-// (`_familyHubThemeCacheKey`, called identically from `_build()` before
-// first paint and from `_applyThemeVars()` after resolving for real), so
-// a card with no override at all shares one cache entry with every other
-// un-overridden card/placement (the common case this exists for), while
-// an overridden card/placement gets its own.
+// Theme flash-of-default fix - Root cause: EVERY themed card's first paint happens with no theme CSS vars set at all
 if (!window.__familyHubThemeCache) {
   window.__familyHubThemeCache = (function () {
     const STORAGE_PREFIX = "familyHubThemeVarsCache::";
@@ -307,9 +362,7 @@ if (!window.__familyHubThemeCache) {
       try {
         localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(vars));
       } catch (e) {
-        // Best-effort only - the in-memory copy above still helps every
-        // OTHER card mounted later in this same page load even if
-        // localStorage itself is unavailable.
+        // Best-effort only - the in-memory copy above still helps every OTHER card mounted later in this same page load even if localStorage itself
       }
     }
     return { get, set };
@@ -317,50 +370,17 @@ if (!window.__familyHubThemeCache) {
 }
 
 class FamilyTodayCard extends HTMLElement {
-  // Lets the card be added via the dashboard's "+ Add Card" picker with
-  // working defaults straight away - these match the entity ids the full
-  // Family Week Calendar card's own Settings suggests/creates, so a family
-  // already running the full card needs zero edits for the common case.
+  // Lets the card be added via the dashboard's "+ Add Card" picker with working defaults straight away
   static getStubConfig() {
-    return {
-      title: "Today",
-      settings_entity: "todo.family_calendar_settings",
-      meal_plan_entity: "todo.meal_plan",
-      reminders_entity: "todo.family_reminders",
-      weather_entity: "weather.forecast_home",
-    };
+    return { title: "Today" };
   }
-  // Uses Home Assistant's built-in schema-based form editor rather than a
-  // hand-built custom editor element - this card's config is just a
-  // handful of entity pickers plus a title, so the generic form covers the
-  // common case with far less code to maintain. `people` is deliberately
-  // left out of the form: in practice it's read from the shared
-  // settings_entity's own Settings (see _getPeople) and only needs to be
-  // set here directly for a rare standalone override, which is still fully
-  // supported by hand-editing the YAML.
-  // static getConfigForm can't offer a live-fetched theme list
-  // (no hass in scope when it's called), so this card now provides its own
-  // config editor element instead - see FamilyTodayCardEditor at the
-  // bottom of this file, which renders the exact same fields (via the
-  // shared statics below) plus the new theme_override field.
+  // Uses Home Assistant's built-in schema-based form editor rather than a hand-built custom editor element
   static _configSchema() {
     return [
       { name: "title", selector: { text: {} } },
-      { name: "settings_entity", selector: { entity: { domain: "todo" } } },
-      { name: "meal_plan_entity", selector: { entity: { domain: "todo" } } },
-      { name: "reminders_entity", selector: { entity: { domain: "todo" } } },
-      { name: "weather_entity", selector: { entity: { domain: "weather" } } },
       { name: "calendar_dashboard_path", selector: { text: {} } },
       { name: "calendar_button_label", selector: { text: {} } },
-      // That's the Month Split view's
-      // day-detail panel (family-week-calendar-card.js's own
-      // _buildMonthSplitDetailHtml/.msd-* CSS) - a single scrolling list
-      // mixing meals and events/reminders together by time, rather than
-      // this card's own default three separate labeled sections. A select
-      // rather than a boolean so a third layout could be added later
-      // without a breaking config-shape change; "sectioned" is the
-      // default so every existing dashboard using this card looks exactly
-      // the same until a household opts in.
+      // That's the Month Split view's day-detail panel (family-week-calendar-card.js's own _buildMonthSplitDetailHtml/.msd-* CSS)
       { name: "layout", selector: { select: { mode: "dropdown", options: [
         { value: "sectioned", label: "Sectioned (Events / Meals / Reminders) - default" },
         { value: "compact", label: "Compact (Month view's Today panel style)" },
@@ -368,12 +388,25 @@ class FamilyTodayCard extends HTMLElement {
       // Off by default (like calendar_dashboard_path) so nothing
       // new appears on an existing dashboard until a household opts in.
       { name: "show_add_button", selector: { boolean: {} } },
+      // the lists and weather come from the main Family Hub calendar card automatically
+      {
+        name: "",
+        type: "expandable",
+        flatten: true,
+        title: "Advanced: use different lists than the calendar card",
+        schema: [
+          { name: "meal_plan_entity", selector: { entity: { domain: "todo" } } },
+          { name: "reminders_entity", selector: { entity: { domain: "todo" } } },
+          { name: "weather_entity", selector: { entity: { domain: "weather" } } },
+          { name: "settings_entity", selector: { entity: { domain: "todo" } } },
+        ],
+      },
     ];
   }
   static _computeLabel(schema) {
     const labels = {
       title: "Title",
-      settings_entity: "Settings to-do list (shared with the full card)",
+      settings_entity: "Old Settings to-do list (very old installs only)",
       meal_plan_entity: "Meal plan to-do list",
       reminders_entity: "Reminders to-do list",
       weather_entity: "Weather entity",
@@ -386,8 +419,11 @@ class FamilyTodayCard extends HTMLElement {
     return labels[schema.name] || undefined;
   }
   static _computeHelper(schema) {
+    if (schema.name === "meal_plan_entity" || schema.name === "reminders_entity" || schema.name === "weather_entity") {
+      return "Leave blank to use the same one as your Family Hub calendar card.";
+    }
     if (schema.name === "settings_entity") {
-      return "Same to-do entity configured on the full Family Week Calendar card - reused here so the theme, people, and meal blocks automatically match.";
+      return "Leave blank. Family Hub keeps its settings itself now; this is only read on installs that haven't been updated in a long time.";
     }
     if (schema.name === "calendar_dashboard_path") {
       return "Optional. Set a relative path (e.g. /lovelace-family/0) and a 'Go to Calendar' button appears at the bottom of the card, jumping straight to your full calendar dashboard/view.";
@@ -422,11 +458,7 @@ class FamilyTodayCard extends HTMLElement {
       reminders_entity: config.reminders_entity || "todo.family_reminders",
       settings_entity: config.settings_entity || "todo.family_calendar_settings",
       weather_entity: config.weather_entity || "weather.forecast_home",
-      // Optional footer button that jumps straight to a full calendar
-      // dashboard/view - blank by default so nothing new appears unless
-      // explicitly configured. calendar_dashboard_path is a relative path
-      // like "/lovelace-family/0" (see the full card's own README for the
-      // dashboard/view path format).
+      // Optional footer button that jumps straight to a full calendar dashboard/view
       calendar_dashboard_path: (config.calendar_dashboard_path || "").toString().trim(),
       calendar_button_label: (config.calendar_button_label || "").toString().trim(),
       // Accepted (and ignored) so the exact same YAML block used for the
@@ -435,21 +467,21 @@ class FamilyTodayCard extends HTMLElement {
       meal_templates_entity: config.meal_templates_entity || "todo.meal_plan_templates",
       suggestions_entity: config.suggestions_entity || "todo.meal_suggestions",
       birthdays_entity: config.birthdays_entity || "calendar.birthdays",
-      // "" (default, untouched by every existing dashboard) =
-      // "Use device settings" - falls straight through to the exact
-      // pre-1.111.0 behavior (household Global Theme, else local). See
-      // _resolveTheme below for where this takes priority.
       theme_override: typeof config.theme_override === "string" ? config.theme_override : "",
-      // "sectioned" (this card's original, unchanged layout)
-      // unless a household explicitly opted into "compact" - see
-      // _configSchema's own comment on this field.
       layout: config.layout === "compact" ? "compact" : "sectioned",
-      // see _configSchema's own
-      // comment on this field. false (untouched) means every existing
-      // dashboard looks exactly the same until a household opts in.
+      // see _configSchema's own comment on this field.
       show_add_button: !!config.show_add_button,
     };
+    // v1.168.85: what this card's own config actually says (blank = "use
+    // the calendar card's") - _applySharedEntities decides the real lists.
+    const explicit = (v) => (typeof v === "string" ? v.trim() : "");
+    this._configExplicit = {
+      meal_plan_entity: explicit(config.meal_plan_entity),
+      reminders_entity: explicit(config.reminders_entity),
+      weather_entity: explicit(config.weather_entity),
+    };
     if (this._settingsCache === undefined) this._settingsCache = null;
+    this._applySharedEntities();
     if (this._globalThemes === undefined) this._globalThemes = [];
     if (this._todayEvents === undefined) this._todayEvents = [];
     if (this._todayBadges === undefined) this._todayBadges = [];
@@ -460,12 +492,7 @@ class FamilyTodayCard extends HTMLElement {
     if (this._recurringMeals === undefined) this._recurringMeals = [];
     if (this._firstLoadPromise === undefined) this._firstLoadPromise = null;
     if (!this._built) this._build();
-    // a full _render() (not just _renderHeader()) so toggling
-    // the new layout field live in the card editor's preview actually
-    // re-paints the body immediately, using whatever today's data was
-    // already fetched to - _render() itself is cheap and safe to call
-    // again with unchanged data (every other setConfig-triggered field
-    // change already relied on this being idempotent).
+    // a full _render() (not just _renderHeader()) so toggling the new layout field live in the card editor's preview actually re-paints the body
     this._render();
   }
   set hass(hass) {
@@ -497,24 +524,93 @@ class FamilyTodayCard extends HTMLElement {
     return (lang || "en").split("-")[0].toLowerCase();
   }
   _ensureTranslationsLoaded() {
+    __fhUseHass(this._hass);
     if (!this._hass || typeof this._hass.loadBackendTranslation !== "function") return;
     const lang = this._baseLanguage(this._hass.language);
-    if (this._i18nLoadedLang === lang || this._i18nLoading === lang) return;
+    if (this._i18nLoadedLang === lang) {
+      // Home Assistant hands cards the hass object that actually knows the newly loaded strings a moment AFTER loadBackendTranslation resolves
+      if (this._hass.localize !== this._i18nLocalize) {
+        this._i18nLocalize = this._hass.localize;
+        // redraw only when our strings changed - a new localize function alone made cards flicker (GitHub issue #16)
+        let probe = "";
+        try { probe = this._hass.localize("component.family_hub.fh_ui.nav.settings") || ""; } catch (e) { probe = ""; }
+        probe = `${this._hass.language}|${probe}`;
+        if (probe !== this._i18nLastProbe) {
+          this._i18nLastProbe = probe;
+          this._onTranslationsReady();
+        }
+      }
+      return;
+    }
+    if (this._i18nLoading === lang) return;
     this._i18nLoading = lang;
     this._hass
       .loadBackendTranslation("fh_ui", "family_hub")
       .then(() => {
         this._i18nLoadedLang = lang;
         this._i18nLoading = null;
-        this._applyTranslations();
-        this._render();
+        this._i18nLocalize = this._hass.localize;
+        this._onTranslationsReady();
       })
       .catch((e) => {
         this._i18nLoading = null;
         console.warn("[family_hub] failed to load \"" + lang + "\" translations - staying on English fallback text", e);
       });
   }
+  // (GitHub issue #10): dates and times follow the Home Assistant user's own language and time format (Profile > Language / Time format)
+  _uiLocale() {
+    const h = this._hass;
+    const lang = (h && h.locale && h.locale.language) || (h && h.language) || "";
+    return lang || undefined;
+  }
+  _uiHour12() {
+    const h = this._hass;
+    const tf = h && h.locale && h.locale.time_format;
+    if (tf === "12") return true;
+    if (tf === "24") return false;
+    if (tf === "system") {
+      try {
+        return new Intl.DateTimeFormat(undefined, { hour: "numeric" }).resolvedOptions().hour12;
+      } catch (e) {
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+  _fmtDate(d, opts) {
+    try {
+      return d.toLocaleDateString(this._uiLocale(), opts);
+    } catch (e) {
+      return d.toLocaleDateString(undefined, opts);
+    }
+  }
+  _fmtTimeOfDay(d) {
+    const opts = { hour: "numeric", minute: "2-digit" };
+    const hour12 = this._uiHour12();
+    if (hour12 !== undefined) opts.hour12 = hour12;
+    try {
+      return d.toLocaleTimeString(this._uiLocale(), opts);
+    } catch (e) {
+      return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    }
+  }
+  _fmtDateTime(d) {
+    const opts = { year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" };
+    const hour12 = this._uiHour12();
+    if (hour12 !== undefined) opts.hour12 = hour12;
+    try {
+      return d.toLocaleString(this._uiLocale(), opts);
+    } catch (e) {
+      return d.toLocaleString();
+    }
+  }
+  // Redraws everything that shows translated text.
+  _onTranslationsReady() {
+    this._applyTranslations();
+    this._render();
+  }
   _applyTranslations() {
+    __fhSweep(this._root || this.shadowRoot);
     if (!this._root) return;
     this._root.querySelectorAll("[data-i18n]").forEach((el) => {
       const key = el.dataset.i18n;
@@ -533,37 +629,23 @@ class FamilyTodayCard extends HTMLElement {
   }
   async _initFirstLoad() {
     await this._fetchSettings();
-    // always fetched now, not just when the household has
-    // useGlobalTheme on - a per-card theme_override needs this list
-    // regardless of the household's own Global Theme setting.
+    // always fetched now, not just when the household has useGlobalTheme on
     await this._fetchGlobalThemes();
     this._refreshAll();
     this._startPolling();
-    // - see this
-    // file's own copy of the window.__familyHubTimerAlarm singleton
-    // (below) for the full design note. Kept byte-identical to every
-    // other card's copy on purpose.
+    // see this file's own copy of the window.__familyHubTimerAlarm singleton (below) for the full design note.
     this._subscribeAlarmEvents();
   }
   _myUserId() {
     return this._hass && this._hass.user ? this._hass.user.id : null;
   }
-  // household-wide timer alarms - subscribe to the two bus
-  // events chores_websocket_api.py's _dispatch_timer_alarm/
-  // _reannounce_active_alarms fire (see const.py's
-  // EVENT_FAMILY_HUB_TIMER_ALARM_RING/_STOP), and hand each one to the
-  // shared window.__familyHubTimerAlarm singleton below - same "one modal/
-  // audio loop shared by every card on the dashboard" convention its own
-  // top comment describes. Subscribed once per card instance (guarded by
-  // _alarmUnsub so a re-run of _initFirstLoad, which shouldn't happen but
-  // costs nothing to guard against, never double-subscribes).
   async _subscribeAlarmEvents() {
     if (this._alarmUnsub || !this._hass || !this._hass.connection) return;
     const myUserId = this._myUserId();
     try {
       const unsubRing = await this._hass.connection.subscribeEvents((event) => {
         if (window.__familyHubTimerAlarm) {
-          window.__familyHubTimerAlarm.ringBroadcast(event.data, this._hass, myUserId);
+          window.__familyHubTimerAlarm.ringBroadcast(event.data, this._hass, typeof this._myUserId === "function" ? this._myUserId() : myUserId);
         }
       }, "family_hub_timer_alarm_ring");
       const unsubStop = await this._hass.connection.subscribeEvents((event) => {
@@ -576,14 +658,9 @@ class FamilyTodayCard extends HTMLElement {
         try { unsubStop(); } catch (e) { /* no-op */ }
       };
     } catch (e) {
-      // Best-effort - a dashboard that can't subscribe (e.g. a very old
-      // frontend build) simply never gets the WIDENED alarm reach; the
-      // same-tab-only local alarm (window.__familyHubTimerAlarm.check,
-      // unaffected by any of this) still works exactly as before.
+      // Best-effort - a dashboard that can't subscribe (e.g. a very old frontend build) simply never gets the WIDENED alarm reach
     }
-    // Catch up on anything already ringing before this tab opened, rather
-    // than waiting up to ALARM_REANNOUNCE_SECONDS for the next re-
-    // announcement's RING event.
+    // Catch up on anything already ringing before this tab opened
     if (this._hass.connection.sendMessagePromise) {
       try {
         const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/timers/list_active_alarms" });
@@ -597,6 +674,7 @@ class FamilyTodayCard extends HTMLElement {
     }
   }
   _refreshAll() {
+    this._loadedOnce = true;
     this._fetchTodayEvents();
     this._fetchTodayMeals();
     this._fetchTodayReminders();
@@ -624,9 +702,7 @@ class FamilyTodayCard extends HTMLElement {
         this._startPolling();
       }
     }
-    // Refresh at the next local midnight so a card left open overnight
-    // rolls over to the new day's events/meals/reminders on its own,
-    // without needing a manual refresh.
+    // Refresh at the next local midnight so a card left open overnight rolls over to the new day's events/meals/reminders on its own
     this._scheduleMidnightRefresh();
   }
   disconnectedCallback() {
@@ -650,14 +726,7 @@ class FamilyTodayCard extends HTMLElement {
   getCardSize() {
     return 4;
   }
-  // Sections-view "Layout" tab sizing (current API). `rows` is left unset
-  // so the card auto-fits its content height by default (a day with one
-  // event looks shorter than a day with five) - but if someone manually
-  // drags the card to a shorter height in the Layout tab, the grid DOES
-  // impose a fixed height on this element, and the card's own CSS (:host
-  // height:100%, .body-scroll flex:1 + overflow-y:auto) makes it scroll
-  // internally rather than overflowing past its assigned space. Width is
-  // resizable between a compact 4-column tile and a full 12-column row.
+  // Sections-view "Layout" tab sizing (current API).
   getGridOptions() {
     return {
       columns: 6,
@@ -715,16 +784,10 @@ class FamilyTodayCard extends HTMLElement {
       people: [],
       theme: this._defaultTheme(),
       useGlobalTheme: true,
-      globalThemeId: "liquidglass",
+      globalThemeId: "slate",
     };
   }
-  // Only reads the handful of shared-settings fields this card actually
-  // needs (blocks, weekend-breakfast, people, theme) - everything else in
-  // the settings blob (countdown, Daily Digest, timeline range, etc.) is
-  // simply ignored here since this card doesn't render any of it. This is
-  // deliberately lenient/forward-compatible: an older or newer settings
-  // blob shape never breaks this card, it just falls back to defaults for
-  // any field it doesn't recognize.
+  // Only reads the handful of shared-settings fields this card actually needs (blocks, weekend-breakfast, people, theme)
   _normalizeSettings(parsed) {
     const defaults = this._defaultSettings();
     if (!parsed || typeof parsed !== "object") return defaults;
@@ -746,7 +809,31 @@ class FamilyTodayCard extends HTMLElement {
     });
     const useGlobalTheme = typeof parsed.useGlobalTheme === "boolean" ? parsed.useGlobalTheme : defaults.useGlobalTheme;
     const globalThemeId = typeof parsed.globalThemeId === "string" ? parsed.globalThemeId : defaults.globalThemeId;
-    return { blocks, weekendBreakfast, people, theme: { colors, fonts }, useGlobalTheme, globalThemeId };
+    // the lists the main calendar card uses (see _applySharedEntities) - its Settings choices
+    const str = (v) => (typeof v === "string" ? v.trim() : "");
+    const reg = parsed.calendarCardEntities && typeof parsed.calendarCardEntities === "object" ? parsed.calendarCardEntities : {};
+    const calendarCardEntities = {};
+    ["meal_plan_entity", "reminders_entity", "weather_entity"].forEach((k) => {
+      if (/^(todo|weather)\.[a-z0-9_]+$/.test(str(reg[k]))) calendarCardEntities[k] = str(reg[k]);
+    });
+    return {
+      blocks, weekendBreakfast, people, theme: { colors, fonts }, useGlobalTheme, globalThemeId,
+      mealPlanEntity: str(parsed.mealPlanEntity), weatherEntity: str(parsed.weatherEntity), calendarCardEntities,
+    };
+  }
+  // which meal plan / reminders list / weather entity this card reads.
+  _applySharedEntities() {
+    if (!this._config) return;
+    const s = this._settingsCache || {};
+    const reg = s.calendarCardEntities || {};
+    const pick = (key, fromSettings, def) => {
+      const own = (this._configExplicit && this._configExplicit[key]) || "";
+      if (own && own !== def) return own;
+      return (fromSettings || "").trim() || reg[key] || own || def;
+    };
+    this._config.meal_plan_entity = pick("meal_plan_entity", s.mealPlanEntity, "todo.meal_plan");
+    this._config.reminders_entity = pick("reminders_entity", "", "todo.family_reminders");
+    this._config.weather_entity = pick("weather_entity", s.weatherEntity, "weather.forecast_home");
   }
   _getSettings() {
     return this._settingsCache || this._defaultSettings();
@@ -763,9 +850,28 @@ class FamilyTodayCard extends HTMLElement {
           color: p.color || palette[i % palette.length],
           badges: Array.isArray(p.badges) ? p.badges : [],
           remindersEntity: p.remindersEntity || "",
+          holiday: typeof p.holiday === "boolean" ? p.holiday : undefined,
         }));
     }
     return this._config.people;
+  }
+  // A holiday calendar (Settings > Calendars > Holidays, or one named "holiday") shows next to the date, not as events
+  _holidayIcon(summary) {
+    const s = String(summary || "").toLowerCase();
+    const rules = [
+      [/hallowe/, "\u{1F383}"], [/christmas|xmas|weihnacht|navidad|no[eë]l|natale|kerst|natal/, "\u{1F384}"], [/thanksgiving/, "\u{1F983}"],
+      [/easter|ostern|pascua|p[âa]ques|pasqua|pasen|wielkanoc|p[áa]scoa/, "\u{1F423}"], [/new year|neujahr|a[ñn]o nuevo|nouvel an|capodanno|nieuwjaar|nowy rok|ano novo/, "\u{1F386}"],
+      [/valentin/, "\u2764\uFE0F"], [/patrick/, "\u2618\uFE0F"], [/independence|4th of july|fourth of july/, "\u{1F386}"], [/mother/, "\u{1F490}"], [/father/, "\u{1F454}"],
+      [/memorial|veteran|remembrance/, "\u{1F396}\uFE0F"], [/labou?r day|may day/, "\u{1F6E0}\uFE0F"], [/daylight|dst|summer time|winter time/, "\u{1F552}"],
+      [/hanuk|chanuk/, "\u{1F54E}"], [/diwali/, "\u{1FA94}"], [/birthday|geburtstag|cumplea/, "\u{1F382}"],
+    ];
+    const hit = rules.find(([re]) => re.test(s));
+    return hit ? hit[1] : "\u{1F389}";
+  }
+  _isHolidayCalendar(person) {
+    if (!person) return false;
+    if (typeof person.holiday === "boolean") return person.holiday;
+    return /holiday|feiertag|festivo|feriado|f[ée]ri[ée]|feestdag|święt|swiet/i.test(`${person.entity || ""} ${person.name || ""}`);
   }
   _getBlocksForToday() {
     const settings = this._getSettings();
@@ -777,9 +883,7 @@ class FamilyTodayCard extends HTMLElement {
     }
     return blocks;
   }
-  // Shared by both the new per-card override branch below and the
-  // existing household-global branch, so the color/font validation only
-  // needs to exist once in this file.
+  // Shared by both the new per-card override branch below and the existing household-global branch
   _themeFromGlobalEntry(g) {
     const defaultTheme = this._defaultTheme();
     const colors = {};
@@ -793,15 +897,13 @@ class FamilyTodayCard extends HTMLElement {
       const n = typeof raw === "number" ? raw : parseInt(raw, 10);
       fonts[k] = Number.isFinite(n) && n >= 6 && n <= 72 ? n : defaultTheme.fonts[k];
     });
-    return { colors, fonts, effects: g.effects || null, background: g.background || null };
+    const cardOpacity = typeof g.cardOpacity === "number" ? g.cardOpacity : 100;
+    const glassBlur = typeof g.glassBlur === "number" ? g.glassBlur : 0;
+    return { colors, fonts, effects: g.effects || null, background: g.background || null, cardOpacity, glassBlur };
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
-    // a per-card-placement Theme override (set from this card's
-    // own native "Edit Card" dialog) wins over the household's own Global
-    // Theme setting - the most specific choice available. "" (the
-    // untouched default) falls straight through to the exact pre-1.111.0
-    // behavior below.
+    // a per-card-placement Theme override (set from this card's own native "Edit Card" dialog) wins over the household's own Global Theme setting
     const cardOverride = this._config && this._config.theme_override;
     if (cardOverride) {
       const list = Array.isArray(this._globalThemes) ? this._globalThemes : [];
@@ -809,6 +911,13 @@ class FamilyTodayCard extends HTMLElement {
       if (g) return this._themeFromGlobalEntry(g);
       // A stale override (theme since deleted/renamed) falls through to
       // normal resolution below rather than going blank.
+    }
+    // a holiday background set to change the theme wins while it's showing
+    if (window.__fhHolidayTheme) {
+      if (!this.__fhHolidaySub) this.__fhHolidaySub = window.__fhHolidayTheme.subscribe(() => { if (this.isConnected) this._applyThemeVars(); });
+      const holidayThemeId = window.__fhHolidayTheme.themeId(this._hass);
+      const hg = holidayThemeId && (this._globalThemes || []).find((t) => t && t.id === holidayThemeId);
+      if (hg) return this._themeFromGlobalEntry(hg);
     }
     if (!settings.useGlobalTheme || !settings.globalThemeId) return local;
     const list = Array.isArray(this._globalThemes) ? this._globalThemes : [];
@@ -840,12 +949,7 @@ class FamilyTodayCard extends HTMLElement {
     }
     return layers.length ? layers.join(", ") : null;
   }
-  // see window.__familyHubThemeCache's own comment above the
-  // class for the full "why a key, not one shared blob" reasoning. This
-  // card has no per-device theme override concept (that lives only on the
-  // full calendar/chores/rewards/goals/pantry/my-chores cards), so the key
-  // is only ever this card-placement's own theme_override, or the shared
-  // "household" bucket every un-overridden card/placement uses.
+  // see window.__familyHubThemeCache's own comment above the class for the full "why a key, not one shared blob" reasoning.
   _familyHubThemeCacheKey() {
     const cardOverride = this._config && this._config.theme_override;
     if (cardOverride) return `card:${cardOverride}`;
@@ -855,7 +959,12 @@ class FamilyTodayCard extends HTMLElement {
     const settings = this._getSettings();
     const theme = this._resolveTheme(settings);
     this.style.setProperty("--fc-bg", theme.colors.bg);
-    this.style.setProperty("--fc-card", theme.colors.card);
+    // Liquid Glass support (cardOpacity/glassBlur): the rows and cards go translucent and blur the theme's background image, like the calendar.
+    const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
+    const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
+    this.style.setProperty("--fc-glass-blur", `${glassBlur}px`);
+    this.style.setProperty("--fc-card", (cardOpacity < 100 ? this._hexToRgba(theme.colors.card, cardOpacity / 100) : theme.colors.card));
+    this.style.setProperty("--fc-card-menu", (cardOpacity < 88 ? this._hexToRgba(theme.colors.card, 0.88) : cardOpacity < 100 ? this._hexToRgba(theme.colors.card, cardOpacity / 100) : theme.colors.card));
     this.style.setProperty("--fc-border", theme.colors.border);
     this.style.setProperty("--fc-text", theme.colors.text);
     this.style.setProperty("--fc-text-secondary", theme.colors.textSecondary);
@@ -863,8 +972,8 @@ class FamilyTodayCard extends HTMLElement {
     this.style.setProperty("--fc-accent-text", theme.colors.accentText);
     this.style.setProperty("--fc-accent2", theme.colors.accent2);
     this.style.setProperty("--fc-accent3", theme.colors.accent3);
-    this.style.setProperty("--fc-surface-alt", theme.colors.surfaceAlt);
-    this.style.setProperty("--fc-surface2", theme.colors.surface2);
+    this.style.setProperty("--fc-surface-alt", (cardOpacity < 100 ? this._hexToRgba(theme.colors.surfaceAlt, cardOpacity / 100) : theme.colors.surfaceAlt));
+    this.style.setProperty("--fc-surface2", (cardOpacity < 100 ? this._hexToRgba(theme.colors.surface2, cardOpacity / 100) : theme.colors.surface2));
     this.style.setProperty("--fs-header-title", `${theme.fonts.headerTitle}px`);
     this.style.setProperty("--fs-event", `${theme.fonts.event}px`);
     this.style.setProperty("--fs-chip", `${theme.fonts.chip}px`);
@@ -891,18 +1000,12 @@ class FamilyTodayCard extends HTMLElement {
       this.style.removeProperty("--fc-bg-image-opacity");
       this.style.removeProperty("--fc-bg-overlay-image");
     }
-    // snapshot exactly what was just set/removed above into the
-    // shared cache under this card/placement's key, so a future _build() can
-    // apply the same values before the real fetches resolve - see
-    // window.__familyHubThemeCache's own comment for the full reasoning. A
-    // var not currently set on the host (e.g. --fc-bg-image when there is no
-    // background image right now) is simply skipped rather than cached as an
-    // empty string, so applying the cache later never clobbers a var that
-    // should stay unset.
+    // snapshot exactly what was just set/removed above into the shared cache under this card/placement's key
     if (window.__familyHubThemeCache) {
       const __familyHubCacheVarNames = [
       "--fc-bg",
       "--fc-card",
+      "--fc-card-menu",
       "--fc-border",
       "--fc-text",
       "--fc-text-secondary",
@@ -912,6 +1015,7 @@ class FamilyTodayCard extends HTMLElement {
       "--fc-accent3",
       "--fc-surface-alt",
       "--fc-surface2",
+      "--fc-glass-blur",
       "--fs-header-title",
       "--fs-event",
       "--fs-chip",
@@ -932,14 +1036,7 @@ class FamilyTodayCard extends HTMLElement {
       window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
     }
   }
-  // applies whatever theme this device/placement last actually
-  // resolved to, SYNCHRONOUSLY, before the real fetches that would
-  // otherwise be the only way to know it - see window.__familyHubTheme
-  // Cache's own comment above the class. Called once from `_build()`,
-  // before the very first `_render()`/paint. A no-op (does nothing,
-  // leaves `_defaultTheme()`'s plain colors as the first paint exactly
-  // like before this fix) on the very first time ANY card resolves this
-  // particular key - there's nothing to have cached yet.
+  // applies whatever theme this device/placement last actually resolved to, SYNCHRONOUSLY
   _applyCachedThemeVarsIfAny() {
     if (!window.__familyHubThemeCache) return;
     const cached = window.__familyHubThemeCache.get(this._familyHubThemeCacheKey());
@@ -950,6 +1047,20 @@ class FamilyTodayCard extends HTMLElement {
   }
   async _fetchSettings() {
     if (!this._hass) return;
+    // read Family Hub's own live settings store first - the legacy "Settings" to-do item this used to read exclusively stopped being kept in sync
+    try {
+      const live = await this._hass.connection.sendMessagePromise({ type: "family_hub/get_settings" });
+      const liveSettings = live && live.settings && typeof live.settings === "object" ? live.settings : null;
+      if (liveSettings && Object.keys(liveSettings).length) {
+        this._settingsCache = this._normalizeSettings(liveSettings);
+        this._afterSettingsLoaded();
+        this._applyThemeVars();
+        this._renderHeader();
+        return;
+      }
+    } catch (e) {
+      // fall through to the legacy copy below
+    }
     try {
       const result = await this._hass.connection.sendMessagePromise({
         type: "call_service",
@@ -974,8 +1085,16 @@ class FamilyTodayCard extends HTMLElement {
     } catch (e) {
       if (!this._settingsCache) this._settingsCache = this._defaultSettings();
     }
+    this._afterSettingsLoaded();
     this._applyThemeVars();
     this._renderHeader();
+  }
+  // re-pick the lists (see _applySharedEntities) and, if the calendar card's choice changed since the last load
+  _afterSettingsLoaded() {
+    const before = [this._config.meal_plan_entity, this._config.reminders_entity, this._config.weather_entity].join("|");
+    this._applySharedEntities();
+    const after = [this._config.meal_plan_entity, this._config.reminders_entity, this._config.weather_entity].join("|");
+    if (before !== after && this._loadedOnce) this._refreshAll();
   }
   async _fetchGlobalThemes() {
     if (!this._hass) return;
@@ -986,11 +1105,7 @@ class FamilyTodayCard extends HTMLElement {
     } catch (e) {
       custom = [];
     }
-    // also merge in every installed native Home Assistant theme
-    // - duplicated (not shared/imported) from family-week-calendar-card.js's
-    // own _fetchGlobalThemes/_nativeHaThemeEntries, same "independently
-    // loaded Lovelace resources duplicate small helpers" convention used
-    // throughout this project.
+    // also merge in every installed native Home Assistant theme - duplicated
     this._globalThemes = custom.concat(this._nativeHaThemeEntries());
     this._applyThemeVars();
   }
@@ -1106,12 +1221,7 @@ class FamilyTodayCard extends HTMLElement {
   }
   _parseReminderRollover(raw) {
     const match = /<!--rollover:1-->/.exec(raw || "");
-    // a rollover reminder can now also carry a <!--rolldays:...-->
-    // marker (see family-week-calendar-card.js's own _parseReminderRollover
-    // for the read/write half of this) restricting which days it applies
-    // to - this card only ever DISPLAYS a reminder's description, so it
-    // just needs both markers stripped out of the visible text, not the
-    // day list itself.
+    // a rollover reminder can now also carry a <!--rolldays:...--> marker
     const description = (raw || "")
       .replace(/<!--rollover:1-->/, "")
       .replace(/<!--rolldays:[\d,]*-->/, "")
@@ -1127,10 +1237,8 @@ class FamilyTodayCard extends HTMLElement {
     dayEnd.setDate(dayStart.getDate() + 1);
     const people = this._getPeople();
     const results = [];
-    // Deduped by "text|color" so two same-badge events today don't stack
-    // duplicate bubbles next to the date - one bubble per distinct badge is
-    // enough to signal "something's up today", same intent as the full
-    // card's per-day custody badge.
+    const holidays = [];
+    // Deduped by "text|color" so two same-badge events today don't stack duplicate bubbles next to the date
     const badgeMap = new Map();
     await Promise.all(
       people.map(async (person) => {
@@ -1146,18 +1254,17 @@ class FamilyTodayCard extends HTMLElement {
             const end = this._toDate(ev.end);
             if (!start) continue;
             const summaryLower = (ev.summary || "").toLowerCase();
-            // A per-calendar "hide when contains" keyword drops the event
-            // entirely (e.g. a background custody-schedule calendar) -
-            // same as the full card's month/week grids.
+            if (this._isHolidayCalendar(person)) {
+              if (ev.summary && !holidays.some((h) => h.summary.toLowerCase() === summaryLower)) holidays.push({ summary: ev.summary, color: person.color });
+              continue;
+            }
+            // A per-calendar "hide when contains" keyword drops the event entirely (e.g. a background custody-schedule calendar)
             const hideMatched = personBadges.some((b) => {
               const hideMatch = (b.hideMatch || "").trim().toLowerCase();
               return hideMatch && summaryLower.includes(hideMatch);
             });
             if (hideMatched) continue;
-            // A "show badge when contains" keyword swaps the full event
-            // row for a small colored bubble next to today's date instead
-            // - keeps the agenda from being cluttered by all-day custody
-            // markers while still surfacing that something matched today.
+            // A "show badge when contains" keyword swaps the full event row for a small colored bubble next to today's date instead
             let matchedBadge = false;
             for (const b of personBadges) {
               const badgeMatch = (b.match || "").trim().toLowerCase();
@@ -1189,6 +1296,7 @@ class FamilyTodayCard extends HTMLElement {
     });
     this._todayEvents = results;
     this._todayBadges = Array.from(badgeMap.values());
+    this._todayHolidays = holidays;
     this._render();
   }
   async _fetchTodayMeals() {
@@ -1243,11 +1351,7 @@ class FamilyTodayCard extends HTMLElement {
       .filter(Boolean);
     this._render();
   }
-  // Same resolution rule as the full card's _getMealForDay: an explicit
-  // entry for this exact date always wins (whether it's a recurring
-  // anchor or a one-off override), otherwise the nearest "repeat weekly"
-  // anchor whose weekday + block match and whose own date is on or before
-  // today (never projects backward).
+  // Same resolution rule as the full card's _getMealForDay: an explicit entry for this exact date always wins
   _getMealForDay(dateKey, dayDate, blockIndex) {
     const explicit = this._mealPlanRaw[dateKey] && this._mealPlanRaw[dateKey][blockIndex];
     if (explicit) return explicit;
@@ -1261,22 +1365,7 @@ class FamilyTodayCard extends HTMLElement {
     if (!best) return null;
     return { uid: best.uid, name: best.name, description: best.description, link: best.link, color: best.color, recur: "weekly" };
   }
-  // v144.2+ (): mirrors the full calendar card's own v130+
-  // multi-list subscription rule (see family-week-calendar-card.js's
-  // _fetchReminders) instead of only ever pulling from the one shared
-  // family list. Every logged-in profile also sees, folded into the same
-  // this._todayReminders array: their OWN individual list (settings.
-  // people[i].remindersEntity for whichever person their userProfile.
-  // primaryCalendar points at), shown unconditionally - no subscription
-  // needed for your own list - and every OTHER person's individual list
-  // they're subscribed to at EITHER tier (remindersSubscriptions[personEntity]
-  // === "calendar" or "calendar_alert"; both tiers are equivalent to
-  // "visible" here, same as the calendar card). Each returned item is
-  // tagged with which list it came from (listEntity), that list's color
-  // (null for the family list) and personName (null for the family list)
-  // so "Done" can target the right entity and items can be styled per
-  // owner. A person whose individual list entity happens to equal the
-  // family entity is only ever fetched once.
+  // (): mirrors the full calendar card's own v130+ multi-list subscription rule
   async _fetchTodayReminders() {
     if (!this._hass) return;
     const familyEntity = this._config.reminders_entity;
@@ -1402,13 +1491,9 @@ class FamilyTodayCard extends HTMLElement {
     return map[condition] || "";
   }
   _fmtTime(d) {
-    return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    return this._fmtTimeOfDay(d);
   }
-  // Client-side navigation to another dashboard/view, the same mechanism
-  // Home Assistant's own frontend uses for a "navigate" tap action -
-  // pushState + a "location-changed" event lets the app's router swap
-  // views instantly instead of a full page reload (which would also lose
-  // any other cards' in-memory state on the page).
+  // Client-side navigation to another dashboard/view, the same mechanism Home Assistant's own frontend uses for a "navigate" tap action
   _goToCalendar() {
     const path = (this._config.calendar_dashboard_path || "").trim();
     if (!path) return;
@@ -1427,19 +1512,7 @@ class FamilyTodayCard extends HTMLElement {
     const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
     return luminance > 0.6 ? "#3a2f00" : "#ffffff";
   }
-  // Ported
-  // from family-week-calendar-card.js's own Add Event modal (same class
-  // names, same fields, same save logic) rather than a stripped-down
-  // rebuild, so it really is "the same modal" - this card already shared
-  // most of the underlying data (_getPeople, _getSettings, reminders_entity,
-  // the rollover marker format) with the full card, so the gap was mostly
-  // this UI itself, not the concepts behind it. Two deliberate, documented
-  // scope cuts from the full card's version: no translations (this card has
-  // no i18n system at all today, so every string here is plain English,
-  // matching the rest of this file), and _addEventDefaultDate's "whichever
-  // day is currently in view" logic is replaced with a plain "always
-  // defaults to today" - this card only ever shows one day, so there's no
-  // other day to default to.
+  // Ported from family-week-calendar-card.js's own Add Event modal (same class names, same fields
   _colorByName(people) {
     const map = {};
     for (const p of people) {
@@ -1452,12 +1525,7 @@ class FamilyTodayCard extends HTMLElement {
     const key = (person.name || person.entity || "").trim().toLowerCase();
     return (colorMap && colorMap[key]) || person.color;
   }
-  // Same "someone else's individual/subscribed Reminders list" picker as
-  // the full card's own _addableRemindersLists - always at least the
-  // shared family list, plus this Home Assistant user's own individual
-  // list and anything they're subscribed to, per this card's own already-
-  // fetched _getSettings()/_getPeople() (see _fetchTodayReminders, which
-  // already builds this exact same list for display).
+  // Same "someone else's individual/subscribed Reminders list" picker as the full card's own _addableRemindersLists
   _addableRemindersLists() {
     const familyEntity = this._config.reminders_entity;
     const lists = [{ entity: familyEntity, label: this._t("today.add_event.family_list_label", "Family"), color: null }];
@@ -1482,15 +1550,11 @@ class FamilyTodayCard extends HTMLElement {
         }
       }
     } catch (e) {
-      // No profile/individual-list data yet - just the family list, same
-      // picker-of-one this feature always had before individual lists
-      // existed.
+      // No profile/individual-list data yet - just the family list, same picker-of-one this feature always had before individual lists existed.
     }
     return lists;
   }
-  // Renders the 7 Mon-Sun toggle buttons for the reminder rollover-days
-  // picker - `selected` empty (or covering all 7 days) renders every button
-  // active, matching "every day" being this feature's default state.
+  // Renders the 7 Mon-Sun toggle buttons for the reminder rollover-days picker - `selected` empty
   _rolldaysBtnsHtml(selectedDays) {
     const selected = new Set(selectedDays && selectedDays.length ? selectedDays : [0, 1, 2, 3, 4, 5, 6]);
     return REMINDER_WEEKDAY_LABELS.map(
@@ -1507,12 +1571,7 @@ class FamilyTodayCard extends HTMLElement {
     if (!container) return [];
     return Array.from(container.querySelectorAll(".rolldays-btn.active")).map((btn) => parseInt(btn.dataset.day, 10));
   }
-  // Writes a standalone reminder's rollover markers back into its
-  // description - identical marker format to family-week-calendar-card.js's
-  // own _buildReminderDescription (and to what this card's own
-  // _parseReminderRollover already reads back for display), so a reminder
-  // created here rolls over exactly the same way one created from the full
-  // card would.
+  // Writes a standalone reminder's rollover markers back into its description
   _buildReminderDescription(description, rollover, rolloverDays) {
     const base = (description || "").trim();
     if (!rollover) return base;
@@ -1524,17 +1583,7 @@ class FamilyTodayCard extends HTMLElement {
     const markerBlock = markers.join("\n");
     return base ? `${base}\n\n${markerBlock}` : markerBlock;
   }
-  // Same mobile-back-button/hardware-back-gesture handling as the full
-  // card's own _openModal/_setupModalBackButtonHandling/
-  // _handleModalPopState (see that file's own extensive comment on
-  // _setupModalBackButtonHandling for the full "why" - identical here,
-  // just ported byte-for-byte since it depends on nothing but this._root
-  // and the browser's History API). Wiring this up as part of the Add
-  // Event modal also gives this card's existing Detail popup the same
-  // back-button behavior for free, the first time a household opens the
-  // Add Event modal - a small, harmless improvement, not a regression,
-  // since a household that never enables show_add_button never triggers
-  // this at all and sees no change whatsoever.
+  // Same mobile-back-button/hardware-back-gesture handling as the full card's own _openModal/_setupModalBackButtonHandling/
   _openModal(el) {
     if (!el) return;
     this._setupModalBackButtonHandling();
@@ -1628,9 +1677,7 @@ class FamilyTodayCard extends HTMLElement {
     root.querySelectorAll(".remind-check").forEach((cb) => {
       cb.checked = cb.value === "10" || cb.value === "30";
     });
-    // Always defaults to today - see this whole block's own top comment
-    // for why this card doesn't need the full card's "whichever day is
-    // currently in view" logic.
+    // Always defaults to today - see this whole block's own top comment for why this card doesn't need the full card's "whichever day is
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     root.querySelector(".add-event-date").value = this._dateKey(today);
@@ -1649,9 +1696,7 @@ class FamilyTodayCard extends HTMLElement {
     root.querySelectorAll(".add-event-allday-btn").forEach((b) => b.classList.toggle("active", b.dataset.value === "off"));
     this._updateAddEventFieldVisibility(false);
     this._renderAddEventPeopleField();
-    // Attachable checklists - always start fresh, closed, in "just for
-    // this" mode with no items (same as family-week-calendar-card.js's own
-    // _openAddEvent).
+    // Attachable checklists - always start fresh, closed, in "just for this" mode with no items
     this._addEventChecklistItems = [];
     root.querySelector(".add-event-checklist-toggle").checked = false;
     root.querySelector(".add-event-checklist-body").style.display = "none";
@@ -1664,10 +1709,6 @@ class FamilyTodayCard extends HTMLElement {
     this._setAddEventTab(tab === "reminder" ? "reminder" : "calendar");
     this._openModal(root.querySelector(".add-event-overlay"));
   }
-  // "Also for" - lets someone tag a new event for multiple people right
-  // when they create it. Rebuilt on open and whenever the Calendar select
-  // changes, since whichever calendar is currently picked has to be
-  // excluded from "someone else".
   _renderAddEventPeopleField() {
     const root = this._root;
     const content = root.querySelector(".add-event-people-content");
@@ -1714,10 +1755,7 @@ class FamilyTodayCard extends HTMLElement {
       });
     });
   }
-  // Populates the "use an existing list" dropdown from
-  // _fetchTodoListCandidates - separate from that fetch itself so it can
-  // be called again cheaply (the fetch is cached) whenever the mode
-  // toggles to "existing" without re-fetching every time.
+  // Populates the "use an existing list" dropdown from _fetchTodoListCandidates
   async _renderAddEventChecklistExistingSelect() {
     const root = this._root;
     const select = root.querySelector(".add-event-checklist-existing-select");
@@ -1730,10 +1768,7 @@ class FamilyTodayCard extends HTMLElement {
       : `<option value="">${this._t("today.add_event.no_todo_lists_found", "No to-do lists found")}</option>`;
     if (previous && candidates.some((c) => c.entity_id === previous)) select.value = previous;
   }
-  // Every todo.* entity in this Home Assistant instance, for the "use an
-  // existing list" picker - cached on this._todoListCandidates once per
-  // modal-open lifetime (cleared to null every time the modal is
-  // (re)opened - see _openAddEvent).
+  // Every todo.* entity in this Home Assistant instance, for the "use an existing list" picker
   async _fetchTodoListCandidates() {
     if (this._todoListCandidates) return this._todoListCandidates;
     if (!this._hass || !this._hass.connection || !this._hass.connection.sendMessagePromise) return null;
@@ -1809,11 +1844,7 @@ class FamilyTodayCard extends HTMLElement {
       }
     }
   }
-  // Shared by both _saveAddEvent's calendar branch and _saveAddReminder
-  // below - reads whatever's currently set in the checklist section and,
-  // if the toggle was ever turned on, attaches it to the just-created
-  // event/reminder. Best-effort: a failure here still leaves the event/
-  // reminder itself created, just without its checklist attached.
+  // Shared by both _saveAddEvent's calendar branch and _saveAddReminder below - reads whatever's currently set in the checklist section and
   async _saveAddEventChecklistIfAny(targetParams) {
     const root = this._root;
     const toggle = root.querySelector(".add-event-checklist-toggle");
@@ -1836,7 +1867,7 @@ class FamilyTodayCard extends HTMLElement {
         checklist,
       });
     } catch (e) {
-      /* best-effort - see comment above */
+      // best-effort - see comment above
     }
   }
   async _saveAddEvent() {
@@ -1919,7 +1950,7 @@ class FamilyTodayCard extends HTMLElement {
           people: peopleEntities,
         });
       } catch (e) {
-        /* best-effort - see comment above */
+        // best-effort - see comment above
       }
     }
     await this._saveAddEventChecklistIfAny({ calendar_entity: entity, start: startTs, summary: title });
@@ -1974,9 +2005,7 @@ class FamilyTodayCard extends HTMLElement {
     this._closeAddEvent();
     this._fetchTodayReminders();
   }
-  // Best-effort lookup for the uid of the to-do item _saveAddReminder just
-  // created via the plain (response-less) todo.add_item callService call
-  // above - only needed when a checklist is about to be attached to it.
+  // Best-effort lookup for the uid of the to-do item _saveAddReminder just created via the plain
   async _findJustAddedReminderUid(entityId, title, dueDatetime) {
     try {
       const result = await this._hass.connection.sendMessagePromise({
@@ -1995,11 +2024,7 @@ class FamilyTodayCard extends HTMLElement {
       return null;
     }
   }
-  // All the Add Event modal's own event listeners, wired once from _build()
-  // right after its markup is created - kept as its own method (rather than
-  // inlined into _build() alongside the two existing detail-popup
-  // listeners) purely so this sizable block reads as one clearly-labeled
-  // unit rather than crowding _build() itself.
+  // All the Add Event modal's own event listeners, wired once from _build() right after its markup is created - kept as its own method
   _wireAddEventModal(root) {
     root.querySelector(".add-event-close").addEventListener("click", () => this._closeAddEvent());
     root.querySelector(".add-event-cancel").addEventListener("click", () => this._closeAddEvent());
@@ -2085,10 +2110,7 @@ class FamilyTodayCard extends HTMLElement {
   }
   _build() {
     this._built = true;
-    // applied BEFORE attachShadow/the first innerHTML paint -
-    // see _applyCachedThemeVarsIfAny's own comment and window.__familyHub
-    // ThemeCache's above the class for why this is what actually fixes
-    // the household's reported "loads the default theme first" flash.
+    // applied BEFORE attachShadow/the first innerHTML paint - see _applyCachedThemeVarsIfAny's own comment and window.__familyHub ThemeCache's
     this._applyCachedThemeVarsIfAny();
     const root = this.attachShadow ? this.attachShadow({ mode: "open" }) : this;
     this._root = root;
@@ -2129,7 +2151,8 @@ background-image: var(--fc-bg-overlay-image, none);
 .header { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; position: relative; }
 .body-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; margin-right: -8px; padding-right: 8px; }
 .date-title { display: flex; align-items: center; gap: 6px; font-size: var(--fs-header-title, 15px); font-weight: 800; color: var(--fc-text); }
-.header-badges { display: inline-flex; align-items: center; gap: 4px; }
+.header-badges { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 0; }
+.holiday-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 220px; padding: 2px 8px; border-radius: 8px; background: color-mix(in srgb, var(--holiday-color, #c9c2b3) 30%, var(--fc-card-opaque, var(--fc-card))); border: 1px solid color-mix(in srgb, var(--holiday-color, #c9c2b3) 70%, transparent); color: var(--fc-text); font-size: 12px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .custody-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; font-size: 11px; font-weight: 800; box-shadow: var(--fc-shadow); }
 .date-sub { font-size: var(--fs-chip, 13px); color: var(--fc-text-secondary); font-weight: 600; margin-top: 2px; }
 .wx { display: flex; align-items: center; gap: 6px; font-size: var(--fs-wx-temp, 14px); color: var(--fc-text-secondary); font-weight: 700; }
@@ -2138,6 +2161,7 @@ background-image: var(--fc-bg-overlay-image, none);
 .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fc-text-secondary); font-weight: 800; margin-bottom: 6px; }
 .row { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border-radius: 10px; background: var(--fc-surface-alt); margin-bottom: 6px; cursor: pointer; box-sizing: border-box; }
 .row:last-child { margin-bottom: 0; }
+.row { backdrop-filter: blur(var(--fc-glass-blur, 0px)); -webkit-backdrop-filter: blur(var(--fc-glass-blur, 0px)); }
 .row .dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
 .row .label { flex: 1 1 auto; font-size: var(--fs-event, 14px); color: var(--fc-text); min-width: 0; overflow-wrap: break-word; }
 .row .meta { font-size: var(--fs-chip, 13px); color: var(--fc-text-secondary); flex: 0 0 auto; white-space: nowrap; }
@@ -2166,7 +2190,7 @@ background-image: var(--fc-bg-overlay-image, none);
 .go-to-calendar-btn, .footer-add-btn { flex: 1 1 auto; box-sizing: border-box; border: none; border-radius: 10px; background: var(--fc-accent); color: var(--fc-accent-text); font-size: var(--fs-event, 14px); font-weight: 700; padding: 11px 12px; cursor: pointer; box-shadow: var(--fc-shadow); font-family: inherit; }
 .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(40,34,20,0.45); z-index: 1000; align-items: center; justify-content: center; }
 .modal-overlay.open { display: flex; }
-.modal-box { position: relative; background: var(--fc-card); color: var(--fc-text); border-radius: 14px; padding: 20px 20px 16px; width: min(92vw, 380px); max-height: 80vh; overflow-y: auto; box-shadow: 0 8px 30px rgba(58,53,44,0.3); }
+.modal-box { position: relative; background: var(--fc-card-menu, var(--fc-card)); color: var(--fc-text); border-radius: 14px; padding: 20px 20px 16px; width: min(92vw, 380px); max-height: 80vh; overflow-y: auto; box-shadow: 0 8px 30px rgba(58,53,44,0.3); }
 .modal-close { position: absolute; top: 10px; right: 10px; border: none; background: var(--fc-surface-alt); color: var(--fc-text); width: 30px; height: 30px; border-radius: 8px; font-size: 14px; cursor: pointer; }
 .modal-box h2 { margin: 0 26px 14px 0; font-size: 1.2em; color: var(--fc-text); }
 .detail-title { font-size: 17px; font-weight: 800; margin: 0 24px 8px 0; }
@@ -2268,7 +2292,7 @@ background-image: var(--fc-bg-overlay-image, none);
 </div>
 <div class="field">
 <label data-i18n="today.add_event.title_label">Title</label>
-<input type="text" class="add-event-title" placeholder="e.g. Dentist appointment" maxlength="120" />
+<input data-fh-placeholder="text.e_g_dentist_appointment" type="text" class="add-event-title" placeholder="${__fhT("text.e_g_dentist_appointment", "e.g. Dentist appointment", null, "h")}" maxlength="120" />
 </div>
 <div class="add-event-tab-panel" data-tab-panel="calendar">
 <div class="field">
@@ -2302,7 +2326,7 @@ background-image: var(--fc-bg-overlay-image, none);
 </div>
 <div class="field">
 <label data-i18n="today.add_event.location_label">Location (optional)</label>
-<input type="text" class="add-event-location" placeholder="Optional" maxlength="120" />
+<input data-fh-placeholder="text.optional" type="text" class="add-event-location" placeholder="${__fhT("text.optional", "Optional", null, "h")}" maxlength="120" />
 </div>
 <div class="field add-event-remind-field">
 <label data-i18n="today.add_event.remind_me_label">Remind me</label>
@@ -2315,7 +2339,7 @@ background-image: var(--fc-bg-overlay-image, none);
 <label class="remind-check-opt"><input type="checkbox" class="remind-check" value="120" />2h</label>
 <label class="remind-check-opt"><input type="checkbox" class="remind-check" value="1440" />1d</label>
 </div>
-<div class="remind-hint" data-i18n="today.add_event.remind_hint">Needs the Family Hub integration installed to actually notify.</div>
+
 </div>
 <div class="field add-event-people-field">
 <label data-i18n="today.add_event.also_for_label">Also for</label>
@@ -2345,7 +2369,7 @@ background-image: var(--fc-bg-overlay-image, none);
 <div class="rolldays-btn-row add-event-reminder-rolldays">${this._rolldaysBtnsHtml([])}</div>
 </div>
 </div>
-<div class="remind-hint" data-i18n="today.add_event.reminder_hint">Saved as a to-do in Home Assistant, not an event on your calendar - fires once at this exact time, and you can mark it done or reschedule it anytime from Home Assistant's own To-do UI. Needs the Family Hub integration installed to actually notify; set reminder notify devices under Settings.</div>
+<div class="remind-hint" data-i18n="today.add_event.reminder_hint">Saved as a to-do in Home Assistant, not an event on your calendar - fires once at this exact time, and you can mark it done or reschedule it anytime from Home Assistant's own To-do UI. Who gets notified is set per person under Settings > Users.</div>
 <div class="add-event-warn add-event-reminder-missing-warn" style="display:none"></div>
 </div>
 <div class="field add-event-checklist-field">
@@ -2361,7 +2385,7 @@ background-image: var(--fc-bg-overlay-image, none);
 <div class="add-event-checklist-custom-field">
 <div class="add-event-checklist-items"></div>
 <div class="checklist-add-row">
-<input type="text" class="add-event-checklist-add-input" placeholder="e.g. Cleats" maxlength="200" />
+<input data-fh-placeholder="text.e_g_cleats" type="text" class="add-event-checklist-add-input" placeholder="${__fhT("text.e_g_cleats", "e.g. Cleats", null, "h")}" maxlength="200" />
 <button type="button" class="btn-cancel add-event-checklist-add-btn" data-i18n="common.add">Add</button>
 </div>
 </div>
@@ -2370,7 +2394,7 @@ background-image: var(--fc-bg-overlay-image, none);
 </div>
 <div class="field">
 <label data-i18n="today.add_event.notes_label">Notes (optional)</label>
-<textarea class="add-event-description" placeholder="Optional details" maxlength="255"></textarea>
+<textarea data-fh-placeholder="text.optional_details" class="add-event-description" placeholder="${__fhT("text.optional_details", "Optional details", null, "h")}" maxlength="255"></textarea>
 </div>
 <div class="add-event-error" style="display:none"></div>
 <div class="modal-actions">
@@ -2418,27 +2442,26 @@ background-image: var(--fc-bg-overlay-image, none);
   _renderHeader() {
     if (!this._root) return;
     const now = new Date();
-    this._root.querySelector(".date-title-text").textContent = this._config.title || "Today";
-    this._root.querySelector(".date-sub").textContent = now.toLocaleDateString(undefined, {
+    this._root.querySelector(".date-title-text").textContent = this._config.title || __fhT("text.today", "Today");
+    this._root.querySelector(".date-sub").textContent = this._fmtDate(now, {
       weekday: "long",
       month: "long",
       day: "numeric",
     });
-    // Per-calendar custody/status badges (Settings -> Calendars -> Add
-    // badge) that matched one of today's events - same small colored
-    // bubbles the full card shows next to the date in Week/Month view.
+    // Per-calendar custody/status badges (Settings -> Calendars -> Add badge) that matched one of today's events
     const badgesEl = this._root.querySelector(".header-badges");
     if (badgesEl) {
-      badgesEl.innerHTML = (this._todayBadges || [])
-        .map((b) => `<span class="custody-badge" style="background:${b.color};color:${this._textColorFor(b.color)}">${b.text}</span>`)
-        .join("");
+      badgesEl.innerHTML =
+        (this._todayBadges || [])
+          .map((b) => `<span class="custody-badge" style="background:${b.color};color:${this._textColorFor(b.color)}">${b.text}</span>`)
+          .join("") +
+        (this._todayHolidays || [])
+          .map((h) => `<span class="holiday-chip" style="--holiday-color:${h.color}" title="${String(h.summary).replace(/"/g, "&quot;").replace(/</g, "&lt;")}">${this._holidayIcon(h.summary)} ${String(h.summary).replace(/&/g, "&amp;").replace(/</g, "&lt;")}</span>`)
+          .join("");
     }
     this._renderFooterActions();
   }
-  // extracted out of _render()'s old inline click handlers so
-  // both layouts (sectioned's per-list rows AND compact's single combined
-  // list) can open the exact same detail popup for the exact same event,
-  // rather than maintaining two copies of this logic.
+  // extracted out of _render()'s old inline click handlers so both layouts
   _openEventDetail(ev) {
     const rows = [];
     rows.push({ text: ev.allDay ? this._t("today.detail.all_day", "All day") : `${this._fmtTime(ev.start)}${ev.end ? " - " + this._fmtTime(ev.end) : ""}` });
@@ -2564,17 +2587,7 @@ background-image: var(--fc-bg-overlay-image, none);
       });
     }
   }
-  // Mirrors family-week-calendar-card.js's own
-  // _buildMonthSplitDetailHtml as closely as this card's own already-
-  // fetched data allows: meal pills first, then events and reminders
-  // combined into one time-sorted list (all-day items first, same
-  // ordering _buildMonthSplitDetailHtml uses). Two differences from the
-  // full card's version, both deliberate scope cuts rather than oversights:
-  // no "Go to this week" button (this card has its own separate "Go to
-  // Calendar" footer button already, see _renderFooterActions) and no
-  // birthdays (this card never fetches birthdays_entity at all today -
-  // see setConfig's own comment on that field - so there's nothing to
-  // include; a future pass could add that fetch if a household asks).
+  // Mirrors family-week-calendar-card.js's own _buildMonthSplitDetailHtml as closely as this card's own already- fetched data allows: meal
   _renderCompactBody() {
     const root = this._root;
     root.querySelectorAll(".section").forEach((el) => (el.style.display = "none"));
@@ -2627,20 +2640,13 @@ background-image: var(--fc-bg-overlay-image, none);
       });
     });
   }
-  // Optional footer button - only rendered when a dashboard path is
-  // actually configured, so cards that don't want it look unchanged. Split
-  // out from _render() (and also called from setConfig via _renderHeader)
-  // so the button shows up immediately from config alone, without waiting
-  // on hass/data to load first.
+  // Optional footer button - only rendered when a dashboard path is actually configured, so cards that don't want it look unchanged.
   _renderFooterActions() {
     if (!this._root) return;
     const footerEl = this._root.querySelector(".footer-actions");
     if (!footerEl) return;
     const calendarPath = (this._config.calendar_dashboard_path || "").trim();
-    // Both buttons (either, neither, or both may be present depending on
-    // config) live in one flex row rather than each being its own
-    // full-width block, so "next to" is literal, not just "also in the
-    // footer".
+    // Both buttons (either, neither, or both may be present depending on config) live in one flex row rather than each being its own full-width
     const buttonsHtml = [];
     if (this._config.show_add_button) {
       buttonsHtml.push(`<button type="button" class="footer-add-btn">&#10133; ${this._t("common.add", "Add")}</button>`);
@@ -2665,11 +2671,7 @@ if (!customElements.get("family-today-card")) {
   customElements.define("family-today-card", FamilyTodayCard);
 }
 
-// native "Edit Card" config editor - a thin wrapper around
-// Home Assistant's own <ha-form>, needed only because the new
-// theme_override field's option list has to be fetched live. See
-// FamilyTodayCard.getConfigElement above and FamilyHubGoalsCardEditor in
-// family-hub-goals-card.js for the identical pattern/reasoning.
+// native "Edit Card" config editor - a thin wrapper around Home Assistant's own <ha-form>
 class FamilyTodayCardEditor extends HTMLElement {
   setConfig(config) {
     this._config = config || {};

@@ -1,31 +1,4 @@
-"""Storage Managers for the Chores/Rewards/Permissions feature area.
-
-Three separate Store-backed JSON files (family_hub_chores.json,
-family_hub_rewards.json, family_hub_permissions.json under Home Assistant's
-own .storage/ - the actual on-disk filename homeassistant.helpers.storage.Store
-uses is "<key>_<entry.entry_id>", matching every other Store this project
-already creates directly in async_setup_entry), kept apart from the general
-Settings blob (see SETTINGS_STORAGE_KEY_PREFIX in const.py) because this data
-has real shape chore_engine.py/reward_engine.py validate and mutate, changes
-far more often (every completion, every star spent), and is meaningfully
-sized on its own (a family with a year of chore history) - none of which is
-true of the mostly-opaque Settings blob the frontend just round-trips.
-
-Each store's on-disk root is a plain dict, same convention as every other
-Store in this project (notified, reminder_overrides, digest_state, etc.):
-
-    chores:      {<chore_id>: <chore record - see chore_engine.py>, ...}
-    rewards:     {"balances": {<user_id>: <int>, ...},
-                  "catalog": [<catalog item>, ...],
-                  "redemptions": [<redemption record>, ...]}
-    permissions: {<user_id>: {"can_assign": bool, "can_verify": bool,
-                               "can_override_rewards": bool}, ...}
-
-All functions here are thin - create the Store, load it with sane defaults
-if it's ever empty/missing a key, or save it back. No business logic lives
-here (that's chore_engine.py/reward_engine.py); this module only knows how
-to get the right shape of dict in and out of disk.
-"""
+"""Storage Managers for the Chores/Rewards/Permissions feature area."""
 from __future__ import annotations
 
 import json
@@ -131,16 +104,7 @@ async def async_load_pantry_extras(store: Store) -> dict[str, dict[str, Any]]:
 
 
 def default_device_settings() -> dict[str, Any]:
-    """See const.py's DEVICE_SETTINGS_STORAGE_KEY_PREFIX docstring for the
-    full picture of what this store is (a mirror/staging area, not any
-    device's own source of truth).
-
-    devices: {<device_id>: {"settings": {...}, "last_seen": <iso str>,
-                             "pending_seq": <int>, "pending_settings":
-                             {...} or None}}
-    presets: {<preset_id>: {"name": <str>, "settings": {...},
-                             "created": <iso str>}}
-    """
+    """See const.py's DEVICE_SETTINGS_STORAGE_KEY_PREFIX docstring for the full picture of what this store is (a mirror/staging area"""
     return {"devices": {}, "presets": {}}
 
 
@@ -161,21 +125,6 @@ async def async_load_device_settings(store: Store) -> dict[str, Any]:
 
 
 def default_rewards() -> dict[str, Any]:
-    # "suggestions" - pending reward suggestions from someone without
-    # add/override authority, awaiting a priced approve_suggestion (or a
-    # reject_suggestion) from someone who has one - see reward_engine.py's
-    # own module docstring and const.py's PERMISSION_REWARD_ADD.
-    #
-    # three more -
-    #   "ledger": every star balance change ever made (chore approvals/
-    #   overdue penalties/redemptions/reversals/manual adjustments), for a
-    #   complete per-user star history - see reward_engine.add_stars.
-    #   "banks": {user_id: {item_id: amount}} - running per-(user, item)
-    #   balances for "banked" redeem_mode rewards (an accumulating
-    #   allowance/TV-time-style pool), see reward_engine._adjust_bank.
-    #   "bank_usages": the spend-side history for banks above (reward_engine.
-    #   use_bank) - parallel to "redemptions" but for spending FROM a bank
-    #   rather than earning INTO one.
     return {
         "balances": {}, "catalog": [], "redemptions": [], "suggestions": [],
         "ledger": [], "banks": {}, "bank_usages": [],
@@ -230,17 +179,7 @@ async def async_load_privacy_mode(store: Store) -> dict[str, Any]:
 
 
 def default_settings_history() -> dict[str, Any]:
-    """See const.py's SETTINGS_HISTORY_STORAGE_KEY_PREFIX docstring for the
-    full picture of what this store is for (a rotating, admin-browsable
-    backup of Settings+Permissions+Device Settings together, separate from
-    the single-generation SETTINGS_BACKUP_FILENAME safety net above).
-
-    snapshots: a newest-first list of at most SETTINGS_HISTORY_MAX_SNAPSHOTS
-    {"timestamp": <ISO 8601 str, UTC>, "settings": {...}, "permissions":
-    {...}, "device_settings": {...}} dicts - see __init__.py's
-    _maybe_snapshot_settings_history for how/when these are captured, and
-    config_flow.py's FamilyHubOptionsFlow.async_step_restore_backup for how
-    one is picked and restored."""
+    """See const.py's SETTINGS_HISTORY_STORAGE_KEY_PREFIX docstring for the full picture of what this store is for (a rotating"""
     return {"snapshots": []}
 
 
@@ -290,27 +229,7 @@ async def async_load_routines(store: Store) -> dict[str, Any]:
     return merged
 
 
-# ---------------------------------------------------------------------------
-# Durable backups (survive the Family Hub config entry being removed and
-# re-added, not just a normal update/restart)
-# ---------------------------------------------------------------------------
-# Same mechanism __init__.py's _backup_settings/_maybe_restore_settings_backup
-# already established for the general Settings blob (see PROJECT_CONTEXT.md's
-# v109/1.76.0 note, and CHORES_BACKUP_FILENAME's comment in const.py):
-# chores/rewards/permissions are Store-backed and keyed by entry.entry_id
-# (see create_chores_store/create_rewards_store/create_permissions_store
-# above), so removing and re-adding the integration hands the next setup a
-# brand-new entry_id and therefore brand-new, empty Stores - orphaning
-# whatever's on disk under the old entry_id even though it's still there.
-#
-# This lives HERE, not in __init__.py alongside the settings backup
-# functions, because chores_websocket_api.py - which is where every real
-# chores/rewards/permissions save actually happens (its _save_chores/
-# _save_rewards/_save_permissions helpers) - must stay import-independent
-# of __init__.py (see that module's own docstring); store.py is the shared,
-# self-contained sibling both __init__.py and chores_websocket_api.py
-# already import from, so it's the only place this can live without either
-# duplicating the logic or breaking that convention.
+# -------------------------------------------------------------------------- Durable backups
 def _backup_file_path(hass: HomeAssistant, filename: str) -> str:
     """Same family_hub_backups/ folder __init__.py's settings backup uses -
     outside both .storage/ and custom_components/family_hub/, so it
@@ -320,15 +239,7 @@ def _backup_file_path(hass: HomeAssistant, filename: str) -> str:
 
 
 def _write_backup_file(path: str, data: dict[str, Any]) -> None:
-    """Blocking file write - always call via hass.async_add_executor_job.
-
-    Written to a temp file in the same directory and swapped into place
-    with os.replace (atomic on both POSIX and Windows), so a crash or
-    power loss mid-write can never leave a half-written, unparseable
-    backup file behind. Mirrors __init__.py's _write_settings_backup_file
-    exactly - kept as a separate copy rather than a shared import specifically
-    so this module has zero dependency on __init__.py (see this section's
-    intro comment)."""
+    """Blocking file write - always call via hass.async_add_executor_job."""
     directory = os.path.dirname(path)
     os.makedirs(directory, exist_ok=True)
     tmp_path = path + ".tmp"
@@ -353,13 +264,7 @@ def _read_backup_file(path: str) -> dict[str, Any] | None:
 
 
 async def _backup_data(hass: HomeAssistant, filename: str, data: dict[str, Any], *, label: str) -> None:
-    """Best-effort durable copy of one store's current data. Deliberately
-    never backs up an empty/falsy dict - a brand-new install's very first
-    (still-empty) load, or a household that's currently at zero chores/
-    grants, should never stomp on a previous real backup before there's
-    anything worth losing. A backup failure (disk full, permissions, etc.)
-    is logged and swallowed - it must never block the real save that
-    triggered it."""
+    """Best-effort durable copy of one store's current data."""
     if not data:
         return
     try:
@@ -369,21 +274,7 @@ async def _backup_data(hass: HomeAssistant, filename: str, data: dict[str, Any],
 
 
 async def _maybe_restore_backup(hass: HomeAssistant, store: Store, filename: str, *, label: str) -> None:
-    """If `store` loads completely empty - the signature of a brand-new
-    entry_id that's never been written to, most commonly because the
-    Family Hub integration entry was removed and re-added - and a durable
-    backup file exists on disk, restore it into the store before anything
-    else reads from or writes to it (see async_setup_entry in __init__.py
-    for the exact call ordering, matching how _maybe_restore_settings_backup
-    is sequenced there).
-
-    Deliberately only triggers on a completely empty store, never a
-    partially-populated one - if the raw store has ANY content (even an
-    intentionally-emptied dict some callers can't tell apart from "never
-    used" - see _backup_data's docstring on the flip side of this same
-    tradeoff), it's left exactly as-is. A brand-new install with nothing
-    configured yet and no prior backup file on disk correctly does
-    nothing here."""
+    """If `store` loads completely empty - the signature of a brand-new entry_id that's never been written to"""
     existing = await store.async_load()
     if existing:
         return

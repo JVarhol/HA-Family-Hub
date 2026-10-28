@@ -1,49 +1,4 @@
-"""button platform: one press-only button entity per real Home Assistant
-user account, each opening THAT user's own Daily Digest modal
-live on whichever Family Hub dashboard they currently have open.
-
-Why this exists - the household's own words: "Need to make the daily digest
-a Card/modal. ... Add a setting that is per device that allows you to add
-the modal button to the calendar screen or allows someone to add a digest
-button to a dashboard by calling an entity. Digest should be user specific."
-
-The in-card route (a "Daily Digest" item in the calendar card's own More
-menu, always present - see the card's own _openDailyDigest) covers "add
-the modal button to the calendar screen." This file covers the
-other half: "allows someone to add a digest button to a dashboard by
-calling an entity" - a plain `button` domain entity is exactly Home
-Assistant's own answer to "something I can drop on any dashboard as a
-button card, or press from an automation/script." Pressing it does NOT
-itself send a notification (that's already covered by the scheduled digest
-and the Users tab's "Send test digest now") - it fires
-DAILY_DIGEST_EVENT_OPEN (see const.py's own comment on that event) so any
-currently-open Family Hub card belonging to THIS SAME signed-in user pops
-its digest modal open right there, same live-broadcast shape as an
-already-ringing timer alarm reaching every open dashboard.
-
-One button PER USER (not one shared button) because "Digest should be user
-specific" is the whole point - the digest's actual content already varies
-per recipient (see _build_daily_digest_sections' own docstring), and a
-single shared button would have no way to know whose morning to show
-without guessing. A household member presses THEIR OWN named button
-(wherever it's been placed - their own phone dashboard, a shared tablet, an
-automation) and sees their own events/reminders/chores, never anyone
-else's.
-
-Entities here are created once, statically, at setup from whichever real
-(non-system-generated) Home Assistant user accounts exist at that moment -
-same enumeration _ws_get_users already uses for the Users tab's own admin
-dropdown. Unlike sensor.py's per-running-timer entities, these are NOT
-recreated dynamically as accounts are added or removed - a new HA user
-added later only gets their own button after the next Family Hub reload/HA
-restart, an accepted, ordinary limitation shared by plenty of "one entity
-per configured X" integrations rather than something worth a live
-add/remove-entities bridge for what's expected to be a rare event.
-
-Self-contained like sensor.py/todo.py: no imports from `.` (the package
-__init__.py), so it has no circular-import exposure and is forwarded the
-same way (hass.config_entries.async_forward_entry_setups(entry, ["button"])).
-"""
+"""button platform: one press-only button entity per real Home Assistant user account"""
 from __future__ import annotations
 
 import logging
@@ -144,16 +99,7 @@ class FamilyHubDailyDigestButton(ButtonEntity):
 
 
 class FamilyHubDeviceSyncButton(ButtonEntity):
-    """One per Family Hub device, plus one more per dashboard/view instance
-    of that device (instance_id given) - pressing it stages and live-
-    broadcasts that scope's current settings (see device_settings_entity_
-    shared.py's own push_settings_to_target), the same effect the admin
-    dashboard's own Push action already has, but reachable from an
-    automation/script/other integration via the native button.press
-    service with no custom websocket call. Every button for one device -
-    its own and every instance's - is grouped under that same device's
-    device-registry entry via DeviceInfo, same as the select/number/text
-    settings entities."""
+    """One per Family Hub device, plus one more per dashboard/view instance of that device (instance_id given)"""
 
     _attr_has_entity_name = True
     _attr_icon = "mdi:sync"

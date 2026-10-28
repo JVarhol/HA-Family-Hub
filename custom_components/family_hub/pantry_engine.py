@@ -65,10 +65,7 @@ def default_pantry_extra(**overrides: Any) -> dict[str, Any]:
     extra: dict[str, Any] = {
         "id": overrides.get("id") or new_pantry_extra_id(),
         "name": "",
-        # Free text on purpose (see this module's own docstring) - "3
-        # rolls," "a few," "1 case" all just pass through as typed, there's
-        # no real quantity-unit math happening here the way Grocy's own
-        # amount/qu_id_stock pair needs.
+        # Free text on purpose (see this module's own docstring) - "3 rolls," "a few," "1 case" all just pass through as typed
         "quantity": "",
         "location": "",
         "expiration_date": None,

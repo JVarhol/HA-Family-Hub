@@ -64,16 +64,9 @@
           "digest_recipients": "Enviar para"
         }
       },
-      "dashboard": {
-        "title": "Painel (opcional)",
-        "description": "Gostaria de um painel dedicado do Family Hub - uma tela com o cartão de calendário ocupando toda a visualização, o mesmo layout de painel completo que este projeto sempre recomendou? O Home Assistant não consegue criá-lo automaticamente, então responder sim apenas prepara o YAML exato para colar na próxima tela (Configurações > Painéis > Adicionar painel > Editar em YAML), já preenchido com os calendários e listas escolhidos até agora.",
-        "data": {
-          "add_dashboard": "Preparar um painel do Family Hub"
-        }
-      },
       "finish": {
         "title": "Tudo pronto",
-        "description": "Destino padrão dos lembretes: {default_notify}\nResumo diário: {daily_digest}\n\nYAML do painel (Configurações > Painéis > Adicionar painel > Editar em YAML, cole isto e salve):\n{dashboard_yaml}\n\nA configuração terminou - adicione o cartão Family Week Calendar a um painel para começar, ou clique em Configurar a qualquer momento para alterar lembretes ou o Grocy."
+        "description": "⚙️ **As configurações ficam no cartão Family Week Calendar.** Adicione esse cartão a um painel primeiro: o botão ⚙️ dele é o único lugar para mudar as configurações do Family Hub (pessoas, permissões, calendários, temas e mais), para todos os cartões.\n\nO Family Hub está pronto. Aqui vai um tour rápido pelos cartões - adicione qualquer um a um painel (Editar painel > Adicionar cartão e procure \"Family\"):\n\n- 📅 **Family Week Calendar** - os calendários, lembretes e o cardápio de todos em visão de semana, mês, dia ou planejador, mais as Configurações de todo o Family Hub.\n- ☀️ **Family Today** - o dia de hoje num relance: eventos, refeições e lembretes pendentes.\n- 🕒 **Family Right Now** - o que cada pessoa está fazendo agora e o que vem depois, com Em casa/Fora.\n- ✅ **Family Hub Chores** - uma coluna por pessoa mais a Caixa de tarefas; tarefas feitas rendem estrelas, com rotinas diárias.\n- ⭐ **Family Hub Rewards** - o saldo de estrelas de cada um e as recompensas para gastá-las.\n- 🎯 **Family Hub My Goals** - metas maiores com uma recompensa no fim, como \"praticar piano 5 vezes\".\n- 📝 **Family Hub To-Do Lists** - suas listas de tarefas do Home Assistant lado a lado, incluindo listas de desejos.\n- 📖 **Family Hub Recipe Box** - os pratos favoritos da família - pesquise e adicione ao cardápio.\n- 🥫 **Family Hub My Pantry** - o que tem na despensa, do Grocy (se você usa).\n- ⏲️ **Family Hub Active Timers** - todos os timers da casa e timers rápidos.\n- 🖼️ **Family Hub Screen Saver** - fotos ou um relógio quando a tela está parada.\n- 🎨 **Theme Builder: Theme Selector** - deixa cada tela escolher o próprio tema.\n\nOs lembretes vão para: {default_notify}\nResumo diário: {daily_digest}\n\nVocê pode mudar isso quando quiser em Configurar ou nas Configurações do cartão de calendário."
       }
     },
     "abort": {
@@ -291,7 +284,20 @@
       "checklist_no_items": "Nenhum item ainda - adicione abaixo o que precisa ser lembrado.",
       "checklist_no_todo_lists": "Nenhuma lista de tarefas encontrada",
       "title_placeholder": "Título",
-      "location_placeholder": "Local (opcional)"
+      "location_placeholder": "Local (opcional)",
+      "category_label": "Categoria",
+      "category_none": "Sem categoria",
+      "repeat_every_n_days": "A cada %n% dias",
+      "repeat_every_n_weeks": "A cada %n% semanas",
+      "repeat_every_n_months": "A cada %n% meses",
+      "repeat_every_n_years": "A cada %n% anos",
+      "category_setup_hint": "Ainda não há categorias. Adicione em Configurações → Geral → Calendários.",
+      "enddate_short_label": "Data de término (opcional)",
+      "checklist_short_label": "Checklist",
+      "remind_custom": "Outro",
+      "remind_unit_minutes": "minutos antes",
+      "remind_unit_hours": "horas antes",
+      "remind_unit_days": "dias antes"
     },
     "event_info": {
       "duplicate_event_btn": "Duplicar evento",
@@ -352,7 +358,12 @@
       "dup_when_next_week": "Próxima semana",
       "dup_when_date": "Data",
       "dup_when_start": "Início",
-      "dup_when_end": "Fim"
+      "dup_when_end": "Fim",
+      "also_for_needs_users": "Adicione pessoas em Configurações > Usuários e escolha o calendário de cada uma para poder marcá-las aqui.",
+      "category": "Categoria",
+      "repeat_current": "atual",
+      "repeat_left": "restam %n%",
+      "repeat_until": "até %d%"
     },
     "more_menu_tpl": {
       "blank_name": "Em branco",
@@ -735,7 +746,7 @@
       "five_days": "5 dias",
       "seven_days": "7 dias",
       "days_shown_hint": "dias (1–36)",
-      "current_day_first_label": "Dia atual sempre primeiro — só este dispositivo",
+      "current_day_first_label": "Dia atual sempre primeiro",
       "week_rows_label": "Linhas mostradas de uma vez na visualização semanal — só este dispositivo",
       "week_rows_hint": "linhas (1–7)",
       "this_device_label": "Este dispositivo",
@@ -794,7 +805,7 @@
       "no_more_alarm_devices": "Nenhum outro dispositivo encontrado.",
       "tab_developer": "Ferramentas de desenvolvedor",
       "prevent_duplicate_events_label": "Evitar eventos duplicados",
-      "prevent_duplicate_events_hint": "Detecta um calendário que acaba em mais de uma coluna (ex.: vinculado a um usuário como calendário secundário enquanto a própria linha ainda aparece separada) e mostra os eventos só uma vez. Ativado por padrão - desative só para conferir se o que parece duplicado é na verdade um segundo evento realmente diferente.",
+      "prevent_duplicate_events_hint": "Mostra uma vez só um evento que está em mais de um calendário - o mesmo convite, ou exatamente o mesmo nome no mesmo horário - na coluna da primeira pessoa. Desligado por padrão. Dê nomes diferentes a eventos separados (\"Sam Futebol\", \"Taylor Futebol\") para que os dois apareçam.",
       "top_bar_style_hidden": "Oculta",
       "top_bar_style_right_now": "Agora",
       "right_now_topbar_position_label": "Posição do Agora",
@@ -864,7 +875,46 @@
       "more_menu_unifi_enable_btn": "Ativar QR codes do UniFi",
       "more_menu_unifi_enabling": "Ativando…",
       "more_menu_unifi_enabled_wait": "Ativados. O Home Assistant leva cerca de 30 segundos para iniciá-los - isto muda sozinho.",
-      "more_menu_unifi_enable_failed": "Não foi possível ativar - só um administrador do Home Assistant pode. No Home Assistant abra Configurações > Dispositivos e serviços > UniFi Network e ative as entidades “QR code”."
+      "more_menu_unifi_enable_failed": "Não foi possível ativar - só um administrador do Home Assistant pode. No Home Assistant abra Configurações > Dispositivos e serviços > UniFi Network e ative as entidades “QR code”.",
+      "current_day_first_step_label": "Passo de navegação (com “Dia atual sempre primeiro” ativado)",
+      "step_one_day": "1 dia",
+      "step_full_window": "Janela inteira",
+      "dup_merge_info_title": "Eventos duplicados são mostrados uma vez",
+      "dup_merge_info_text": "Quando o mesmo evento está em mais de um calendário - o mesmo convite, ou eventos com exatamente o mesmo nome no mesmo horário - ele é mostrado uma vez só, na coluna da primeira pessoa.",
+      "dup_merge_info_tip": "Se duas pessoas realmente têm eventos separados com o mesmo nome no mesmo horário, dê nomes diferentes a eles para que os dois apareçam - por exemplo \"Sam Futebol\" e \"Taylor Futebol\" em vez de \"Futebol\".",
+      "categories_add": "+ Adicionar uma categoria",
+      "categories_hint": "Eventos e lembretes com categoria ganham uma barra na cor dela.",
+      "categories_label": "Categorias de eventos e lembretes",
+      "categories_name_placeholder": "ex.: Esportes",
+      "categories_remove": "Remover",
+      "calendar_countdown_short": "Contagem",
+      "calendar_add_badge_short": "Adicionar selo",
+      "calendar_remove_short": "Remover",
+      "holiday_backgrounds_hint_v2": "Ative um feriado ou adicione sua própria data, depois uma foto e, se quiser, um tema para trocar. Quando dois coincidem, vence o mais curto (um dia vence uma semana, uma semana vence um mês).",
+      "holiday_theme_keep": "Manter o tema de sempre",
+      "holiday_cover_label": "Mostrar a foto",
+      "holiday_cover_column": "Atrás do dia",
+      "holiday_cover_day": "Tela cheia, naquele dia",
+      "holiday_cover_week": "Tela cheia, naquela semana",
+      "holiday_cover_month": "Tela cheia, naquele mês",
+      "holiday_date_label": "Data",
+      "holiday_photo_label": "Foto",
+      "holiday_no_photo_hint": "Ainda sem foto - o tema pode mudar mesmo assim.",
+      "holiday_theme_label": "Tema",
+      "holiday_theme_hint": "Troca todos os cartões do Family Hub para este tema enquanto o feriado aparece.",
+      "holiday_date_label_placeholder": "Quem ou o quê (opcional)",
+      "holiday_dates_label": "Datas",
+      "holiday_add_date": "Adicionar outra data",
+      "holiday_remove_date": "Remover esta data",
+      "name_pills_label": "Etiquetas de nomes — só neste dispositivo",
+      "name_pills_show": "Mostrar",
+      "name_pills_hide": "Ocultar",
+      "name_pills_hint": "A fileira de nomes com contadores acima do calendário (e a de Lembretes). Oculte para ganhar espaço; o calendário mostra então todo mundo.",
+      "name_pills_device_label": "Ocultar etiquetas de nomes",
+      "calendar_holiday_short": "Feriados",
+      "calendar_holiday_title": "Calendário de feriados: os dias aparecem como faixas abaixo da data em vez de eventos",
+      "hashtags_hint": "Dica: digite #Nome ou #Categoria no título ou nas notas de um evento, até pelo Google ou Apple Agenda no celular. #Emma mostra também no calendário da Emma, #Esportes dá a categoria Esportes, e dá para usar vários.",
+      "kiosk_account_note": "Contas de quiosque não ficam no quadro de tarefas nem em Recompensas e não recebem lembretes nem listas próprias."
     },
     "common": {
       "close": "Fechar",
@@ -879,7 +929,8 @@
       "edit": "Editar",
       "ha_starting_banner": "O Home Assistant está iniciando - talvez nem tudo esteja disponível ainda.",
       "more": "Mais",
-      "delete": "Excluir"
+      "delete": "Excluir",
+      "ok": "OK"
     },
     "chores": {
       "achieved": "Alcançado",
@@ -998,7 +1049,23 @@
       "alarm_audience_label": "Quem ouve este alarme",
       "alarm_audience_self": "Só eles",
       "alarm_audience_kiosks": "Eles + quiosques",
-      "alarm_audience_everyone": "Todos"
+      "alarm_audience_everyone": "Todos",
+      "star_balance": "Estrelas",
+      "previous_person": "Anterior",
+      "next_person": "Próximo",
+      "ask_for_stars": "Pedir estrelas",
+      "ask_for_stars_for_x": "Pedir estrelas para %x%",
+      "star_request": "Pedido de estrelas",
+      "star_request_what": "O que você fez?",
+      "star_request_what_placeholder": "Ajudei a trazer as compras",
+      "star_request_how_many": "Quantas estrelas?",
+      "star_request_note": "Mais alguma coisa? (opcional)",
+      "star_request_hint": "Alguém que pode aprovar tarefas vai aprovar ou devolver o pedido.",
+      "star_request_send": "Enviar pedido",
+      "star_request_need_title": "Diga para que foi.",
+      "star_request_need_stars": "Peça entre 1 e 100 estrelas.",
+      "star_request_failed": "Não foi possível enviar o pedido.",
+      "star_request_for": "Para"
     },
     "daily_digest": {
       "title": "Resumo diário",
@@ -2367,7 +2434,29 @@
       "pin_placeholder": "PIN",
       "unlock_submit": "Desbloquear",
       "pin_required": "Digite um PIN.",
-      "incorrect_pin": "PIN incorreto."
+      "incorrect_pin": "PIN incorreto.",
+      "no_pin_warn_title": "Ninguém pode desbloquear com um PIN",
+      "no_pin_warn_text": "Ninguém com permissão para desligar o Modo de privacidade tem um PIN de quiosque ainda, então depois de ligado ele não poderá ser desligado nesta tela.",
+      "no_pin_warn_how": "Para desligar você vai precisar do Home Assistant: desligue %entity% (Configurações > Dispositivos e serviços > Family Hub). Ou defina primeiro um PIN de quiosque em Configurações > Usuários.",
+      "no_pin_warn_go": "Ligar mesmo assim"
+    },
+    "library": {
+      "add": "Adicionar um item",
+      "chores_title": "Biblioteca de tarefas",
+      "rewards_title": "Biblioteca de recompensas",
+      "routines_title": "Biblioteca de rotinas",
+      "cost": "Custo em estrelas",
+      "stars": "Estrelas",
+      "edit": "Editar biblioteca",
+      "failed": "Não foi possível salvar.",
+      "hint": "As alterações são salvas na hora. Todos escolhem desta lista.",
+      "item_name": "Nome",
+      "pick": "Escolher da biblioteca… (opcional)",
+      "remove": "Remover",
+      "reset": "Recuperar itens padrão removidos",
+      "saved": "Salvo.",
+      "restored": "%n% item(ns) padrão recuperado(s).",
+      "nothing_to_restore": "Todos os itens padrão já estão aqui."
     }
   }
 }

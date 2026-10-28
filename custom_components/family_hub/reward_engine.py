@@ -1,51 +1,4 @@
-"""Star economy: per-user balances, a browsable reward catalog, redemption
-(in three different shapes - see redeem_mode below), a pending suggestions
-bin, a per-item "bank" for stackable rewards, and a full star transaction
-ledger.
-
-not everyone can add straight to the catalog (see const.py's
-PERMISSION_REWARD_ADD) - someone without that (or PERMISSION_REWARD_OVERRIDE,
-or real admin) can still suggest a new reward via add_suggestion, just
-without a price (they have no authority to set one). It sits in
-rewards["suggestions"] until someone who DOES have pricing authority calls
-approve_suggestion (turns it into a real, priced catalog item) or
-reject_suggestion (discards it) - see chores_websocket_api.py's
-ws_add_suggestion/ws_approve_suggestion/ws_reject_suggestion for the
-permission gating itself, which (deliberately) lives at the call site, not
-in this hass-free module.
-
-Redemption itself is deliberately NOT gated behind admin approval (confirmed
-with the household - see the "Reward redemption" decision in the project's
-own notes): tapping "Claim" in family-hub-rewards-card deducts stars the
-moment it happens, as long as the balance covers the cost. What happens
-AFTER that deduction depends on the catalog item's own redeem_mode (see
-const.py's REWARD_REDEEM_MODES docstring for the full picture):
-  - "instant" (the original, and still the default): a plain logged
-    redemption - "movie night," "extra dessert."
-  - "banked": the redemption ADDS to a running per-user balance for
-    that item (its "bank") instead of being a one-off event - "$1 of
-    allowance," "1 hour of TV time" - redeemed as many times as affordable,
-    stacking up. use_bank later spends part (or all) of the bank down,
-    independent of stars - "use 1.5 of my 3 banked hours."
-  - "one_time": a plain logged redemption exactly like "instant",
-    except the catalog item deletes itself immediately afterward - gone for
-    everyone the instant anybody claims it.
-Separately, a catalog item's requires_fulfillment flag controls
-whether the "spend" step - the redemption itself for instant/one_time, or a
-use_bank call for banked - needs someone with pricing authority to mark it
-done before it's considered delivered (an actual $20 handed over, an actual
-prize picked up), or is self-serve/instant. See mark_redemption_fulfilled/
-mark_bank_usage_fulfilled.
-
-Every star balance change (chore approval, overdue penalty, redemption,
-reversed redemption, a manual adjust_balance) is recorded in rewards["ledger"]
-(see add_stars) so a household can pull a complete per-user history
-of where their stars came from and went, not just the current balance.
-
-Every function here operates on the caller's already-loaded `rewards` dict
-(see store.py's default_rewards shape) and mutates it in place; callers own
-saving the Store afterward, same convention as chore_engine.py.
-"""
+"""Star economy: per-user balances, a browsable reward catalog, redemption (in three different shapes - see redeem_mode below), a pending suggestions bin"""
 from __future__ import annotations
 
 import re
@@ -99,39 +52,17 @@ def get_balance(rewards: dict[str, Any], user_id: str) -> int:
     return int(rewards.setdefault("balances", {}).get(user_id, 0))
 
 
-# Machine-readable `source` tags for add_stars' ledger entries (see below) -
-# not an enum stored anywhere on the schema itself (a plain string, like
-# every other loosely-typed field in this module), just the fixed set of
-# values every call site in this project actually passes, listed here so
-# a frontend rendering the ledger has one place to look for "what are all
-# the kinds of entry I might see."
+# Machine-readable `source` tags for add_stars' ledger entries (see below) - not an enum stored anywhere on the schema itself
 LEDGER_SOURCE_CHORE_APPROVED = "chore_approved"
 LEDGER_SOURCE_CHORE_OVERDUE = "chore_overdue"
-# a Goal (see goal_engine.py) whose reward_type is "stars", paid out
-# by goal_engine.approve_goal - the Goals-feature counterpart of
-# LEDGER_SOURCE_CHORE_APPROVED just above. A goal whose reward_type is
-# "catalog_item" instead never touches add_stars at all (see grant_item),
-# so it never produces a ledger entry - only redemptions.
+# a Goal (see goal_engine.py) whose reward_type is "stars", paid out by goal_engine.approve_goal
 LEDGER_SOURCE_GOAL_ACHIEVED = "goal_achieved"
-# a Routine item (see routine_engine.py) with its own optional
-# star_value, paid out by routine_engine.approve_item (manual, when the
-# item's no_approval_required is false - the default) or straight from
-# toggle_item itself (when it's true) - the Routines-feature counterpart of
-# LEDGER_SOURCE_CHORE_APPROVED, minus the rest of the chore state machine
-# (no streaks/recurrence/dependencies - routines reset on their own daily
-# timer, see maybe_reset_daily).
+# a Routine item (see routine_engine.py) with its own optional star_value, paid out by routine_engine.approve_item (manual
 LEDGER_SOURCE_ROUTINE_APPROVED = "routine_approved"
 LEDGER_SOURCE_REDEEMED = "redeemed"
 LEDGER_SOURCE_REDEMPTION_REVERSED = "redemption_reversed"
 LEDGER_SOURCE_MANUAL_ADJUSTMENT = "manual_adjustment"
-# v144.2+ (): the two halves of a peer-to-peer star gift (see
-# gift_stars below) - always appear in pairs, one LEDGER_SOURCE_GIFT_SENT
-# entry on the giver's own ledger and one LEDGER_SOURCE_GIFT_RECEIVED entry
-# on the recipient's, same instant/no-approval-needed shape as redemption
-# (see this module's own docstring on why redemption itself is never
-# admin-gated - the household's same "spend your own stars, no approval
-# needed" answer applies here too, just spending them ON someone else
-# instead of on a catalog item).
+# (): the two halves of a peer-to-peer star gift (see gift_stars below) - always appear in pairs
 LEDGER_SOURCE_GIFT_SENT = "gift_sent"
 LEDGER_SOURCE_GIFT_RECEIVED = "gift_received"
 
@@ -139,23 +70,7 @@ LEDGER_SOURCE_GIFT_RECEIVED = "gift_received"
 def add_stars(
     rewards: dict[str, Any], user_id: str, delta: int, *, reason: Optional[str] = None, source: str = LEDGER_SOURCE_MANUAL_ADJUSTMENT
 ) -> int:
-    """Adjust a user's balance by `delta` (negative for a penalty/spend)
-    and return the new balance. No floor at zero - a star debt from an
-    overdue penalty is allowed to go negative, same as a real allowance
-    ledger would; the UI is free to display that as "owes N stars" rather
-    than blocking it here.
-
-    every call appends an entry to rewards["ledger"] (id, user_id,
-    delta, balance_after, reason, source, at) - this gives a
-    complete per-user history of where their stars came from and went, not
-    just the current balance/the separate redemptions log. `source` is one
-    of the LEDGER_SOURCE_* constants above; callers that don't pass one
-    fall back to "manual_adjustment" (the ws_adjust_balance call site's own
-    shape - a plain grant/deduction outside the normal chore/redemption
-    flow), which is also the only sensible default for any caller this
-    module doesn't know about yet. Every OTHER call site in this project
-    (chore_engine.approve_chore/sweep_overdue_chores, redeem_item,
-    reverse_redemption below) passes its own specific source explicitly."""
+    """Adjust a user's balance by `delta` (negative for a penalty/spend) and return the new balance."""
     balances = rewards.setdefault("balances", {})
     new_balance = int(balances.get(user_id, 0)) + int(delta)
     balances[user_id] = new_balance
@@ -231,11 +146,7 @@ def gift_stars(
 
 
 def list_ledger(rewards: dict[str, Any], user_id: Optional[str] = None) -> list[dict[str, Any]]:
-    """Most-recent-first, optionally scoped to one user - same shape as
-    list_redemptions below (the per-user Star History view's primary data
-    source; the full household-wide list isn't currently exposed anywhere,
-    but nothing here stops a future admin-wide view from calling this with
-    user_id=None)."""
+    """Most-recent-first, optionally scoped to one user - same shape as list_redemptions below (the per-user Star History view's primary data source"""
     ledger = rewards.setdefault("ledger", [])
     if user_id is not None:
         ledger = [entry for entry in ledger if entry.get("user_id") == user_id]
@@ -247,13 +158,7 @@ def list_catalog(rewards: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _normalize_hex_color(value: Any) -> str:
-    """A card color is purely cosmetic (the catalog card's own background
-    accent - see family-hub-rewards-card.js's _catalogItemHtml) and, like
-    every other stored color in this project (userProfiles[id].color,
-    Theme Builder's own fields), degrades to "" (meaning "use the default
-    look") rather than raising on anything that isn't a clean #rrggbb
-    hex string - a malformed value here should never block saving the
-    rest of the reward."""
+    """A card color is purely cosmetic (the catalog card's own background accent - see family-hub-rewards-card.js's _catalogItemHtml) and"""
     if not isinstance(value, str):
         return ""
     value = value.strip()
@@ -277,16 +182,7 @@ def add_catalog_item(
     timer_minutes: Any = None,
     alarm_audience: Any = None,
 ) -> dict[str, Any]:
-    """v128+ adds four optional fields on top of the original title/cost/
-    icon/color - see const.py's REWARD_REDEEM_MODES docstring for the full
-    picture of what redeem_mode/requires_fulfillment mean, and this
-    module's own docstring for how they interact. value_note is purely
-    cosmetic (a free-text "what this is really worth" label like "$20" or
-    "2 hrs", shown next to cost_stars - never parsed or used in any
-    calculation). stack_unit_amount/stack_unit_label only matter for
-    redeem_mode "banked" (how much one redemption adds to the bank, and
-    what unit to call it - "hours", "$"); harmless (stored but inert) on
-    the other two modes."""
+    """adds four optional fields on top of the original title/cost/ icon/color"""
     title = str(title or "").strip()
     if not title:
         raise RewardError("invalid_title", "A reward needs a title.")
@@ -313,16 +209,9 @@ def add_catalog_item(
         "value_note": str(value_note or "").strip(),
         "stack_unit_amount": stack_unit_amount,
         "stack_unit_label": str(stack_unit_label or "").strip(),
-        # optional countdown started when this reward is used -
-        # "2 hours of gaming." None (every pre-v1.110.0 reward) means no
-        # timer, and Use behaves exactly as it always has. Deliberately
-        # INDEPENDENT of redeem_mode rather than a fourth mode: the modes
-        # describe how the star cost is consumed, a timer describes what
-        # happens after, and they compose ("1 hour of TV, banked").
+        # optional countdown started when this reward is used - "2 hours of gaming." None (every pre-v1.110.0 reward) means no timer
         REWARD_KEY_TIMER_MINUTES: timer_engine.normalize_timer_minutes(timer_minutes),
-        # who/what rings when this reward's timer alarms - same
-        # field/tiers/default as a chore's own CHORE_KEY_ALARM_AUDIENCE, see
-        # its docstring in const.py for the full picture.
+        # who/what rings when this reward's timer alarms - same field/tiers/default as a chore's own CHORE_KEY_ALARM_AUDIENCE
         REWARD_KEY_ALARM_AUDIENCE: timer_engine.normalize_alarm_audience(alarm_audience),
     }
     rewards.setdefault("catalog", []).append(item)
@@ -366,11 +255,7 @@ def update_catalog_item(rewards: dict[str, Any], item_id: str, **fields: Any) ->
             stack_unit_amount = float(fields["stack_unit_amount"])
         except (TypeError, ValueError):
             stack_unit_amount = 1.0
-        # Validated against whatever redeem_mode the item has AFTER this
-        # same call's own "redeem_mode" field (if any) is applied above -
-        # so switching an item to "banked" and setting its stack amount in
-        # one call validates the combination together, not the item's
-        # stale pre-update mode.
+        # Validated against whatever redeem_mode the item has AFTER this same call's own "redeem_mode" field (if any) is applied above
         if item.get("redeem_mode") == REWARD_REDEEM_MODE_BANKED and stack_unit_amount <= 0:
             raise RewardError("invalid_stack_unit", "A banked reward needs a positive amount added per redemption.")
         item["stack_unit_amount"] = stack_unit_amount
@@ -380,13 +265,7 @@ def update_catalog_item(rewards: dict[str, Any], item_id: str, **fields: Any) ->
 
 
 def delete_catalog_item(rewards: dict[str, Any], item_id: str) -> None:
-    """Removes the catalog listing itself. Deliberately does NOT touch any
-    existing bank balance for this item (rewards["banks"][user][item_id]) -
-    stars already converted into a bank are the user's, and use_bank still
-    honors them (falling back to a generic "(removed reward)" title/no unit
-    label) even after the item that earned them is gone; a household that
-    wants those funds actually cleared out can do so through use_bank
-    itself, not by deleting the catalog listing."""
+    """Removes the catalog listing itself."""
     catalog = rewards.setdefault("catalog", [])
     remaining = [it for it in catalog if it.get("id") != item_id]
     if len(remaining) == len(catalog):
@@ -395,21 +274,7 @@ def delete_catalog_item(rewards: dict[str, Any], item_id: str) -> None:
 
 
 def redeem_item(rewards: dict[str, Any], user_id: str, item_id: str) -> dict[str, Any]:
-    """Self-serve claim: deduct cost_stars from user_id's balance right now
-    (raising if the balance doesn't cover it, regardless of redeem_mode -
-    see this module's own docstring, redemption itself is never gated) and
-    append a redemption history entry. What happens next branches on the
-    item's own redeem_mode:
-      - "instant"/"one_time": the redemption is the whole transaction -
-        fulfilled immediately unless the item requires_fulfillment, in
-        which case it's logged as pending until mark_redemption_fulfilled.
-        "one_time" additionally deletes the catalog item right after.
-      - "banked": the redemption ADDS stack_unit_amount to this user's bank
-        for this item (see _adjust_bank) instead of being fulfillment-
-        gated itself - banking is always instant/self-serve; fulfillment
-        (if the item has it on) only ever applies to the later use_bank
-        spend, not to the act of earning the bank balance.
-    Returns the redemption entry either way."""
+    """Self-serve claim: deduct cost_stars from user_id's balance right now (raising if the balance doesn't cover it, regardless of redeem_mode"""
     catalog = rewards.setdefault("catalog", [])
     item = next((it for it in catalog if it.get("id") == item_id), None)
     if item is None:
@@ -450,24 +315,7 @@ def redeem_item(rewards: dict[str, Any], user_id: str, item_id: str) -> dict[str
 
 
 def grant_item(rewards: dict[str, Any], user_id: str, item_id: str, *, reason: str = "") -> dict[str, Any]:
-    """Hands a catalog item to user_id WITHOUT charging any stars - v133+,
-    for Family Hub's Goals feature (goal_engine.approve_goal) crediting a
-    goal's own directly-attached reward on approval, as an alternative to
-    redeem_item's normal self-serve "spend stars now" path. Reuses the
-    exact same redemption record shape (and requires_fulfillment/banked
-    handling) as redeem_item, just with cost_stars forced to 0 and a
-    `granted: True` marker so it's still fully visible in the recipient's
-    ordinary redemption history - a parent looking at "what did my kid get"
-    sees a goal-earned reward right alongside anything self-claimed with
-    stars, not in some separate list. `reason` is stored as `grant_reason`
-    (e.g. "Goal achieved: Get 3 Bs in math") for that same history view to
-    show WHY this one has no star cost.
-
-    Deliberately raises RewardError("not_found", ...) rather than silently
-    no-op'ing when item_id no longer exists (the catalog item a goal
-    pointed at could have since been deleted) - approve_goal itself decides
-    whether that should block the whole approval or just skip the grant;
-    this function only owns "does the grant itself succeed."""
+    """Hands a catalog item to user_id WITHOUT charging any stars - v133+, for Family Hub's Goals feature"""
     catalog = rewards.setdefault("catalog", [])
     item = next((it for it in catalog if it.get("id") == item_id), None)
     if item is None:
@@ -502,13 +350,7 @@ def grant_item(rewards: dict[str, Any], user_id: str, item_id: str, *, reason: s
 
 
 def mark_redemption_fulfilled(rewards: dict[str, Any], redemption_id: str, actor: Optional[str] = None) -> dict[str, Any]:
-    """Marks a pending (requires_fulfillment, not yet fulfilled) redemption
-    as delivered - e.g. a parent confirming the $20 allowance was actually
-    handed over. Stays in the redemptions list either way (never popped -
-    this is a status flip, not a removal, so the history entry survives).
-    Raises "already_fulfilled" rather than silently no-op'ing on a second
-    call, so a caller (the card's own Mark Done button) can tell a stale
-    click apart from a real state change."""
+    """Marks a pending (requires_fulfillment, not yet fulfilled) redemption as delivered - e.g. a parent confirming the $20 allowance was actually handed over."""
     redemptions = rewards.setdefault("redemptions", [])
     match = next((r for r in redemptions if r.get("id") == redemption_id), None)
     if match is None:
@@ -521,25 +363,11 @@ def mark_redemption_fulfilled(rewards: dict[str, Any], redemption_id: str, actor
     return match
 
 
-# --- Banked rewards: a per-(user, item) running balance, spent down over
-# time via use_bank independent of stars - see const.py's REWARD_REDEEM_MODES
-# docstring and redeem_item above for how a bank gets credited in the first
-# place. rewards["banks"] is a plain nested dict: {user_id: {item_id: amount}}
-# - a flat float per pair, not its own list of entries (unlike ledger/
-# redemptions/bank_usages, there's nothing to browse chronologically about
-# a running balance, only the current number).
+# -- Banked rewards: a per-(user, item) running balance, spent down over time via use_bank independent of stars
 
 
 def _adjust_bank(rewards: dict[str, Any], user_id: str, item_id: str, delta: float) -> float:
-    """Shared credit/debit for a user's bank on one item - redeem_item
-    (always positive, crediting) and use_bank (always negative, debiting)
-    both go through this so the two never drift out of the same rounding/
-    clamping behavior. Rounded to 4 decimal places to keep repeated partial
-    (e.g. 1.5-hour) credits/debits from accumulating binary-float noise
-    into a balance that LOOKS wrong (2.9999999999996 instead of 3);
-    clamped to exactly 0 once within float-noise distance of it so a full
-    "use everything banked" never leaves a technically-negative dust
-    amount sitting behind."""
+    """Shared credit/debit for a user's bank on one item - redeem_item (always positive, crediting) and use_bank (always negative"""
     banks = rewards.setdefault("banks", {})
     user_banks = banks.setdefault(user_id, {})
     new_total = round(float(user_banks.get(item_id, 0)) + delta, 4)
@@ -554,11 +382,7 @@ def get_bank(rewards: dict[str, Any], user_id: str, item_id: str) -> float:
 
 
 def list_banks(rewards: dict[str, Any], user_id: str) -> dict[str, float]:
-    """{item_id: amount} for every item this user has EVER banked something
-    in (including one now at exactly 0, or one whose catalog item has since
-    been deleted - see delete_catalog_item's own docstring) - the rewards
-    card filters/looks up titles against the current catalog itself when
-    rendering, this just hands back the raw numbers."""
+    """{item_id: amount} for every item this user has EVER banked something in (including one now at exactly 0, or one whose catalog item has since been deleted"""
     return dict(rewards.setdefault("banks", {}).get(user_id, {}))
 
 
@@ -750,25 +574,7 @@ def approve_suggestion(
     stack_unit_amount: float = 1,
     stack_unit_label: str = "",
 ) -> dict[str, Any]:
-    """Turns a pending suggestion into a real, priced catalog item -
-    cost_stars is required (the one thing the original submitter couldn't
-    set); icon/color are optional overrides for an approver who wants to
-    tidy up what was suggested, defaulting to whatever the suggestion
-    itself already had. Cost is validated BEFORE the suggestion is popped
-    off the list, so a bad request (negative cost) leaves the suggestion
-    exactly where it was instead of silently discarding it on a failed
-    approval. Removes the suggestion either way it resolves (this function
-    only ever resolves it as approved - see reject_suggestion for the
-    other outcome) and returns the new catalog item.
-
-    redeem_mode/requires_fulfillment/value_note/stack_unit_* are all
-    optional and default to the original "instant, no fulfillment gate"
-    shape approve_suggestion always had before these existed - an approver
-    who wants a suggestion turned into a banked or one-time reward, or one
-    that needs marking done, passes those explicitly (the card's own Approve
-    row only ever sends cost_stars, matching that original behavior; a
-    parent who wants more control still has update_catalog_item after the
-    fact)."""
+    """Turns a pending suggestion into a real, priced catalog item - cost_stars is required (the one thing the original submitter couldn't set)"""
     cost_stars = int(cost_stars or 0)
     if cost_stars < 0:
         raise RewardError("invalid_cost", "Cost can't be negative.")

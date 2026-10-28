@@ -1,49 +1,4 @@
-"""switch platform: two kinds of live, automation-friendly on/off entities -
-
-  - FamilyHubDeviceScreenSaverSwitch: one per known Family Hub device
-    (grouped under that device's own device-registry entry, same as select.
-    py/number.py/text.py - see device_settings_entity_shared.py's own module
-    docstring), household ask verbatim: "I want the screensaver to have a
-    toggle per device shown in the same device tab that we currently have so
-    that automations can control screen saver." Unlike every
-    DEVICE_SETTINGS_FIELDS-backed select/number/text entity, flipping this
-    one takes effect IMMEDIATELY - no separate Sync/Push button step - see
-    DEVICE_SETTINGS_EVENT_SCREENSAVER_TOGGLE's own comment in const.py for
-    why. Created dynamically the first time a device_id reports in, exactly
-    like select.py's own FamilyHubDeviceSettingSelect.
-
-  - FamilyHubDevicePrivacyParticipatesSwitch: one per known Family Hub
-    device, same per-device/dynamically-created shape as
-    FamilyHubDeviceScreenSaverSwitch above. Household ask, verbatim: "I
-    wanted to have a setting that you check if you want the device to
-    participate in privacy mode. This way things like phones could have
-    the calendar while the fridge or the kiosk is hidden." Also takes
-    effect IMMEDIATELY, no Sync/Push step - see DEVICE_SETTINGS_EVENT_
-    PRIVACY_PARTICIPATION_TOGGLE's own comment in const.py.
-
-  - FamilyHubPrivacyModeSwitch: ONE single household-wide switch (not
-    per-device - "the calendar" the household described is every open
-    Family Calendar card, not one tablet), grouped under the integration's
-    own "Family Hub" device-registry entry (the same one device_trigger.py's
-    routine triggers already hang off of in __init__.py's async_setup_entry)
-    rather than inventing a second ungrouped entity. Household ask,
-    verbatim: "there is also a toggle on the back end so it can be handled
-    by automations... Toggle privacy mode off with the toggle entity doesn't
-    require validation" - turn_on/turn_off here never check a kiosk PIN at
-    all, unlike the card's own on-screen lock-unlock flow (see
-    chores_websocket_api.py's ws_privacy_mode_disable_with_pin) - this is an
-    already-authenticated Home Assistant service call, a different trust
-    boundary entirely. Created once, unconditionally, at setup - not
-    discovered dynamically like the per-device entities above.
-
-Self-contained like select.py/number.py/text.py: no imports from `.`'s own
-__init__.py (only its sibling shared-helper modules, device_settings_entity_
-shared and privacy_mode_shared - same one-directional "entity platforms
-depend on a shared helper, never the reverse" layering those modules'
-docstrings describe), so this file has no circular-import exposure and is
-forwarded the same way (hass.config_entries.async_forward_entry_setups(entry,
-["switch"])).
-"""
+"""switch platform: two kinds of live, automation-friendly on/off entities -"""
 from __future__ import annotations
 
 import logging
@@ -110,11 +65,7 @@ def create_entities_for_device(entry_data: dict[str, Any], device_id: str) -> No
 
 
 def notify_device(entry_data: dict[str, Any], device_id: str) -> None:
-    """Refreshes one device's already-created screensaver switch after its
-    value changed by some other means (the admin Devices tab's own toggle
-    control, via device_settings_websocket_api.py's ws_set_screensaver_
-    enabled) - the switch's own turn_on/turn_off already write their own
-    state directly, so this is only needed for that OTHER entry point."""
+    """Refreshes one device's already-created screensaver switch after its value changed by some other means (the admin Devices tab's own toggle control"""
     entity = entry_data.get("device_settings_screensaver_switch_entities", {}).get(device_id)
     if entity is not None:
         shared.safe_write_ha_state(entity)

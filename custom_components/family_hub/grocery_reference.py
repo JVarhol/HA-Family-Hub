@@ -1,46 +1,9 @@
-"""A curated reference list of common grocery items, used by the recipe
-importer to suggest a product name + a sensible purchase/stock unit pair
-for an ingredient that doesn't already match anything in a household's own
-Grocy instance (see _match_grocery_reference and its use in
-_ws_match_recipe_ingredients, in __init__.py).
-
-This is a STARTING POINT, not an authority - matches are always shown to
-the person for review (they land in the existing "+ Add new product to
-Grocy" mini-form, editable before anything is actually created), never
-created in Grocy automatically. Extending this list over time is
-encouraged and low-risk: it's plain data, no other code needs to change to
-add, remove, or tweak an entry.
-
-Two unit fields per item:
-  - purchase_unit: what it's typically SOLD in (e.g. milk by the gallon,
-    flour by the pound, eggs by the dozen) - this becomes the suggested
-    product's qu_id_purchase.
-  - stock_unit: what it's typically USED/tracked in, which for a lot of
-    ingredients is the same as how it's bought (a can of beans is a can
-    either way), but for some kitchen staples is a smaller cooking
-    measurement recipes actually call for (milk by the cup, flour by the
-    cup, butter by the tablespoon) - this becomes qu_id_stock.
-
-`factor` (stock units per one purchase unit, matching Grocy's own
-"quantity per container" concept - see _ws_create_grocy_product) is only
-set for a small, deliberately conservative set of items where the
-conversion is either an exact unit-of-measure fact (16 cups to a gallon, 4
-cups to a quart, 12 eggs to a dozen, 32 tablespoons to a pound of butter)
-or a widely-cited baking reference figure (King Arthur Baking's flour/
-sugar/rice/oat weights-per-cup). Every other item deliberately leaves
-purchase_unit == stock_unit rather than inventing an ingredient-density
-number that hasn't actually been checked - a correct name and a real
-default unit is still useful on its own, and nothing stops someone from
-setting their own conversion afterward (or using the "+ Add new unit…"
-option) if they want the split.
-"""
+"""A curated reference list of common grocery items, used by the recipe importer to suggest a product name + a sensible purchase/stock unit pair for an ingredient"""
 from __future__ import annotations
 
 # (name, aliases, category, purchase_unit, stock_unit, factor)
 _RAW_REFERENCE_ROWS: list[tuple[str, tuple[str, ...], str, str, str, float | None]] = [
-    # ------------------------------------------------------------------
-    # Produce - vegetables
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Produce
     ("Yellow Onion", ("onion", "onions", "yellow onions"), "Produce", "each", "each", None),
     ("Red Onion", ("red onions",), "Produce", "each", "each", None),
     ("Garlic", ("garlic", "garlic clove", "cloves garlic", "clove of garlic"), "Produce", "head", "clove", 10),
@@ -108,9 +71,7 @@ _RAW_REFERENCE_ROWS: list[tuple[str, tuple[str, ...], str, str, str, float | Non
     ("Horseradish Root", (), "Produce", "each", "tablespoon", None),
     ("Jicama", (), "Produce", "each", "cup", None),
     ("Daikon Radish", (), "Produce", "each", "cup", None),
-    # ------------------------------------------------------------------
-    # Produce - fruits
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Produce
     ("Banana", ("bananas",), "Produce", "each", "each", None),
     ("Apple", ("apples",), "Produce", "each", "each", None),
     ("Orange", ("oranges",), "Produce", "each", "each", None),
@@ -154,9 +115,7 @@ _RAW_REFERENCE_ROWS: list[tuple[str, tuple[str, ...], str, str, str, float | Non
     ("Kumquat", ("kumquats",), "Produce", "each", "each", None),
     ("Blood Orange", ("blood oranges",), "Produce", "each", "each", None),
     ("Meyer Lemon", ("meyer lemons",), "Produce", "each", "each", None),
-    # ------------------------------------------------------------------
-    # Fresh herbs
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Fresh herbs
     ("Fresh Basil", ("basil", "basil leaves"), "Produce", "bunch", "tablespoon", None),
     ("Fresh Cilantro", ("cilantro", "coriander leaves"), "Produce", "bunch", "tablespoon", None),
     ("Fresh Parsley", ("parsley",), "Produce", "bunch", "tablespoon", None),
@@ -172,9 +131,7 @@ _RAW_REFERENCE_ROWS: list[tuple[str, tuple[str, ...], str, str, str, float | Non
     ("Lemongrass", (), "Produce", "each", "tablespoon", None),
     ("Curry Leaves", (), "Produce", "package", "each", None),
     ("Fresh Bay Leaves", (), "Produce", "package", "each", None),
-    # ------------------------------------------------------------------
-    # Dairy & eggs
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Dairy & eggs
     ("Whole Milk", ("milk", "2% milk", "skim milk", "reduced fat milk"), "Dairy", "gallon", "cup", 16),
     ("Heavy Cream", ("heavy whipping cream", "whipping cream"), "Dairy", "pint", "cup", 2),
     ("Half and Half", (), "Dairy", "pint", "cup", 2),
@@ -208,9 +165,7 @@ _RAW_REFERENCE_ROWS: list[tuple[str, tuple[str, ...], str, str, str, float | Non
     ("Ghee", ("clarified butter",), "Dairy", "each", "tablespoon", None),
     ("Egg Whites", (), "Dairy", "each", "each", None),
     ("Egg Substitute", (), "Dairy", "each", "cup", None),
-    # ------------------------------------------------------------------
-    # Meat & poultry
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Meat & poultry
     ("Chicken Breast", ("chicken breasts", "boneless skinless chicken breast", "boneless chicken breast"), "Meat", "pound", "pound", None),
     ("Chicken Thighs", ("chicken thigh",), "Meat", "pound", "pound", None),
     ("Whole Chicken", (), "Meat", "each", "each", None),
@@ -253,9 +208,7 @@ _RAW_REFERENCE_ROWS: list[tuple[str, tuple[str, ...], str, str, str, float | Non
     ("Bratwurst", (), "Meat", "package", "each", None),
     ("Ground Venison", (), "Meat", "pound", "pound", None),
     ("Duck", ("duck breast",), "Meat", "pound", "pound", None),
-    # ------------------------------------------------------------------
-    # Seafood
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Seafood ------------------------------------------------------------------
     ("Shrimp", (), "Seafood", "pound", "pound", None),
     ("Salmon", ("salmon fillet",), "Seafood", "pound", "pound", None),
     ("Tilapia", (), "Seafood", "pound", "pound", None),
@@ -278,9 +231,7 @@ _RAW_REFERENCE_ROWS: list[tuple[str, tuple[str, ...], str, str, str, float | Non
     ("Imitation Crab", ("crab sticks",), "Seafood", "pound", "pound", None),
     ("Smoked Salmon", ("lox",), "Seafood", "package", "ounce", None),
     ("Fish Sticks", (), "Frozen", "box", "each", None),
-    # ------------------------------------------------------------------
-    # Bakery
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Bakery ------------------------------------------------------------------
     ("Sandwich Bread", ("bread", "white bread", "wheat bread", "loaf of bread"), "Bakery", "loaf", "slice", 20),
     ("Bagels", ("bagel",), "Bakery", "package", "each", None),
     ("Flour Tortillas", ("tortillas", "tortilla"), "Bakery", "package", "each", None),
@@ -306,9 +257,7 @@ _RAW_REFERENCE_ROWS: list[tuple[str, tuple[str, ...], str, str, str, float | Non
     ("Angel Food Cake", (), "Bakery", "each", "each", None),
     ("Pie Shell", (), "Bakery", "each", "each", None),
     ("Breadsticks", (), "Bakery", "package", "each", None),
-    # ------------------------------------------------------------------
-    # Pantry - grains & pasta
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Pantry
     ("White Rice", ("rice", "long grain rice", "long grain white rice"), "Pantry", "pound", "cup", 2.4),
     ("Brown Rice", (), "Pantry", "pound", "cup", 2.2),
     ("Jasmine Rice", (), "Pantry", "pound", "cup", 2.4),
@@ -342,9 +291,7 @@ _RAW_REFERENCE_ROWS: list[tuple[str, tuple[str, ...], str, str, str, float | Non
     ("Wild Rice", (), "Pantry", "pound", "cup", None),
     ("Arborio Rice", (), "Pantry", "pound", "cup", 2.4),
     ("Sushi Rice", (), "Pantry", "pound", "cup", 2.4),
-    # ------------------------------------------------------------------
-    # Baking
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Baking ------------------------------------------------------------------
     ("All-Purpose Flour", ("flour", "ap flour", "plain flour"), "Baking", "pound", "cup", 3.78),
     ("Whole Wheat Flour", (), "Baking", "pound", "pound", None),
     ("Bread Flour", (), "Baking", "pound", "pound", None),
@@ -392,9 +339,7 @@ _RAW_REFERENCE_ROWS: list[tuple[str, tuple[str, ...], str, str, str, float | Non
     ("Almond Meal", (), "Baking", "each", "cup", None),
     ("Coconut Sugar", (), "Baking", "pound", "pound", None),
     ("Turbinado Sugar", ("raw sugar",), "Baking", "pound", "pound", None),
-    # ------------------------------------------------------------------
-    # Canned & jarred
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Canned & jarred
     ("Canned Black Beans", ("black beans",), "Canned Goods", "can", "can", None),
     ("Canned Kidney Beans", ("kidney beans",), "Canned Goods", "can", "can", None),
     ("Canned Pinto Beans", ("pinto beans",), "Canned Goods", "can", "can", None),
@@ -441,9 +386,7 @@ _RAW_REFERENCE_ROWS: list[tuple[str, tuple[str, ...], str, str, str, float | Non
     ("Canned Pineapple", (), "Canned Goods", "can", "can", None),
     ("Marinated Artichoke Hearts", ("artichoke hearts",), "Condiments", "jar", "cup", None),
     ("Chipotle Peppers in Adobo", ("chipotles in adobo",), "Condiments", "can", "each", None),
-    # ------------------------------------------------------------------
-    # Condiments & sauces
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Condiments & sauces
     ("Ketchup", (), "Condiments", "each", "tablespoon", None),
     ("Mustard", ("yellow mustard", "dijon mustard"), "Condiments", "each", "tablespoon", None),
     ("Mayonnaise", ("mayo",), "Condiments", "each", "tablespoon", None),
@@ -489,9 +432,7 @@ _RAW_REFERENCE_ROWS: list[tuple[str, tuple[str, ...], str, str, str, float | Non
     ("Buffalo Sauce", (), "Condiments", "each", "tablespoon", None),
     ("Caesar Dressing", (), "Condiments", "each", "tablespoon", None),
     ("Honey Mustard", (), "Condiments", "each", "tablespoon", None),
-    # ------------------------------------------------------------------
-    # Spices & seasonings
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Spices & seasonings
     ("Black Pepper", ("ground black pepper", "pepper"), "Spices", "each", "teaspoon", None),
     ("Garlic Powder", (), "Spices", "each", "teaspoon", None),
     ("Onion Powder", (), "Spices", "each", "teaspoon", None),
@@ -571,9 +512,7 @@ _RAW_REFERENCE_ROWS: list[tuple[str, tuple[str, ...], str, str, str, float | Non
     ("Grill Seasoning", (), "Spices", "each", "teaspoon", None),
     ("Pickling Spice", (), "Spices", "each", "teaspoon", None),
     ("Apple Pie Spice", (), "Spices", "each", "teaspoon", None),
-    # ------------------------------------------------------------------
-    # Snacks
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Snacks ------------------------------------------------------------------
     ("Potato Chips", ("chips",), "Snacks", "bag", "cup", None),
     ("Tortilla Chips", (), "Snacks", "bag", "cup", None),
     ("Pretzels", (), "Snacks", "bag", "cup", None),
@@ -604,9 +543,7 @@ _RAW_REFERENCE_ROWS: list[tuple[str, tuple[str, ...], str, str, str, float | Non
     ("Corn Nuts", (), "Snacks", "bag", "cup", None),
     ("Cheese Crackers", (), "Snacks", "box", "cup", None),
     ("Pudding Cups", (), "Snacks", "package", "each", None),
-    # ------------------------------------------------------------------
-    # Beverages
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Beverages
     ("Coffee", ("ground coffee", "coffee beans"), "Beverages", "bag", "tablespoon", None),
     ("Tea", ("tea bags",), "Beverages", "box", "each", None),
     ("Orange Juice", (), "Beverages", "gallon", "cup", 16),
@@ -637,17 +574,7 @@ _RAW_REFERENCE_ROWS: list[tuple[str, tuple[str, ...], str, str, str, float | Non
     ("Dry Sherry", ("cooking sherry",), "Beverages", "bottle", "tablespoon", None),
     ("Marsala Wine", (), "Beverages", "bottle", "cup", None),
     ("Champagne", ("sparkling wine",), "Beverages", "bottle", "cup", None),
-    # ------------------------------------------------------------------
-    # Flavoring syrups - Torani (88-flavor "Original Syrups" line - see
-    # https://www.torani.com/products/original-syrups.html; a handful of
-    # very-limited-run or seasonal flavors not consistently listed there
-    # are omitted rather than guessed at) and Dopoco (powder-concentrate
-    # syrups - see https://dopoco.com/collections/all, "Classic Flavors").
-    # All left at purchase_unit "each" (a bottle/packet) with stock_unit
-    # "tablespoon", matching how Honey and Maple Syrup are handled above -
-    # no invented bottle-to-tablespoon factor since bottle sizes vary by
-    # flavor and edition.
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Flavoring syrups - Torani (88-flavor "Original Syrups" line
     ("Torani Cookie Butter Syrup", ("cookie butter syrup", "torani cookie butter"), "Syrups", "each", "tablespoon", None),
     ("Torani Blue Raspberry Syrup", ("blue raspberry syrup", "torani blue raspberry"), "Syrups", "each", "tablespoon", None),
     ("Torani Vanilla Syrup", ("vanilla syrup", "torani vanilla"), "Syrups", "each", "tablespoon", None),
@@ -762,9 +689,7 @@ _RAW_REFERENCE_ROWS: list[tuple[str, tuple[str, ...], str, str, str, float | Non
     ("Dopoco Toasted Marshmallow Syrup", ("dopoco toasted marshmallow",), "Syrups", "each", "tablespoon", None),
     ("Dopoco Toffee Syrup", ("dopoco toffee",), "Syrups", "each", "tablespoon", None),
     ("Dopoco Vanilla Syrup", ("dopoco vanilla",), "Syrups", "each", "tablespoon", None),
-    # ------------------------------------------------------------------
-    # Frozen
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Frozen ------------------------------------------------------------------
     ("Frozen Peas", (), "Frozen", "bag", "cup", None),
     ("Frozen Corn", (), "Frozen", "bag", "cup", None),
     ("Frozen Mixed Vegetables", (), "Frozen", "bag", "cup", None),
@@ -792,9 +717,7 @@ _RAW_REFERENCE_ROWS: list[tuple[str, tuple[str, ...], str, str, str, float | Non
     ("Frozen Garlic Bread", (), "Frozen", "package", "each", None),
     ("Popsicles", (), "Frozen", "box", "each", None),
     ("Sherbet", (), "Frozen", "each", "cup", None),
-    # ------------------------------------------------------------------
-    # Other / international
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Other / international
     ("Tofu", ("firm tofu", "extra firm tofu"), "Other", "each", "each", None),
     ("Tempeh", (), "Other", "each", "each", None),
     ("Seitan", (), "Other", "each", "each", None),
@@ -822,20 +745,7 @@ _RAW_REFERENCE_ROWS: list[tuple[str, tuple[str, ...], str, str, str, float | Non
     ("Almond Butter", (), "Other", "each", "tablespoon", None),
     ("Cashew Butter", (), "Other", "each", "tablespoon", None),
     ("Nutella", ("chocolate hazelnut spread",), "Other", "each", "tablespoon", None),
-    # ------------------------------------------------------------------
-    # Everyday coverage expansion (2026-09) - common household items that
-    # weren't yet in this list, found by cross-checking a batch of
-    # candidate items against every existing NAME *and* ALIAS first (not
-    # just names) to avoid creating a near-duplicate of something already
-    # reachable a different way - e.g. "2% milk"/"skim milk" already
-    # resolve to "Whole Milk" via its own aliases, and "salted butter"
-    # already resolves to "Unsalted Butter" the same way, so neither
-    # needed a new entry despite seeming like an obvious gap at first.
-    # Deliberately skips anything that would reopen the exact fresh-vs-
-    # processed collision _ingredient_form_kind exists to guard against
-    # in __init__.py (no new bare-word entry that only differs from an
-    # existing one by a dried/ground/powder qualifier).
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Everyday coverage expansion (2026-09)
     ("Yukon Gold Potato", ("yukon gold potatoes",), "Produce", "pound", "pound", None),
     ("Red Potato", ("red potatoes",), "Produce", "pound", "pound", None),
     ("Baby Potatoes", ("baby potato", "new potatoes", "petite potatoes"), "Produce", "pound", "pound", None),

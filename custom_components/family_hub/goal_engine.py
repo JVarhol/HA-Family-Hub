@@ -74,9 +74,7 @@ from .reward_engine import LEDGER_SOURCE_GOAL_ACHIEVED, RewardError, add_stars, 
 
 _LOGGER = logging.getLogger(__name__)
 
-# Same dependency-injection shape as chore_engine.IsUserEnabled - see that
-# module's own docstring for the full reasoning (keeps this module import-
-# independent of __init__.py/the Settings store).
+# Same dependency-injection shape as chore_engine.IsUserEnabled - see that module's own docstring for the full reasoning
 IsUserEnabled = Callable[[str], bool]
 
 
@@ -170,11 +168,7 @@ def create_goal(
     payload: dict[str, Any],
     is_user_enabled: Optional[IsUserEnabled] = None,
 ) -> dict[str, Any]:
-    """Validate + build a new goal record, insert it into `goals` (the
-    caller's in-memory dict, saved to the Store afterward), fire the
-    creation event, and return the record. Unlike create_chore, assigned_to
-    is always required here - there is no Chore-Bin-style "unclaimed"
-    state for a goal, it's always for one specific person from the start."""
+    """Validate + build a new goal record, insert it into `goals` (the caller's in-memory dict, saved to the Store afterward), fire the creation event"""
     title = str(payload.get("title") or "").strip()
     if not title:
         raise GoalError("invalid_title", "A goal needs a title.")
@@ -263,16 +257,7 @@ def approve_goal(
     goal_id: str,
     approver: Optional[str],
 ) -> dict[str, Any]:
-    """The second half of the verification gate: Pending Verification ->
-    Approved -> reward disbursed. Disburses per the goal's own reward_type
-    (see const.py's GOAL_REWARD_TYPE_* docstring): star_value credited via
-    reward_engine.add_stars for "stars", or reward_item_id handed over
-    directly via reward_engine.grant_item for "catalog_item" - a
-    since-deleted catalog item is logged and swallowed rather than blocking
-    the approval itself (the goal was still genuinely achieved; the
-    reward's own availability is a separate, already-surfaced-elsewhere
-    concern - same fail-safe posture reward_engine.use_bank already takes
-    on a since-deleted item)."""
+    """The second half of the verification gate: Pending Verification -> Approved -> reward disbursed."""
     goal = _get_goal(goals, goal_id)
     if goal["status"] != GOAL_STATUS_PENDING_VERIFICATION:
         raise GoalError("not_pending", "This goal isn't waiting on approval.")
@@ -282,9 +267,7 @@ def approve_goal(
     goal["approved_by"] = approver
     goal["approved_at"] = _now_iso()
     goal["updated_at"] = goal["approved_at"]
-    # A clean approval has nothing left to explain - clear out any note left
-    # by an earlier reject_goal on a prior attempt, same reasoning
-    # approve_chore already applies to CHORE_KEY_REJECT_REASON.
+    # A clean approval has nothing left to explain - clear out any note left by an earlier reject_goal on a prior attempt
     goal["rejected_by"] = None
     goal["rejected_at"] = None
     goal["reject_reason"] = None
@@ -322,15 +305,7 @@ def reject_goal(
     rejecter: Optional[str],
     reason: Optional[str] = None,
 ) -> dict[str, Any]:
-    """The other way out of the verification gate: Pending Verification ->
-    back to Open. Unlike reject_chore (which leaves a chore's own
-    completed_by/completed_at cleared but nothing else touched), a
-    rejected goal's current_count and log_history are both reset to
-    empty/zero - "send it back" for a counted goal means genuinely trying
-    again, not a silent partial-credit reduction with no clear record of
-    which specific logged occurrence was disputed. No reward disbursed, no
-    stars/bank touched - approve_goal is the only place that ever happens,
-    and this function never reaches it."""
+    """The other way out of the verification gate: Pending Verification -> back to Open."""
     goal = _get_goal(goals, goal_id)
     if goal["status"] != GOAL_STATUS_PENDING_VERIFICATION:
         raise GoalError("not_pending", "This goal isn't waiting on approval.")
@@ -368,25 +343,7 @@ def update_goal(
     fields: dict[str, Any],
     is_user_enabled: Optional[IsUserEnabled] = None,
 ) -> dict[str, Any]:
-    """Edit an open goal's details (never while pending_verification/
-    approved - reject it back to open first, same reasoning as
-    update_chore). Only touches keys the caller actually passed in
-    `fields`; only fields in _EDITABLE_FIELDS are honored, so e.g.
-    `status`/`current_count`/`log_history` can never be smuggled in through
-    this path - those only ever change via log_progress/approve_goal/
-    reject_goal. Reassigning to a different person (`assigned_to`) is
-    allowed directly here rather than through a separate assign_goal
-    action, unlike Chores - there's no Chore-Bin/drag-and-drop concept to
-    mirror for a goal, so a plain editable field is simpler and just as
-    safe (still gated by is_user_enabled).
-
-    If target_count is lowered to (or below) a count already logged, the
-    goal immediately advances to pending_verification exactly as if that
-    many log_progress calls had just landed - an admin shrinking the target
-    below what's already been logged is a deliberate "that's enough,
-    already done" call, not something that should require yet another
-    log_progress tap that can't happen (the goal isn't open anymore in
-    spirit, only in stale field values) to actually take effect."""
+    """Edit an open goal's details (never while pending_verification/ approved - reject it back to open first, same reasoning as update_chore)."""
     goal = _get_goal(goals, goal_id)
     if goal["status"] != GOAL_STATUS_OPEN:
         raise GoalError("not_open", "Only an open (not-yet-completed) goal can be edited.")

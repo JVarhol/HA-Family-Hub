@@ -1,39 +1,4 @@
-"""Device automation triggers for Family Hub Routines.
-
-(v186), then, once that shipped as a plain bus event
-with no device behind it, the follow-up report: "family hub is not
-showing as an integration with automation triggers and it's not showing
-if I type family into the trigger search."
-
-The v186 fix (see chores_websocket_api.py's _fire_routine_event) already
-made every routine checklist toggle/approval, and the moment a person
-finishes every item due today in one of their routines, fire a real HA
-bus event (ROUTINE_EVENT_TYPE = "family_hub_routine_event"). That was
-technically usable as a trigger - Settings -> Automations -> Add Trigger
--> Event -> type the event type by hand. But Home Assistant's "Add
-Trigger" search box only ever surfaces an integration by name for
-entities or DEVICES that integration owns; a bare bus event with nothing
-registered in the device registry never appears no matter what you
-search for, which is exactly the gap this file closes.
-
-This file is Home Assistant's own device automation platform contract
-(see the "trigger" platform docs) - `async_get_triggers` lists what shows
-up for the "Family Hub" device (registered once per config entry, in
-__init__.py's async_setup_entry) when it's picked in the trigger UI,
-`async_get_trigger_capabilities` offers the optional "only this routine
-category" / "only this household member" narrowing fields, and
-`async_attach_trigger` is what actually fires the automation - it just
-builds the equivalent plain Event trigger (matching event_type +
-event_data) under the hood and delegates to Home Assistant's own event
-trigger platform, so there's no separate listening/dispatch logic to
-maintain here at all.
-
-Self-contained like todo.py/sensor.py: only imports from .const, nothing
-from the package __init__.py, so it carries no circular-import exposure -
-Home Assistant discovers and imports this module by convention
-(`<domain>.device_trigger`) whenever a device belonging to this domain is
-asked for its available triggers.
-"""
+"""Device automation triggers for Family Hub Routines."""
 from __future__ import annotations
 
 from typing import Any
@@ -51,19 +16,12 @@ from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN, ROUTINE_CATEGORIES, ROUTINE_CATEGORY_LABELS, ROUTINE_EVENT_TYPE
 
-# These three map 1:1 onto the three `event` values _fire_routine_event
-# already sends in the ROUTINE_EVENT_TYPE payload (see
-# chores_websocket_api.py) - "routine_completed" fires once when every
-# item due today in a category is done, the other two fire on every
-# single checklist toggle/approval regardless of whether that finishes
-# the routine.
+# These three map 1:1 onto the three `event` values _fire_routine_event already sends in the ROUTINE_EVENT_TYPE payload
 TRIGGER_TYPE_ROUTINE_COMPLETED = "routine_completed"
 TRIGGER_TYPE_ITEM_TOGGLED = "routine_item_toggled"
 TRIGGER_TYPE_ITEM_APPROVED = "routine_item_approved"
 
-# device_trigger "type" (this file's own trigger names) -> the ROUTINE_EVENT_TYPE
-# payload's "event" field value it actually corresponds to - the one place
-# that mapping lives, so the three lists below can never drift apart.
+# device_trigger "type" (this file's own trigger names) -> the ROUTINE_EVENT_TYPE payload's "event" field value it actually corresponds to
 _TRIGGER_TYPE_TO_EVENT_NAME = {
     TRIGGER_TYPE_ROUTINE_COMPLETED: "routine_completed",
     TRIGGER_TYPE_ITEM_TOGGLED: "item_toggled",
@@ -93,12 +51,7 @@ def _device_belongs_to_family_hub(hass: HomeAssistant, device_id: str) -> bool:
 
 
 async def async_get_triggers(hass: HomeAssistant, device_id: str) -> list[dict[str, Any]]:
-    """The fixed list of triggers the Family Hub device offers - always
-    all three, regardless of whether the household has routines enabled
-    or any routines actually set up yet (same "always show what's
-    possible" approach as every other integration's device triggers -
-    narrowing to "only this category"/"only this person" happens via the
-    optional extra_fields below, not by hiding trigger types)."""
+    """The fixed list of triggers the Family Hub device offers - always all three"""
     if not _device_belongs_to_family_hub(hass, device_id):
         return []
     return [
@@ -138,13 +91,7 @@ async def async_attach_trigger(
     action: TriggerActionType,
     trigger_info: TriggerInfo,
 ) -> CALLBACK_TYPE:
-    """Delegates to Home Assistant's own Event trigger platform - a
-    Family Hub device trigger IS just an Event trigger on
-    ROUTINE_EVENT_TYPE with event_data pre-filled from the trigger type
-    (+ the optional category/person narrowing), so there's no separate
-    listen/dispatch/cleanup logic to hand-maintain here. Mirrors the
-    pattern most core integrations' device_trigger.py use for
-    event-backed triggers."""
+    """Delegates to Home Assistant's own Event trigger platform - a Family Hub device trigger IS just an Event trigger on ROUTINE_EVENT_TYPE with event_data"""
     event_data: dict[str, Any] = {"event": _TRIGGER_TYPE_TO_EVENT_NAME[config[CONF_TYPE]]}
     if config.get(CONF_CATEGORY):
         event_data[CONF_CATEGORY] = config[CONF_CATEGORY]

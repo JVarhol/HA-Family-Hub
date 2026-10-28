@@ -64,16 +64,9 @@
           "digest_recipients": "Versturen naar"
         }
       },
-      "dashboard": {
-        "title": "Dashboard (optioneel)",
-        "description": "Wil je een eigen Family Hub-dashboard - één scherm waarop de agendakaart de hele weergave vult, dezelfde volledige dashboardindeling die dit project altijd heeft aanbevolen? Home Assistant kan dat niet automatisch bouwen, dus 'ja' bereidt alleen de exacte YAML voor om op het volgende scherm te plakken (Instellingen > Dashboards > Dashboard toevoegen > Bewerken in YAML), al ingevuld met de tot nu toe gekozen agenda's en takenlijsten.",
-        "data": {
-          "add_dashboard": "Een Family Hub-dashboard voorbereiden"
-        }
-      },
       "finish": {
         "title": "Klaar",
-        "description": "Standaarddoel voor herinneringen: {default_notify}\nDagelijks overzicht: {daily_digest}\n\nDashboard-YAML (Instellingen > Dashboards > Dashboard toevoegen > Bewerken in YAML, plak dit erin en sla op):\n{dashboard_yaml}\n\nDe installatie is klaar - voeg de Family Week Calendar-kaart toe aan een dashboard om te beginnen, of klik op elk moment op Configureren om herinneringen of Grocy te wijzigen."
+        "description": "⚙️ **De instellingen zitten op de Family Week Calendar-kaart.** Voeg die kaart eerst toe aan een dashboard: de ⚙️-knop is de enige plek om de instellingen van Family Hub te wijzigen (personen, rechten, agenda's, thema's en meer), voor alle kaarten.\n\nFamily Hub is klaar. Een korte rondleiding langs de kaarten - voeg ze toe aan een dashboard (Dashboard bewerken > Kaart toevoegen en zoek op \"Family\"):\n\n- 📅 **Family Week Calendar** - ieders agenda's, herinneringen en het menu in week-, maand-, dag- of plannerweergave, plus de Instellingen van heel Family Hub.\n- ☀️ **Family Today** - vandaag in één oogopslag: afspraken, maaltijden en herinneringen.\n- 🕒 **Family Right Now** - wat iedereen nu doet en wat er hierna komt, met Thuis/Weg.\n- ✅ **Family Hub Chores** - een kolom per persoon plus de Klusjesbak; klusjes doen levert sterren op, met dagelijkse routines.\n- ⭐ **Family Hub Rewards** - ieders sterrensaldo en de beloningen om ze aan te besteden.\n- 🎯 **Family Hub My Goals** - grotere doelen met een beloning aan het eind, zoals \"5 keer piano oefenen\".\n- 📝 **Family Hub To-Do Lists** - je Home Assistant-takenlijsten naast elkaar, ook verlanglijstjes.\n- 📖 **Family Hub Recipe Box** - de lievelingsgerechten van het gezin - zoek ze op en zet ze op het menu.\n- 🥫 **Family Hub My Pantry** - wat er in voorraad is, uit Grocy (als je dat gebruikt).\n- ⏲️ **Family Hub Active Timers** - alle lopende timers in huis, en snelle timers.\n- 🖼️ **Family Hub Screen Saver** - foto's of een klok als het scherm niet gebruikt wordt.\n- 🎨 **Theme Builder: Theme Selector** - laat elk scherm zijn eigen thema kiezen.\n\nHerinneringen gaan naar: {default_notify}\nDagelijkse samenvatting: {daily_digest}\n\nJe kunt dit altijd wijzigen via Configureren of in de Instellingen van de agendakaart."
       }
     },
     "abort": {
@@ -291,7 +284,20 @@
       "checklist_no_items": "Nog geen onderdelen - voeg hieronder toe wat er onthouden moet worden.",
       "checklist_no_todo_lists": "Geen takenlijsten gevonden",
       "title_placeholder": "Titel",
-      "location_placeholder": "Locatie (optioneel)"
+      "location_placeholder": "Locatie (optioneel)",
+      "category_label": "Categorie",
+      "category_none": "Geen categorie",
+      "repeat_every_n_days": "Elke %n% dagen",
+      "repeat_every_n_weeks": "Elke %n% weken",
+      "repeat_every_n_months": "Elke %n% maanden",
+      "repeat_every_n_years": "Elke %n% jaar",
+      "category_setup_hint": "Nog geen categorieën. Voeg ze toe via Instellingen → Algemeen → Agenda's.",
+      "enddate_short_label": "Einddatum (optioneel)",
+      "checklist_short_label": "Checklist",
+      "remind_custom": "Eigen",
+      "remind_unit_minutes": "minuten vooraf",
+      "remind_unit_hours": "uur vooraf",
+      "remind_unit_days": "dagen vooraf"
     },
     "event_info": {
       "duplicate_event_btn": "Afspraak dupliceren",
@@ -352,7 +358,12 @@
       "dup_when_next_week": "Volgende week",
       "dup_when_date": "Datum",
       "dup_when_start": "Begin",
-      "dup_when_end": "Einde"
+      "dup_when_end": "Einde",
+      "also_for_needs_users": "Voeg mensen toe onder Instellingen > Gebruikers en kies voor ieder een eigen agenda om ze hier te kunnen taggen.",
+      "category": "Categorie",
+      "repeat_current": "huidig",
+      "repeat_left": "nog %n%",
+      "repeat_until": "tot %d%"
     },
     "more_menu_tpl": {
       "blank_name": "Leeg",
@@ -735,7 +746,7 @@
       "five_days": "5 dagen",
       "seven_days": "7 dagen",
       "days_shown_hint": "dagen (1–36)",
-      "current_day_first_label": "Huidige dag altijd eerst — alleen dit apparaat",
+      "current_day_first_label": "Huidige dag altijd eerst",
       "week_rows_label": "Rijen tegelijk zichtbaar in weekweergave — alleen dit apparaat",
       "week_rows_hint": "rijen (1–7)",
       "this_device_label": "Dit apparaat",
@@ -794,7 +805,7 @@
       "no_more_alarm_devices": "Geen apparaten meer gevonden.",
       "tab_developer": "Ontwikkelaarstools",
       "prevent_duplicate_events_label": "Dubbele afspraken voorkomen",
-      "prevent_duplicate_events_hint": "Vangt een agenda op die in meer dan één kolom terechtkomt (bijv. als tweede agenda aan een gebruiker gekoppeld terwijl de eigen rij nog apart wordt getoond) en toont de afspraken maar één keer. Standaard aan - zet het alleen uit om te controleren of iets dat dubbel lijkt eigenlijk een tweede, echt andere afspraak is.",
+      "prevent_duplicate_events_hint": "Toont een afspraak die in meer dan één agenda staat - dezelfde uitnodiging, of precies dezelfde naam op hetzelfde tijdstip - één keer, in de kolom van de eerste persoon. Standaard uit. Geef aparte afspraken verschillende namen (\"Sam Voetbal\", \"Taylor Voetbal\") zodat beide verschijnen.",
       "top_bar_style_hidden": "Verborgen",
       "top_bar_style_right_now": "Op dit moment",
       "right_now_topbar_position_label": "Plaats van Op dit moment",
@@ -864,7 +875,46 @@
       "more_menu_unifi_enable_btn": "UniFi-QR-codes aanzetten",
       "more_menu_unifi_enabling": "Bezig met aanzetten…",
       "more_menu_unifi_enabled_wait": "Aangezet. Home Assistant heeft ongeveer 30 seconden nodig om ze te starten - daarna schakelt dit vanzelf over.",
-      "more_menu_unifi_enable_failed": "Aanzetten lukte niet - alleen een Home Assistant-beheerder kan dat. Open in Home Assistant Instellingen > Apparaten & diensten > UniFi Network en zet de “QR code”-entiteiten aan."
+      "more_menu_unifi_enable_failed": "Aanzetten lukte niet - alleen een Home Assistant-beheerder kan dat. Open in Home Assistant Instellingen > Apparaten & diensten > UniFi Network en zet de “QR code”-entiteiten aan.",
+      "current_day_first_step_label": "Navigatiestap (als “Huidige dag altijd eerst” aan staat)",
+      "step_one_day": "1 dag",
+      "step_full_window": "Hele venster",
+      "dup_merge_info_title": "Dubbele afspraken worden één keer getoond",
+      "dup_merge_info_text": "Staat dezelfde afspraak in meer dan één agenda - dezelfde uitnodiging, of afspraken met precies dezelfde naam op hetzelfde tijdstip - dan wordt hij één keer getoond, in de kolom van de eerste persoon.",
+      "dup_merge_info_tip": "Hebben twee mensen echt aparte afspraken met dezelfde naam op hetzelfde tijdstip, geef ze dan verschillende namen zodat beide verschijnen - bijvoorbeeld \"Sam Voetbal\" en \"Taylor Voetbal\" in plaats van \"Voetbal\".",
+      "categories_add": "+ Categorie toevoegen",
+      "categories_hint": "Afspraken en herinneringen met een categorie krijgen een balk in die kleur.",
+      "categories_label": "Categorieën voor afspraken en herinneringen",
+      "categories_name_placeholder": "bijv. Sport",
+      "categories_remove": "Verwijderen",
+      "calendar_countdown_short": "Aftellen",
+      "calendar_add_badge_short": "Badge toevoegen",
+      "calendar_remove_short": "Verwijderen",
+      "holiday_backgrounds_hint_v2": "Zet een feestdag aan of voeg een eigen datum toe, voeg dan een foto en eventueel een thema toe. Als er twee tegelijk zijn, wint de kortste (een dag gaat voor een week, een week voor een maand).",
+      "holiday_theme_keep": "Gewone thema houden",
+      "holiday_cover_label": "Foto tonen",
+      "holiday_cover_column": "Achter de dag",
+      "holiday_cover_day": "Volledig scherm, die dag",
+      "holiday_cover_week": "Volledig scherm, die week",
+      "holiday_cover_month": "Volledig scherm, die maand",
+      "holiday_date_label": "Datum",
+      "holiday_photo_label": "Foto",
+      "holiday_no_photo_hint": "Nog geen foto - het thema kan toch wisselen.",
+      "holiday_theme_label": "Thema",
+      "holiday_theme_hint": "Zet alle Family Hub-kaarten op dit thema zolang de feestdag wordt getoond.",
+      "holiday_date_label_placeholder": "Wie of wat (optioneel)",
+      "holiday_dates_label": "Datums",
+      "holiday_add_date": "Nog een datum",
+      "holiday_remove_date": "Deze datum verwijderen",
+      "name_pills_label": "Naampillen — alleen dit apparaat",
+      "name_pills_show": "Tonen",
+      "name_pills_hide": "Verbergen",
+      "name_pills_hint": "De rij namen met tellers boven de agenda (en de Herinneringen-pil). Verberg ze voor meer ruimte; de agenda toont dan iedereen.",
+      "name_pills_device_label": "Naampillen verbergen",
+      "calendar_holiday_short": "Feestdagen",
+      "calendar_holiday_title": "Feestdagenagenda: de dagen verschijnen als banner onder de datum in plaats van als afspraken",
+      "hashtags_hint": "Tip: typ #Naam of #Categorie in de titel of notities van een afspraak, ook vanuit Google of Apple Agenda op je telefoon. #Emma toont hem ook in Emma's agenda, #Sport geeft hem de categorie Sport, en je kunt er meerdere gebruiken.",
+      "kiosk_account_note": "Kioskaccounts staan niet op het klusjesbord of bij Beloningen en krijgen geen herinneringen of eigen lijsten."
     },
     "common": {
       "close": "Sluiten",
@@ -879,7 +929,8 @@
       "edit": "Bewerken",
       "ha_starting_banner": "Home Assistant start op - nog niet alles is misschien beschikbaar.",
       "more": "Meer",
-      "delete": "Verwijderen"
+      "delete": "Verwijderen",
+      "ok": "OK"
     },
     "chores": {
       "achieved": "Behaald",
@@ -998,7 +1049,23 @@
       "alarm_audience_label": "Wie hoort dit alarm",
       "alarm_audience_self": "Alleen zij",
       "alarm_audience_kiosks": "Zij + kiosken",
-      "alarm_audience_everyone": "Iedereen"
+      "alarm_audience_everyone": "Iedereen",
+      "star_balance": "Sterren",
+      "previous_person": "Vorige",
+      "next_person": "Volgende",
+      "ask_for_stars": "Sterren vragen",
+      "ask_for_stars_for_x": "Sterren vragen voor %x%",
+      "star_request": "Sterrenverzoek",
+      "star_request_what": "Wat heb je gedaan?",
+      "star_request_what_placeholder": "Geholpen de boodschappen naar binnen te dragen",
+      "star_request_how_many": "Hoeveel sterren?",
+      "star_request_note": "Nog iets? (optioneel)",
+      "star_request_hint": "Iemand die klusjes mag goedkeuren keurt het goed of stuurt het terug.",
+      "star_request_send": "Verzoek sturen",
+      "star_request_need_title": "Zeg waarvoor het was.",
+      "star_request_need_stars": "Vraag tussen 1 en 100 sterren.",
+      "star_request_failed": "Het verzoek kon niet worden verstuurd.",
+      "star_request_for": "Voor"
     },
     "daily_digest": {
       "title": "Dagelijks overzicht",
@@ -2367,7 +2434,29 @@
       "pin_placeholder": "Pincode",
       "unlock_submit": "Ontgrendelen",
       "pin_required": "Voer een pincode in.",
-      "incorrect_pin": "Onjuiste pincode."
+      "incorrect_pin": "Onjuiste pincode.",
+      "no_pin_warn_title": "Niemand kan ontgrendelen met een pincode",
+      "no_pin_warn_text": "Niemand die de privacymodus mag uitzetten heeft al een kiosk-pincode, dus eenmaal aan kan hij op dit scherm niet meer uit.",
+      "no_pin_warn_how": "Om hem uit te zetten heb je Home Assistant nodig: zet %entity% uit (Instellingen > Apparaten & diensten > Family Hub). Of stel eerst een kiosk-pincode in onder Instellingen > Gebruikers.",
+      "no_pin_warn_go": "Toch aanzetten"
+    },
+    "library": {
+      "add": "Item toevoegen",
+      "chores_title": "Klusjesbibliotheek",
+      "rewards_title": "Beloningenbibliotheek",
+      "routines_title": "Routinebibliotheek",
+      "cost": "Kosten in sterren",
+      "stars": "Sterren",
+      "edit": "Bibliotheek bewerken",
+      "failed": "Kon niet opslaan.",
+      "hint": "Wijzigingen worden direct opgeslagen. Iedereen kiest uit deze lijst.",
+      "item_name": "Naam",
+      "pick": "Kies uit bibliotheek… (optioneel)",
+      "remove": "Verwijderen",
+      "reset": "Verwijderde standaarditems terugzetten",
+      "saved": "Opgeslagen.",
+      "restored": "%n% standaarditem(s) teruggezet.",
+      "nothing_to_restore": "Alle standaarditems staan er al."
     }
   }
 }

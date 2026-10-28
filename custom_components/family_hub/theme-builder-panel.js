@@ -1,8 +1,61 @@
-// Must match const.py's MAX_THEMES - 6 original presets + Liquid Glass/
-// Liquid Glass Dark = 8 built-ins, bumped to 10 so a fresh install still
-// has room for 2 custom themes instead of the Add button being disabled
-// from the first load.
-const TB_MAX_THEMES = 10;
+// Must match const.py's MAX_THEMES - 6 original presets + Liquid Glass/ Liquid Glass Dark = 8 built-ins
+var __fhI18n = (window.__familyHubI18n = window.__familyHubI18n || { hass: null, fb: {}, loading: null, loaded: null });
+var __fhEsc = function (s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+};
+var __fhT = function (key, fb, vars, mode) {
+  var g = window.__familyHubI18n || __fhI18n;
+  if (g.fb[key] === undefined) g.fb[key] = fb;
+  var str = "";
+  try {
+    if (g.hass && typeof g.hass.localize === "function") str = g.hass.localize("component.family_hub.fh_ui." + key) || "";
+  } catch (e) {
+    str = "";
+  }
+  if (!str) str = fb;
+  if (mode === "h") str = __fhEsc(str);
+  if (vars) {
+    Object.keys(vars).forEach(function (k) {
+      var v = vars[k];
+      str = str.split("%" + k + "%").join(v === null || v === undefined ? "" : String(v));
+    });
+  }
+  return str;
+};
+var __fhUseHass = function (hass) {
+  if (hass && typeof hass.localize === "function") (window.__familyHubI18n || __fhI18n).hass = hass;
+};
+var __fhSweep = function (root) {
+  if (!root || typeof root.querySelectorAll !== "function") return;
+  var g = window.__familyHubI18n || __fhI18n;
+  root.querySelectorAll("[data-fh-t]").forEach(function (el) {
+    var key = el.getAttribute("data-fh-t");
+    var fb = g.fb[key];
+    if (fb === undefined) return;
+    var cur = (el.textContent || "").trim();
+    if (cur !== fb && cur !== el.__fhShown) return;
+    var next = __fhT(key, fb);
+    if (cur !== next) el.textContent = next;
+    el.__fhShown = next;
+  });
+  [["data-fh-title", "title"], ["data-fh-placeholder", "placeholder"], ["data-fh-aria", "aria-label"], ["data-fh-alt", "alt"]].forEach(function (pair) {
+    root.querySelectorAll("[" + pair[0] + "]").forEach(function (el) {
+      var key = el.getAttribute(pair[0]);
+      var fb = g.fb[key];
+      if (fb === undefined) return;
+      var cur = el.getAttribute(pair[1]);
+      var shownKey = "__fhShown_" + pair[1];
+      if (cur !== fb && cur !== el[shownKey]) return;
+      var next = __fhT(key, fb);
+      if (cur !== next) el.setAttribute(pair[1], next);
+      el[shownKey] = next;
+    });
+  });
+};
+// -------------------------------------------------------------------------
+
+// v1.168.76: 10 built-ins now (+ HA Light / HA Dark) - 12 keeps 2 custom slots.
+const TB_MAX_THEMES = 12;
 const TB_LEGACY_COLOR_KEY_MAP = { gold: "accent", goldText: "accentText", green: "accent2", terracotta: "accent3", chipBg: "surfaceAlt", blockBg: "surface2" };
 
 class ThemeBuilderPanel extends HTMLElement {
@@ -16,6 +69,8 @@ class ThemeBuilderPanel extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    __fhUseHass(hass);
+    this._fhEnsureI18n();
     this.classList.toggle("dark", !!(hass && hass.themes && hass.themes.darkMode));
     if (!this._loaded) {
       this._loaded = true;
@@ -33,6 +88,43 @@ class ThemeBuilderPanel extends HTMLElement {
     return this._hass;
   }
 
+  // the Theme Builder page is a panel, not a card, so nothing else loads Family Hub's "fh_ui" strings for it - do that here
+  _fhEnsureI18n() {
+    const hass = this._hass;
+    if (!hass || typeof hass.loadBackendTranslation !== "function") return;
+    const lang = String(hass.language || "en");
+    if (this._fhI18nLang === lang) {
+      if (hass.localize !== this._fhI18nLocalize) {
+        this._fhI18nLocalize = hass.localize;
+        this._fhOnI18nReady();
+      }
+      return;
+    }
+    if (this._fhI18nLoading === lang) return;
+    this._fhI18nLoading = lang;
+    hass
+      .loadBackendTranslation("fh_ui", "family_hub")
+      .then(() => {
+        this._fhI18nLang = lang;
+        this._fhI18nLoading = null;
+        this._fhI18nLocalize = this._hass && this._hass.localize;
+        this._fhOnI18nReady();
+      })
+      .catch(() => {
+        this._fhI18nLoading = null;
+      });
+  }
+
+  _fhOnI18nReady() {
+    if (!this._root) return;
+    __fhSweep(this._root);
+    try {
+      if (this._themes && this._themes.length) this._renderAll();
+    } catch (e) {
+      // drawing is best-effort here - the next edit redraws anyway
+    }
+  }
+
   set narrow(v) {
     this._narrow = v;
   }
@@ -43,9 +135,7 @@ class ThemeBuilderPanel extends HTMLElement {
 
   set panel(v) {
     this._panel = v;
-    // The panel property can arrive after the initial render - re-render
-    // the header once it's available so the logo doesn't stay stuck as the
-    // emoji fallback for a load that happened to race it.
+    // The panel property can arrive after the initial render - re-render the header once it's available so the logo doesn't stay stuck as the
     if (this._root) this._updateHeaderIcon();
   }
 
@@ -63,7 +153,7 @@ class ThemeBuilderPanel extends HTMLElement {
       const img = document.createElement("img");
       img.className = "tb-logo";
       img.src = iconUrl;
-      img.alt = "Family Hub logo";
+      img.alt = __fhT("text.family_hub_logo", "Family Hub logo");
       titleEl.insertBefore(img, titleEl.firstChild);
     }
   }
@@ -113,11 +203,7 @@ class ThemeBuilderPanel extends HTMLElement {
     };
   }
 
-  // Normalizes a theme from the backend (or a stale cached copy) into the
-  // current generic shape: renames legacy calendar-flavored color keys
-  // (gold -> accent, etc.) and fills in defaults for any missing field,
-  // including the newer effects/background objects. Safe to call on an
-  // already-current theme.
+  // Normalizes a theme from the backend (or a stale cached copy) into the current generic shape: renames legacy calendar-flavored color keys
   _migrateTheme(t) {
     const blank = this._blankTheme();
     const colors = Object.assign({}, (t && t.colors) || {});
@@ -349,25 +435,25 @@ class ThemeBuilderPanel extends HTMLElement {
       <div class="tb-root">
         <div class="tb-header">
           <div>
-            <div class="tb-header-title">${this._iconUrl() ? `<img class="tb-logo" src="${this._iconUrl()}" alt="Family Hub logo" />` : `<span class="tb-icon">&#127912;</span>`}<h1>Theme Builder</h1></div>
-            <div class="tb-header-sub">Colors auto-register as selectable Home Assistant themes. Shadows, glow, and background images are available to cards built to read them.</div>
+            <div class="tb-header-title">${this._iconUrl() ? `<img data-fh-alt="text.family_hub_logo" class="tb-logo" src="${this._iconUrl()}" alt="${__fhT("text.family_hub_logo", "Family Hub logo", null, "h")}" />` : `<span class="tb-icon">&#127912;</span>`}<h1 data-fh-t="text.theme_builder">${__fhT("text.theme_builder", "Theme Builder", null, "h")}</h1></div>
+            <div data-fh-t="text.colors_auto_register_as_selectable_home" class="tb-header-sub">${__fhT("text.colors_auto_register_as_selectable_home", "Colors auto-register as selectable Home Assistant themes. Shadows, glow, and background images are available to cards built to read them.", null, "h")}</div>
           </div>
           <div class="tb-header-actions">
             <div class="tb-device-theme">
-              <button class="tb-device-theme-btn" title="Set the theme for THIS device only - other devices/tablets are unaffected">
+              <button data-fh-title="text.set_the_theme_for_this_device_only" class="tb-device-theme-btn" title="${__fhT("text.set_the_theme_for_this_device_only", "Set the theme for THIS device only - other devices/tablets are unaffected", null, "h")}">
                 <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.14,12.94c0.04,-0.3 0.06,-0.61 0.06,-0.94c0,-0.32 -0.02,-0.64 -0.07,-0.94l2.03,-1.58c0.18,-0.14 0.23,-0.41 0.12,-0.61l-1.92,-3.32c-0.12,-0.22 -0.37,-0.29 -0.59,-0.22l-2.39,0.96c-0.5,-0.38 -1.03,-0.7 -1.62,-0.94L14.4,2.81c-0.04,-0.24 -0.24,-0.41 -0.48,-0.41h-3.84c-0.24,0 -0.43,0.17 -0.47,0.41L9.25,5.35C8.66,5.59 8.12,5.92 7.63,6.29L5.24,5.33c-0.22,-0.08 -0.47,0 -0.59,0.22L2.74,8.87C2.62,9.08 2.66,9.34 2.86,9.48l2.03,1.58C4.84,11.36 4.8,11.69 4.8,12s0.02,0.64 0.07,0.94l-2.03,1.58c-0.18,0.14 -0.23,0.41 -0.12,0.61l1.92,3.32c0.12,0.22 0.37,0.29 0.59,0.22l2.39,-0.96c0.5,0.38 1.03,0.7 1.62,0.94l0.36,2.54c0.05,0.24 0.24,0.41 0.48,0.41h3.84c0.24,0 0.44,-0.17 0.47,-0.41l0.36,-2.54c0.59,-0.24 1.13,-0.56 1.62,-0.94l2.39,0.96c0.22,0.08 0.47,0 0.59,-0.22l1.92,-3.32c0.12,-0.22 0.07,-0.47 -0.12,-0.61L19.14,12.94z M12,15.6c-1.98,0 -3.6,-1.62 -3.6,-3.6s1.62,-3.6 3.6,-3.6s3.6,1.62 3.6,3.6S13.98,15.6 12,15.6z"/></svg>
-                <span class="tb-device-theme-label">This device: Default</span>
+                <span data-fh-t="text.this_device_default" class="tb-device-theme-label">${__fhT("text.this_device_default", "This device: Default", null, "h")}</span>
               </button>
               <div class="tb-device-theme-dropdown"></div>
             </div>
             <span class="tb-status"></span>
-            <button class="tb-save-btn">Save All</button>
+            <button data-fh-t="text.save_all" class="tb-save-btn">${__fhT("text.save_all", "Save All", null, "h")}</button>
           </div>
         </div>
         <div class="tb-body">
           <div class="tb-sidebar">
             <div class="tb-tabs"></div>
-            <button class="tb-add-theme">&#10133; Add theme</button>
+            <button data-fh-t="text.add_theme" class="tb-add-theme">${__fhT("text.add_theme", "➕ Add theme", null, "h")}</button>
           </div>
           <div class="tb-editor"></div>
         </div>
@@ -379,19 +465,7 @@ class ThemeBuilderPanel extends HTMLElement {
     this._bindDeviceThemeSection();
   }
 
-  // --- "This device's theme" picker ---------------------------------------
-  // Lets THIS browser/tablet pick any Home Assistant theme (native themes.yaml
-  // /HACS themes, or a Theme Builder theme - those auto-register as native HA
-  // themes, see _register_ha_themes on the backend) to look at, without
-  // affecting any other device. Deliberately does NOT call the
-  // frontend.set_theme service, since that changes the theme for every
-  // browser signed into the same HA account - not what you want on a
-  // wall-mounted kiosk where each tablet might want its own look. Instead the
-  // chosen theme's CSS variables are written directly onto <html> in this
-  // browser only, and the choice is remembered in this browser's
-  // localStorage. Same storage key and mechanism as the standalone "Theme
-  // Selector" dashboard card, so picking a theme here or there stays in
-  // sync on the same device.
+  // -- "This device's theme" picker --------------------------------------- Lets THIS browser/tablet pick any Home Assistant theme
 
   _deviceThemeStorageKey() {
     return "family-hub-device-theme";
@@ -520,7 +594,7 @@ class ThemeBuilderPanel extends HTMLElement {
       dropdown.appendChild(item);
     }
     const labelEl = btn.querySelector(".tb-device-theme-label");
-    if (labelEl) labelEl.textContent = `This device: ${this._deviceThemeName || "Default"}`;
+    if (labelEl) labelEl.textContent = __fhT("text.this_device_x", "This device: %0%", {0: this._deviceThemeName || "Default"});
   }
 
   _renderAll() {
@@ -556,7 +630,7 @@ class ThemeBuilderPanel extends HTMLElement {
     const theme = this._themes[this._activeIndex];
     const editor = this._root.querySelector(".tb-editor");
     if (!theme) {
-      editor.innerHTML = `<div class="tb-empty">No themes yet.</div>`;
+      editor.innerHTML = `<div data-fh-t="text.no_themes_yet" class="tb-empty">${__fhT("text.no_themes_yet", "No themes yet.", null, "h")}</div>`;
       return;
     }
 
@@ -590,23 +664,23 @@ class ThemeBuilderPanel extends HTMLElement {
 
     editor.innerHTML = `
       <div class="tb-editor-top">
-        <input type="text" class="tb-name-input" value="${this._escape(theme.name)}" maxlength="24" placeholder="Theme name" />
-        <button class="tb-delete-theme" ${this._themes.length <= 1 ? "disabled" : ""}>&#128465;&#65039; Delete theme</button>
+        <input data-fh-placeholder="text.theme_name" type="text" class="tb-name-input" value="${this._escape(theme.name)}" maxlength="24" placeholder="${__fhT("text.theme_name", "Theme name", null, "h")}" />
+        <button data-fh-t="text.delete_theme" class="tb-delete-theme" ${this._themes.length <= 1 ? "disabled" : ""}>${__fhT("text.delete_theme", "🗑️ Delete theme", null, "h")}</button>
       </div>
       <div class="tb-preview">
-        <div class="tb-preview-label">Live preview</div>
+        <div data-fh-t="text.live_preview" class="tb-preview-label">${__fhT("text.live_preview", "Live preview", null, "h")}</div>
         <div class="tb-preview-day">
           <div class="tb-preview-daylabel">MON</div>
           <div class="tb-preview-daynum">12</div>
-          <div class="tb-preview-block">Dinner &mdash; Taco Night</div>
+          <div data-fh-t="text.dinner_taco_night" class="tb-preview-block">${__fhT("text.dinner_taco_night", "Dinner — Taco Night", null, "h")}</div>
           <div class="tb-preview-event">
-            <span class="tb-preview-chip">Family</span>
-            <span>Soccer practice</span>
+            <span data-fh-t="text.family" class="tb-preview-chip">${__fhT("text.family", "Family", null, "h")}</span>
+            <span data-fh-t="text.soccer_practice">${__fhT("text.soccer_practice", "Soccer practice", null, "h")}</span>
           </div>
         </div>
       </div>
       <div class="tb-section">
-        <h2>Colors</h2>
+        <h2 data-fh-t="text.colors">${__fhT("text.colors", "Colors", null, "h")}</h2>
         <div class="tb-color-grid">
           ${colorFields
             .map(
@@ -621,7 +695,7 @@ class ThemeBuilderPanel extends HTMLElement {
         </div>
       </div>
       <div class="tb-section">
-        <h2>Fonts (px)</h2>
+        <h2 data-fh-t="text.fonts_px">${__fhT("text.fonts_px", "Fonts (px)", null, "h")}</h2>
         <div class="tb-font-grid">
           ${fontFields
             .map(
@@ -636,109 +710,109 @@ class ThemeBuilderPanel extends HTMLElement {
         </div>
       </div>
       <div class="tb-section">
-        <h2>Appearance</h2>
+        <h2 data-fh-t="text.appearance">${__fhT("text.appearance", "Appearance", null, "h")}</h2>
         <label class="tb-appearance-row">
-          <span>Border weight (px)</span>
+          <span data-fh-t="text.border_weight_px">${__fhT("text.border_weight_px", "Border weight (px)", null, "h")}</span>
           <input type="number" class="tb-border-width" min="0" max="8" value="${theme.borderWidth}" />
         </label>
         <label class="tb-appearance-row">
-          <span>Accent border weight (px)</span>
+          <span data-fh-t="text.accent_border_weight_px">${__fhT("text.accent_border_weight_px", "Accent border weight (px)", null, "h")}</span>
           <input type="number" class="tb-accent-border-width" min="0" max="8" value="${theme.accentBorderWidth}" />
         </label>
         <label class="tb-appearance-row">
-          <span>Card / chip transparency (<span class="tb-opacity-val">${theme.cardOpacity}</span>%)</span>
+          <span>${__fhT("text.card_chip_transparency", "Card / chip transparency (", null, "h")}<span class="tb-opacity-val">${theme.cardOpacity}</span>%)</span>
           <input type="range" class="tb-opacity" min="20" max="100" value="${theme.cardOpacity}" />
         </label>
         <label class="tb-appearance-row">
-          <span>Glass blur (<span class="tb-glass-blur-val">${theme.glassBlur}</span>px) - pairs with transparency above for a "liquid glass" look</span>
+          <span>${__fhT("text.glass_blur", "Glass blur (", null, "h")}<span class="tb-glass-blur-val">${theme.glassBlur}</span>${__fhT("text.px_pairs_with_transparency_above_for_a", "px) - pairs with transparency above for a \"liquid glass\" look", null, "h")}</span>
           <input type="range" class="tb-glass-blur" min="0" max="24" value="${theme.glassBlur}" />
         </label>
       </div>
       <div class="tb-section">
-        <h2>Shadow</h2>
+        <h2 data-fh-t="text.shadow">${__fhT("text.shadow", "Shadow", null, "h")}</h2>
         <label class="tb-appearance-row">
-          <span>Enable drop shadow</span>
+          <span data-fh-t="text.enable_drop_shadow">${__fhT("text.enable_drop_shadow", "Enable drop shadow", null, "h")}</span>
           <input type="checkbox" class="tb-shadow-enabled" ${shadow.enabled ? "checked" : ""} />
         </label>
         <label class="tb-color-row" style="max-width:460px;">
-          <span>Shadow color</span>
+          <span data-fh-t="text.shadow_color">${__fhT("text.shadow_color", "Shadow color", null, "h")}</span>
           <input type="color" class="tb-shadow-color" value="${shadow.color}" />
         </label>
         <label class="tb-appearance-row">
-          <span>Opacity (<span class="tb-shadow-opacity-val">${Math.round(shadow.opacity * 100)}</span>%)</span>
+          <span>${__fhT("text.opacity", "Opacity (", null, "h")}<span class="tb-shadow-opacity-val">${Math.round(shadow.opacity * 100)}</span>%)</span>
           <input type="range" class="tb-shadow-opacity" min="0" max="100" value="${Math.round(shadow.opacity * 100)}" />
         </label>
         <label class="tb-appearance-row">
-          <span>Blur (px)</span>
+          <span data-fh-t="text.blur_px">${__fhT("text.blur_px", "Blur (px)", null, "h")}</span>
           <input type="number" class="tb-shadow-blur" min="0" max="60" value="${shadow.blurRadius}" />
         </label>
         <label class="tb-appearance-row">
-          <span>Spread (px)</span>
+          <span data-fh-t="text.spread_px">${__fhT("text.spread_px", "Spread (px)", null, "h")}</span>
           <input type="number" class="tb-shadow-spread" min="-20" max="40" value="${shadow.spreadRadius}" />
         </label>
         <label class="tb-appearance-row">
-          <span>Offset X (px)</span>
+          <span data-fh-t="text.offset_x_px">${__fhT("text.offset_x_px", "Offset X (px)", null, "h")}</span>
           <input type="number" class="tb-shadow-offset-x" min="-40" max="40" value="${shadow.offsetX}" />
         </label>
         <label class="tb-appearance-row">
-          <span>Offset Y (px)</span>
+          <span data-fh-t="text.offset_y_px">${__fhT("text.offset_y_px", "Offset Y (px)", null, "h")}</span>
           <input type="number" class="tb-shadow-offset-y" min="-40" max="40" value="${shadow.offsetY}" />
         </label>
       </div>
       <div class="tb-section">
-        <h2>Glow</h2>
+        <h2 data-fh-t="text.glow">${__fhT("text.glow", "Glow", null, "h")}</h2>
         <label class="tb-appearance-row">
-          <span>Enable glow</span>
+          <span data-fh-t="text.enable_glow">${__fhT("text.enable_glow", "Enable glow", null, "h")}</span>
           <input type="checkbox" class="tb-glow-enabled" ${glow.enabled ? "checked" : ""} />
         </label>
         <label class="tb-color-row" style="max-width:460px;">
-          <span>Glow color</span>
+          <span data-fh-t="text.glow_color">${__fhT("text.glow_color", "Glow color", null, "h")}</span>
           <input type="color" class="tb-glow-color" value="${glow.color}" />
         </label>
         <label class="tb-appearance-row">
-          <span>Opacity (<span class="tb-glow-opacity-val">${Math.round(glow.opacity * 100)}</span>%)</span>
+          <span>${__fhT("text.opacity", "Opacity (", null, "h")}<span class="tb-glow-opacity-val">${Math.round(glow.opacity * 100)}</span>%)</span>
           <input type="range" class="tb-glow-opacity" min="0" max="100" value="${Math.round(glow.opacity * 100)}" />
         </label>
         <label class="tb-appearance-row">
-          <span>Blur (px)</span>
+          <span data-fh-t="text.blur_px">${__fhT("text.blur_px", "Blur (px)", null, "h")}</span>
           <input type="number" class="tb-glow-blur" min="0" max="60" value="${glow.blurRadius}" />
         </label>
       </div>
       <div class="tb-section">
-        <h2>Background image</h2>
-        <div class="tb-section-hint">Cards that opt in to reading Theme Builder data (like the family calendar card) can show this behind their content. It does not apply to the native Home Assistant theme.</div>
-        <span class="tb-field-label">Image URL (e.g. /local/my-bg.jpg or https://...)</span>
-        <input type="text" class="tb-bg-url-input" value="${this._escape(bg.image)}" placeholder="No background image" />
+        <h2 data-fh-t="text.background_image">${__fhT("text.background_image", "Background image", null, "h")}</h2>
+        <div data-fh-t="text.cards_that_opt_in_to_reading_theme" class="tb-section-hint">${__fhT("text.cards_that_opt_in_to_reading_theme", "Cards that opt in to reading Theme Builder data (like the family calendar card) can show this behind their content. It does not apply to the native Home Assistant theme.", null, "h")}</div>
+        <span data-fh-t="text.image_url_e_g_local_my_bg_jpg_or_https" class="tb-field-label">${__fhT("text.image_url_e_g_local_my_bg_jpg_or_https", "Image URL (e.g. /local/my-bg.jpg or https://...)", null, "h")}</span>
+        <input data-fh-placeholder="text.no_background_image" type="text" class="tb-bg-url-input" value="${this._escape(bg.image)}" placeholder="${__fhT("text.no_background_image", "No background image", null, "h")}" />
         <label class="tb-appearance-row">
-          <span>Fit</span>
+          <span data-fh-t="text.fit">${__fhT("text.fit", "Fit", null, "h")}</span>
           <select class="tb-bg-size">
-            <option value="cover" ${bg.size === "cover" ? "selected" : ""}>Cover</option>
-            <option value="contain" ${bg.size === "contain" ? "selected" : ""}>Contain</option>
-            <option value="repeat" ${bg.size === "repeat" ? "selected" : ""}>Repeat (tile)</option>
+            <option data-fh-t="text.cover" value="cover" ${bg.size === "cover" ? "selected" : ""}>${__fhT("text.cover", "Cover", null, "h")}</option>
+            <option data-fh-t="text.contain" value="contain" ${bg.size === "contain" ? "selected" : ""}>${__fhT("text.contain", "Contain", null, "h")}</option>
+            <option data-fh-t="text.repeat_tile" value="repeat" ${bg.size === "repeat" ? "selected" : ""}>${__fhT("text.repeat_tile", "Repeat (tile)", null, "h")}</option>
           </select>
         </label>
         <label class="tb-appearance-row">
-          <span>Position</span>
+          <span data-fh-t="text.position">${__fhT("text.position", "Position", null, "h")}</span>
           <select class="tb-bg-position">
-            <option value="center" ${bg.position === "center" ? "selected" : ""}>Center</option>
-            <option value="top" ${bg.position === "top" ? "selected" : ""}>Top</option>
-            <option value="bottom" ${bg.position === "bottom" ? "selected" : ""}>Bottom</option>
+            <option data-fh-t="text.center" value="center" ${bg.position === "center" ? "selected" : ""}>${__fhT("text.center", "Center", null, "h")}</option>
+            <option data-fh-t="text.top" value="top" ${bg.position === "top" ? "selected" : ""}>${__fhT("text.top", "Top", null, "h")}</option>
+            <option data-fh-t="text.bottom" value="bottom" ${bg.position === "bottom" ? "selected" : ""}>${__fhT("text.bottom", "Bottom", null, "h")}</option>
           </select>
         </label>
         <label class="tb-appearance-row">
-          <span>Image opacity (<span class="tb-bg-opacity-val">${Math.round(bg.opacity * 100)}</span>%)</span>
+          <span>${__fhT("text.image_opacity", "Image opacity (", null, "h")}<span class="tb-bg-opacity-val">${Math.round(bg.opacity * 100)}</span>%)</span>
           <input type="range" class="tb-bg-opacity" min="0" max="100" value="${Math.round(bg.opacity * 100)}" />
         </label>
         <label class="tb-appearance-row">
-          <span>Blur (px)</span>
+          <span data-fh-t="text.blur_px">${__fhT("text.blur_px", "Blur (px)", null, "h")}</span>
           <input type="number" class="tb-bg-blur" min="0" max="30" value="${bg.blur}" />
         </label>
         <label class="tb-color-row" style="max-width:460px;">
-          <span>Overlay tint</span>
+          <span data-fh-t="text.overlay_tint">${__fhT("text.overlay_tint", "Overlay tint", null, "h")}</span>
           <input type="color" class="tb-bg-overlay-color" value="${bg.overlayColor}" />
         </label>
         <label class="tb-appearance-row">
-          <span>Overlay strength (<span class="tb-bg-overlay-val">${Math.round(bg.overlayOpacity * 100)}</span>%)</span>
+          <span>${__fhT("text.overlay_strength", "Overlay strength (", null, "h")}<span class="tb-bg-overlay-val">${Math.round(bg.overlayOpacity * 100)}</span>%)</span>
           <input type="range" class="tb-bg-overlay-opacity" min="0" max="100" value="${Math.round(bg.overlayOpacity * 100)}" />
         </label>
       </div>
@@ -748,7 +822,7 @@ class ThemeBuilderPanel extends HTMLElement {
       theme.name = e.target.value;
       this._markDirty();
       const tab = this._root.querySelector(`.tb-tab[data-idx="${this._activeIndex}"] .tb-tab-name`);
-      if (tab) tab.textContent = e.target.value || "Untitled";
+      if (tab) tab.textContent = e.target.value || __fhT("text.untitled", "Untitled");
     });
     editor.querySelector(".tb-delete-theme").addEventListener("click", () => this._deleteTheme());
     editor.querySelectorAll(".tb-color-input").forEach((input) => {
@@ -972,7 +1046,7 @@ class ThemeBuilderPanel extends HTMLElement {
   _updateStatus() {
     const status = this._root.querySelector(".tb-status");
     if (!status) return;
-    status.textContent = this._dirty ? "Unsaved changes" : "All changes saved";
+    status.textContent = this._dirty ? __fhT("text.unsaved_changes", "Unsaved changes") : __fhT("text.all_changes_saved", "All changes saved");
     status.classList.toggle("dirty", this._dirty);
   }
 
@@ -988,7 +1062,7 @@ class ThemeBuilderPanel extends HTMLElement {
   _deleteTheme() {
     if (this._themes.length <= 1) return;
     const theme = this._themes[this._activeIndex];
-    if (!window.confirm(`Delete theme "${theme.name || "Untitled"}"? This can't be undone once saved.`)) return;
+    if (!window.confirm(__fhT("text.delete_theme_x_this_can_t_be_undone", "Delete theme \"%0%\"? This can't be undone once saved.", {0: theme.name || "Untitled"}))) return;
     this._themes.splice(this._activeIndex, 1);
     this._activeIndex = Math.max(0, this._activeIndex - 1);
     this._markDirty();
@@ -999,18 +1073,18 @@ class ThemeBuilderPanel extends HTMLElement {
     const btn = this._root.querySelector(".tb-save-btn");
     if (btn) {
       btn.disabled = true;
-      btn.textContent = "Saving...";
+      btn.textContent = __fhT("text.saving_2", "Saving...");
     }
     try {
       await this._hass.connection.sendMessagePromise({ type: "theme_builder/save", themes: this._themes });
       this._dirty = false;
       this._updateStatus();
     } catch (e) {
-      window.alert("Failed to save themes: " + (e && e.message ? e.message : e));
+      window.alert(__fhT("text.failed_to_save_themes_x", "Failed to save themes: %0%", {0: e && e.message ? e.message : e}));
     } finally {
       if (btn) {
         btn.disabled = false;
-        btn.textContent = "Save All";
+        btn.textContent = __fhT("text.save_all", "Save All");
       }
     }
   }

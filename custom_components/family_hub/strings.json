@@ -64,16 +64,9 @@
           "digest_recipients": "Send to"
         }
       },
-      "dashboard": {
-        "title": "Dashboard (optional)",
-        "description": "Would you like a dedicated Family Hub dashboard - one screen with the calendar card filling the whole view, the same full-dashboard layout this project has always recommended? There's no way for Home Assistant to build it automatically, so saying yes just prepares the exact YAML to paste in on the next screen (Settings > Dashboards > Add Dashboard > Edit in YAML), already filled in with the calendars and to-do lists picked so far.",
-        "data": {
-          "add_dashboard": "Prepare a Family Hub dashboard"
-        }
-      },
       "finish": {
         "title": "All set",
-        "description": "Default reminder notify target: {default_notify}\nDaily Digest: {daily_digest}\n\nDashboard YAML (Settings > Dashboards > Add Dashboard > Edit in YAML, paste this in and save):\n{dashboard_yaml}\n\nSetup is done - add the Family Week Calendar card to a dashboard to get started, or click Configure any time to change reminders or Grocy."
+        "description": "⚙️ **Settings live on the Family Week Calendar card.** Add that card to a dashboard first: its ⚙️ button is the only place to change Family Hub's settings (people, permissions, calendars, themes and more), for every card.\n\nFamily Hub is ready. Here's a quick tour of the cards - add any of them to a dashboard (Edit dashboard > Add card, then search \"Family\"):\n\n- 📅 **Family Week Calendar** - everyone's calendars, reminders and the meal plan in week, month, day or planner view, plus Settings for all of Family Hub.\n- ☀️ **Family Today** - today at a glance: events, meals and reminders that are due.\n- 🕒 **Family Right Now** - what each person is doing now and what's next, with Home/Away.\n- ✅ **Family Hub Chores** - a column per person plus the Chore Bin; finish chores to earn stars, with daily routines.\n- ⭐ **Family Hub Rewards** - everyone's star balance and the rewards to spend stars on.\n- 🎯 **Family Hub My Goals** - bigger goals with a reward at the end, like \"practice piano 5 times\".\n- 📝 **Family Hub To-Do Lists** - your Home Assistant to-do lists side by side, including wish lists.\n- 📖 **Family Hub Recipe Box** - your family's favorite dishes - search them and add them to the meal plan.\n- 🥫 **Family Hub My Pantry** - what's in stock, from Grocy (if you use it).\n- ⏲️ **Family Hub Active Timers** - every timer running in the house, and quick timers to start.\n- 🖼️ **Family Hub Screen Saver** - photos or a clock when the screen's idle.\n- 🎨 **Theme Builder: Theme Selector** - lets each screen pick its own theme.\n\nReminders go to: {default_notify}\nDaily Digest: {daily_digest}\n\nYou can change these any time with Configure, or in the calendar card's Settings."
       }
     },
     "abort": {

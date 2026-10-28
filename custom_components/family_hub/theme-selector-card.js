@@ -1,19 +1,4 @@
-// Theme Builder: Theme Selector card - the dashboard-card counterpart to
-// the "this device's theme" picker in the Theme Builder page itself (see
-// theme-builder-panel.js). A gear icon that opens a list of every theme
-// Home Assistant currently knows about (themes.yaml, HACS themes, and any
-// Theme Builder theme, since those are auto-registered as native HA themes -
-// see _register_ha_themes in __init__.py) and applies the chosen one.
-//
-// Deliberately device-specific: picking a theme here does NOT call the
-// frontend.set_theme service, because that service changes the theme for
-// every browser/tablet signed in as the same HA user - not what you want on
-// a wall-mounted kiosk where each device should be able to look different.
-// Instead the chosen theme's CSS custom properties are written directly
-// onto <html> in THIS browser only, and the choice is remembered in this
-// browser's localStorage so it survives reloads without touching any other
-// device. Same pattern as the calendar card's device-specific "show
-// timeline" toggle.
+// Theme Builder: Theme Selector card - the dashboard-card counterpart to the "this device's theme" picker in the Theme Builder page itself
 const STORAGE_KEY = "family-hub-device-theme";
 const DEFAULT_ID = "__default__";
 
@@ -26,10 +11,7 @@ if (!this._built) this._build();
 set hass(hass) {
 this._hass = hass;
 if (!this._built) this._build();
-// The theme this device has picked may have changed on the backend
-// (e.g. someone edited it in Theme Builder) - re-resolve and reapply
-// from the live definition so this device stays current, not just
-// whatever snapshot was saved at selection time.
+// The theme this device has picked may have changed on the backend (e.g. someone edited it in Theme Builder)
 if (this._activeId && this._activeId !== DEFAULT_ID) {
 this._applyThemeVars(this._resolveThemeVars(this._activeId));
 }
@@ -45,9 +27,7 @@ return 1;
 }
 
 connectedCallback() {
-// Apply whatever this device last chose immediately, from the stored
-// snapshot, so there's no flash of the default look while waiting for
-// `hass` to be set and themes to load.
+// Apply whatever this device last chose immediately, from the stored snapshot
 if (!this._appliedStoredOnConnect) {
 this._appliedStoredOnConnect = true;
 this._loadStoredChoice();
@@ -91,9 +71,7 @@ for (const key of Object.keys(theme)) {
 if (key === "modes") continue;
 vars[key] = theme[key];
 }
-// Newer-style HA themes can split light/dark-only variables under
-// "modes" - overlay whichever one currently applies on top of the
-// shared vars above.
+// Newer-style HA themes can split light/dark-only variables under "modes"
 if (theme.modes) {
 const dark = !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
 const modeVars = theme.modes[dark ? "dark" : "light"] || {};
@@ -105,9 +83,7 @@ return vars;
 }
 
 _applyThemeVars(vars) {
-// Clear whatever this card applied last time before applying the new
-// set, so a var that existed in the old theme but not the new one
-// doesn't linger.
+// Clear whatever this card applied last time before applying the new set
 const prevKeys = this._appliedKeys || [];
 for (const key of prevKeys) {
 document.documentElement.style.removeProperty(`--${key}`);

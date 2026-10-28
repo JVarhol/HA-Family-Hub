@@ -1,36 +1,4 @@
-"""Config flow for Family Hub.
-
-The theme panel and calendar card both work immediately once the
-integration is added - nothing here is required, and everything it collects
-can also be reached later via Configure (Settings > Devices & Services >
-Family Hub). What used to happen is a new install sat there with reminders
-silently off and no Grocy connection until someone thought to go look for
-Configure; the first-time setup wizard below (async_step_user through
-async_step_finish) just front-loads those same optional decisions - which
-calendars to watch for reminders and whether to connect Grocy - into the
-moment the integration is added, since that's when a household is already
-thinking about setup. Every step can be left blank/skipped and revisited in
-Configure afterward. That same Configure dialog is also where updates get
-installed - see async_step_update below - since that's where an admin would
-look for it, not a sidebar panel.
-
-this wizard USED to also have a "Meal Plan & Reminders lists"
-step (async_step_todo_lists) between Grocy and Notifications, letting you
-pick/auto-create the todo.* entities those two features are backed by.
-Removed - - since it was never
-actually load-bearing: the calendar card's own meal_plan_entity/
-reminders_entity Lovelace config fields (defaulting to todo.meal_plan/
-todo.family_reminders if never overridden - see the card's own YAML
-options in README.md) are the real source of truth for which entity each
-feature reads, and the card ALREADY self-syncs whichever entity it's
-actually configured with into these same backend options every session
-(_ws_set_reminders_entity/_ws_set_daily_digest in __init__.py) with zero
-user action needed - so this step only ever saved someone the trouble of
-either accepting the card's own defaults or setting the field once on the
-card. CONF_MEAL_PLAN_ENTITY/CONF_REMINDERS_ENTITY themselves are unchanged
-and still very much live options, just no longer settable from THIS
-wizard.
-"""
+"""Config flow for Family Hub."""
 from __future__ import annotations
 
 import json
@@ -137,23 +105,11 @@ def _build_grocy_schema(defaults: dict[str, Any]) -> vol.Schema:
     )
 
 
-# the first-time setup wizard's opening "which features do you
-# want" step (async_step_features) - lets a household skip whole sections
-# of the wizard up front rather than clicking through and leaving
-# everything blank. Deliberately a small, fixed set of transient string
-# keys rather than config-entry options (see CONF_INITIAL_* in const.py
-# for the one set of wizard fields that DOES need to survive past this
-# flow) - self._selected_features only ever controls this flow run's own
-# step routing and is never persisted anywhere.
+# the first-time setup wizard's opening "which features do you want" step (async_step_features)
 _FEATURE_CHORES = "chores"
 _FEATURE_GROCY = "grocy"
 _FEATURE_DIGEST = "digest"
-# _FEATURE_REMINDERS ("Reminders & Meal Plan to-do lists") is
-# gone - it only ever gated async_step_todo_lists, which is gone too (see
-# this module's own docstring). Calendar reminders themselves aren't
-# gated behind a feature choice here at all (see async_step_features'
-# docstring below) - only the now-removed to-do list picker/auto-create
-# step was.
+# _FEATURE_REMINDERS ("Reminders & Meal Plan to-do lists") is gone - it only ever gated async_step_todo_lists, which is gone too
 _ALL_FEATURES = (_FEATURE_CHORES, _FEATURE_GROCY, _FEATURE_DIGEST)
 _FEATURES_FIELD = "setup_features"
 
@@ -165,9 +121,7 @@ _FEATURE_LABELS = {
 
 
 def _build_features_schema() -> vol.Schema:
-    # Every feature defaults to checked - a household that just clicks
-    # through this screen without touching anything sees the exact same
-    # full wizard this always was, before this step existed.
+    # Every feature defaults to checked - a household that just clicks through this screen without touching anything sees the exact same full
     return vol.Schema(
         {
             vol.Optional(_FEATURES_FIELD, default=list(_ALL_FEATURES)): selector.SelectSelector(
@@ -184,18 +138,9 @@ def _build_features_schema() -> vol.Schema:
     )
 
 
-# async_step_users' own field name - reuses CONF_INITIAL_MEMBER_USER_IDS
-# directly as the form field rather than a separate transient name, since
-# that's exactly where the picked ids end up in self._collected_options
-# anyway (see the CONF_INITIAL_* docstring in const.py).
+# async_step_users' own field name - reuses CONF_INITIAL_MEMBER_USER_IDS directly as the form field rather than a separate transient name
 async def _list_member_choices(hass: HomeAssistant) -> list[dict[str, str]]:
-    """Same shape/filter as __init__.py's family_hub/list_users websocket
-    command (_ws_list_users) - id + display name, system-generated
-    accounts (Supervisor and the like - nobody logs in as those) excluded,
-    sorted by name. Surfaced here a step earlier, before the config entry
-    (and therefore that websocket command) exists yet. Best-effort: an
-    empty list just means an empty picker, never blocks the wizard.
-    """
+    """Same shape/filter as __init__.py's family_hub/list_users websocket command (_ws_list_users) - id + display name, system-generated accounts"""
     try:
         users = await hass.auth.async_get_users()
     except Exception:  # noqa: BLE001 - never block setup over the user list
@@ -224,13 +169,7 @@ def _build_users_schema(members: list[dict[str, str]]) -> vol.Schema:
     )
 
 
-# async_step_member_profile's own two field names - one small form shown
-# once per member picked on the Users step (see that step's own docstring
-# for why this loops one-at-a-time instead of building one big dynamic
-# schema with a field per member: HA's translation strings are per FIELD
-# NAME, which can't cover an unbounded/variable set of member ids, but CAN
-# cover a title/description that gets a member's name interpolated in via
-# description_placeholders on a step reused once per member).
+# async_step_member_profile's own two field names - one small form shown once per member picked on the Users step
 _MEMBER_COLOR_FIELD = "member_color"
 _MEMBER_INCLUDE_FIELD = "member_include_in_chores"
 # v1.168.60: optional - this member's own calendar, which becomes their
@@ -255,20 +194,7 @@ def _build_member_profile_schema(default_color: str) -> vol.Schema:
     )
 
 
-# async_step_chores_features' own three field names - the same Routines/
-# Goals-on-Chores/Goals-on-Rewards toggles Settings' "Chores, Rewards &
-# Routines" accordion has (see family-week-calendar-card.js), just asked
-# once up front here too. Goals-on-Chores/Goals-on-Rewards stay off by
-# default, same as they've always defaulted to in Settings. Routines
-# defaults ON as of v1.132.54+ ) - see family-week-calendar-card.js's own
-# routinesEnabled:true default for the matching change to an existing/
-# upgraded install that never went through this wizard (or skipped the
-# Features step's "Chores, Rewards, Routines & Goals" option) and so falls
-# back to that frontend default instead. Picking "Chores, Rewards, Routines
-# & Goals" on the Features step only guarantees Chores/Rewards themselves
-# (membership, board, catalog) are ready to go; Routines/Goals are each
-# their own separate opt-in on top of that - Routines' own opt-in is now
-# just pre-checked here rather than starting unchecked.
+# async_step_chores_features' own three field names - the same Routines/ Goals-on-Chores/Goals-on-Rewards toggles Settings' "Chores
 _ROUTINES_FIELD = "routines_enabled"
 _GOALS_IN_CHORES_FIELD = "goals_in_chores"
 _GOALS_IN_REWARDS_FIELD = "goals_in_rewards"
@@ -296,11 +222,7 @@ def _build_calendars_schema(defaults: dict[str, Any]) -> vol.Schema:
     )
 
 
-# _build_todo_lists_schema/_REMINDERS_NOTIFY_FIELD (the
-# now-removed "Meal Plan & Reminders lists" step's own schema, and the
-# Notifications step's reminders-notify-target picker that only ever made
-# sense keyed by that step's CONF_REMINDERS_ENTITY output) are both gone -
-# see this module's own docstring for why the step itself was dropped.
+# _build_todo_lists_schema/_REMINDERS_NOTIFY_FIELD (the now-removed "Meal Plan & Reminders lists" step's own schema
 def _build_notifications_schema(hass, defaults: dict[str, Any]) -> vol.Schema:
     return vol.Schema(
         {
@@ -311,9 +233,7 @@ def _build_notifications_schema(hass, defaults: dict[str, Any]) -> vol.Schema:
     )
 
 
-# Transient wizard-only field for async_step_digest's recipient list - like
-# _REMINDERS_NOTIFY_FIELD, folded into CONF_OVERRIDES_TEXT rather than kept
-# as its own option (see DAILY_DIGEST_NOTIFY_KEY).
+# Transient wizard-only field for async_step_digest's recipient list - like _REMINDERS_NOTIFY_FIELD
 _DIGEST_RECIPIENTS_FIELD = "digest_recipients"
 
 
@@ -333,91 +253,8 @@ def _build_digest_schema(hass, defaults: dict[str, Any]) -> vol.Schema:
     )
 
 
-# Transient wizard-only field/defaults for async_step_dashboard - not config
-# entry options (a dashboard's YAML isn't something Family Hub itself owns
-# or persists; the field just controls whether the finish step shows one).
-_ADD_DASHBOARD_FIELD = "add_dashboard"
-DEFAULT_DASHBOARD_TITLE = "Family Hub"
-DEFAULT_DASHBOARD_URL_PATH = "family-hub"
-
+# Member board colors offered on the member-profile step
 _PEOPLE_COLOR_PALETTE = ["#d9bf7e", "#7ec9d9", "#d97e9e", "#9ed97e", "#b07ed9", "#d9a67e"]
-
-
-def _build_dashboard_schema() -> vol.Schema:
-    return vol.Schema({vol.Optional(_ADD_DASHBOARD_FIELD, default=True): selector.BooleanSelector()})
-
-
-def _yaml_scalar(value: str) -> str:
-    """Minimal YAML-safe quoting for the handful of values this wizard ever
-    plugs into _build_dashboard_yaml (entity ids, calendar friendly names,
-    hex colors) - not a general-purpose YAML dumper, just enough to keep a
-    name with a colon or leading/trailing space from breaking the pasted
-    result."""
-    if value == "" or value.strip() != value or any(ch in value for ch in ":#{}[]&*!|>'\"%@`,"):
-        return "'" + value.replace("'", "''") + "'"
-    return value
-
-
-def _dashboard_calendar_name(hass: HomeAssistant, entity_id: str) -> str:
-    """Best-effort friendly name for a calendar.* entity, for the "name"
-    field of a generated dashboard card's people list - falls back to a
-    title-cased version of the entity id's object_id if the entity isn't
-    known yet (e.g. hass is unavailable, as in unit tests) rather than
-    leaving the YAML with a blank name."""
-    try:
-        state = hass.states.get(entity_id) if hass is not None else None
-    except Exception:  # noqa: BLE001 - never block the wizard over a display name
-        state = None
-    if state is not None and getattr(state, "name", None):
-        return state.name
-    return entity_id.split(".", 1)[-1].replace("_", " ").title()
-
-
-def _build_dashboard_yaml(
-    hass: HomeAssistant, options: dict[str, Any], url_path: str, title: str
-) -> str:
-    """Build the exact dashboard YAML shown on the finish screen: one
-    "panel" view (a single card filling the whole screen, same as this
-    project's own documented "one card, full dashboard" setup) holding the
-    Family Week Calendar card, pre-filled with whatever calendars and
-    Meal Plan/Reminders to-do lists were already picked earlier in this
-    same wizard run - so pasting it in gets a working dashboard in one
-    step instead of also needing a trip through the card's own Settings.
-
-    Returned as plain text rather than parsed/applied anywhere - there is
-    no supported way for an integration to create a Lovelace dashboard on
-    Home Assistant's behalf (the object that would allow it isn't exposed
-    by the lovelace component on any current release), so copy/paste into
-    Settings > Dashboards > Add Dashboard > Edit in YAML is the actual
-    mechanism, not a fallback for one.
-    """
-    calendars: list[str] = options.get(CONF_CALENDARS) or []
-    lines = [
-        f"title: {_yaml_scalar(title)}",
-        "views:",
-        f"  - title: {_yaml_scalar(title)}",
-        f"    path: {_yaml_scalar(url_path)}",
-        "    type: panel",
-        "    cards:",
-        "      - type: custom:family-week-calendar-card",
-    ]
-    if calendars:
-        lines.append("        people:")
-        for idx, entity_id in enumerate(calendars):
-            color = _PEOPLE_COLOR_PALETTE[idx % len(_PEOPLE_COLOR_PALETTE)]
-            name = _dashboard_calendar_name(hass, entity_id)
-            lines.append(f"          - entity: {_yaml_scalar(entity_id)}")
-            lines.append(f"            name: {_yaml_scalar(name)}")
-            lines.append(f"            color: {_yaml_scalar(color)}")
-    else:
-        lines.append("        people: []  # add at least one calendar.* entity here")
-    meal_plan_entity = options.get(CONF_MEAL_PLAN_ENTITY)
-    if meal_plan_entity:
-        lines.append(f"        meal_plan_entity: {_yaml_scalar(meal_plan_entity)}")
-    reminders_entity = options.get(CONF_REMINDERS_ENTITY)
-    if reminders_entity:
-        lines.append(f"        reminders_entity: {_yaml_scalar(reminders_entity)}")
-    return "\n".join(lines)
 
 
 def _normalize_options(user_input: dict[str, Any] | None) -> dict[str, Any]:
@@ -431,42 +268,16 @@ def _normalize_options(user_input: dict[str, Any] | None) -> dict[str, Any]:
 
 
 class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Which features to turn on, who's in the household, chores/rewards
-    setup for them, calendars to monitor, Grocy, and Meal Plan/Reminders
-    to-do lists - before creating the entry. Every step accepts blank/
-    default input and moves on; nothing here is required to finish setup,
-    matching how Configure/the card's own Settings have always treated the
-    same settings afterward. The opening Features step (async_step_features)
-    controls which of the Chores/Grocy/Reminders/Digest sections below even
-    get shown - see that step's own docstring."""
+    """Which features to turn on, who's in the household, chores/rewards setup for them, calendars to monitor, Grocy, and Meal Plan/Reminders to-do lists"""
 
     VERSION = 1
 
     def __init__(self) -> None:
-        # Accumulates option values across steps; written into the config
-        # entry's options in one shot by async_step_finish, the same shape
-        # _normalize_options/the options flow steps already expect.
+        # Accumulates option values across steps; written into the config entry's options in one shot by async_step_finish
         self._collected_options: dict[str, Any] = {}
-        # Set by async_step_dashboard when the household opts in - shown on
-        # the finish screen as copy-paste YAML, never persisted anywhere
-        # (see _build_dashboard_yaml's docstring for why this can't just be
-        # created automatically).
-        self._dashboard_yaml: str | None = None
-        # Which optional sections the Features step turned on - controls
-        # step routing only, never persisted (see _ALL_FEATURES). Defaults
-        # to "everything on" so any code path that somehow checks this
-        # before async_step_features runs sees the same full wizard this
-        # always was, rather than skipping sections nobody chose to skip.
+        # Which optional sections the Features step turned on - controls step routing only, never persisted (see _ALL_FEATURES).
         self._selected_features: set[str] = set(_ALL_FEATURES)
-        # Users/member-profile step state - see async_step_users/
-        # async_step_member_profile. _member_setup_queue is the ids still
-        # waiting for their own one-member-at-a-time profile screen (popped
-        # from the front as each is submitted); _member_profiles accumulates
-        # {user_id: {"color":..., "includeInChores":...}} as they go, folded
-        # into CONF_INITIAL_USER_PROFILES once the queue drains
-        # (async_step_chores_features); _member_names is id -> display name,
-        # fetched once in async_step_users, used only to caption each
-        # member's own profile screen.
+        # Users/member-profile step state - see async_step_users/ async_step_member_profile.
         self._member_setup_queue: list[str] = []
         self._member_profiles: dict[str, dict[str, Any]] = {}
         self._member_names: dict[str, str] = {}
@@ -480,17 +291,7 @@ class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return await self.async_step_features()
 
     async def async_step_features(self, user_input: dict[str, Any] | None = None):
-        """Opening screen: which optional sections of the rest of this
-        wizard does the household actually want? Every section defaults to
-        checked, so clicking straight through without touching anything
-        behaves exactly like the wizard always did before this step
-        existed - this only exists to let a household SKIP whole sections
-        (Chores/Rewards/Routines/Goals setup, Grocy, Daily Digest) up front
-        rather than clicking through screens for features they don't want
-        and leaving every field blank. Calendars, Notifications, and the
-        Dashboard offer are NOT gated behind a feature choice here - they're
-        cheap, universally-relevant screens that every household still
-        sees."""
+        """Opening screen: which optional sections of the rest of this wizard does the household actually want?"""
         if user_input is not None:
             self._selected_features = set(user_input.get(_FEATURES_FIELD) or [])
             if self._feature_selected(_FEATURE_CHORES):
@@ -526,19 +327,7 @@ class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_member_profile(self, user_input: dict[str, Any] | None = None):
-        """One small screen per member picked on the Users step - their
-        board color (from the same six-color palette the generated
-        dashboard YAML already cycles through, see _PEOPLE_COLOR_PALETTE)
-        and whether they're included in Chores/Rewards (default yes - see
-        _isChoresIncluded in the chores card for how this same field is
-        read afterward). This is "set up chores for users," one member at a
-        time rather than one big dynamic form - see _MEMBER_COLOR_FIELD's
-        own comment for why. Loops by re-invoking itself: pops the member
-        that was just submitted for off the front of _member_setup_queue,
-        then either shows the next one or - once the queue is empty (which
-        is also true immediately, on the very first call, for a household
-        that picked zero members) - moves on to async_step_chores_features.
-        """
+        """One small screen per member picked on the Users step - their board color (from _PEOPLE_COLOR_PALETTE"""
         if user_input is not None and self._member_setup_queue:
             user_id = self._member_setup_queue[0]
             self._member_profiles[user_id] = {
@@ -583,18 +372,7 @@ class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(step_id="chores_features", data_schema=_build_chores_features_schema())
 
     async def async_step_calendars(self, user_input: dict[str, Any] | None = None):
-        """Pick which calendars go on the family calendar.
-
-        v1.168.60 (calendar UX review): this step used to ask only for
-        "Calendars to monitor" (reminder polling), so a household that
-        filled it in still landed on an empty calendar card. Now the picks
-        here ARE the calendar's columns: each one that isn't already a
-        member's own calendar (picked on that member's own screen) is
-        seeded as a Settings > Calendars row by
-        _maybe_seed_calendar_rows_from_setup_wizard. Every picked calendar,
-        plus every member's own calendar, also goes into CONF_CALENDARS
-        ("Calendars to monitor") exactly as this step always did, so
-        reminders work out of the box. Leaving it empty is still fine."""
+        """Pick which calendars go on the family calendar."""
         if user_input is not None:
             picked = [e for e in (user_input.get(CONF_CALENDARS) or []) if isinstance(e, str) and e]
             member_calendars = [
@@ -616,12 +394,7 @@ class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_grocy(self, user_input: dict[str, Any] | None = None):
-        """Optional Grocy connection, asked up front instead of only being
-        discoverable later via Configure > Grocy - reuses that exact same
-        schema, so filling it in here or there behaves identically. Leaving
-        both fields blank skips Grocy entirely, same as before. Skipped
-        entirely (never even shown) when "Grocy" was unchecked on the
-        Features step - reachable afterward via Configure either way."""
+        """Optional Grocy connection, asked up front instead of only being discoverable later via Configure > Grocy - reuses that exact same schema"""
         if not self._feature_selected(_FEATURE_GROCY):
             return await self.async_step_notifications()
 
@@ -639,20 +412,10 @@ class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=_build_grocy_schema(self._collected_options),
         )
 
-    # async_step_todo_lists ("Meal Plan & Reminders lists") is
-    # gone - See this module's
-    # own docstring for why it was safe to drop entirely: the calendar
-    # card's own meal_plan_entity/reminders_entity config fields already
-    # self-sync into these same backend options every session with no user
-    # action needed, so this step only ever saved someone from accepting
-    # the card's own defaults or setting the field once on the card itself.
+    # async_step_todo_lists ("Meal Plan & Reminders lists") is gone
 
     async def async_step_notifications(self, user_input: dict[str, Any] | None = None):
-        """Who should get a default notification for calendar event
-        reminders - the calendar card's "Remind me" field falls back to
-        this when a calendar has no override of its own. Leaving it blank
-        is fine; it's also editable later via Configure > Calendar
-        reminders or the card's own Settings > Calendars notify pickers."""
+        """Who should get a default notification for calendar event reminders"""
         if user_input is not None:
             default_notify = (user_input.get(CONF_DEFAULT_NOTIFY) or "").strip()
             if default_notify:
@@ -665,20 +428,10 @@ class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_digest(self, user_input: dict[str, Any] | None = None):
-        """Ask whether to turn on the Daily Digest - a once-a-day
-        notification summarizing today's events, due reminders, and
-        planned meals, sent independent of anyone having the dashboard
-        open. Off by default, unlike most of this wizard's other
-        defaults - this is the one step here that starts actively sending
-        something on a schedule rather than just getting an entity or
-        connection ready, so a household should switch it on on purpose,
-        not discover it because a wizard defaulted it on. Reachable
-        afterward via the card's own Settings or Configure either way,
-        same as everything else in this wizard. Skipped entirely when
-        "Daily Digest" was unchecked on the Features step."""
+        """Ask whether to turn on the Daily Digest - a once-a-day notification summarizing today's events, due reminders, and planned meals"""
         if not self._feature_selected(_FEATURE_DIGEST):
             self._collected_options[CONF_DAILY_DIGEST_ENABLED] = False
-            return await self.async_step_dashboard()
+            return await self.async_step_finish()
 
         if user_input is not None:
             enabled = bool(user_input.get(CONF_DAILY_DIGEST_ENABLED, False))
@@ -694,51 +447,15 @@ class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     overrides = _parse_overrides(self._collected_options.get(CONF_OVERRIDES_TEXT, ""))
                     overrides[DAILY_DIGEST_NOTIFY_KEY] = recipients
                     self._collected_options[CONF_OVERRIDES_TEXT] = _overrides_to_text(overrides)
-            return await self.async_step_dashboard()
+            return await self.async_step_finish()
 
         return self.async_show_form(
             step_id="digest",
             data_schema=_build_digest_schema(self.hass, self._collected_options),
         )
 
-    async def async_step_dashboard(self, user_input: dict[str, Any] | None = None):
-        """Ask whether to set up a dedicated Family Hub dashboard - the
-        same single full-screen calendar card layout this project has
-        always documented for manual setup. There's no supported way for
-        an integration to create a Lovelace dashboard on its own (the
-        object that would allow it isn't exposed by Home Assistant's own
-        lovelace component on any current release, unlike the dashboard
-        *resource* registration this integration already does elsewhere),
-        so saying yes here doesn't create anything directly - it generates
-        the exact YAML to paste in, already filled in with whichever
-        calendars and to-do lists were picked earlier in this wizard, and
-        shows it on the next (finish) screen with instructions."""
-        if user_input is not None:
-            if user_input.get(_ADD_DASHBOARD_FIELD, True):
-                self._dashboard_yaml = _build_dashboard_yaml(
-                    self.hass,
-                    self._collected_options,
-                    DEFAULT_DASHBOARD_URL_PATH,
-                    DEFAULT_DASHBOARD_TITLE,
-                )
-            else:
-                self._dashboard_yaml = None
-            return await self.async_step_finish()
-
-        return self.async_show_form(
-            step_id="dashboard",
-            data_schema=_build_dashboard_schema(),
-        )
-
     async def async_step_finish(self, user_input: dict[str, Any] | None = None):
-        """Read-only summary before creating the entry - mainly so the
-        dashboard YAML (if requested) is visible somewhere, since it still
-        needs to be copied into place by hand via Settings > Dashboards.
-        no longer mentions meal_plan_entity/reminders_entity -
-        those aren't collected by this wizard any more (see this module's
-        own docstring on why the "Meal Plan & Reminders lists" step was
-        dropped); the calendar card's own config fields for those, or its
-        Settings, are where to set them now."""
+        """Last screen: a short tour of the cards (in the translations' finish description) plus what reminders and the Daily Digest were set to"""
         if user_input is not None:
             return self.async_create_entry(
                 title="Family Hub",
@@ -758,8 +475,6 @@ class FamilyHubConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "default_notify": self._collected_options.get(CONF_DEFAULT_NOTIFY)
                 or "not set - calendar event reminders won't fire until one is added via Configure",
                 "daily_digest": digest_summary,
-                "dashboard_yaml": self._dashboard_yaml
-                or "Skipped - you can always add a dashboard later the same way (Settings > Dashboards > Add Dashboard > Edit in YAML).",
             },
         )
 
@@ -816,27 +531,12 @@ _RESTORE_PUSH_DEVICES_FIELD = "push_device_settings"
 _EXPORT_SNAPSHOT_FIELD = "snapshot"
 _IMPORT_BACKUP_FILE_FIELD = "backup_file"
 
-# Keys a snapshot dict must carry to be treated as a real Family Hub
-# settings-history snapshot rather than some unrelated JSON file someone
-# picked by mistake - see store.py's default_settings_history() docstring
-# for the authoritative shape. "timestamp" is checked for type too (not
-# just presence) since _describe_settings_history_snapshot above needs a
-# parseable string, not just any truthy value.
+# Keys a snapshot dict must carry to be treated as a real Family Hub settings-history snapshot rather than some unrelated JSON file someone
 _SETTINGS_HISTORY_SNAPSHOT_REQUIRED_KEYS = ("timestamp", "settings", "permissions", "device_settings")
 
 
 def _write_backup_export_file(hass: HomeAssistant, snapshot: dict[str, Any]) -> str:
-    """Writes one Settings-history snapshot out as a standalone JSON file
-    under <config>/family_hub_backups/exports/, named after the snapshot's
-    own original timestamp so two exports of the same snapshot overwrite
-    each other instead of piling up. Returns the full path written, for
-    display in the confirmation screen - kept as a second way to grab the
-    file (Samba, SSH, the Studio Code Server/Terminal add-ons, etc.)
-    alongside the real browser download link async_step_export_backup
-    also generates via FamilyHubSettingsHistoryExportView. Blocking (file
-    I/O) - always call this via hass.async_add_executor_job, never
-    awaited directly from a flow step.
-    """
+    """Writes one Settings-history snapshot out as a standalone JSON file under <config>/family_hub_backups/exports/"""
     export_dir = Path(hass.config.path(SETTINGS_BACKUP_DIR_NAME, "exports"))
     export_dir.mkdir(parents=True, exist_ok=True)
     raw_timestamp = snapshot.get("timestamp")
@@ -847,14 +547,7 @@ def _write_backup_export_file(hass: HomeAssistant, snapshot: dict[str, Any]) -> 
 
 
 def _read_uploaded_backup_snapshot(hass: HomeAssistant, uploaded_file_id: str) -> dict[str, Any]:
-    """Reads and parses a snapshot JSON file uploaded through a
-    FileSelector field (same process_uploaded_file idiom as
-    _read_uploaded_zip_bytes above, just text+json.loads instead of raw
-    bytes). Raises ValueError - caught by the calling flow step and turned
-    into the user-facing "invalid_backup_file" error - for anything that
-    isn't valid JSON, isn't a JSON object, or is missing one of
-    _SETTINGS_HISTORY_SNAPSHOT_REQUIRED_KEYS. Blocking (file I/O) - always
-    call this via hass.async_add_executor_job, never awaited directly."""
+    """Reads and parses a snapshot JSON file uploaded through a FileSelector field (same process_uploaded_file idiom as _read_uploaded_zip_bytes above"""
     from homeassistant.components.file_upload import process_uploaded_file
 
     with process_uploaded_file(hass, uploaded_file_id) as file_path:
@@ -873,26 +566,12 @@ def _read_uploaded_backup_snapshot(hass: HomeAssistant, uploaded_file_id: str) -
     for key in ("settings", "permissions", "device_settings"):
         if not isinstance(data.get(key), dict):
             raise ValueError(f"'{key}' isn't an object")
-    # Only the four recognized keys are kept - an export is meant to be
-    # re-imported as-is, but there's no reason to carry forward stray
-    # extra keys from a hand-edited or future-version file into this
-    # install's own history store.
+    # Only the four recognized keys are kept - an export is meant to be re-imported as-is
     return {key: data[key] for key in _SETTINGS_HISTORY_SNAPSHOT_REQUIRED_KEYS}
 
 
 def _describe_settings_history_snapshot(snapshot: dict[str, Any], now) -> str:
-    """Label for one Settings-history snapshot shown in the restore/export
-    picker and in confirmation/abort messages - the actual local date and
-    time it was taken (e.g. "Oct 3, 2026, 2:15 PM"), plus a relative-age
-    hint in parentheses (e.g. "35 minutes ago", "2 days ago"). Picking the
-    right one of SETTINGS_HISTORY_MAX_SNAPSHOTS recent snapshots - or
-    confirming an imported one landed where expected - needs the real
-    clock time, not just a fuzzy "2 hours ago" with no date attached (that
-    reads fine for a same-day pick, but is ambiguous the moment a snapshot
-    is more than a day old, or has been sitting in an exported file for
-    however long before being imported back in). Falls back to the raw
-    timestamp string if it's ever missing/unparseable rather than
-    crashing the options flow over a cosmetic label."""
+    """Label for one Settings-history snapshot shown in the restore/export picker and in confirmation/abort messages - the actual local date and time it was taken"""
     timestamp = snapshot.get("timestamp")
     parsed = dt_util.parse_datetime(timestamp) if isinstance(timestamp, str) else None
     if parsed is None:
@@ -932,33 +611,13 @@ class FamilyHubOptionsFlow(config_entries.OptionsFlow):
             ],
         )
 
-    # Home Assistant's own "Configure" button
-    # (Settings -> Devices & Services -> Family Hub -> Configure) already
-    # opens this options flow's menu, but the actual day-to-day Family Hub
-    # settings (theme, per-person notifications, chores/rewards toggles,
-    # screensaver, etc.) all live inside the calendar card's own in-
-    # dashboard Settings modal (family-week-calendar-card.js's
-    # _openSettings/.settings-btn) - a config flow step can't reach into a
-    # Lovelace card's JS to open that modal directly (they're two
-    # completely separate surfaces: this flow renders as its own dialog in
-    # the Settings page, the card's modal lives inside a dashboard view),
-    # so this is a plain informational step, same shape as async_step_
-    # upcoming's read-only summary just below - it just tells someone
-    # where to actually find that gear icon, rather than pretending to be
-    # a shortcut into it.
+    # Home Assistant's own "Configure" button (Settings -> Devices & Services -> Family Hub -> Configure) already opens this options flow's menu
     async def async_step_settings(self, user_input: dict[str, Any] | None = None):
         return self.async_show_form(step_id="settings", data_schema=vol.Schema({}))
 
     async def async_step_reminders(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
-            # Merge onto the existing options rather than replacing them
-            # outright - reminders_entity, the Daily Digest settings,
-            # notification_click_path, meal_plan_entity, and the Grocy
-            # fields below are all written straight into entry.options by
-            # their own websocket handlers (not part of this form), so a
-            # plain `data=_normalize_options(user_input)` here would
-            # silently wipe every one of them out the moment someone opens
-            # and saves this screen.
+            # Merge onto the existing options rather than replacing them outright - reminders_entity, the Daily Digest settings, notification_click_path
             return self.async_create_entry(
                 title="", data={**self.config_entry.options, **_normalize_options(user_input)}
             )
@@ -996,11 +655,7 @@ class FamilyHubOptionsFlow(config_entries.OptionsFlow):
         )
 
     async def async_step_test_notify(self, user_input: dict[str, Any] | None = None):
-        """Fire a one-off notification at any registered notify.* target right
-        now, independent of calendars/reminders - lets you confirm a device
-        is reachable before wiring it into a calendar's reminder overrides,
-        or diagnose "reminders aren't arriving" by ruling notify delivery
-        in or out."""
+        """Fire a one-off notification at any registered notify.* target right now, independent of calendars/reminders"""
         if user_input is not None:
             target = user_input.get(_TEST_TARGET_FIELD, "")
             split = _split_notify_target(target)
@@ -1052,28 +707,14 @@ class FamilyHubOptionsFlow(config_entries.OptionsFlow):
         )
 
     async def async_step_restore_backup(self, user_input: dict[str, Any] | None = None):
-        """Entry point for everything backup-related: restoring an
-        existing automatically-captured snapshot, exporting one to a file,
-        or importing a snapshot from a file someone exported earlier
-        (possibly from a different installation entirely - e.g. restoring
-        a household's settings onto a replacement Home Assistant instance,
-        where the automatic hourly history was never populated in the
-        first place). Just a menu - see async_step_restore_backup_pick/
-        async_step_export_backup/async_step_import_backup for the actual
-        work."""
+        """Entry point for everything backup-related: restoring an existing automatically-captured snapshot, exporting one to a file"""
         return self.async_show_menu(
             step_id="restore_backup",
             menu_options=["restore_backup_pick", "export_backup", "import_backup"],
         )
 
     async def async_step_restore_backup_pick(self, user_input: dict[str, Any] | None = None):
-        """Step 1 of 2: pick which automatically-captured (or previously
-        imported - the two live in the same history store once imported,
-        see async_step_import_backup) Settings-history snapshot to
-        restore (see const.py's SETTINGS_HISTORY_STORAGE_KEY_PREFIX
-        docstring for what's captured and how often). Snapshots are
-        listed newest-first, labeled with the actual date/time they were
-        taken plus a relative-age hint."""
+        """Step 1 of 2: pick which automatically-captured (or previously imported - the two live in the same history store once imported"""
         entry_data = _get_family_hub_entry_data(self.hass)
         if entry_data is None:
             return self.async_abort(reason="not_found")
@@ -1105,13 +746,7 @@ class FamilyHubOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(step_id="restore_backup_pick", data_schema=schema)
 
     async def async_step_export_backup(self, user_input: dict[str, Any] | None = None):
-        """Pick one of the existing Settings-history snapshots and make it
-        available two ways: written out as a standalone .json file under
-        <config>/family_hub_backups/exports/ (for Samba/SSH/a Terminal
-        add-on), AND as a real browser download - a short-lived signed URL
-        to FamilyHubSettingsHistoryExportView (__init__.py), shown as a
-        clickable link on the confirmation screen. Either one can later be
-        fed back in on this or another install via async_step_import_backup."""
+        """Pick one of the existing Settings-history snapshots and make it available two ways: written out as a standalone .json file under"""
         entry_data = _get_family_hub_entry_data(self.hass)
         if entry_data is None:
             return self.async_abort(reason="not_found")
@@ -1128,18 +763,6 @@ class FamilyHubOptionsFlow(config_entries.OptionsFlow):
                 return self.async_abort(reason="no_backups")
             snapshot = snapshots[index]
             path = await self.hass.async_add_executor_job(_write_backup_export_file, self.hass, snapshot)
-            # Household ask, verbatim: "allow backups to be downloaded and
-            # uploaded as well" - uploading already worked (the import
-            # step below is a real browser file-upload control), this is
-            # the download half. Sign a short-lived URL to
-            # FamilyHubSettingsHistoryExportView (__init__.py) the same
-            # way Home Assistant signs its own camera/image URLs, so
-            # clicking it in the confirmation screen downloads the file
-            # straight from the admin's own browser - no separate login,
-            # and the link stops working on its own after 5 minutes
-            # rather than staying valid forever. The server-side copy in
-            # family_hub_backups/exports/ (path, above) is kept too, for
-            # anyone who'd rather grab it via Samba/SSH/a Terminal add-on.
             download_url = async_sign_path(
                 self.hass,
                 f"/api/family_hub/settings_history_export/{self.config_entry.entry_id}/{index}",
@@ -1150,17 +773,7 @@ class FamilyHubOptionsFlow(config_entries.OptionsFlow):
                 description_placeholders={
                     "when": _describe_settings_history_snapshot(snapshot, now),
                     "path": path,
-                    # v1.168.84: a plain Markdown link to this same-origin
-                    # URL never downloaded anything - Home Assistant's
-                    # frontend treats a click on any same-origin link
-                    # without a target/download attribute as in-app
-                    # navigation (is-navigation-click.ts) and just routed
-                    # to a blank page. target="_blank" (kept by HA's
-                    # Markdown sanitizer) hands the click to the browser,
-                    # which opens the signed URL and saves the file, since
-                    # FamilyHubSettingsHistoryExportView answers with
-                    # Content-Disposition: attachment - the same way HA's
-                    # own backup downloads work.
+                    # a plain Markdown link to this same-origin URL never downloaded anything
                     "download_link": f'<a href="{download_url}" target="_blank" rel="noopener">⬇️ Download the backup file</a>',
                 },
             )
@@ -1182,16 +795,7 @@ class FamilyHubOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(step_id="export_backup", data_schema=schema)
 
     async def async_step_import_backup(self, user_input: dict[str, Any] | None = None):
-        """Upload a .json file previously produced by
-        async_step_export_backup (from this install or a different one)
-        and add it to this install's own settings-history store as a new,
-        newest-first entry, trimmed to SETTINGS_HISTORY_MAX_SNAPSHOTS same
-        as the hourly capture. Deliberately does NOT restore it
-        automatically - it only becomes available to pick from
-        async_step_restore_backup_pick, same two-step confirm-and-
-        automatic-safety-snapshot flow as any other snapshot, so importing
-        a file is never by itself a one-way door into someone else's
-        settings."""
+        """Upload a .json file previously produced by async_step_export_backup"""
         import_schema = vol.Schema(
             {
                 vol.Required(_IMPORT_BACKUP_FILE_FIELD): selector.FileSelector(
@@ -1241,12 +845,7 @@ class FamilyHubOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(step_id="import_backup", data_schema=import_schema)
 
     async def async_step_restore_backup_confirm(self, user_input: dict[str, Any] | None = None):
-        """Step 2 of 2: confirm, and separately decide whether the restore
-        should also push the snapshot's Device Settings out live to every
-        known device/instance (see _restore_settings_history_snapshot's own
-        docstring for exactly what that does and doesn't touch) - off by
-        default, since the far more common case is "undo a bad Settings
-        save," not "roll every tablet's view/layout back too."""
+        """Step 2 of 2: confirm, and separately decide whether the restore should also push the snapshot's Device Settings out live to every known device/instance"""
         entry_data = _get_family_hub_entry_data(self.hass)
         if entry_data is None:
             return self.async_abort(reason="not_found")
@@ -1260,12 +859,7 @@ class FamilyHubOptionsFlow(config_entries.OptionsFlow):
 
         if user_input is not None:
             push_device_settings = bool(user_input.get(_RESTORE_PUSH_DEVICES_FIELD))
-            # One more automatic safety snapshot of the CURRENT state,
-            # taken immediately before restoring - see
-            # _restore_settings_history_snapshot's own docstring for why
-            # this makes restoring itself never a one-way door. Saved the
-            # same way the hourly timer would, including the same
-            # MAX_SNAPSHOTS trim.
+            # One more automatic safety snapshot of the CURRENT state, taken immediately before restoring
             fresh_history = await chores_store.async_load_settings_history(history_store) if history_store else {
                 "snapshots": []
             }
@@ -1306,9 +900,7 @@ class FamilyHubOptionsFlow(config_entries.OptionsFlow):
                     _read_uploaded_zip_bytes, self.hass, user_input[CONF_UPDATE_FILE]
                 )
                 integration_dir = self.hass.config.path("custom_components", DOMAIN)
-                # Backups are kept outside custom_components/ on purpose - see
-                # the docstring on install_update_from_zip for why a sibling
-                # folder in there can break the whole integration's setup.
+                # Backups are kept outside custom_components/ on purpose - see the docstring on install_update_from_zip for why a sibling folder in there can
                 backup_root = self.hass.config.path("family_hub_backups")
                 result = await self.hass.async_add_executor_job(
                     updater.install_update_from_zip, integration_dir, zip_bytes, backup_root

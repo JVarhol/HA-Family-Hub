@@ -27,9 +27,7 @@ from .const import ROUTINE_CATEGORY_AFTERNOON, ROUTINE_CATEGORY_MORNING, ROUTINE
 
 # (title, category, icon)
 _LIBRARY_ROWS: list[tuple[str, str, str]] = [
-    # ------------------------------------------------------------------
-    # Morning
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Morning ------------------------------------------------------------------
     ("Wake up on time", ROUTINE_CATEGORY_MORNING, "⏰"),
     ("Make bed", ROUTINE_CATEGORY_MORNING, "\U0001F6CF️"),
     ("Brush teeth", ROUTINE_CATEGORY_MORNING, "\U0001FAA5"),
@@ -43,9 +41,7 @@ _LIBRARY_ROWS: list[tuple[str, str, str]] = [
     ("Feed pets", ROUTINE_CATEGORY_MORNING, "\U0001F415"),
     ("Put on shoes", ROUTINE_CATEGORY_MORNING, "\U0001F45F"),
     ("Check the weather", ROUTINE_CATEGORY_MORNING, "⛅"),
-    # ------------------------------------------------------------------
-    # Afternoon
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Afternoon
     ("Homework", ROUTINE_CATEGORY_AFTERNOON, "\U0001F4DA"),
     ("Practice instrument", ROUTINE_CATEGORY_AFTERNOON, "\U0001F3B9"),
     ("Read for 20 minutes", ROUTINE_CATEGORY_AFTERNOON, "\U0001F4D6"),
@@ -55,9 +51,7 @@ _LIBRARY_ROWS: list[tuple[str, str, str]] = [
     ("Screen time check-in", ROUTINE_CATEGORY_AFTERNOON, "\U0001F4F1"),
     ("Outside/exercise time", ROUTINE_CATEGORY_AFTERNOON, "\U0001F3C3"),
     ("Empty backpack/bag", ROUTINE_CATEGORY_AFTERNOON, "\U0001F392"),
-    # ------------------------------------------------------------------
-    # Night
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------- Night ------------------------------------------------------------------
     ("Brush teeth", ROUTINE_CATEGORY_NIGHT, "\U0001FAA5"),
     ("Floss", ROUTINE_CATEGORY_NIGHT, "\U0001F9B7"),
     ("Wash face", ROUTINE_CATEGORY_NIGHT, "\U0001F9FC"),

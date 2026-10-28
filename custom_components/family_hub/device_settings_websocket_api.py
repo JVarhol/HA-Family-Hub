@@ -1,80 +1,4 @@
-"""Websocket API for the v1.133.3+ Device Settings admin dashboard -
-
-
-Named device_settings_websocket_api.py, NOT websocket_api.py, for the exact
-same import-shadowing reason chores_websocket_api.py's own module docstring
-explains at length - don't rename it to that.
-
-Deliberately self-contained otherwise (mirrors chores_websocket_api.py's own
-"nothing here imports from `.`'s __init__.py" convention) so it can be unit
-tested without loading __init__.py.
-
-Every setting this manages (see const.py's DEVICE_SETTINGS_FIELDS) lives in
-one specific dashboard's own browser localStorage and always has - this
-store is a mirror/staging area the admin dashboard reads from and pushes
-into, never the source of truth a device itself relies on to render (see
-const.py's own module comment for the full picture). Concretely:
-
-  - ws_report: any signed-in device calls this on load (and after any local
-    Settings save) to upload its own current values - this is how the admin
-    dashboard's device list has anything to show at all, and where "save
-    THIS device's current settings as a new preset" gets its data from.
-    Also carries an optional, purely cosmetic `device_name` (a browser/OS
-    guess like "Chrome-Windows" the card derives from its own
-    navigator.userAgent) - stored alongside `settings` but NOT part of
-    DEVICE_SETTINGS_FIELDS/_validate_settings, since it's display sugar for
-    the admin tab's row headings (household ask: raw device ids alone were
-    "kind of difficult" to tell apart), never a managed/pushable setting.
-  - ws_get_pending: any signed-in device calls this on load to ask "has an
-    admin pushed me something since I last checked?" - compares against the
-    seq number the device itself remembers having already applied (see the
-    card's own familyHubDeviceSettingsAppliedSeqLocal). Covers the device
-    being closed/asleep at push time - ws_push below ALSO fires a live bus
-    event for whichever devices happen to be open right now, but this is
-    the backstop that makes the sync eventually-consistent regardless.
-  - ws_subscribe_push / ws_subscribe_identify: any signed-in device's live
-    counterpart to ws_get_pending above - forwards DEVICE_SETTINGS_EVENT_
-    PUSH/_IDENTIFY to the calling connection via hass.bus.async_listen,
-    same as Home Assistant's own built-in `subscribe_events` websocket
-    command would, except NOT restricted to admin connections. The generic
-    `subscribe_events` command refuses a non-admin connection.user for any
-    event type outside its own small built-in allowlist (see
-    homeassistant.auth.permissions.events.SUBSCRIBE_ALLOWLIST), so a
-    device signed in as a non-admin Home Assistant user could never
-    receive a live push or identify at all - only ever catching up on
-    page reload via ws_get_pending (identify has no such catch-up, so it
-    silently never worked there before these two commands existed).
-  - ws_list / ws_push / ws_save_preset / ws_delete_preset / ws_apply_preset /
-    ws_identify: admin-only (a real hass.user.is_admin account - same
-    baseline every other admin-gated command in this project uses, see
-    chores_websocket_api.py's _is_admin) management of the dashboard
-    itself. ws_identify is the odd one out: it never touches this store at
-    all (see DEVICE_SETTINGS_EVENT_IDENTIFY's own comment in const.py) - it
-    just fires a live-only bus event telling one specific device to pop an
-    on-screen modal naming itself, so an admin who can't tell two tablets
-    apart from their rows alone can click Identify and go look.
-
-Every value written here (a device's own report, or an admin's push/preset)
-is validated against DEVICE_SETTINGS_FIELDS - an unrecognized key or an
-out-of-range/wrong-type value is rejected outright rather than silently
-dropped or clamped, so a typo'd or forged websocket call can't quietly
-corrupt what the admin dashboard shows or plant a bad value on a device.
-
-v1.139.0+: a device record can also hold one or more "instances" nested
-under it (record["instances"][instance_id]) - one per dashboard/view the
-card is embedded on for that device (see the card's own
-_getCardInstanceId), each with the same {settings, last_seen, pending_seq,
-pending_settings} shape as the device record itself, plus a cosmetic
-instance_label. This exists because DEVICE_SETTINGS_FIELDS' view/layout
-fields (Week/Month variant, day count, rows, timeline, current-day-first,
-small-screen mode) are now "instance"-scoped (see const.py's own "scope"
-comment) rather than shared for the whole physical device - a household
-can embed the same card on more than one dashboard on one tablet and want
-a different layout on each. ws_report/ws_push/ws_get_pending each grew an
-optional instance_id (and, for report, instance_settings/instance_label)
-that route to a device's own top-level fields when omitted, or to that one
-instance's nested record when given - see each command's own docstring.
-"""
+"""Websocket API for the v1.133.3+ Device Settings admin dashboard -"""
 from __future__ import annotations
 
 import logging
@@ -135,11 +59,7 @@ def _is_admin(connection: websocket_api.ActiveConnection) -> bool:
 
 
 def _require_admin(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg_id: Any) -> Optional[dict[str, Any]]:
-    """Shared admin gate for the four dashboard-management commands (list/
-    push/save_preset/delete_preset/apply_preset) - report and get_pending
-    deliberately do NOT use this (see their own docstrings: every signed-in
-    device, not just an admin's, needs to report its own settings and check
-    for a pending push)."""
+    """Shared admin gate for the four dashboard-management commands (list/ push/save_preset/delete_preset/apply_preset)"""
     entry_data = _entry_data_or_error(hass, connection, msg_id)
     if entry_data is None:
         return None
@@ -150,15 +70,7 @@ def _require_admin(hass: HomeAssistant, connection: websocket_api.ActiveConnecti
 
 
 def _validate_against(raw: Any, fields: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """Returns a cleaned {key: value} dict containing only keys recognized
-    by `fields` with valid values, or None if `raw` isn't even a dict, or
-    if it contains a key `fields` doesn't recognize or an invalid value for
-    a recognized one - deliberately all-or-nothing (like CHORE_PERMISSIONS-
-    backed schemas elsewhere in this project) rather than silently
-    dropping/clamping the bad entries, so a caller always gets a clear
-    rejection instead of a partially-applied result. The three thin
-    wrappers below just fix which slice of DEVICE_SETTINGS_FIELDS `fields`
-    is - see each one's own docstring for which callers use it and why."""
+    """Returns a cleaned {key: value} dict containing only keys recognized by `fields` with valid values, or None if `raw` isn't even a dict"""
     if not isinstance(raw, dict):
         return None
     cleaned: dict[str, Any] = {}
@@ -173,11 +85,7 @@ def _validate_against(raw: Any, fields: dict[str, Any]) -> Optional[dict[str, An
             if not isinstance(value, int) or isinstance(value, bool) or value < field["min"] or value > field["max"]:
                 return None
         elif field["type"] == "text":
-            # Empty string is valid (familyHubDeviceCustomNameLocal's own
-            # "no override yet" default) - only a non-str value or one
-            # over max_length is rejected, same "reject outright, never
-            # silently truncate" rule this function's own docstring
-            # already applies to enum/int.
+            # Empty string is valid (familyHubDeviceCustomNameLocal's own "no override yet" default)
             if not isinstance(value, str) or len(value) > field["max_length"]:
                 return None
         cleaned[key] = value
@@ -201,12 +109,7 @@ def _validate_instance_settings(raw: Any) -> Optional[dict[str, Any]]:
 
 
 def _validate_mixed_settings(raw: Any) -> Optional[dict[str, Any]]:
-    """Either scope, mixed - only ws_save_preset uses this: a preset is a
-    named bundle an admin builds once (in the admin Devices tab's own
-    per-field controls, which cover every field regardless of scope) and
-    may apply later to a device, an instance, or both at once (see
-    ws_apply_preset's own docstring for how it's split back apart by scope
-    at apply time)."""
+    """Either scope, mixed - only ws_save_preset uses this: a preset is a named bundle an admin builds once (in the admin Devices tab's own per-field controls"""
     return _validate_against(raw, DEVICE_SETTINGS_FIELDS)
 
 
@@ -218,13 +121,7 @@ def _sync_device_entities(
     instance_id: Optional[str] = None,
     is_new_instance: bool = False,
 ) -> None:
-    """Keeps the select/number/text/button entities from select.py/number.py/
-    text.py/button.py in step with this store - creates a new device's (or
-    instance's) full set of entities the first time it's seen, otherwise
-    refreshes the state of whichever entities already exist for it. Called
-    after every change to a device's or instance's own settings dict,
-    regardless of whether that change came from a report or an admin's
-    push/apply_preset."""
+    """Keeps the select/number/text/button entities from select.py/number.py/ text.py/button.py in step with this store - creates a new device's"""
     if is_new_device:
         device_settings_select.create_entities_for_device(entry_data, device_id)
         device_settings_number.create_entities_for_device(entry_data, device_id)
@@ -287,18 +184,11 @@ def _instance_record(device_record: dict[str, Any], instance_id: str) -> dict[st
     return record
 
 
-# Cosmetic-only cap on the self-reported device_name (see ws_report below) -
-# generous enough for any real browser/OS guess the card's own _getDeviceName
-# ever produces, just a sanity ceiling against a malformed/oversized value
-# rather than a meaningful validation rule (unlike DEVICE_SETTINGS_FIELDS,
-# this is never fed back into a form control, so there's nothing to reject
-# it FOR beyond "don't let the stored blob grow unbounded").
+# Cosmetic-only cap on the self-reported device_name (see ws_report below)
 _DEVICE_NAME_MAX_LEN = 80
 
 
-# ---------------------------------------------------------------------------
-# Every signed-in device (not admin-gated - see this module's own docstring)
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------- Every signed-in device (not admin-gated
 
 
 @websocket_api.websocket_command(
@@ -307,25 +197,10 @@ _DEVICE_NAME_MAX_LEN = 80
         vol.Required("device_id"): str,
         vol.Required("settings"): dict,
         vol.Optional("device_name"): str,
-        # v1.139.0+: the same card can be embedded on more than one
-        # Lovelace dashboard/view on one physical device - instance_id
-        # identifies WHICH placement this report is for (see the card's
-        # own _getCardInstanceId), and instance_settings carries that
-        # placement's own view/layout values (INSTANCE_SCOPED_SETTINGS_
-        # FIELDS), separate from `settings` above (now device-scoped
-        # fields only - see _validate_settings's own docstring). Both
-        # optional together: an older cached card that hasn't picked up
-        # this version yet simply never sends them, and this report still
-        # succeeds exactly as before for its device-scoped fields.
+        # the same card can be embedded on more than one Lovelace dashboard/view on one physical device
         vol.Optional("instance_id"): str,
         vol.Optional("instance_settings"): dict,
         vol.Optional("instance_label"): str,
-        # Household ask: "a kiosk would default with participation in
-        # privacy mode" - true when the HA user currently logged in and
-        # reporting is, per their own Family Hub profile
-        # (isKioskAccount), a Kiosk account. See this handler's own use
-        # of it below for what that actually does to this device's
-        # privacy_participates.
         vol.Optional("is_kiosk_account"): bool,
     }
 )
@@ -352,24 +227,11 @@ async def ws_report(hass: HomeAssistant, connection: websocket_api.ActiveConnect
     blob = entry_data["device_settings"]
     is_new_device = device_id not in blob["devices"]
     record = _device_record(blob["devices"], device_id)
-    # Household ask: "a kiosk would default with participation in privacy
-    # mode" - the FIRST time this device ever reports in while logged in
-    # as a Kiosk-account profile, explicitly persist privacy_participates
-    # as True, rather than just leaning on privacy_participates_for's own
-    # implicit "no key yet -> True" default. Only fires while the key is
-    # still unset, so it never overwrites an explicit choice an admin
-    # already made for this device (on or off), and never forces it back
-    # on later if an admin opts the device out afterward - a one-time
-    # sensible default, not an enforced link between account and device.
     if bool(msg.get("is_kiosk_account")) and "privacy_participates" not in record:
         record["privacy_participates"] = True
     record["settings"] = cleaned
     record["last_seen"] = dt_util.utcnow().isoformat()
-    # Cosmetic only - see this field's own note on _device_record/
-    # _DEVICE_NAME_MAX_LEN above. A device that never sends one (an older
-    # card version, say) simply keeps whatever was last reported, so this
-    # never regresses a row back to a bare id just because one report
-    # happened to omit it.
+    # Cosmetic only - see this field's own note on _device_record/ _DEVICE_NAME_MAX_LEN above.
     device_name = (msg.get("device_name") or "").strip()
     if device_name:
         record["device_name"] = device_name[:_DEVICE_NAME_MAX_LEN]
@@ -384,11 +246,7 @@ async def ws_report(hass: HomeAssistant, connection: websocket_api.ActiveConnect
             instance_record["instance_label"] = instance_label[:_DEVICE_NAME_MAX_LEN]
     await entry_data["device_settings_store"].async_save(blob)
     _sync_device_entities(hass, entry_data, device_id, is_new_device, instance_id or None, is_new_instance)
-    # v1.147.0+: lets a device that was closed/asleep when an admin or
-    # automation flipped its screensaver switch learn the right value the
-    # next time it loads - see DEVICE_SETTINGS_EVENT_SCREENSAVER_TOGGLE's
-    # own comment in const.py for why this field has no dedicated
-    # get_pending-style catch-up command of its own.
+    # lets a device that was closed/asleep when an admin or automation flipped its screensaver switch learn the right value the next time it
     connection.send_result(
         msg["id"],
         {
@@ -407,15 +265,7 @@ async def ws_report(hass: HomeAssistant, connection: websocket_api.ActiveConnect
 )
 @websocket_api.async_response
 async def ws_get_pending(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    """Catch-up check for both scopes at once when `instance_id` is given -
-    the response keeps its original flat {seq, settings} shape (the
-    device's own pending push) for backward compatibility with an older
-    cached card that never sends instance_id, and ADDS a nested
-    `instance` key ({seq, settings} for that one instance's own pending
-    push, or null if that instance has never had anything pushed to it)
-    only when instance_id was actually given - see the card's own
-    _checkPendingDeviceSettings for how the two get applied together
-    without a double reload."""
+    """Catch-up check for both scopes at once when `instance_id` is given - the response keeps its original flat {seq, settings} shape"""
     entry_data = _entry_data_or_error(hass, connection, msg["id"])
     if entry_data is None:
         return
@@ -487,15 +337,7 @@ async def ws_subscribe_push(hass: HomeAssistant, connection: websocket_api.Activ
 @websocket_api.websocket_command({vol.Required("type"): "family_hub/device_settings/subscribe_identify"})
 @websocket_api.async_response
 async def ws_subscribe_identify(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    """Live Identify subscription for every signed-in device - see
-    ws_subscribe_push's own docstring above for why this needs its own
-    command rather than the generic subscribe_events one. Identify has no
-    catch-up counterpart to ws_get_pending (see DEVICE_SETTINGS_EVENT_
-    IDENTIFY's own comment in const.py): a device that missed the live
-    event - screen off, or, before this command existed, a non-admin
-    login that could never subscribe at all - simply never shows the
-    modal for that click, same as Identify already meant for a closed or
-    asleep dashboard."""
+    """Live Identify subscription for every signed-in device - see ws_subscribe_push's own docstring above for why this needs its own command rather than the generic"""
     entry_data = _entry_data_or_error(hass, connection, msg["id"])
     if entry_data is None:
         return
@@ -548,9 +390,7 @@ async def ws_subscribe_privacy_participation_toggle(hass: HomeAssistant, connect
     connection.send_result(msg["id"])
 
 
-# ---------------------------------------------------------------------------
-# Admin-only dashboard management
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------- Admin-only dashboard management
 
 
 @websocket_api.websocket_command({vol.Required("type"): "family_hub/device_settings/list"})
@@ -564,14 +404,7 @@ async def ws_list(hass: HomeAssistant, connection: websocket_api.ActiveConnectio
 
 
 def _push_settings(hass: HomeAssistant, entry_data: dict[str, Any], device_id: str, settings: dict[str, Any]) -> int:
-    """Shared by ws_push and ws_apply_preset - stages `settings` as the
-    device's pending push (bumping pending_seq so _applyPendingDeviceSettings
-    on the card can tell "this is newer than what I already applied" even
-    across a full push-settings/apply-preset mix), mirrors it into the
-    dashboard's own "settings" snapshot (so the admin list shows the new
-    values immediately rather than waiting for the device's own next
-    ws_report to confirm it), and fires the live event for whichever device
-    happens to have its dashboard open right now. Returns the new seq."""
+    """Shared by ws_push and ws_apply_preset - stages `settings` as the device's pending push"""
     blob = entry_data["device_settings"]
     is_new_device = device_id not in blob["devices"]
     record = _device_record(blob["devices"], device_id)
@@ -585,12 +418,7 @@ def _push_settings(hass: HomeAssistant, entry_data: dict[str, Any], device_id: s
 
 
 def _push_instance_settings(hass: HomeAssistant, entry_data: dict[str, Any], device_id: str, instance_id: str, settings: dict[str, Any]) -> int:
-    """Instance-scoped counterpart to _push_settings above - same staging/
-    mirroring/live-event shape, just one level deeper (record["instances"]
-    [instance_id] instead of the device record itself), and the fired
-    event carries instance_id alongside device_id so the card's own live
-    listener only applies it to the matching dashboard/view (see the
-    card's own _subscribeDeviceSettingsPush)."""
+    """Instance-scoped counterpart to _push_settings above - same staging/ mirroring/live-event shape, just one level deeper"""
     blob = entry_data["device_settings"]
     is_new_device = device_id not in blob["devices"]
     device_record = _device_record(blob["devices"], device_id)
@@ -613,11 +441,7 @@ def _push_instance_settings(hass: HomeAssistant, entry_data: dict[str, Any], dev
         vol.Required("type"): "family_hub/device_settings/push",
         vol.Required("device_id"): str,
         vol.Required("settings"): dict,
-        # v1.139.0+: when given, `settings` targets that one dashboard/view
-        # instance's own view/layout fields (validated against INSTANCE_
-        # SCOPED_SETTINGS_FIELDS) instead of the device's own fields
-        # (DEVICE_SCOPED_SETTINGS_FIELDS) - see _validate_settings/
-        # _validate_instance_settings's own docstrings.
+        # when given, `settings` targets that one dashboard/view instance's own view/layout fields
         vol.Optional("instance_id"): str,
     }
 )
@@ -682,13 +506,7 @@ async def ws_set_screensaver_enabled(hass: HomeAssistant, connection: websocket_
 )
 @websocket_api.async_response
 async def ws_set_privacy_participates(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    """The admin Devices tab's own per-device Privacy Mode participation
-    toggle - household ask, verbatim: "I wanted to have a setting that you
-    check if you want the device to participate in privacy mode. This way
-    things like phones could have the calendar while the fridge or the
-    kiosk is hidden." Admin-only, same gate as ws_set_screensaver_enabled
-    above, and takes effect immediately for the same reason - there's no
-    separate Push/Sync step for this field either."""
+    """The admin Devices tab's own per-device Privacy Mode participation toggle - household ask"""
     entry_data = _require_admin(hass, connection, msg["id"])
     if entry_data is None:
         return
@@ -711,13 +529,7 @@ async def ws_set_privacy_participates(hass: HomeAssistant, connection: websocket
 )
 @websocket_api.async_response
 async def ws_save_preset(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    """Creates a new preset, or (when preset_id names an existing one)
-    overwrites it in place - the card's own Save button uses the same
-    command for both, distinguishing "new" vs "update" purely by whether a
-    preset is currently selected, same idiom as this project's other
-    create-or-update forms (e.g. ws_save_preset's own name field is never
-    treated as a uniqueness key, so renaming an existing preset on save is
-    just a normal update)."""
+    """Creates a new preset, or (when preset_id names an existing one) overwrites it in place - the card's own Save button uses the same command for both"""
     entry_data = _require_admin(hass, connection, msg["id"])
     if entry_data is None:
         return
@@ -763,26 +575,13 @@ async def ws_delete_preset(hass: HomeAssistant, connection: websocket_api.Active
         vol.Required("type"): "family_hub/device_settings/apply_preset",
         vol.Required("preset_id"): str,
         vol.Required("device_id"): str,
-        # v1.139.0+: a preset can carry both device- and instance-scoped
-        # fields at once (ws_save_preset validates against the full mixed
-        # registry - see _validate_mixed_settings's own docstring). The
-        # device-scoped part of the preset always applies to device_id;
-        # the instance-scoped part only applies, to this one instance_id,
-        # when it's given - see this command's own docstring below.
+        # a preset can carry both device- and instance-scoped fields at once (ws_save_preset validates against the full mixed registry
         vol.Optional("instance_id"): str,
     }
 )
 @websocket_api.async_response
 async def ws_apply_preset(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    """Splits the preset's own (possibly mixed-scope) settings dict by
-    scope (DEVICE_SCOPED_SETTINGS_FIELDS / INSTANCE_SCOPED_SETTINGS_FIELDS)
-    and pushes each half through its own scope's push path. The device-
-    scoped half always applies (there's always a device_id). The instance-
-    scoped half only applies when instance_id was given; without one, any
-    instance-scoped keys the preset happens to carry are simply skipped -
-    "apply this preset to just the device" is a perfectly reasonable thing
-    to want, not an error, same as a preset built with only device-scoped
-    fields in the first place."""
+    """Splits the preset's own (possibly mixed-scope) settings dict by scope"""
     entry_data = _require_admin(hass, connection, msg["id"])
     if entry_data is None:
         return
@@ -818,11 +617,7 @@ async def ws_apply_preset(hass: HomeAssistant, connection: websocket_api.ActiveC
 )
 @websocket_api.async_response
 async def ws_identify(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    """Fires DEVICE_SETTINGS_EVENT_IDENTIFY for one device_id - see that
-    constant's own comment in const.py for why this deliberately never
-    touches device_settings storage (no seq, no pending push, nothing
-    persisted): it's a pure live "pop a modal naming yourself" signal for
-    whichever one device happens to be open right now, not a setting."""
+    """Fires DEVICE_SETTINGS_EVENT_IDENTIFY for one device_id - see that constant's own comment in const.py for why this deliberately never touches device_settings"""
     entry_data = _require_admin(hass, connection, msg["id"])
     if entry_data is None:
         return
