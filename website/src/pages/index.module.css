@@ -13,8 +13,17 @@
 
 .buttons {
   display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
   align-items: center;
   justify-content: center;
+}
+
+.heroLogo {
+  display: block;
+  margin: 0 auto 1rem;
+  border-radius: 18px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
 }
 
 @media screen and (max-width: 996px) {

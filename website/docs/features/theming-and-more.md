@@ -51,13 +51,17 @@ Family Hub's cards, Settings, Theme Builder page and setup screens are translate
   as a one-time fallback for households updating from a very old version;
   new installs never need one.
 - **Optional vertical scroll lock**, handy for kiosk-mode wall tablets.
-- Built-in **Debug Info** panel (Settings → Debug Info) showing fetched
-  events, errors per calendar, and current settings.
-- **Test a notification** and **Upcoming notifications preview** steps in
-  Configure, for confirming a notify target works and previewing what's
-  queued to fire before waiting around for it.
+- Built-in **Debug Info** panel (Settings → Developer tools → Debug Info)
+  showing fetched events, errors per calendar, and current settings, with
+  **Copy** and **Export to file** for bug reports.
+- **Test a notification** and **Upcoming notifications** in
+  [Integration Options](/docs/integration-options), for confirming a notify
+  target works and previewing what's queued to fire.
 - **Backups**: Family Hub saves a snapshot of your Settings, Permissions and
   per-device settings every 12 hours (at midnight and noon) and keeps the
   last 8 (or take one right away with **Back up now** in Settings → Developer tools). Restore one, download one as a
   file, or upload a file from another install under Settings → Devices &
-  services → Family Hub → **Configure** → **Restore a backup**.
+  services → Family Hub → **Configure** → **Restore a backup**. See
+  [Integration Options → Backups](/docs/integration-options#backups).
+- **Updating without HACS**: Configure → **Update Family Hub** installs a
+  release zip. See [Integration Options](/docs/integration-options#update-family-hub).

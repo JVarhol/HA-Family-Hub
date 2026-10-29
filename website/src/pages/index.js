@@ -13,6 +13,13 @@ function HomepageHeader() {
   return (
     <header className={clsx('hero hero--primary', styles.heroBanner)}>
       <div className="container">
+        <img
+          src={useBaseUrl('/img/logo.png')}
+          alt="Family Hub logo"
+          width="96"
+          height="96"
+          className={styles.heroLogo}
+        />
         <Heading as="h1" className="hero__title">
           {siteConfig.title}
         </Heading>
@@ -30,9 +37,18 @@ function HomepageHeader() {
           </Link>
           <Link
             className="button button--outline button--secondary button--lg"
-            to="/docs/installation"
-            style={{marginLeft: '1rem'}}>
+            to="/docs/installation">
             Installation
+          </Link>
+          <Link
+            className="button button--outline button--secondary button--lg"
+            to="/docs/card-configuration">
+            The cards
+          </Link>
+          <Link
+            className="button button--outline button--secondary button--lg"
+            href="https://discord.com/channels/330944238910963714/1543630448800960653">
+            Discord
           </Link>
         </div>
       </div>

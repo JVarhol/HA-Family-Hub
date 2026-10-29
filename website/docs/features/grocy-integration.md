@@ -7,7 +7,7 @@ Connect a self-hosted [Grocy](https://grocy.info) instance under Settings →
 Devices & Services → Family Hub → Configure → **Grocy** (URL + API key) to
 unlock a deeper recipe/grocery layer on top of the meal planner above.
 Leave both fields blank and none of this appears. Family Hub works exactly
-as described everywhere else in this README with no Grocy at all.
+as described everywhere else on this site with no Grocy at all.
 
 - **Pick a meal straight from Grocy**: the Recipe Box gets an "Add from
   Grocy" option that pulls in one of your existing Grocy recipes by name,
@@ -79,5 +79,11 @@ as described everywhere else in this README with no Grocy at all.
   chips on Expiring Soon items that use up something about to expire.
 - **Per-feature Daily Digest toggles**: Expiring Soon and Low Stock can each
   independently be included in (or left out of) the once-a-day Daily Digest
-  notification described below, on top of their own on/off switch for
-  showing up in the More menu at all.
+  notification, per person in their profile (Settings → Users), on top of
+  their own on/off switch for showing up in the More menu at all.
+- **My Pantry card**: your Grocy stock on its own card, with search,
+  filters and sorting, adding and removing stock, editing entries and
+  products, and creating new products right there, plus an "Also Tracking"
+  list for things you don't keep in Grocy. See [My Pantry](/docs/cards/my-pantry).
+- **Grocy shopping lists on the To-Do Lists card**: see
+  [To-Do Lists & Wish Lists](/docs/features/todo-lists-and-wishlists#grocy-shopping-lists).

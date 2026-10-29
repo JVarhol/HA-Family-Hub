@@ -48,6 +48,43 @@ features described in its own section below.
   the same searchable list as everything else.
 - **Search** inside the Recipe Box, including its Suggested filter.
 
+## The meal editor
+
+Tap an empty meal block (or the pencil on a planned one) to open the editor:
+
+- **Dish name**, with **🍽️ Pick a Recipe** to choose from the Recipe Box.
+  Typing a name close to a dish you already have ("Cilli dogs") offers
+  **Similar to: Chilli Cheese Dogs**, so the same dish doesn't end up in
+  the Recipe Box twice under different spellings.
+- **Description** (notes, sides), **Category**, and **💡 Also add to Meal
+  Suggestions**.
+- **Recipe link**, with a 🔗 button to open it.
+- **👍 Who's cooking**: tap a person. Their color shows as a bar along the
+  bottom of that meal block, so everyone can see whose night it is.
+- **More options**: edit the recipe link, **Servings** (for the Grocy
+  shopping list), a **Photo URL** (shown on its Recipe Box card), the
+  **Card color**, and **🔁 Repeat weekly** (until turned off or changed
+  for one week).
+- **♻️ Leftovers**: also show this meal on any other days you pick (they
+  don't need to be in a row), for a big pot of chili that covers Tuesday
+  and Thursday.
+- **📅 Move to another week**: pick a date and **Move** sends the meal
+  there, in the same slot.
+- **🍲 Additional recipes**: sides, sauces or desserts that go with it,
+  **from the Recipe Box** or **from a link**.
+- **❤️ / 👎**: rate the dish.
+- **Clear** empties the slot. (In the Recipe Box's own dish editor,
+  **Delete** removes the dish.)
+
+**Suggesting a meal**: someone without the **Edit the menu** permission sees
+**💡 Suggest** instead of Save. Their idea shows on that day as a
+suggestion, and someone who can edit the menu puts it on the menu or
+dismisses it. You can always take back your own suggestion.
+
+**Rearranging**: the **✏️ Edit** button in the top bar turns on drag and
+drop. Drag meals between days and slots (and, with the right permission,
+calendar events between days). Tap it again when you're done.
+
 Without Grocy, a Loved Dish or a day's meal is filled in through the dish/
 day editor's own fields: name, description, a recipe link (with an Open
 Link button), card color, servings, typed or pasted in by hand. The

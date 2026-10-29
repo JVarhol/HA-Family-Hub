@@ -3,6 +3,17 @@ title: Reminders & Countdown
 sidebar_position: 7
 ---
 
+- **A Family Reminders list is made for you** (v1.168.88+): reminders live
+  on a Home Assistant to-do list, `todo.family_reminders`. Family Hub
+  creates it (as a Local To-do list) when it's missing, right after install
+  or if it's deleted later.
+- **Everyone's own reminders lists**: each person added under Settings →
+  Users also gets their own list (`todo.<name>_reminders`), and can have
+  more. New reminders can go on the shared list or **My list**. In each
+  person's profile, **Other people's reminder lists** decides whether they
+  see someone else's list: **None**, **Add to calendar** (shown in its
+  owner's color) or **Add to calendar + alert** (also notified when one
+  comes due). See [Member profiles](/docs/settings-modal#member-profiles).
 - **Standalone reminders**, stored as Home Assistant to-do items (not
   calendar events), with their own date/time, editable after creation from
   the event-info popup, and a **mark done** button.
@@ -12,8 +23,21 @@ sidebar_position: 7
   not marked done. It keeps re-notifying daily until you mark it done.
   Without it, a reminder just fires once at its due time and then sits
   overdue on its original day until you clean it up yourself.
+- **Repeating reminders** (v1.168.88+): the Reminder tab has the same
+  **Repeat** section as calendar events: daily, weekly on chosen days,
+  monthly or yearly, every N days/weeks/months/years, ending never, on a
+  date, or after a number of times. Marking a repeating reminder done moves
+  it to its next date instead of finishing it (dates you missed are
+  skipped), wherever you mark it done: the calendar, the Today card or Home
+  Assistant's own to-do list. Upcoming dates show faded on the calendar. The
+  event-info popup can change or stop the repeat. The last one (or one past
+  its end date) finishes normally.
+- **Categories** (v1.168.88+): reminders can have a category too; see
+  [Calendar](/docs/features/calendar-and-layout#adding-and-editing-events).
 - **Calendar-event reminders**: any event can get a "remind me N minutes
-  before" lead time (or several at once, e.g. 10 and 30 minutes before),
+  before" lead time (or several at once, e.g. 10 and 30 minutes before):
+  tap 5m, 10m, 15m, 30m or 1h, or **+ Custom** for any number of minutes,
+  hours or days before (v1.168.88+),
   added at creation or edited afterward from the event-info popup;
   editing one on a recurring-by-name event (e.g. weekly "Yoga") offers to
   apply the same change to every matching occurrence currently loaded.
@@ -33,25 +57,35 @@ sidebar_position: 7
   backend integration itself (polling every few minutes, configurable), so
   they arrive even if no dashboard is open, and are deduplicated so the
   same reminder never fires twice.
-- **Per-target notify devices**: a default notify target, plus optional
-  overrides per calendar, for Reminders as a whole, and for the Daily
-  Digest, all manageable from in-card Settings via a shared "Notify
-  devices" picker.
+- **Who gets notified is set per person** (Settings → Users → their
+  profile): their **Notify targets** (their phones), which calendars they
+  **Get reminders from**, whether **Reminders** notify them, their
+  **Instant notifications** (a reward claimed, a chore approved, sent back
+  or due soon, a timer going off) and their own **Daily Digest**. Which
+  calendars the backend watches, and how often, is under
+  [Integration Options → Calendar reminders](/docs/integration-options#calendar-reminders).
+- **Tapping a notification** opens the dashboard set under Settings →
+  Users → **Notification tap destination** (needs the Home Assistant
+  Companion app).
+- **Checking it works**: **Test a notification** and **Upcoming
+  notifications** under [Integration Options](/docs/integration-options),
+  and **Notification debug** in each person's profile.
 - **Daily Digest**: an optional once-a-day notification (Settings → Daily
-  Digest: on/off toggle, send time, recipient picker) summarizing that
-  day's calendar events, due reminders, and planned meals. Sent by the
+  Digest: on/off and the send time; each person's profile: whether they
+  get one and what's in it, with **Send test digest now**) summarizing that
+  day's calendar events, due reminders, planned meals and their own pending
+  chores. Sent by the
   backend at the first poll at or after the configured time, once per
   calendar day, independent of the dashboard being open. With Grocy
   connected, it can also add an "N items expiring soon" and/or "N items
-  running low" line, each opt-in independently under Settings → Grocy (see
-  the Grocy integration section above), and every section, Grocy or not,
+  running low" line, each opt-in per person in their profile once the
+  Grocy toggles are on (see [Grocy](/docs/features/grocy-integration)), and every section, Grocy or not,
   is simply omitted on a day it has nothing to report.
   - **As a popup, any time**: the same digest is also available as a modal
     you can open on demand. There's nothing to wait for, and it's always your own
     current content, not a cached notification from earlier. Two ways to
-    open it: turn on "Daily Digest button on calendar screen" (Settings →
-    Calendar & layout, this device only) to add a "Daily Digest" item to
-    the card's own More menu; or, from anywhere else in Home Assistant
+    open it: **Daily Digest** in the calendar's **⋮ More** menu (admins can
+    hide it under Settings → More menu); or, from anywhere else in Home Assistant
     (another dashboard, an automation, a script, a button card), press that
     person's own `button.<name>_daily_digest` entity (one is created
     automatically per real Home Assistant user account). Pressing it pops

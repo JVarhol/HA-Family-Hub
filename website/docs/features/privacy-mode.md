@@ -13,7 +13,7 @@ A small locked pill appears over the card instead: "Privacy Mode is on - tap to 
 
 ## Turning it on
 
-Anyone can turn Privacy Mode on, with no PIN and no permission needed. From the card's **☰ "more" menu**, tap **Enable Privacy Mode**. There's deliberately no gate on making the screen *more* private.
+Anyone can turn Privacy Mode on, with no PIN and no permission needed. From the calendar's **⋮ More** menu, tap **Enable Privacy Mode**. There's deliberately no gate on making the screen *more* private.
 
 ## Turning it off
 

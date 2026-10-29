@@ -1,9 +1,15 @@
 ---
-title: Settings Modal
-sidebar_position: 5
+title: Settings
+description: Everything behind the ⚙️ Settings button on the Family Week Calendar card.
 ---
 
-Every Family Hub card has a gear-icon **Settings** button that opens a modal with tabs for **General**, **Users**, and **Devices** (Devices is admin-only), plus a **Developer tools** tab for troubleshooting. This page walks through what's in each one. Most fields save together when you tap the **Save** button, which stays pinned to the bottom of the modal while you scroll; a few, called out below, save immediately or are stored per-device instead.
+Household settings live behind the **⚙️ Settings** button on the **Family Week Calendar** card, and only there. (With the top bar hidden or minimal, Settings moves into the card's **+** button menu.) Settings has four tabs: **General**, **Users**, and for admins **Devices** and **Developer tools**.
+
+Most fields save together when you tap **Save**, which stays pinned to the bottom while you scroll. A few, called out below, save the moment you change them, and fields marked **this device only** are saved on that one screen.
+
+Children and kiosk accounts see a reduced Settings: no Users tab and none of the admin sections. Things you can't change are hidden rather than greyed out.
+
+A few things are set up in Home Assistant's own integration screen instead (calendar reminders, Grocy, backups, updates). See [Integration Options](/docs/integration-options).
 
 ## General tab
 
@@ -23,14 +29,22 @@ The one place to add calendars and say whose calendar is whose; no YAML editing 
 
 - **+ Add calendar**: pick one of your Home Assistant calendars **by name** from the list. The **Name** fills in automatically (a name you've typed yourself is never overwritten). A new calendar takes its own color from Home Assistant (for a Google calendar, its Google color); one without a color gets a color nobody else is using.
 - **Person menu**: choose who the calendar belongs to, or **Not linked** for a shared calendar like Family or School. A person's first calendar becomes their column (★); any more of theirs are shown inside that same column. Calendars are grouped under **Not linked to a user** and **Linked to a user**.
-- **Color**: tap it for **Choose a color…** or **Reset to calendar color** (back to its Home Assistant/Google color). **⏳** (add its events to the countdown banner) and **+ Add badge**: a keyword to watch for in event titles, producing a small colored badge (e.g. "N") next to the date, plus a separate keyword for events that should be hidden from the grid entirely (handy for a background custody-schedule calendar).
-- **✕** removes a calendar and also unlinks it from its person, so it doesn't come back as their column.
+- **Color**: tap it for **Choose a color…** or **Reset to calendar color** (back to its Home Assistant/Google color).
+- **A row of buttons** under each calendar (v1.168.88+):
+  - **⏳ Countdown**: add this calendar's events to the countdown banner.
+  - **🎉 Holidays**: treat it as a holiday calendar, so its days show as banners under the meals instead of as events in a column. Calendars with "holiday" in the name are switched on automatically. See [Holiday calendars](/docs/features/calendar-and-layout#holiday-calendars).
+  - **➕ Add badge**: a keyword to watch for in event titles, which puts a small colored badge (like "N") next to the date, plus an optional keyword for events to hide from the grid entirely (handy for a background custody-schedule calendar).
+  - **✕ Remove**: removes the calendar and unlinks it from its person, so it doesn't come back as their column.
 
 Who gets *reminders* from a calendar is set per person under the **Users** tab (**Get reminders from**), not here.
 
 ### Prevent duplicate events
 
-On by default. When the same event shows up on more than one of your calendars (an invite on both parents' calendars, say), it only appears once, in the first column that has it. Repeating events are never treated as duplicates of themselves. Turn it off if you ever need to check whether two similar events really are separate.
+Off by default. When it's on and the same event shows up on more than one of your calendars - the same invite on both parents' calendars, or events with exactly the same name at the same time - it only appears once, in the first column that has it. Repeating events are never treated as duplicates of themselves. Turning it on shows a short reminder: if two people really have separate events with the same name at the same time, name them apart ("Sam Soccer" and "Taylor Soccer" instead of "Soccer") so both show.
+
+### Categories
+
+At the bottom of the Calendars section. Admins only. Add categories with a name and a color; events and reminders given one show a bar in its color. Removing a category takes the bar off everything that had it. See [Calendar](/docs/features/calendar-and-layout#adding-and-editing-events).
 
 ### Default view
 
@@ -46,7 +60,8 @@ Four one-tap presets (**Week**, **Portrait**, **Agenda**, **Two-Week Ahead**) th
 - **Agenda view: show meals**: Agenda follows the Days shown setting below and always includes reminders; turn this on to list meals too.
 - **Days shown in Week view**: 1–36 columns, for narrower screens that can't fit all 7 days.
 - **Rows shown at once in Week view**: 1–7, for the Two-Week-style layouts.
-- **Current day always first**: keeps today in the leftmost column instead of a fixed Sunday/Monday start.
+- **Current day always first**: keeps today in the leftmost column instead of a fixed Sunday/Monday start (synced household-wide by default, with optional per-device override via the Devices tab).
+- **Navigation step** (when Current day always first is On): choose whether Previous/Next advances by **1 day** at a time (rolling 7-day window) or by a **Full window** (7 days).
 
 ### Month view options
 
@@ -56,6 +71,10 @@ Four one-tap presets (**Week**, **Portrait**, **Agenda**, **Two-Week Ahead**) th
 ### Dim past events
 
 Today's events dim one by one as they end; any earlier day dims entirely, since the whole day is already over.
+
+### Name pills (this device only)
+
+Show or hide the row of names with counts above the calendar (and the Reminders pill). Hiding it gives the calendar more room, and the calendar then shows everyone. (v1.168.88+)
 
 ### Calendar top bar style (this device only)
 
@@ -118,10 +137,10 @@ Shows a full-screen video or live camera feed after the dashboard sits idle, bui
 - **Video URL**: a direct link to a video file, or a path under Home Assistant's own `/local/` media folder. Loops muted.
 - **Camera entity**: for the Camera source.
 - **Idle time before it shows**: in seconds; any tap dismisses it and restarts the countdown.
-- **Enable for these logins**: which Home Assistant accounts actually see the screensaver.
 - **Disable while a recipe is open**: pauses the idle countdown while a single recipe's detail view is open (browsing the recipe list itself still counts as idle).
 - **Return to this dashboard on wake**: optional: jump to a specific dashboard/view when the screensaver is tapped awake, instead of staying on whatever view it fell asleep on.
-- **Widgets on the screensaver**: layer weather, a clock, a to-do list, or any other Lovelace card on top of the screensaver (shared layout, with a per-device **Hide widgets on this device** option below it).
+- **Widgets on the screensaver**: cards layered on top of the video or camera. **Add widget** offers **Weather**, **Clock**, **Calendar** (a month grid for one calendar), **Sensor** (one entity's state), **Camera** (a live snapshot), **Text** (your own text or Markdown) and **Custom** (any Lovelace card, as JSON or YAML). Drag a widget to move it and drag its corner to resize it. A Clock can be **Digits only** with **Automatic color** (light digits on a dark picture, dark on a light one), and any widget can have a **Transparent background**. The layout is shared by the household; **Hide widgets on this device** hides chosen widgets on just this screen.
+- **Screen Saver logins**: tick every Home Assistant login that should get the screen saver. Everyone else keeps browsing without it. Each screen can also be switched off from the Devices tab (or its **Screensaver enabled** switch entity).
 
 ### Theme
 
@@ -146,7 +165,7 @@ Show a photo on a holiday or special day, normally just behind that day's own co
 
 Choose what the **⋮ More** menu shows, and add your own buttons to it. This is set once for the whole household, so every tablet and phone gets the same menu. Changes are saved when you tap **Save**.
 
-- **Show or hide** any built-in item (Recipe Box, Templates, Print, Shopping List, Expiring Soon, Low Stock, Daily Digest, Privacy Mode) with its checkbox.
+- **Show or hide** any built-in item (Quick Add, Recipe Box, Templates, Print, Shopping List, Expiring Soon, Low Stock, Daily Digest, Privacy Mode) with its checkbox.
 - **Reorder** with the ▲ ▼ arrows. Your own buttons can go anywhere in the list.
 - **+ Add a button** creates your own button (up to 20). Start from **Blank** or a ready-made one - **Babysitter / house info**, **Emergency contacts**, **Address book** or **Guest Wi-Fi** - and fill in the blanks. Each one opens a pop-up with:
   - an **icon** (any emoji, or a Home Assistant icon like `mdi:camera`) and a **button label**;
@@ -189,21 +208,75 @@ Add a Home Assistant login to make them part of Family Hub. Only people added he
 
 ![The Users tab](/img/screenshots/settings-users.webp)
 
-Tap a person in the list to open their profile, or **Remove** to take them out of Family Hub (nothing about them is deleted; re-adding brings everything right back). Each profile covers:
+Tap a person to open their profile, or **Remove** to take them out of Family Hub (nothing about them is deleted, and re-adding them brings everything back). Most of a profile saves with **Done**; Permissions save the moment you tick them.
 
-- **Color**: their color on the calendar, the Chores board and Rewards balances. Leave unset for an automatically assigned color. Someone with no color who gets a main calendar takes that calendar's color, and **Reset to calendar color** brings it back later.
-- **Include in Chores & Rewards**: turn off to keep them a full member (still on the list, Permissions, and Routines) without a Chores board column or Rewards balance. Useful for a shared/kiosk login that needs permissions but isn't an actual person.
-- **Child account** (admin only): restricts their own Settings view even further than an ordinary non-admin's: they also lose the whole Users tab, including their own profile. A child can never turn this off for themselves.
-- **Kiosk account** (admin only): for a shared wall-mounted tablet login rather than a real person. Restricts Settings the same way Child account does, and also turns on **Always-on alarm kiosk** and that account's own Kiosk PIN login as a starting point (either can be switched back off afterward). New devices logged in as a kiosk account default to participating in Privacy Mode. A Kiosk account can never see wish-list claim status while logged in directly as itself; this is hard-blocked even for a kiosk login that's also a Home Assistant admin account, since every other permission has an admin bypass but this one deliberately doesn't. Once someone PIN-logs-in as themselves via that account's own Kiosk PIN login, they see claims according to their own permission grant instead.
-- **Their reminders list** / **Their wish list**: the personal to-do lists auto-created for them when they're added (see **Add a person** above), shown here so you can point either at a to-do list you already have instead, the same "+ Add list" pattern used elsewhere in Settings. Changing **Their wish list** re-flags whichever list is pointed at as this person's owned Wish List automatically; it doesn't need a separate visit to the To-Do Lists card's own List(s) tab.
-- **Always-on alarm kiosk** (admin only): a "kiosks"- or "everyone"-tier chore/reward alarm (set per chore/reward via its own "Who hears this alarm" option) rings on every open Family Hub dashboard logged in as this account, not just the timer owner's.
-- **Notify targets**: which devices/services actually receive this person's notifications.
-- **Presence & sensors**: their `person.*` entity (for the Home/Away pill on the Right Now bar) and any extra sensors to show on their tile, like a phone's battery level.
-- **Calendar**: shows which calendar is their column and any others merged into it, with a **Manage calendars** button that jumps to General → Calendars (the one place where calendars are linked to people).
-- **Get reminders from**: tap calendars to get their event reminders and Daily Digest entries (✓ = on). Calendars that belong to someone are grouped under their name: tap the name to pick all of theirs at once.
+**At the top**
+
+- **Color**: their color on the calendar, the Chores board and Rewards. Leave it unset for an automatic color. Someone with no color who gets a calendar takes that calendar's color, and **Reset to calendar color** brings it back later.
+- **Display Name**: the name Family Hub shows for them, instead of their Home Assistant name.
+- **Account options** (admin only, pick any):
+  - **Chores**: on by default. Turn it off to keep them a full member (on the list, in Permissions and Routines) without a Chores column, a Rewards balance, or being offered as an assignee.
+  - **Child**: they can't see the Users tab at all, including their own profile, and can never turn this off themselves.
+  - **Kiosk**: for a shared wall-tablet login, not a person. A kiosk account is never on Chores, Rewards or Goals, never gets reminders, and doesn't get its own Reminders or Wish List (v1.168.88+); those options are hidden. It restricts Settings like Child does, and switches on **Always-on alarm kiosk** and its own Kiosk PIN login as a starting point. New screens signed in as a kiosk account join Privacy Mode by default. A kiosk login can never see wish-list claims, even if it's a Home Assistant admin; someone who PIN-logs-in on it sees claims by their own permission.
+- **Always-on alarm kiosk** (admin only): chore, reward and timer alarms set to "Them + kiosks" or "Everyone" ring on every open Family Hub screen signed in as this account, not just the owner's.
+
+**Presence & sensors**
+
+- **Presence**: a `person.*` or `device_tracker.*` entity for the Home/Away pill on the Right Now card and bar.
+- **Other sensors & switches to show**: any entities, shown as small pills on their Right Now tile (a phone's battery, a door). Tapping a switch or light toggles it; anything else opens its details.
+
+**🔔 Notify targets**: which phones or services get this person's notifications. **Auto-detect this device** adds the phone you're on.
+
+**Calendar**
+
+- **Their calendar column**: which calendar is their column and which others are merged into it, with **Manage calendars** to jump to General → Calendars (the main place calendars are linked to people).
+- **Get reminders from**: tap calendars to get their event reminders and Daily Digest entries (✓ = on). Calendars that belong to someone are grouped under their name: tap the name to pick all of theirs. Tap the **★** on one to make it their **primary** calendar: its events then take this person's color everywhere.
+- **Their own calendar**: set their calendar right here if it isn't added under Calendars yet. It becomes their column, with their name and color. It can have its own **badge**, the same as under Calendars.
+- **Also show events from**: extra read-only calendars shown in their column (a school feed, a work calendar). Their events can't be edited from the dashboard. To get reminders from one, tick it under Get reminders from too.
 
 ![A person's Calendar section: their column, Manage calendars, and Get reminders from](/img/screenshots/settings-person-calendar.webp)
-- **Permissions** (admin only): an accordion of granular permission checkboxes for that person: things like approving chores, overriding rewards, pricing a suggested reward, or seeing wish-list claims. Each checkbox saves immediately on change, no Save button needed. This used to be one big combined grid under its own tab; it's now folded into each person's own profile instead. The underlying backend commands are themselves hard-gated to real Home Assistant admin accounts, so hiding this from a non-admin here is UX, not the actual security boundary.
+
+**Lists**
+
+- **Their reminders list**: their own Reminders list, separate from the shared Family Reminders. Created automatically when they're added; point it at another list if you like.
+- **Their other reminders lists**: more personal reminders lists. The one above stays their **primary**, where new reminders go; tap **★** on another to make it primary instead. **+ Create new** makes one.
+- **Their wish list**: their wish list, created automatically. Pointing it at another list flags that list as their wish list.
+- **Other people's reminder lists**: for each other person's own list: **None** (out of sight), **Add to calendar** (shown on this person's calendar in its owner's color, no notifications) or **Add to calendar + alert** (also notifies this person when one comes due). Everyone always sees their own list.
+- **Reminders**: whether they get a notification when a reminder comes due, on the shared Family Reminders list and their own lists. Off by default.
+
+**Instant notifications**: sent right away, not saved for the Daily Digest. Pick any:
+
+- A reward is claimed (by anyone in the household)
+- One of my chores is approved
+- One of my chores is sent back
+- One of my chores is due soon (using that chore's own reminder times)
+- One of my timers goes off (alarm-style, so it breaks through silent mode and Do Not Disturb)
+
+**Daily Digest**: on or off for this person, and **In their digest**: today's calendar events, today's due reminders, today's planned meals, their own pending chores, and (with Grocy) items expiring soon and items running low. **📤 Send test digest now** sends what's ticked, even before you Save, to their notify targets.
+
+**Notification debug** (admin only): what Family Hub actually sees for this person as of their last Save: their **subscribed calendars**, the **devices to notify**, and **pending notifications** (and ones already sent). Use **🔄 Refresh** after a change.
+
+**Kiosk PIN login** (admin only): **Enable logging in as this person on a shared kiosk display**, and **🔐 Set / change PIN…** (4 to 8 digits; save it blank to clear it). They can then tap **🔒 Login** on the Chores, Rewards and To-Do Lists cards, or unlock Privacy Mode and locked More-menu pop-ups, as themselves. A kiosk session logs out after 45 seconds of no taps. Five wrong PINs in a row lock that person's PIN for 5 minutes; setting a new PIN unlocks it.
+
+**Permissions** (admin only): saved the moment you tick them. A Home Assistant admin always has all of them. Everyone, with no permissions at all, can still do their own chores, claim from the Chore Bin, check off routine items, log their own goals, suggest a reward, suggest a meal, and ask for stars.
+
+| Group | Permission | Lets them |
+|---|---|---|
+| Chores | **Assign to others** | Assign chores to other people, reassign by dragging, and edit the Chores library. |
+| Chores | **Edit open chores** | Change an existing open chore (stars, due date and so on). |
+| Chores | **Skip-approval chores** | Create or edit a chore that skips approval, so its stars pay out right away. |
+| Chores | **Approve completed** | Approve or send back chores (and star requests) other people marked done. |
+| Chores | **Complete anyone's** | Mark any chore done, not just their own. |
+| Chores | **No approval needed** | Their own finished chores are approved and paid instantly. |
+| Rewards | **Override star costs** | Change what a reward costs, add or subtract anyone's stars (Manage stars), reverse or clear history, price and approve suggestions, and mark rewards as handed over. |
+| Rewards | **Add to catalog** | Add rewards with a star cost, price and approve suggestions, and mark a "needs a parent" reward as handed over. Without it, what they add is a suggestion that waits for approval. |
+| Menu | **Edit the menu** | Change the weekly meal plan. Without it they can still **suggest** a meal for any day, and someone with this permission decides. |
+| Wish Lists | **See claim status** | See who's claimed what on other people's wish lists. A list's owner never sees claims. |
+| Calendar | **Delete calendar events** | Delete events (on calendars that allow it). |
+| Calendar | **Edit/move calendar events** | Edit events, and drag them to another day in Edit Meals mode (on calendars that allow it). |
+| Routines | **Manage own routine items** | Add, edit, remove and reorder items in their own routines. |
+| Routines | **Manage everyone's routine items** | The same for anyone's routines, and edit the Routines library. |
+| Privacy | **Turn off Privacy mode** | Unlock Privacy Mode with their Kiosk PIN. Anyone can turn it on. |
 
 ### Alarm Devices (admin only)
 
@@ -211,8 +284,23 @@ Speakers and Assist satellites a widened ("Them + kiosks" or "Everyone") chore/r
 
 ## Devices tab (admin only)
 
-Every dashboard reports its own display settings (Week day count, Current day first, Rows shown in Week view, etc., the "this device only" fields from the General tab) here once it's been opened at least once.
+Every screen that has opened a Family Hub dashboard shows up here, with each dashboard view on it listed separately. For each one you can see and change:
 
-- Change a device's values and tap **Push** to update it right away. An open dashboard updates instantly, a closed one picks it up next time it's opened.
-- **Identify all**: flashes an identifier on every reporting device at once, to help match entries in the list to physical screens.
-- **Presets**: save any device's current values as a named preset, then apply that preset to any other device.
+- **Device name** (otherwise a guess from the browser, like "Chrome on Android")
+- The **this device only** layout fields from the General tab: Week button shows, Days shown, Rows shown, Current day always first and its navigation step, Month button shows, Show hours of the day, Small screen mode (the Minimal top bar), Calendar top bar style: Hidden, and Hide name pills
+- **Screensaver enabled** and **Participates in Privacy Mode**: these two save immediately, no Push needed.
+- **Dashboards/views on this device**: which views it has opened.
+
+Then:
+
+- **Push** sends the changed values to that screen. An open screen updates instantly; a closed one picks it up next time it opens.
+- **Identify all** flashes a name on every screen at once, to match the list to the physical tablets. (**Identify** in General → This device does the same for just the screen you're on.)
+- **Presets**: save a screen's values as a named preset, then apply it to any other screen.
+
+Every value here is also a Home Assistant entity, so automations can change them. See [Automations & Entities](/docs/features/automations-and-entities#per-screen-entities).
+
+## Developer tools tab (admin only)
+
+- **Discreet mode (hide names & event text)**: shows people as "Person 1", "Person 2" and blanks event names on the calendar and Right Now card, on every screen. Handy for screenshots or a public-facing display. See [Discreet Mode](/docs/features/privacy-mode#discreet-mode).
+- **🐛 Debug Info**: what the card has loaded: events and errors for each calendar, the current settings, and backup history. **Copy** it or **Export to file** to attach to a bug report.
+- **💾 Back up now**: take a settings snapshot right away. Restoring is under [Integration Options → Backups](/docs/integration-options#backups).

@@ -27,11 +27,12 @@ Family Hub is the Home Assistant-native answer: a **12-card ecosystem** built fr
 - **Chores, Rewards, Goals & Routines**: assignable/rotating/first-come chores with a star economy, a redeemable rewards catalog, one-off goals, and Morning/Afternoon/Night routine checklists.
 - **To-Do Lists, Recipe Box & Pantry**: native Home Assistant to-do integration, a searchable recipe box, and pantry/grocery tracking via an optional [Grocy](https://grocy.info) connection.
 - **Active Timers & Screen Saver**: a household-wide timers board, plus an idle-triggered full-screen screen saver (video, camera feed, clock, weather, or photos).
+- **Quick Add**: type or say one line, like "Soccer Tuesday 5pm for Emma" or "tacos for dinner Friday", and it lands in the right place. Works in the calendar and with Assist chat and voice. See [Quick Add](/docs/features/quick-add).
 - **Your own buttons**: add pop-ups to the calendar's More menu with text, photos, links and QR codes (guest Wi-Fi, including UniFi's own QR code, contacts and more), optionally locked to chosen people.
 - **Themes and languages**: 10 built-in themes (including Liquid Glass and two that match Home Assistant's own look), a Theme Builder for your own, and translations into English, German, Spanish, French, Italian, Dutch, Polish and Portuguese (Brazil). See [Theming](/docs/features/theming-and-more).
 
-See [Calendar & Layout](/docs/features/calendar-and-layout) and the rest of the Features section in the sidebar for the full list, or jump straight to [Installation](/docs/installation).
+See [Calendar & Layout](/docs/features/calendar-and-layout) and the rest of the Features section in the sidebar for the full list, browse [all 12 cards](/docs/card-configuration), or jump straight to [Installation](/docs/installation).
 
 ## Status
 
-Family Hub is in active beta development. Source, issue tracker, and releases all live on [GitHub](https://github.com/JVarhol/HA-Family-Hub). There's also ongoing discussion in the [original Home Assistant Community thread](https://community.home-assistant.io/t/ha-family-hub-a-ha-focused-alternative-to-skylight-nori-cozyla-etc/1025747) and on the Home Assistant Discord server.
+Family Hub is in active beta development. Source, issue tracker, and releases all live on [GitHub](https://github.com/JVarhol/HA-Family-Hub). Come say hi, ask questions and share your setup in the [Family Hub discussion on Discord](https://discord.com/channels/330944238910963714/1543630448800960653) or the [Home Assistant Community thread](https://community.home-assistant.io/t/ha-family-hub-a-ha-focused-alternative-to-skylight-nori-cozyla-etc/1025747). Bugs and feature requests go on [GitHub Issues](https://github.com/JVarhol/HA-Family-Hub/issues).
