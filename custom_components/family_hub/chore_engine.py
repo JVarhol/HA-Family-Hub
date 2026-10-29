@@ -30,6 +30,7 @@ from .const import (
     CHORE_KEY_COMPLETED_BY,
     CHORE_KEY_GROUP_ID,
     CHORE_KEY_IMPORTANT,
+    CHORE_KEY_SHOW_ON_CALENDAR,
     CHORE_KEY_IN_PROGRESS,
     CHORE_KEY_NO_APPROVAL_REQUIRED,
     CHORE_KEY_OVERDUE_PENALTY_APPLIED,
@@ -326,6 +327,7 @@ def default_chore(**overrides: Any) -> dict[str, Any]:
         CHORE_KEY_QUANTITY_TOTAL: None,
         CHORE_KEY_QUANTITY_REMAINING: None,
         CHORE_KEY_IMPORTANT: False,
+        CHORE_KEY_SHOW_ON_CALENDAR: False,
         CHORE_KEY_IN_PROGRESS: False,
         CHORE_KEY_GROUP_ID: None,
         CHORE_KEY_STAR_REQUEST: False,
@@ -448,6 +450,7 @@ def create_chore(
             CHORE_KEY_TIMER_MINUTES: timer_minutes,
             CHORE_KEY_ALARM_AUDIENCE: alarm_audience,
             CHORE_KEY_IMPORTANT: bool(payload.get(CHORE_KEY_IMPORTANT)),
+            CHORE_KEY_SHOW_ON_CALENDAR: bool(payload.get(CHORE_KEY_SHOW_ON_CALENDAR)),
             # set by chores_websocket_api's multi-assignee fan-out (ws_create_chore, when the request names more than one assignee)
             CHORE_KEY_GROUP_ID: payload.get(CHORE_KEY_GROUP_ID) or None,
         },
@@ -877,6 +880,7 @@ _EDITABLE_FIELDS = (
     CHORE_KEY_TIMER_MINUTES,
     CHORE_KEY_ALARM_AUDIENCE,
     CHORE_KEY_IMPORTANT,
+    CHORE_KEY_SHOW_ON_CALENDAR,
 )
 
 
@@ -951,6 +955,8 @@ def update_chore(
         chore[CHORE_KEY_NO_APPROVAL_REQUIRED] = bool(fields[CHORE_KEY_NO_APPROVAL_REQUIRED])
     if CHORE_KEY_IMPORTANT in fields:
         chore[CHORE_KEY_IMPORTANT] = bool(fields[CHORE_KEY_IMPORTANT])
+    if CHORE_KEY_SHOW_ON_CALENDAR in fields:
+        chore[CHORE_KEY_SHOW_ON_CALENDAR] = bool(fields[CHORE_KEY_SHOW_ON_CALENDAR])
     chore[CHORE_KEY_UPDATED_AT] = _now_iso()
     return chore
 
@@ -965,3 +971,97 @@ def delete_chore(chores: dict[str, dict[str, Any]], chore_id: str) -> None:
             f"{len(still_depended_on)} other chore(s) still depend on this one - remove that link first.",
         )
     del chores[chore_id]
+
+
+# ------------------------------------------------------------------ schedule (the Chores card's 📅 view)
+
+SCHEDULE_MAX_PER_CHORE = 120
+
+
+def _occurrence_assignee(chore: dict[str, Any], steps_ahead: int) -> Optional[str]:
+    """who a chore lands on `steps_ahead` recurrences from now (auto-rotation moves along its group each time)"""
+    mode = chore.get("assignment_mode")
+    if mode in (CHORE_ASSIGNMENT_MODE_CHORE_BIN, CHORE_ASSIGNMENT_MODE_FIRST_COME_FIRST_SERVED):
+        return CHORE_BIN_SENTINEL
+    if mode == CHORE_ASSIGNMENT_MODE_AUTO_ROTATION:
+        group = chore.get("rotation_group") or []
+        if group:
+            return group[(int(chore.get("rotation_pointer") or 0) + steps_ahead) % len(group)]
+        return CHORE_BIN_SENTINEL
+    return chore.get("assigned_to")
+
+
+def project_schedule(
+    chores: dict[str, dict[str, Any]], start: datetime, end: datetime, now: Optional[datetime] = None
+) -> dict[str, Any]:
+    """Every chore's occurrences between start and end, for an overview: the current one as it stands (open,
+    overdue, waiting for approval, or done) and, for repeating chores, the ones still to come, assuming each is
+    done on its day. Uses the same rules the chores themselves follow (_compute_next_recur_due, the due offset,
+    rotation). Sensor-triggered chores can't be predicted, so only their current state shows.
+
+    Returns {"items": [{chore_id, title, assigned_to, due, status, projected, star_value, important, in_progress,
+    rotation}], "undated": [open chores with no due date]}. Times are ISO strings in UTC."""
+    now = now or dt_util.utcnow()
+    items: list[dict[str, Any]] = []
+    undated: list[dict[str, Any]] = []
+
+    def add(chore: dict[str, Any], when: datetime, status: str, projected: bool, assignee: Optional[str]) -> None:
+        if start <= when < end:
+            items.append({
+                "chore_id": chore.get("id"),
+                "title": chore.get("title") or "",
+                "assigned_to": assignee,
+                "due": when.isoformat(),
+                "status": status,
+                "projected": projected,
+                "star_value": int(chore.get("star_value") or 0),
+                "important": bool(chore.get(CHORE_KEY_IMPORTANT)),
+                "in_progress": bool(chore.get(CHORE_KEY_IN_PROGRESS)) and not projected,
+                "rotation": chore.get("assignment_mode") == CHORE_ASSIGNMENT_MODE_AUTO_ROTATION,
+            })
+
+    for chore in chores.values():
+        if not isinstance(chore, dict) or chore.get(CHORE_KEY_STAR_REQUEST):
+            continue
+        status = chore.get("status")
+        offset = timedelta(minutes=int(chore.get(CHORE_KEY_RECUR_DUE_OFFSET_MINUTES) or 0))
+        due = _parse_dt(chore.get("due_date"))
+        recurring = bool(chore.get("recur_type"))
+        # the occurrence we're on now, and when it opened (what the next repeat counts from)
+        anchor: Optional[datetime] = None
+        steps = 0
+        if status == CHORE_STATUS_APPROVED:
+            approved = _parse_dt(chore.get(CHORE_KEY_APPROVED_AT))
+            if approved:
+                add(chore, approved, "done", False, chore.get("assigned_to"))
+            nxt = _parse_dt(chore.get(CHORE_KEY_RECUR_NEXT_DUE))
+            if recurring and nxt:
+                # rotation already moved on when it was approved
+                add(chore, nxt + offset, "upcoming", True, _occurrence_assignee(chore, 0))
+                anchor, steps = nxt, 1
+        else:
+            if due is None:
+                if status in (CHORE_STATUS_OPEN, CHORE_STATUS_PENDING_VERIFICATION):
+                    undated.append({"chore_id": chore.get("id"), "title": chore.get("title") or "",
+                                    "assigned_to": chore.get("assigned_to"), "status": "waiting" if status == CHORE_STATUS_PENDING_VERIFICATION else "open",
+                                    "star_value": int(chore.get("star_value") or 0), "important": bool(chore.get(CHORE_KEY_IMPORTANT))})
+            else:
+                label = "waiting" if status == CHORE_STATUS_PENDING_VERIFICATION else ("overdue" if due < now else "open")
+                add(chore, due, label, False, chore.get("assigned_to"))
+                if recurring:
+                    # steps=1: a rotation's next one goes to the next person in the group
+                    anchor, steps = due - offset, 1
+        if not recurring or anchor is None:
+            continue
+        for _ in range(SCHEDULE_MAX_PER_CHORE):
+            nxt = _compute_next_recur_due(chore, anchor)
+            if nxt is None or nxt <= anchor:
+                break
+            when = nxt + offset
+            if when >= end:
+                break
+            add(chore, when, "upcoming", True, _occurrence_assignee(chore, steps))
+            anchor = nxt
+            steps += 1
+    items.sort(key=lambda x: x["due"])
+    return {"items": items, "undated": undated}

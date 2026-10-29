@@ -42,7 +42,7 @@
       },
       "grocy": {
         "title": "Grocy (optional)",
-        "description": "Connect a self-hosted Grocy instance so the calendar card's Meal Suggestions box can offer 'Add from Grocy' - pulling in a recipe's name plus a link back to view it in Grocy. Leave both fields blank if you don't use Grocy; this can be added later from Configure.",
+        "description": "Connect a self-hosted Grocy instance to add Grocy recipes to your meals, the recipe viewer and importer, a grocery list from the week's meals, your Grocy shopping list, stock on the My Pantry card, and Expiring Soon and Low Stock lists. Leave both fields blank if you don't use Grocy; this can be added later from Configure.",
         "data": {
           "grocy_url": "Grocy URL (e.g. http://homeassistant.local:9192)",
           "grocy_api_key": "Grocy API key"
@@ -93,7 +93,7 @@
       },
       "grocy": {
         "title": "Grocy",
-        "description": "Optional: connect a self-hosted Grocy instance so the calendar card's Meal Suggestions box can offer 'Add from Grocy' - pulling in a recipe's name plus a link back to view it in Grocy (nothing else is copied in). Leave both fields blank if you don't use Grocy. The API key is stored here, in Family Hub's own integration settings - not in the card's Settings panel.",
+        "description": "Optional: connect a self-hosted Grocy instance to add Grocy recipes to your meals, the recipe viewer and importer, a grocery list from the week's meals, your Grocy shopping list, stock on the My Pantry card, and Expiring Soon and Low Stock lists. Leave both fields blank if you don't use Grocy. The API key is stored here, in Family Hub's own integration settings - not in the card's Settings panel.",
         "data": {
           "grocy_url": "Grocy URL (e.g. http://homeassistant.local:9192)",
           "grocy_api_key": "Grocy API key"
@@ -657,7 +657,33 @@
       "ordinal_-1": "last",
       "weeks": "weeks",
       "months": "months",
-      "days": "days"
+      "days": "days",
+      "schedule_toggle_show": "Show the chore schedule",
+      "schedule_toggle_hide": "Back to the chore board",
+      "schedule_this_week": "This week",
+      "schedule_next_week": "Next week",
+      "schedule_month": "Month",
+      "schedule_previous": "Previous",
+      "schedule_next": "Next",
+      "schedule_today": "Today",
+      "schedule_nothing_due": "Nothing due",
+      "schedule_loading": "Loading…",
+      "schedule_error": "Couldn't load the schedule.",
+      "schedule_overdue": "Overdue",
+      "schedule_waiting": "Waiting for approval",
+      "schedule_done": "Done",
+      "schedule_takes_turns": "Takes turns",
+      "schedule_projected_title": "A repeat still to come, if the one before is done on time",
+      "schedule_summary_due": "%n% to do",
+      "schedule_summary_overdue": "%n% overdue",
+      "schedule_summary_waiting": "%n% waiting for approval",
+      "schedule_summary_done": "%n% done",
+      "schedule_summary_stars": "%n% ⭐ to earn",
+      "schedule_no_due_date": "No due date",
+      "schedule_more": "+%n% more",
+      "schedule_empty": "No chores are due here. Give a chore a due date (and a repeat) to see it on the schedule.",
+      "schedule_legend": "Faded ones are repeats still to come, if each one is done on time.",
+      "schedule_chore_bin": "Chore Bin"
     },
     "daily_digest": {
       "title": "Daily Digest",

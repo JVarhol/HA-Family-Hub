@@ -6,7 +6,7 @@ import hmac
 import logging
 import secrets
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import voluptuous as vol
@@ -29,6 +29,7 @@ from .const import (
     CHORE_KEY_GROUP_ID,
     CHORE_KEY_STAR_REQUEST,
     CHORE_KEY_IMPORTANT,
+    CHORE_KEY_SHOW_ON_CALENDAR,
     CHORE_KEY_RECUR_DUE_OFFSET_MINUTES,
     CHORE_KEY_RECUR_INTERVAL_UNIT,
     CHORE_KEY_RECUR_MONTH_NTH,
@@ -746,6 +747,30 @@ async def ws_list_chores(hass: HomeAssistant, connection: websocket_api.ActiveCo
 
 
 @websocket_api.websocket_command(
+    {vol.Required("type"): "family_hub/chores/schedule", vol.Required("start"): str, vol.Required("end"): str}
+)
+@websocket_api.async_response
+async def ws_chores_schedule(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Chores between start and end (ISO), with repeating ones projected ahead - the Chores card's 📅 Schedule view.
+    Read-only and open to everyone, like the board itself. At most 62 days at a time."""
+    entry_data = _entry_data_or_error(hass, connection, msg["id"])
+    if entry_data is None:
+        return
+    start = dt_util.parse_datetime(msg["start"])
+    end = dt_util.parse_datetime(msg["end"])
+    if start is None or end is None or end <= start:
+        connection.send_error(msg["id"], "invalid_format", "start and end must be ISO date-times, end after start.")
+        return
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=dt_util.get_default_time_zone())
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=dt_util.get_default_time_zone())
+    if end - start > timedelta(days=62):
+        end = start + timedelta(days=62)
+    connection.send_result(msg["id"], chore_engine.project_schedule(entry_data["chores"], start, end))
+
+
+@websocket_api.websocket_command(
     {
         vol.Required("type"): "family_hub/chores/create",
         vol.Required("title"): str,
@@ -780,6 +805,7 @@ async def ws_list_chores(hass: HomeAssistant, connection: websocket_api.ActiveCo
         # const.py's CHORE_KEY_ALARM_AUDIENCE/TIMER_ALARM_AUDIENCES.
         vol.Optional(CHORE_KEY_ALARM_AUDIENCE): vol.Any(str, None),
         vol.Optional(CHORE_KEY_IMPORTANT): bool,
+        vol.Optional(CHORE_KEY_SHOW_ON_CALENDAR): bool,
     }
 )
 @websocket_api.async_response
@@ -860,6 +886,7 @@ async def ws_create_chore(hass: HomeAssistant, connection: websocket_api.ActiveC
         vol.Optional(CHORE_KEY_ALARM_AUDIENCE): vol.Any(str, None),
         # see ws_create_chore's identical field.
         vol.Optional(CHORE_KEY_IMPORTANT): bool,
+        vol.Optional(CHORE_KEY_SHOW_ON_CALENDAR): bool,
     }
 )
 @websocket_api.async_response
@@ -3874,6 +3901,7 @@ async def ws_privacy_mode_disable_with_pin(hass: HomeAssistant, connection: webs
 
 ALL_COMMANDS = (
     ws_list_chores,
+    ws_chores_schedule,
     ws_create_chore,
     ws_update_chore,
     ws_delete_chore,

@@ -51,6 +51,7 @@ from . import routine_engine
 from . import store as chores_store
 from . import chores_websocket_api as chores_ws_api
 from . import device_settings_websocket_api as device_settings_ws_api
+from . import quick_add_ha
 
 from .const import (
     DEFAULT_REMINDERS_LIST_NAME,
@@ -10107,6 +10108,18 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     websocket_api.async_register_command(hass, _ws_get_calendar_colors)
     websocket_api.async_register_command(hass, _ws_remember_calendar_card_entities)
     websocket_api.async_register_command(hass, _ws_create_calendar_event)
+    # Quick Add: the More menu box, the family_hub.quick_add action, and Assist (chat and voice) sentences
+    quick_add_ha.register(hass)
+    try:
+        from homeassistant.helpers.start import async_at_started
+
+        async def _register_quick_add_assist(_hass: HomeAssistant | None = None) -> None:
+            if not hass.data[DOMAIN].get("quick_add_assist"):
+                hass.data[DOMAIN]["quick_add_assist"] = quick_add_ha.register_assist(hass)
+
+        async_at_started(hass, _register_quick_add_assist)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("Family Hub: could not schedule the Quick Add Assist sentences: %s", err)
     websocket_api.async_register_command(hass, _ws_delete_calendar_event)
     websocket_api.async_register_command(hass, _ws_update_calendar_event)
     websocket_api.async_register_command(hass, _ws_list_users)

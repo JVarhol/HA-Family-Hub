@@ -42,7 +42,7 @@
       },
       "grocy": {
         "title": "Grocy (optional)",
-        "description": "Verbinde eine selbst gehostete Grocy-Instanz, damit das Feld Essensvorschläge der Kalenderkarte 'Aus Grocy hinzufügen' anbieten kann - mit dem Namen eines Rezepts und einem Link, um es in Grocy anzusehen. Lass beide Felder leer, wenn du Grocy nicht nutzt; das kann später über Konfigurieren ergänzt werden.",
+        "description": "Verbinde eine selbst gehostete Grocy-Instanz für Grocy-Rezepte im Speiseplan, die Rezeptansicht und den Rezeptimport, eine Einkaufsliste aus den Gerichten der Woche, deine Grocy-Einkaufsliste, den Vorrat auf der Karte Mein Vorrat sowie die Listen Läuft bald ab und Niedriger Bestand. Lass beide Felder leer, wenn du Grocy nicht nutzt; das kann später über Konfigurieren ergänzt werden.",
         "data": {
           "grocy_url": "Grocy-URL (z. B. http://homeassistant.local:9192)",
           "grocy_api_key": "Grocy-API-Schlüssel"
@@ -93,7 +93,7 @@
       },
       "grocy": {
         "title": "Grocy",
-        "description": "Optional: Verbinde eine selbst gehostete Grocy-Instanz, damit das Feld Essensvorschläge der Kalenderkarte 'Aus Grocy hinzufügen' anbieten kann - mit dem Namen eines Rezepts und einem Link, um es in Grocy anzusehen (sonst wird nichts übernommen). Lass beide Felder leer, wenn du Grocy nicht nutzt. Der API-Schlüssel wird hier gespeichert, in den Integrationseinstellungen von Family Hub - nicht im Einstellungsbereich der Karte.",
+        "description": "Optional: Verbinde eine selbst gehostete Grocy-Instanz für Grocy-Rezepte im Speiseplan, die Rezeptansicht und den Rezeptimport, eine Einkaufsliste aus den Gerichten der Woche, deine Grocy-Einkaufsliste, den Vorrat auf der Karte Mein Vorrat sowie die Listen Läuft bald ab und Niedriger Bestand. Lass beide Felder leer, wenn du Grocy nicht nutzt. Der API-Schlüssel wird hier in den Einstellungen der Family-Hub-Integration gespeichert - nicht in den Einstellungen der Karte.",
         "data": {
           "grocy_url": "Grocy-URL (z. B. http://homeassistant.local:9192)",
           "grocy_api_key": "Grocy-API-Schlüssel"
@@ -363,7 +363,14 @@
       "category": "Kategorie",
       "repeat_current": "aktuell",
       "repeat_left": "noch %n%",
-      "repeat_until": "bis %d%"
+      "repeat_until": "bis %d%",
+      "chore": "Aufgabe",
+      "chore_due": "Fällig",
+      "chore_stars": "Sterne",
+      "chore_mark_done": "✅ Erledigt",
+      "chore_bin": "Aufgaben-Eimer",
+      "chore_bin_hint": "Diese Aufgabe liegt im Aufgaben-Eimer. Schnapp sie dir auf der Aufgaben-Karte.",
+      "chore_done_failed": "Konnte nicht als erledigt markiert werden. Das kann nur die Person, für die sie ist, oder wer die Aufgaben anderer erledigen darf."
     },
     "more_menu_tpl": {
       "blank_name": "Leer",
@@ -1065,7 +1072,33 @@
       "star_request_need_title": "Sag, wofür es war.",
       "star_request_need_stars": "Frag nach 1 bis 100 Sternen.",
       "star_request_failed": "Die Anfrage konnte nicht gesendet werden.",
-      "star_request_for": "Für"
+      "star_request_for": "Für",
+      "schedule_toggle_show": "Aufgabenplan anzeigen",
+      "schedule_toggle_hide": "Zurück zur Aufgabentafel",
+      "schedule_this_week": "Diese Woche",
+      "schedule_next_week": "Nächste Woche",
+      "schedule_month": "Monat",
+      "schedule_previous": "Zurück",
+      "schedule_next": "Weiter",
+      "schedule_today": "Heute",
+      "schedule_nothing_due": "Nichts fällig",
+      "schedule_loading": "Wird geladen…",
+      "schedule_error": "Der Plan konnte nicht geladen werden.",
+      "schedule_overdue": "Überfällig",
+      "schedule_waiting": "Wartet auf Freigabe",
+      "schedule_done": "Erledigt",
+      "schedule_takes_turns": "Wird abgewechselt",
+      "schedule_projected_title": "Eine kommende Wiederholung, wenn die vorige rechtzeitig erledigt wird",
+      "schedule_summary_due": "%n% zu erledigen",
+      "schedule_summary_overdue": "%n% überfällig",
+      "schedule_summary_waiting": "%n% warten auf Freigabe",
+      "schedule_summary_done": "%n% erledigt",
+      "schedule_summary_stars": "%n% ⭐ zu verdienen",
+      "schedule_no_due_date": "Ohne Fälligkeitsdatum",
+      "schedule_more": "+%n% weitere",
+      "schedule_empty": "Hier ist keine Aufgabe fällig. Gib einer Aufgabe ein Fälligkeitsdatum (und eine Wiederholung), um sie im Plan zu sehen.",
+      "schedule_legend": "Blasse Einträge sind kommende Wiederholungen, wenn jede rechtzeitig erledigt wird.",
+      "schedule_chore_bin": "Aufgabenkiste"
     },
     "daily_digest": {
       "title": "Tägliche Zusammenfassung",
@@ -1398,8 +1431,8 @@
       },
       "board": {
         "drag_to_resize": "Ziehen, um Zeilen anzupassen",
-        "no_lists": "Noch keine Listen eingerichtet - tippe auf das Zahnrad, um eine oder mehrere To-Do-Listen auszuwählen.",
-        "no_lists_grocy": "Noch keine Listen eingerichtet - tippe auf das Zahnrad, um eine oder mehrere To-Do- oder Grocy-Listen auszuwählen."
+        "no_lists": "Noch keine Listen - tippe auf die +-Schaltfläche und wähle im Tab Liste(n) eine oder mehrere To-Do-Listen aus.",
+        "no_lists_grocy": "Noch keine Listen - tippe auf die +-Schaltfläche und wähle im Tab Liste(n) eine oder mehrere To-Do- oder Grocy-Listen aus."
       },
       "column": {
         "completed": "Erledigt",
@@ -2423,7 +2456,8 @@
       "added_x_to_grocy_with_x_ingredient_x": "\"%0%\" mit %1% Zutat(en) zu Grocy hinzugefügt.",
       "x_need_x_to_be_added_by_hand_x": " %0% muss/müssen von Hand hinzugefügt werden: %2%.",
       "grocy_isn_t_connected_yet_set_it_up_3": "Grocy ist noch nicht verbunden — richte es unter Einstellungen > Geräte & Dienste > Family Hub > Konfigurieren > Grocy ein.",
-      "px_pairs_with_transparency_above_for_a": "px) - zusammen mit der Transparenz oben für einen \"Liquid Glass\"-Look"
+      "px_pairs_with_transparency_above_for_a": "px) - zusammen mit der Transparenz oben für einen \"Liquid Glass\"-Look",
+      "show_on_the_calendar_on_its_due_date": "📅 Am Fälligkeitstag im Kalender zeigen"
     },
     "privacy": {
       "locked_label": "Privatsphäre-Modus ist an - zum Entsperren tippen",
@@ -2457,6 +2491,64 @@
       "saved": "Gespeichert.",
       "restored": "%n% Standardeintrag/-einträge wiederhergestellt.",
       "nothing_to_restore": "Alle Standardeinträge sind bereits vorhanden."
+    },
+    "permissions": {
+      "group_chores": "Aufgaben",
+      "group_rewards": "Belohnungen",
+      "group_menu": "Speiseplan",
+      "group_wishlists": "Wunschlisten",
+      "group_calendar": "Kalender",
+      "group_routines": "Routinen",
+      "group_privacy": "Privatsphäre",
+      "can_assign_label": "Anderen zuweisen",
+      "can_assign_hint": "Darf anderen Aufgaben zuweisen, nicht nur selbst welche übernehmen.",
+      "can_edit_chore_label": "Offene Aufgaben bearbeiten",
+      "can_edit_chore_hint": "Darf offene Aufgaben bearbeiten (Sterne, Fälligkeit usw.).",
+      "can_star_override_label": "Aufgaben ohne Freigabe",
+      "can_star_override_hint": "Darf Aufgaben ohne Freigabe anlegen oder bearbeiten, deren Sterne sofort ausgezahlt werden.",
+      "can_verify_label": "Erledigtes freigeben",
+      "can_verify_hint": "Darf Aufgaben (und Sternanfragen) freigeben, die andere als erledigt markiert haben.",
+      "can_complete_any_label": "Aufgaben anderer erledigen",
+      "can_complete_any_hint": "Darf jede Aufgabe als erledigt markieren, nicht nur die eigenen.",
+      "no_approval_required_label": "Keine Freigabe nötig",
+      "no_approval_required_hint": "Eigene erledigte Aufgaben werden sofort freigegeben und die Sterne ausgezahlt.",
+      "can_override_rewards_label": "Sternkosten ändern",
+      "can_override_rewards_hint": "Darf Belohnungskosten ändern, Sterne bei allen hinzufügen oder abziehen und den Sternverlauf rückgängig machen oder löschen.",
+      "can_add_rewards_label": "Zum Katalog hinzufügen",
+      "can_add_rewards_hint": "Darf Belohnungen mit Sternkosten in den Katalog aufnehmen. Ohne dieses Recht wird daraus ein Vorschlag, der freigegeben werden muss.",
+      "can_edit_menu_label": "Speiseplan bearbeiten",
+      "can_edit_menu_hint": "Darf den Wochen-Speiseplan bearbeiten. Ohne dieses Recht kann man trotzdem für jeden Tag ein Gericht vorschlagen, und jemand mit diesem Recht entscheidet.",
+      "can_see_wishlist_claims_label": "Reservierungen sehen",
+      "can_see_wishlist_claims_hint": "Sieht, wer was auf den Wunschlisten anderer reserviert hat. Die Besitzerin oder der Besitzer einer Liste sieht das nie. Standardmäßig aus, damit ein gemeinsames Kiosk-Konto keine Überraschung verrät.",
+      "can_delete_event_label": "Kalendertermine löschen",
+      "can_delete_event_hint": "Darf Kalendertermine löschen, wenn der Kalender das erlaubt.",
+      "can_edit_event_label": "Kalendertermine bearbeiten/verschieben",
+      "can_edit_event_hint": "Darf Kalendertermine bearbeiten und im Bearbeiten-Modus auf einen anderen Tag ziehen, wenn der Kalender das erlaubt.",
+      "can_manage_own_routines_label": "Eigene Routinen verwalten",
+      "can_manage_own_routines_hint": "Darf Einträge in den eigenen Morgen-, Nachmittags- und Abendroutinen hinzufügen, bearbeiten, entfernen und umsortieren.",
+      "can_manage_any_routines_label": "Routinen aller verwalten",
+      "can_manage_any_routines_hint": "Darf die Routineeinträge aller hinzufügen, bearbeiten, entfernen und umsortieren.",
+      "can_toggle_privacy_mode_label": "Privatsphäre-Modus ausschalten",
+      "can_toggle_privacy_mode_hint": "Darf den Privatsphäre-Modus mit der eigenen Kiosk-PIN wieder ausschalten. Einschalten kann ihn jeder."
+    },
+    "quick_add": {
+      "menu": "Schnell hinzufügen",
+      "menu_title": "Termin, Erinnerung, Mahlzeit, Aufgabe, Belohnung oder Listeneintrag einfach eintippen",
+      "title": "Schnell hinzufügen",
+      "hint": "Schreib es, wie du es sagen würdest: ein Termin, eine Erinnerung, eine Mahlzeit, eine Aufgabe, eine Belohnung oder etwas für eine Liste.",
+      "placeholder": "Soccer Tuesday 5pm for Emma",
+      "add": "Hinzufügen",
+      "adding": "Wird hinzugefügt…",
+      "failed": "Konnte nicht hinzugefügt werden.",
+      "kind_pick_label": "Nicht richtig? Es ist:",
+      "examples_label": "Probier:",
+      "english_only": "Schnell hinzufügen versteht vorerst nur Englisch.",
+      "kind_event": "Termin",
+      "kind_reminder": "Erinnerung",
+      "kind_meal": "Mahlzeit",
+      "kind_chore": "Aufgabe",
+      "kind_reward": "Belohnung",
+      "kind_list_item": "Listeneintrag"
     }
   }
 }

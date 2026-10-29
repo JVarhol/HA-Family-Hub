@@ -1426,8 +1426,10 @@ class FamilyTodayCard extends HTMLElement {
           }
         })
       );
+      const chores = await this._fetchTodayChoreItems();
       this._todayReminders = fetchedLists
         .flat()
+        .concat(chores)
         .filter((r) => this._dateKey(r.due) === dateKey)
         .sort((a, b) => a.due - b.due);
     } catch (e) {
@@ -1435,8 +1437,56 @@ class FamilyTodayCard extends HTMLElement {
     }
     this._render();
   }
+  // Chores with "Show on the calendar" ticked (chore.show_on_calendar), open and due, shaped like reminders - same rules as the calendar card's _fetchCalendarChoreItems
+  async _fetchTodayChoreItems() {
+    if (!this._hass || !this._hass.connection) return [];
+    let chores = [];
+    try {
+      const res = await this._hass.connection.sendMessagePromise({ type: "family_hub/chores/list" });
+      chores = Array.isArray(res && res.chores) ? res.chores : [];
+    } catch (e) {
+      return [];
+    }
+    const settings = this._getSettings();
+    const profiles = settings.userProfiles || {};
+    const people = this._getPeople() || [];
+    const out = [];
+    for (const c of chores) {
+      if (!c || !c.show_on_calendar || !c.due_date || c.status !== "open" || c.star_request) continue;
+      const raw = String(c.due_date);
+      const due = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? new Date(`${raw}T09:00:00`) : new Date(raw);
+      if (isNaN(due.getTime())) continue;
+      const uid = c.assigned_to && c.assigned_to !== "chore_bin" ? c.assigned_to : null;
+      const profile = (uid && profiles[uid]) || {};
+      const column = profile.primaryCalendar ? people.find((p) => p.entity === profile.primaryCalendar) : null;
+      out.push({
+        uid: `chore:${c.id}`,
+        summary: c.title || "(untitled)",
+        due,
+        description: c.notes || "",
+        rollover: false,
+        listEntity: "",
+        color: (uid && (profile.color || (column && column.color))) || null,
+        personName: uid ? (column && column.name) || "" : this._t("event_info.chore_bin", "Chore Bin"),
+        isFamily: !uid,
+        isChore: true,
+        choreId: c.id,
+        choreAssignedTo: uid,
+      });
+    }
+    return out;
+  }
   async _markReminderDone(uid, listEntity) {
     if (!this._hass || !uid) return;
+    if (String(uid).startsWith("chore:")) {
+      try {
+        await this._hass.connection.sendMessagePromise({ type: "family_hub/chores/complete", chore_id: String(uid).slice(6) });
+      } catch (e) {
+        window.alert(this._t("event_info.chore_done_failed", "Couldn't mark it done. Only the person it's for, or someone allowed to complete anyone's chores, can."));
+      }
+      this._fetchTodayReminders();
+      return;
+    }
     try {
       await this._hass.callService("todo", "update_item", { item: uid, status: "completed" }, { entity_id: listEntity || this._config.reminders_entity });
     } catch (e) {
@@ -2480,7 +2530,27 @@ background-image: var(--fc-bg-overlay-image, none);
       actionHandler: m.link ? () => window.open(m.link, "_blank", "noopener") : null,
     });
   }
+  _openChoreDetail(r) {
+    const dueTime = this._fmtTime(r.due);
+    const rows = [{ text: this._t("today.detail.due_x", `Due ${dueTime}`, { time: dueTime }) }];
+    if (r.description) rows.push({ text: __fhEsc(r.description), secondary: true });
+    if (!r.choreAssignedTo) rows.push({ text: this._t("event_info.chore_bin_hint", "This chore is in the Chore Bin. Grab it on the Chores card."), secondary: true });
+    this._openDetail({
+      chip: `\u{1F9F9} ${r.personName ? `${this._t("event_info.chore", "Chore")} • ${r.personName}` : this._t("event_info.chore", "Chore")}`,
+      chipColor: r.color || TODAY_REMINDER_COLOR,
+      title: r.summary,
+      rows,
+      actionLabel: r.choreAssignedTo ? `✓ ${this._t("today.detail.mark_done", "Mark done")}` : null,
+      actionHandler: r.choreAssignedTo
+        ? () => {
+            this._markReminderDone(r.uid, "");
+            this._closeDetail();
+          }
+        : null,
+    });
+  }
   _openReminderDetail(r) {
+    if (r.isChore) return this._openChoreDetail(r);
     const dueTime = this._fmtTime(r.due);
     const rows = [{ text: this._t("today.detail.due_x", `Due ${dueTime}`, { time: dueTime }) }];
     if (r.description) rows.push({ text: r.description, secondary: true });
@@ -2568,7 +2638,7 @@ background-image: var(--fc-bg-overlay-image, none);
       remindersEl.innerHTML = this._todayReminders
         .map(
           (r, idx) =>
-            `<div class="row" data-idx="${idx}"><span class="dot" style="background:${r.color || TODAY_REMINDER_COLOR}"></span><span class="label">&#128276; ${r.summary}${r.personName ? ` <span class="reminder-owner">(${r.personName})</span>` : ""}</span><span class="meta">${this._fmtTime(r.due)}</span><button type="button" class="done-btn" data-uid="${r.uid}" data-list-entity="${r.listEntity}">${doneLabel}</button></div>`
+            `<div class="row" data-idx="${idx}"><span class="dot" style="background:${r.color || TODAY_REMINDER_COLOR}"></span><span class="label">${r.isChore ? "&#129529;" : "&#128276;"} ${r.isChore ? __fhEsc(r.summary) : r.summary}${r.personName ? ` <span class="reminder-owner">(${r.isChore ? __fhEsc(r.personName) : r.personName})</span>` : ""}</span><span class="meta">${this._fmtTime(r.due)}</span>${r.isChore && !r.choreAssignedTo ? "" : `<button type="button" class="done-btn" data-uid="${r.uid}" data-list-entity="${r.listEntity}">${doneLabel}</button>`}</div>`
         )
         .join("");
       remindersEl.querySelectorAll(".done-btn").forEach((btn) => {
@@ -2607,7 +2677,7 @@ background-image: var(--fc-bg-overlay-image, none);
       combined.push({ kind: "event", idx, start: ev.start, allDay: !!ev.allDay, color: ev.color, isReminder: false, summary: ev.summary });
     });
     (this._todayReminders || []).forEach((r, idx) => {
-      combined.push({ kind: "reminder", idx, start: r.due, allDay: false, color: r.color || TODAY_REMINDER_COLOR, isReminder: true, summary: r.summary });
+      combined.push({ kind: "reminder", idx, start: r.due, allDay: false, color: r.color || TODAY_REMINDER_COLOR, isReminder: true, isChore: !!r.isChore, summary: r.isChore ? __fhEsc(r.summary) : r.summary });
     });
     combined.sort((a, b) => (a.allDay === b.allDay ? a.start - b.start : a.allDay ? -1 : 1));
 
@@ -2617,7 +2687,7 @@ background-image: var(--fc-bg-overlay-image, none);
             (it) =>
               `<div class="msd-item" data-kind="${it.kind}" data-idx="${it.idx}" style="background:${it.color};color:${this._textColorFor(it.color)}">` +
               `<span class="msd-item-time">${it.allDay ? this._t("today.detail.all_day", "All day") : this._fmtTime(it.start)}</span>` +
-              `<span class="msd-item-summary">${it.isReminder ? "&#128276; " : ""}${it.summary}</span>` +
+              `<span class="msd-item-summary">${it.isReminder ? (it.isChore ? "&#129529; " : "&#128276; ") : ""}${it.summary}</span>` +
               `</div>`
           )
           .join("")

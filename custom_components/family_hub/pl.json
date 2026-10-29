@@ -42,7 +42,7 @@
       },
       "grocy": {
         "title": "Grocy (opcjonalnie)",
-        "description": "Połącz własną instancję Grocy, aby pole Propozycje posiłków na karcie kalendarza oferowało 'Dodaj z Grocy' - z nazwą przepisu i linkiem do jego podglądu w Grocy. Pozostaw oba pola puste, jeśli nie używasz Grocy; można to dodać później w Konfiguruj.",
+        "description": "Połącz własną instancję Grocy, aby dodawać przepisy z Grocy do posiłków, korzystać z podglądu i importu przepisów, listy zakupów z posiłków na cały tydzień, listy zakupów Grocy, zapasów na karcie Moja spiżarnia oraz list Wkrótce się przeterminuje i Niski stan. Zostaw oba pola puste, jeśli nie używasz Grocy; możesz to dodać później w Konfiguruj.",
         "data": {
           "grocy_url": "Adres URL Grocy (np. http://homeassistant.local:9192)",
           "grocy_api_key": "Klucz API Grocy"
@@ -93,7 +93,7 @@
       },
       "grocy": {
         "title": "Grocy",
-        "description": "Opcjonalnie: połącz własną instancję Grocy, aby pole Propozycje posiłków na karcie kalendarza oferowało 'Dodaj z Grocy' - z nazwą przepisu i linkiem do jego podglądu w Grocy (nic więcej nie jest kopiowane). Pozostaw oba pola puste, jeśli nie używasz Grocy. Klucz API jest przechowywany tutaj, w ustawieniach integracji Family Hub - nie w panelu Ustawień karty.",
+        "description": "Opcjonalnie: połącz własną instancję Grocy, aby dodawać przepisy z Grocy do posiłków, korzystać z podglądu i importu przepisów, listy zakupów z posiłków na cały tydzień, listy zakupów Grocy, zapasów na karcie Moja spiżarnia oraz list Wkrótce się przeterminuje i Niski stan. Zostaw oba pola puste, jeśli nie używasz Grocy. Klucz API jest przechowywany tutaj, w ustawieniach integracji Family Hub - nie w ustawieniach karty.",
         "data": {
           "grocy_url": "Adres URL Grocy (np. http://homeassistant.local:9192)",
           "grocy_api_key": "Klucz API Grocy"
@@ -363,7 +363,14 @@
       "category": "Kategoria",
       "repeat_current": "obecne",
       "repeat_left": "zostało %n%",
-      "repeat_until": "do %d%"
+      "repeat_until": "do %d%",
+      "chore": "Obowiązek",
+      "chore_due": "Termin",
+      "chore_stars": "Gwiazdki",
+      "chore_mark_done": "✅ Oznacz jako wykonane",
+      "chore_bin": "Pula obowiązków",
+      "chore_bin_hint": "Ten obowiązek jest w puli obowiązków. Weź go na karcie Obowiązki.",
+      "chore_done_failed": "Nie udało się oznaczyć jako wykonane. Może to zrobić tylko osoba, dla której jest ten obowiązek, lub ktoś, kto może kończyć cudze obowiązki."
     },
     "more_menu_tpl": {
       "blank_name": "Pusty",
@@ -1065,7 +1072,33 @@
       "star_request_need_title": "Napisz, za co to było.",
       "star_request_need_stars": "Poproś o 1 do 100 gwiazdek.",
       "star_request_failed": "Nie udało się wysłać prośby.",
-      "star_request_for": "Dla"
+      "star_request_for": "Dla",
+      "schedule_toggle_show": "Pokaż harmonogram obowiązków",
+      "schedule_toggle_hide": "Wróć do tablicy obowiązków",
+      "schedule_this_week": "Ten tydzień",
+      "schedule_next_week": "Następny tydzień",
+      "schedule_month": "Miesiąc",
+      "schedule_previous": "Poprzedni",
+      "schedule_next": "Następny",
+      "schedule_today": "Dziś",
+      "schedule_nothing_due": "Nic do zrobienia",
+      "schedule_loading": "Ładowanie…",
+      "schedule_error": "Nie udało się wczytać harmonogramu.",
+      "schedule_overdue": "Zaległe",
+      "schedule_waiting": "Czeka na zatwierdzenie",
+      "schedule_done": "Zrobione",
+      "schedule_takes_turns": "Na zmianę",
+      "schedule_projected_title": "Powtórzenie, które dopiero nadejdzie, jeśli poprzednie zostanie zrobione na czas",
+      "schedule_summary_due": "Do zrobienia: %n%",
+      "schedule_summary_overdue": "Zaległe: %n%",
+      "schedule_summary_waiting": "Czeka na zatwierdzenie: %n%",
+      "schedule_summary_done": "Zrobione: %n%",
+      "schedule_summary_stars": "Do zdobycia: %n% ⭐",
+      "schedule_no_due_date": "Bez terminu",
+      "schedule_more": "+%n% więcej",
+      "schedule_empty": "Brak obowiązków w tym okresie. Nadaj obowiązkowi termin (i powtarzanie), aby zobaczyć go w harmonogramie.",
+      "schedule_legend": "Wyblakłe to powtórzenia, które dopiero nadejdą, jeśli każde zostanie zrobione na czas.",
+      "schedule_chore_bin": "Kosz obowiązków"
     },
     "daily_digest": {
       "title": "Dzienne podsumowanie",
@@ -1398,8 +1431,8 @@
       },
       "board": {
         "drag_to_resize": "Przeciągnij, aby zmienić wysokość rzędów",
-        "no_lists": "Nie skonfigurowano jeszcze list - dotknij ikony koła zębatego, aby wybrać jedną lub więcej list zadań.",
-        "no_lists_grocy": "Nie skonfigurowano jeszcze list - dotknij ikony koła zębatego, aby wybrać jedną lub więcej list zadań lub Grocy."
+        "no_lists": "Brak list - dotknij przycisku + i wybierz jedną lub więcej list zadań na karcie Lista/listy.",
+        "no_lists_grocy": "Brak list - dotknij przycisku + i wybierz jedną lub więcej list zadań lub Grocy na karcie Lista/listy."
       },
       "column": {
         "completed": "Ukończone",
@@ -2423,7 +2456,8 @@
       "added_x_to_grocy_with_x_ingredient_x": "Dodano \"%0%\" do Grocy ze składnikami: %1%.",
       "x_need_x_to_be_added_by_hand_x": " Do dodania ręcznie (%0%): %2%.",
       "grocy_isn_t_connected_yet_set_it_up_3": "Grocy nie jest jeszcze połączone — skonfiguruj je w Ustawienia > Urządzenia oraz usługi > Family Hub > Konfiguruj > Grocy.",
-      "px_pairs_with_transparency_above_for_a": "px) - w połączeniu z przezroczystością powyżej daje efekt \"liquid glass\""
+      "px_pairs_with_transparency_above_for_a": "px) - w połączeniu z przezroczystością powyżej daje efekt \"liquid glass\"",
+      "show_on_the_calendar_on_its_due_date": "📅 Pokaż w kalendarzu w dniu terminu"
     },
     "privacy": {
       "locked_label": "Tryb prywatności włączony - dotknij, aby odblokować",
@@ -2457,6 +2491,64 @@
       "saved": "Zapisano.",
       "restored": "Przywrócono wbudowane pozycje: %n%.",
       "nothing_to_restore": "Wszystkie wbudowane pozycje już są."
+    },
+    "permissions": {
+      "group_chores": "Obowiązki",
+      "group_rewards": "Nagrody",
+      "group_menu": "Jadłospis",
+      "group_wishlists": "Listy życzeń",
+      "group_calendar": "Kalendarz",
+      "group_routines": "Rutyny",
+      "group_privacy": "Prywatność",
+      "can_assign_label": "Przydzielanie innym",
+      "can_assign_hint": "Może przydzielać obowiązki innym osobom, a nie tylko brać własne.",
+      "can_edit_chore_label": "Edycja otwartych obowiązków",
+      "can_edit_chore_hint": "Może edytować otwarte obowiązki (gwiazdki, termin itp.).",
+      "can_star_override_label": "Obowiązki bez zatwierdzania",
+      "can_star_override_hint": "Może tworzyć lub edytować obowiązek bez zatwierdzania, którego gwiazdki są wypłacane od razu.",
+      "can_verify_label": "Zatwierdzanie wykonanych",
+      "can_verify_hint": "Może zatwierdzać obowiązki (i prośby o gwiazdki), które inni oznaczyli jako wykonane.",
+      "can_complete_any_label": "Kończenie cudzych",
+      "can_complete_any_hint": "Może oznaczyć jako wykonany każdy obowiązek, a nie tylko własne.",
+      "no_approval_required_label": "Bez zatwierdzania",
+      "no_approval_required_hint": "Jego wykonane obowiązki są zatwierdzane, a gwiazdki wypłacane, od razu.",
+      "can_override_rewards_label": "Zmiana kosztu w gwiazdkach",
+      "can_override_rewards_hint": "Może zmieniać koszt nagrody, dodawać lub odejmować gwiazdki każdemu oraz cofać lub czyścić historię gwiazdek.",
+      "can_add_rewards_label": "Dodawanie do katalogu",
+      "can_add_rewards_hint": "Może dodawać nagrody do katalogu z kosztem w gwiazdkach. Bez tego to, co doda, jest propozycją do zatwierdzenia.",
+      "can_edit_menu_label": "Edycja jadłospisu",
+      "can_edit_menu_hint": "Może edytować tygodniowy jadłospis. Bez tego nadal może zaproponować posiłek na dowolny dzień, a decyduje osoba z tym uprawnieniem.",
+      "can_see_wishlist_claims_label": "Widok rezerwacji",
+      "can_see_wishlist_claims_hint": "Widzi, kto co zarezerwował na listach życzeń innych osób. Właściciel listy nigdy tego nie widzi. Domyślnie wyłączone, aby wspólne konto kiosku nie zepsuło niespodzianki.",
+      "can_delete_event_label": "Usuwanie wydarzeń",
+      "can_delete_event_hint": "Może usuwać wydarzenia z kalendarza, jeśli kalendarz na to pozwala.",
+      "can_edit_event_label": "Edycja/przenoszenie wydarzeń",
+      "can_edit_event_hint": "Może edytować wydarzenia i przeciągać je na inny dzień w trybie edycji, jeśli kalendarz na to pozwala.",
+      "can_manage_own_routines_label": "Zarządzanie własnymi rutynami",
+      "can_manage_own_routines_hint": "Może dodawać, edytować, usuwać i zmieniać kolejność elementów własnych rutyn porannych, popołudniowych i wieczornych.",
+      "can_manage_any_routines_label": "Zarządzanie rutynami wszystkich",
+      "can_manage_any_routines_hint": "Może dodawać, edytować, usuwać i zmieniać kolejność elementów rutyn każdej osoby.",
+      "can_toggle_privacy_mode_label": "Wyłączanie trybu prywatności",
+      "can_toggle_privacy_mode_hint": "Może wyłączyć tryb prywatności swoim PIN-em kiosku. Włączyć go może każdy."
+    },
+    "quick_add": {
+      "menu": "Szybkie dodawanie",
+      "menu_title": "Dodaj wydarzenie, przypomnienie, posiłek, obowiązek, nagrodę lub pozycję listy, wpisując je",
+      "title": "Szybkie dodawanie",
+      "hint": "Wpisz tak, jak byś to powiedział: wydarzenie, przypomnienie, posiłek, obowiązek, nagrodę lub coś do listy.",
+      "placeholder": "Soccer Tuesday 5pm for Emma",
+      "add": "Dodaj",
+      "adding": "Dodawanie…",
+      "failed": "Nie udało się dodać.",
+      "kind_pick_label": "Nie to? To jest:",
+      "examples_label": "Spróbuj:",
+      "english_only": "Szybkie dodawanie na razie rozumie tylko angielski.",
+      "kind_event": "Wydarzenie",
+      "kind_reminder": "Przypomnienie",
+      "kind_meal": "Posiłek",
+      "kind_chore": "Obowiązek",
+      "kind_reward": "Nagroda",
+      "kind_list_item": "Pozycja listy"
     }
   }
 }

@@ -546,6 +546,7 @@ locked: true,
 { key: "wifi", icon: "\u{1F4F6}", label: "Guest Wi-Fi", heading: "Guest Wi-Fi", text: "", qrType: "wifi", qrFields: { ssid: "", password: "", security: "WPA", hidden: "0", show: "1" } },
 ];
 const FH_MORE_MENU_BUILTINS = [
+  { key: "quick_add", cls: "quick-add-menu-item" },
   { key: "recipe_box", cls: "loved-menu-item" },
   { key: "templates", cls: "templates-btn" },
   { key: "print", cls: "print-btn" },
@@ -2785,6 +2786,21 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .mm-ha-icon { --mdc-icon-size: 18px; width: 18px; height: 18px; vertical-align: -3px; display: inline-block; }
 .more-custom-heading .mm-ha-icon { --mdc-icon-size: 26px; width: 26px; height: 26px; vertical-align: -4px; }
 .more-custom-box { max-width: 460px; text-align: center; }
+.quick-add-box { max-width: 560px; }
+.quick-add-row { display: flex; gap: 8px; margin-top: 10px; }
+.quick-add-input { flex: 1 1 auto; min-width: 0; font-size: 16px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--fc-border); background: var(--fc-surface-alt); color: var(--fc-text); }
+.quick-add-btn { flex: 0 0 auto; min-height: 42px; padding: 0 18px; border: none; border-radius: 10px; background: var(--fc-accent); color: var(--fc-accent-text); font-weight: 700; font-size: 15px; cursor: pointer; }
+.quick-add-btn:disabled { opacity: 0.5; cursor: default; }
+.quick-add-preview { margin-top: 10px; min-height: 22px; font-size: 15px; }
+.quick-add-preview .qa-kind { display: inline-block; padding: 2px 8px; margin-right: 6px; border-radius: 999px; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 12px; font-weight: 700; vertical-align: 1px; }
+.quick-add-preview .qa-note, .quick-add-preview .qa-problem { display: block; margin-top: 4px; font-size: 13px; color: var(--fc-text-secondary); }
+.quick-add-preview .qa-problem { color: #b5583c; }
+.quick-add-kinds { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 13px; }
+.quick-add-kinds button, .quick-add-examples button { border: 1px solid var(--fc-border); background: var(--fc-surface-alt); color: var(--fc-text); border-radius: 999px; padding: 4px 10px; font-size: 13px; cursor: pointer; }
+.quick-add-kinds button.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: transparent; }
+.quick-add-status { margin-top: 10px; font-size: 14px; font-weight: 600; min-height: 18px; }
+.quick-add-status.is-error { color: #b5583c; }
+.quick-add-examples { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .more-custom-heading { margin: 0 32px 8px; }
 .more-custom-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 15px; line-height: 1.45; color: var(--fc-text); margin-bottom: 12px; text-align: left; }
 .more-custom-text:empty, .more-custom-qr:empty, .more-custom-images:empty, .more-custom-wifi:empty { display: none; }
@@ -5355,6 +5371,32 @@ return { columns: 12, rows: 8, min_columns: 4, max_columns: 32, min_rows: 4, max
 _dateKey(d) {
 return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
+// The signed-in person's "First day of the week" from their Home Assistant profile (0 = Sunday ... 6 = Saturday).
+// "Automatic (use language setting)" follows their language's region, like Home Assistant's own calendar; Sunday if unknown.
+_firstWeekday() {
+const loc = this._hass && this._hass.locale;
+const setting = loc && loc.first_weekday;
+const names = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+if (setting && names.includes(setting)) return names.indexOf(setting);
+if (!setting) return 0;
+try {
+const lang = (loc && loc.language) || (this._hass && this._hass.language);
+if (lang && typeof Intl !== "undefined" && Intl.Locale) {
+const l = new Intl.Locale(lang);
+const info = typeof l.getWeekInfo === "function" ? l.getWeekInfo() : l.weekInfo;
+if (info && info.firstDay) return info.firstDay % 7;
+}
+} catch (e) {
+}
+return 0;
+}
+// Midnight on the first day of the week (per _firstWeekday) containing `date`
+_startOfWeek(date) {
+const d = new Date(date);
+d.setHours(0, 0, 0, 0);
+d.setDate(d.getDate() - ((d.getDay() - this._firstWeekday() + 7) % 7));
+return d;
+}
 _weekStart() {
 const n = this._weekViewDayCount ? this._weekViewDayCount() : 7;
 const now = new Date();
@@ -5368,11 +5410,9 @@ return start;
 }
 // Any whole-week multiple (7, 14, ...) Sunday-aligns the window's FIRST day to the start of the current week
 if (n % 7 === 0) {
-const day = now.getDay();
-const sunday = new Date(now);
-sunday.setHours(0, 0, 0, 0);
-sunday.setDate(now.getDate() - day + (this._weekOffset || 0) * n);
-return sunday;
+const first = this._startOfWeek(now);
+first.setDate(first.getDate() + (this._weekOffset || 0) * n);
+return first;
 }
 const center = new Date(now);
 center.setHours(0, 0, 0, 0);
@@ -5400,9 +5440,7 @@ return new Date(now.getFullYear(), now.getMonth() + (this._monthOffset || 0), 1)
 }
 _monthGridRange() {
 const anchor = this._monthAnchor();
-const gridStart = new Date(anchor);
-gridStart.setHours(0, 0, 0, 0);
-gridStart.setDate(gridStart.getDate() - gridStart.getDay());
+const gridStart = this._startOfWeek(anchor);
 const gridEnd = new Date(gridStart);
 gridEnd.setDate(gridStart.getDate() + 42);
 return { gridStart, gridEnd, anchor };
@@ -5450,12 +5488,8 @@ this._fetchEvents();
 this._updateNavLabel();
 return;
 }
-const nowSunday = new Date(now);
-nowSunday.setHours(0, 0, 0, 0);
-nowSunday.setDate(now.getDate() - now.getDay());
-const clickedSunday = new Date(date);
-clickedSunday.setHours(0, 0, 0, 0);
-clickedSunday.setDate(date.getDate() - date.getDay());
+const nowSunday = this._startOfWeek(now);
+const clickedSunday = this._startOfWeek(date);
 const diffWeeks = Math.round((clickedSunday - nowSunday) / (7 * 86400000));
 this._viewMode = "week";
 this._weekOffset = diffWeeks;
@@ -7775,7 +7809,10 @@ return { order: keys(mm.order), hidden: keys(mm.hidden), custom: custom.slice(0,
 _moreMenuOrderedKeys(mm) {
 const all = FH_MORE_MENU_BUILTINS.map((b) => b.key).concat((mm.custom || []).map((c) => `custom:${c.id}`));
 const saved = (mm.order || []).filter((k) => all.includes(k));
-return saved.concat(all.filter((k) => !saved.includes(k)));
+const rest = all.filter((k) => !saved.includes(k));
+// Quick Add (v1.168.89) goes first for households that saved an order before it existed
+const first = rest.includes("quick_add") ? ["quick_add"] : [];
+return first.concat(saved, rest.filter((k) => k !== "quick_add"));
 }
 _normalizeSettings(parsed) {
 const defaults = this._defaultSettings();
@@ -9443,24 +9480,23 @@ if (this._notifyProfileOpenUserId) this._renderNotifyProfilePermissions(this._no
 }
 // Filtered to current Family Hub members, same as the Users tab (see _renderNotifyProfilesList) - "added" is the one gate for both tabs.
 _permissionDefs() {
+// Labels, hints and group names come from fh_ui.permissions.* in translations/<lang>.json
 return [
-{ key: "can_assign", group: "Chores", label: "Assign to others", hint: "Can assign chores to other people, not just pick up their own." },
-{ key: "can_edit_chore", group: "Chores", label: "Edit open chores", hint: "Can edit existing open chores (star value, due date, etc.)." },
-{ key: "can_star_override", group: "Chores", label: "Skip-approval chores", hint: "Can create/edit a chore that skips approval, so its stars are paid out instantly." },
-{ key: "can_verify", group: "Chores", label: "Approve completed", hint: "Can approve/verify chores other people have marked done." },
-{ key: "can_complete_any", group: "Chores", label: "Complete anyone's", hint: "Can mark any chore done, not just their own." },
-{ key: "no_approval_required", group: "Chores", label: "No approval needed", hint: "Their own completed chores are approved (and stars paid out) instantly, skipping verification." },
-{ key: "can_override_rewards", group: "Rewards", label: "Override star costs", hint: "Can override what a reward costs in stars." },
-{ key: "can_add_rewards", group: "Rewards", label: "Add to catalog", hint: "Can add rewards to the catalog with a star cost. Without this, what they add is a suggestion that needs approval." },
-{ key: "can_edit_menu", group: "Menu", label: "Edit the menu", hint: "Can edit the weekly meal plan. Without this they can still suggest a meal for any day - someone with this permission decides whether it goes on the menu." },
-{ key: "can_see_wishlist_claims", group: "Wish Lists", label: "See claim status", hint: "Can see who's claimed what on a wish list they don't own themselves (the list's own owner never sees this regardless). Off by default for anyone not already using Family Hub when this permission was introduced - see PERMISSION_SEE_WISHLIST_CLAIMS in const.py - so an unidentified shared kiosk login can't spoil a surprise." },
-{ key: "can_delete_event", group: "Calendar", label: "Delete calendar events", hint: "Can delete an event from the calendar (when the calendar integration supports it - otherwise the Delete button is hidden for everyone, regardless of this permission)." },
-{ key: "can_edit_event", group: "Calendar", label: "Edit/move calendar events", hint: "Can edit an event's details, or drag it to a different day in Edit Meals mode (when the calendar integration supports it - otherwise the Edit affordance is hidden for everyone, regardless of this permission)." },
-// Before these, every routine-item write was gated on the single, broad can_assign
-{ key: "can_manage_own_routines", group: "Routines", label: "Manage own routine items", hint: "Can add/edit/delete/reorder items in their OWN Morning/Afternoon/Night routine section, without needing the broader chore-assignment permission." },
-{ key: "can_manage_any_routines", group: "Routines", label: "Manage everyone's routine items", hint: "Can add/edit/delete/reorder ANY person's routine items, not just their own - same reach as Assign to others, scoped to just Routines." },
-// Privacy mode - see PERMISSION_TOGGLE_PRIVACY_MODE's own docstring in const.py.
-{ key: "can_toggle_privacy_mode", group: "Privacy", label: "Turn off Privacy mode", hint: "Can enter their kiosk PIN on the lock screen to turn Privacy mode back off. Anyone can turn it ON from the \"more\" menu - this only gates turning it back off." },
+{ key: "can_assign", groupId: "chores", group: this._t("permissions.group_chores", "Chores"), label: this._t("permissions.can_assign_label", "Assign to others"), hint: this._t("permissions.can_assign_hint", "Can assign chores to other people, not just pick up their own.") },
+{ key: "can_edit_chore", groupId: "chores", group: this._t("permissions.group_chores", "Chores"), label: this._t("permissions.can_edit_chore_label", "Edit open chores"), hint: this._t("permissions.can_edit_chore_hint", "Can edit open chores (stars, due date and so on).") },
+{ key: "can_star_override", groupId: "chores", group: this._t("permissions.group_chores", "Chores"), label: this._t("permissions.can_star_override_label", "Skip-approval chores"), hint: this._t("permissions.can_star_override_hint", "Can create or edit a chore that skips approval, so its stars are paid out right away.") },
+{ key: "can_verify", groupId: "chores", group: this._t("permissions.group_chores", "Chores"), label: this._t("permissions.can_verify_label", "Approve completed"), hint: this._t("permissions.can_verify_hint", "Can approve chores (and star requests) other people have marked done.") },
+{ key: "can_complete_any", groupId: "chores", group: this._t("permissions.group_chores", "Chores"), label: this._t("permissions.can_complete_any_label", "Complete anyone's"), hint: this._t("permissions.can_complete_any_hint", "Can mark any chore done, not just their own.") },
+{ key: "no_approval_required", groupId: "chores", group: this._t("permissions.group_chores", "Chores"), label: this._t("permissions.no_approval_required_label", "No approval needed"), hint: this._t("permissions.no_approval_required_hint", "Their own finished chores are approved, and the stars paid out, right away.") },
+{ key: "can_override_rewards", groupId: "rewards", group: this._t("permissions.group_rewards", "Rewards"), label: this._t("permissions.can_override_rewards_label", "Override star costs"), hint: this._t("permissions.can_override_rewards_hint", "Can change what a reward costs, add or subtract anyone's stars, and reverse or clear star history.") },
+{ key: "can_add_rewards", groupId: "rewards", group: this._t("permissions.group_rewards", "Rewards"), label: this._t("permissions.can_add_rewards_label", "Add to catalog"), hint: this._t("permissions.can_add_rewards_hint", "Can add rewards to the catalog with a star cost. Without this, what they add is a suggestion that needs approval.") },
+{ key: "can_edit_menu", groupId: "menu", group: this._t("permissions.group_menu", "Menu"), label: this._t("permissions.can_edit_menu_label", "Edit the menu"), hint: this._t("permissions.can_edit_menu_hint", "Can edit the weekly meal plan. Without this they can still suggest a meal for any day, and someone with this permission decides.") },
+{ key: "can_see_wishlist_claims", groupId: "wishlists", group: this._t("permissions.group_wishlists", "Wish Lists"), label: this._t("permissions.can_see_wishlist_claims_label", "See claim status"), hint: this._t("permissions.can_see_wishlist_claims_hint", "Can see who has claimed what on other people's wish lists. A list's owner never sees this. Off by default, so a shared kiosk login can't spoil a surprise.") },
+{ key: "can_delete_event", groupId: "calendar", group: this._t("permissions.group_calendar", "Calendar"), label: this._t("permissions.can_delete_event_label", "Delete calendar events"), hint: this._t("permissions.can_delete_event_hint", "Can delete calendar events, on calendars that allow it.") },
+{ key: "can_edit_event", groupId: "calendar", group: this._t("permissions.group_calendar", "Calendar"), label: this._t("permissions.can_edit_event_label", "Edit/move calendar events"), hint: this._t("permissions.can_edit_event_hint", "Can edit calendar events, and drag them to another day in Edit mode, on calendars that allow it.") },
+{ key: "can_manage_own_routines", groupId: "routines", group: this._t("permissions.group_routines", "Routines"), label: this._t("permissions.can_manage_own_routines_label", "Manage own routine items"), hint: this._t("permissions.can_manage_own_routines_hint", "Can add, edit, remove and reorder items in their own Morning, Afternoon and Night routines.") },
+{ key: "can_manage_any_routines", groupId: "routines", group: this._t("permissions.group_routines", "Routines"), label: this._t("permissions.can_manage_any_routines_label", "Manage everyone's routine items"), hint: this._t("permissions.can_manage_any_routines_hint", "Can add, edit, remove and reorder anyone's routine items.") },
+{ key: "can_toggle_privacy_mode", groupId: "privacy", group: this._t("permissions.group_privacy", "Privacy"), label: this._t("permissions.can_toggle_privacy_mode_label", "Turn off Privacy mode"), hint: this._t("permissions.can_toggle_privacy_mode_hint", "Can turn Privacy Mode back off with their kiosk PIN. Anyone can turn it on.") },
 ];
 }
 // replaces the old whole-grid _renderPermissionsList - renders just ONE person's own grants
@@ -9478,18 +9514,19 @@ const entry = perms[userId] || {};
 const defs = this._permissionDefs();
 const groups = [];
 defs.forEach((d) => {
-if (!groups.includes(d.group)) groups.push(d.group);
+if (!groups.includes(d.groupId)) groups.push(d.groupId);
 });
 listEl.innerHTML = groups
 .map((group) => {
 const opts = defs
-.filter((d) => d.group === group)
+.filter((d) => d.groupId === group)
 .map(
 (d) =>
-`<label class="perm-opt" title="${d.hint}"><input type="checkbox" class="perm-check" data-user="${userId}" data-key="${d.key}" ${entry[d.key] ? "checked" : ""} /><span>${d.label}</span></label>`
+`<label class="perm-opt" title="${__fhEsc(d.hint)}"><input type="checkbox" class="perm-check" data-user="${userId}" data-key="${d.key}" ${entry[d.key] ? "checked" : ""} /><span>${__fhEsc(d.label)}</span></label>`
 )
 .join("");
-return `<div class="perm-group"><div class="perm-group-name">${group}</div><div class="perm-group-opts">${opts}</div></div>`;
+const groupName = (defs.find((d) => d.groupId === group) || {}).group || group;
+return `<div class="perm-group"><div class="perm-group-name">${__fhEsc(groupName)}</div><div class="perm-group-opts">${opts}</div></div>`;
 })
 .join("");
 listEl.querySelectorAll(".perm-check").forEach((check) => {
@@ -10478,9 +10515,60 @@ return [];
 }
 })
 );
-this._reminders = fetchedLists.flat();
+const choreItems = await this._fetchCalendarChoreItems();
+this._reminders = fetchedLists.flat().concat(choreItems);
 this._renderGrid();
 this._renderLegend();
+}
+// Chores marked "Show on the calendar" (chore.show_on_calendar) that are still open and have a due date, shaped like
+// reminders so every view shows them through _privacyReminders(). In the assignee's color; Chore Bin chores in the reminder color.
+async _fetchCalendarChoreItems() {
+if (!this._hass || !this._hass.connection) return [];
+let chores = [];
+try {
+const res = await this._hass.connection.sendMessagePromise({ type: "family_hub/chores/list" });
+chores = Array.isArray(res && res.chores) ? res.chores : [];
+} catch (e) {
+return [];
+}
+const settings = this._getSettings();
+const profiles = settings.userProfiles || {};
+const names = this._householdMemberNamesById || {};
+const people = this._getPeople();
+const colorMap = this._colorByName(people);
+const out = [];
+for (const c of chores) {
+if (!c || !c.show_on_calendar || !c.due_date || c.status !== "open" || c.star_request) continue;
+const raw = String(c.due_date);
+const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(raw);
+const due = dateOnly ? new Date(`${raw}T09:00:00`) : new Date(raw);
+if (isNaN(due.getTime())) continue;
+const uid = c.assigned_to && c.assigned_to !== "chore_bin" ? c.assigned_to : null;
+const profile = (uid && profiles[uid]) || {};
+const column = profile.primaryCalendar ? people.find((p) => p.entity === profile.primaryCalendar) : null;
+const color = (uid && (profile.color || (column && this._colorFor(column, colorMap)))) || null;
+const personName = uid ? names[uid] || (column && column.name) || "" : this._t("event_info.chore_bin", "Chore Bin");
+out.push({
+uid: `chore:${c.id}`,
+summary: c.title || "(untitled)",
+due,
+description: c.notes || "",
+rollover: false,
+rolloverDays: [],
+categoryId: null,
+repeat: null,
+dateOnly,
+listEntity: null,
+color,
+personName,
+isFamily: !uid,
+isChore: true,
+choreId: c.id,
+choreStars: Number(c.star_value) || 0,
+choreAssignedTo: uid,
+});
+}
+return out;
 }
 // which Reminders lists the CURRENT user is allowed to add items to - powers the Add Reminder tab's "List" picker.
 _remindersListFriendlyName(entity) {
@@ -11116,6 +11204,7 @@ ${FAMILY_HUB_SHARED_STYLE_BLOCK}
 <div class="more-menu-wrap">
 <button class="more-menu-btn" title="More" aria-haspopup="true" aria-expanded="false" data-i18n-title="nav.more">&#8942; <span data-i18n="nav.more">More</span></button>
 <div class="more-menu-dropdown">
+<button type="button" class="more-menu-item quick-add-menu-item" title="Add an event, reminder, meal, chore, reward or list item by typing it" data-i18n-title="quick_add.menu_title">&#9889; <span data-i18n="quick_add.menu">Quick Add</span></button>
 <button type="button" class="more-menu-item loved-menu-item">&#127869;&#65039; <span data-i18n="nav.recipe_box">Recipe Box</span></button>
 <button type="button" class="more-menu-item templates-btn">&#128203; <span data-i18n="nav.templates">Templates</span></button>
 <button type="button" class="more-menu-item print-btn" title="Print or save as PDF" data-i18n-title="nav.print_title">&#128424;&#65039; <span data-i18n="nav.print">Print</span></button>
@@ -11546,6 +11635,19 @@ ${FAMILY_HUB_SHARED_STYLE_BLOCK}
 <a class="more-custom-link" target="_blank" rel="noopener noreferrer"></a>
 </div>
 </div>
+<div class="modal-overlay quick-add-overlay">
+<div class="modal-box quick-add-box">
+<button class="modal-close quick-add-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
+<h2>&#9889; <span data-i18n="quick_add.title">Quick Add</span></h2>
+<div class="remind-hint quick-add-hint" data-i18n="quick_add.hint">Type it like you'd say it: an event, a reminder, a meal, a chore, a reward, or something for a list.</div>
+<div class="quick-add-row"><input type="text" class="quick-add-input" autocomplete="off" maxlength="300" placeholder="Soccer Tuesday 5pm for Emma" /><button type="button" class="quick-add-btn" disabled data-i18n="quick_add.add">Add</button></div>
+<div class="quick-add-preview" aria-live="polite"></div>
+<div class="quick-add-kinds" style="display:none"><span class="quick-add-kinds-label" data-i18n="quick_add.kind_pick_label">Not right? It's a:</span></div>
+<div class="quick-add-status" aria-live="polite"></div>
+<div class="quick-add-examples"><span class="remind-hint" data-i18n="quick_add.examples_label">Try:</span></div>
+<div class="remind-hint quick-add-english" style="display:none" data-i18n="quick_add.english_only">Quick Add understands English for now.</div>
+</div>
+</div>
 <div class="modal-overlay daily-digest-overlay">
 <div class="modal-box loved-box">
 <button data-fh-aria="text.close" class="modal-close daily-digest-close" aria-label="${__fhT("text.close", "Close", null, "h")}">&#10005;</button>
@@ -11830,7 +11932,7 @@ ${FAMILY_HUB_SHARED_STYLE_BLOCK}
 <div class="field right-now-topbar-option-field right-now-topbar-people-field" style="display:none;">
 <label data-i18n="settings.right_now_topbar_people_label">Who's shown on the top bar</label>
 <div class="right-now-topbar-people-list"></div>
-<div class="remind-hint" data-i18n="settings.right_now_topbar_people_hint">Household ask: "holidays dont need to show, may have other users you dont want to show as well." Uncheck anyone (or anything, like a Holidays row) that shouldn't get a tile on the top bar/sidebar - they still show up everywhere else in this card as usual. Everyone's checked by default, including anyone added later.</div>
+<div class="remind-hint" data-i18n="settings.right_now_topbar_people_hint">Uncheck anyone who shouldn't get a tile on the top bar or sidebar - they still show up everywhere else in this card as usual. Everyone's checked by default, including anyone added later.</div>
 </div>
 </div>
 </div>
@@ -13330,6 +13432,7 @@ root.querySelector(".grocy-low-stock-close").addEventListener("click", () => thi
 root.querySelector(".grocy-low-stock-add-all-btn").addEventListener("click", () => this._addMissingGrocyProductsToShoppingList());
 root.querySelector(".grocy-expiring-close").addEventListener("click", () => this._closeGrocyExpiringSoon());
 root.querySelector(".daily-digest-menu-item").addEventListener("click", () => this._openDailyDigest());
+this._wireQuickAdd(root);
 root.querySelector(".privacy-mode-menu-item").addEventListener("click", () => this._enablePrivacyMode());
 root.querySelector(".daily-digest-close").addEventListener("click", () => this._closeDailyDigest());
 root.querySelector(".grocy-shopping-list-add-btn").addEventListener("click", () => this._addGrocyShoppingListItem());
@@ -18729,6 +18832,7 @@ if (this._eventInfoOpenId === id) this._renderEventInfoChecklistSection(id);
 _openEventInfo(id) {
 const detail = this._eventDetails && this._eventDetails[id];
 if (!detail) return;
+if (detail.isChore) return this._openChoreInfo(id, detail);
 const root = this._root;
 const isRecurring = !!(detail.rrule || detail.recurrenceId);
 root.querySelector(".event-info-title").textContent = detail.summary;
@@ -18755,7 +18859,7 @@ whenText = sameDay
 }
 const rows = [];
 rows.push(
-`<div class="event-info-row"><div class="label">${detail.isReminder ? this._t("event_info.reminder", "Reminder") : this._t("event_info.calendar", "Calendar")}</div><span class="event-info-chip" style="background:${detail.color};color:${this._textColorFor(detail.color)}">${detail.isReminder ? "&#128276; " : ""}${detail.personName}</span></div>`
+`<div class="event-info-row"><div class="label">${detail.isReminder ? this._t("event_info.reminder", "Reminder") : this._t("event_info.calendar", "Calendar")}</div><span class="event-info-chip" style="background:${detail.color};color:${this._textColorFor(detail.color)}">${detail.isReminder ? (detail.isChore ? "&#129529; " : "&#128276; ") : ""}${detail.personName}</span></div>`
 );
 rows.push(`<div class="event-info-row"><div class="label">${this._t("event_info.when", "When")}</div>${whenText}</div>`);
 // Events in this series - lazy: the toggle renders a "Checking..." placeholder and _renderEventInfoSeriesList
@@ -21596,6 +21700,156 @@ statusEl.classList.add("is-error");
 }
 }
 // Daily Digest modal - Same open/render/close shape as _openGrocyExpiringSoon/ _renderGrocyExpiringSoon just above
+// -- Quick Add (v1.168.89): one plain-English line -> an event, reminder, meal, chore, reward or list item.
+// The backend parses and saves (family_hub/quick_add/parse and /add); the same parser answers Assist.
+_wireQuickAdd(root) {
+const overlay = root.querySelector(".quick-add-overlay");
+const btn = root.querySelector(".quick-add-menu-item");
+if (!overlay || !btn) return;
+btn.addEventListener("click", () => this._openQuickAdd());
+root.querySelector(".quick-add-close").addEventListener("click", () => this._closeQuickAdd());
+overlay.addEventListener("click", (e) => {
+if (e.target === e.currentTarget) this._closeQuickAdd();
+});
+const input = root.querySelector(".quick-add-input");
+input.addEventListener("input", () => {
+this._quickAddKind = null;
+this._scheduleQuickAddPreview();
+});
+input.addEventListener("keydown", (e) => {
+if (e.key === "Enter") {
+e.preventDefault();
+this._submitQuickAdd();
+}
+});
+root.querySelector(".quick-add-btn").addEventListener("click", () => this._submitQuickAdd());
+const kinds = root.querySelector(".quick-add-kinds");
+[["event", "Event"], ["reminder", "Reminder"], ["meal", "Meal"], ["chore", "Chore"], ["reward", "Reward"], ["list_item", "List item"]].forEach(([kind, label]) => {
+const b = document.createElement("button");
+b.type = "button";
+b.dataset.kind = kind;
+b.textContent = this._t(`quick_add.kind_${kind}`, label);
+b.addEventListener("click", () => {
+this._quickAddKind = kind;
+this._previewQuickAdd();
+});
+kinds.appendChild(b);
+});
+const examples = root.querySelector(".quick-add-examples");
+["Soccer Tuesday 5pm for Emma", "tacos for dinner Friday", "remind me to call the dentist at 3", "add milk to Groceries"].forEach((ex) => {
+const b = document.createElement("button");
+b.type = "button";
+b.textContent = ex;
+b.addEventListener("click", () => {
+input.value = ex;
+this._quickAddKind = null;
+this._previewQuickAdd();
+input.focus();
+});
+examples.appendChild(b);
+});
+}
+_openQuickAdd() {
+const root = this._root;
+if (!root) return;
+const input = root.querySelector(".quick-add-input");
+input.value = "";
+input.placeholder = this._t("quick_add.placeholder", "Soccer Tuesday 5pm for Emma");
+this._quickAddKind = null;
+this._quickAddLast = null;
+root.querySelector(".quick-add-preview").innerHTML = "";
+root.querySelector(".quick-add-kinds").style.display = "none";
+this._setQuickAddStatus("");
+root.querySelector(".quick-add-btn").disabled = true;
+const lang = ((this._hass && (this._hass.locale && this._hass.locale.language || this._hass.language)) || "en").toLowerCase();
+root.querySelector(".quick-add-english").style.display = lang.startsWith("en") ? "none" : "";
+this._openModal(root.querySelector(".quick-add-overlay"));
+setTimeout(() => input.focus(), 50);
+}
+_closeQuickAdd() {
+clearTimeout(this._quickAddTimer);
+const overlay = this._root && this._root.querySelector(".quick-add-overlay");
+if (overlay) overlay.classList.remove("open");
+}
+_setQuickAddStatus(text, isError) {
+const el = this._root && this._root.querySelector(".quick-add-status");
+if (!el) return;
+el.textContent = text || "";
+el.classList.toggle("is-error", !!isError);
+}
+_scheduleQuickAddPreview() {
+clearTimeout(this._quickAddTimer);
+this._quickAddTimer = setTimeout(() => this._previewQuickAdd(), 250);
+}
+async _previewQuickAdd() {
+const root = this._root;
+if (!root || !this._hass) return;
+const text = root.querySelector(".quick-add-input").value.trim();
+const preview = root.querySelector(".quick-add-preview");
+const kindsEl = root.querySelector(".quick-add-kinds");
+const addBtn = root.querySelector(".quick-add-btn");
+if (!text) {
+preview.innerHTML = "";
+kindsEl.style.display = "none";
+addBtn.disabled = true;
+return;
+}
+const seq = (this._quickAddSeq = (this._quickAddSeq || 0) + 1);
+let result;
+try {
+const msg = { type: "family_hub/quick_add/parse", text };
+if (this._quickAddKind) msg.kind = this._quickAddKind;
+result = await this._hass.connection.sendMessagePromise(msg);
+} catch (e) {
+if (seq !== this._quickAddSeq) return;
+preview.innerHTML = `<span class="qa-problem">${__fhEsc((e && e.message) || this._t("quick_add.failed", "Couldn't add that."))}</span>`;
+addBtn.disabled = true;
+return;
+}
+if (seq !== this._quickAddSeq) return;
+this._quickAddLast = result;
+const kind = result.kind || "event";
+const kindLabel = this._t(`quick_add.kind_${kind}`, { event: "Event", reminder: "Reminder", meal: "Meal", chore: "Chore", reward: "Reward", list_item: "List item" }[kind] || kind);
+const problems = (result.problems || []).map((p) => `<span class="qa-problem">${__fhEsc(p.message)}</span>`).join("");
+preview.innerHTML = `<span class="qa-kind">${__fhEsc(kindLabel)}</span>${__fhEsc(result.summary || "")}${result.note ? `<span class="qa-note">${__fhEsc(result.note)}</span>` : ""}${problems}`;
+kindsEl.style.display = "";
+kindsEl.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.kind === kind));
+addBtn.disabled = !result.ok;
+}
+async _submitQuickAdd() {
+const root = this._root;
+if (!root || !this._hass) return;
+const input = root.querySelector(".quick-add-input");
+const text = input.value.trim();
+if (!text) return;
+const addBtn = root.querySelector(".quick-add-btn");
+addBtn.disabled = true;
+this._setQuickAddStatus(this._t("quick_add.adding", "Adding…"));
+let result;
+try {
+const msg = { type: "family_hub/quick_add/add", text };
+if (this._quickAddKind) msg.kind = this._quickAddKind;
+result = await this._hass.connection.sendMessagePromise(msg);
+} catch (e) {
+this._setQuickAddStatus((e && e.message) || this._t("quick_add.failed", "Couldn't add that."), true);
+addBtn.disabled = false;
+return;
+}
+this._setQuickAddStatus(`\u2713 ${result.message || ""}`);
+input.value = "";
+this._quickAddKind = null;
+root.querySelector(".quick-add-preview").innerHTML = "";
+root.querySelector(".quick-add-kinds").style.display = "none";
+input.focus();
+// show it right away
+const kind = result.kind;
+if (kind === "event") this._fetchEvents();
+if (kind === "reminder" || kind === "chore") this._fetchReminders();
+if (kind === "meal") {
+this._fetchMealPlan();
+if (this._fetchMenuSuggestions) this._fetchMenuSuggestions();
+}
+}
 _openDailyDigest() {
 this._openModal(this._root.querySelector(".daily-digest-overlay"));
 this._renderDailyDigest();
@@ -23457,6 +23711,46 @@ if (newItemUid) {
 this._closeAddEvent();
 this._fetchReminders();
 }
+// A chore shown on the calendar (chore.show_on_calendar): who it's for, when it's due, its stars and notes, and Mark done
+_openChoreInfo(id, detail) {
+const root = this._root;
+if (!root) return;
+root.querySelector(".event-info-title").textContent = detail.summary;
+const repeatsBadge = root.querySelector(".event-info-title-repeats");
+if (repeatsBadge) repeatsBadge.remove();
+const color = detail.color || REMINDER_COLOR;
+const when = `${this._fmtDate(detail.start, { weekday: "long", month: "short", day: "numeric" })} · ${this._fmtTimeOfDay(detail.start)}`;
+const rows = [];
+rows.push(`<div class="event-info-row"><div class="label">${this._t("event_info.chore", "Chore")}</div><span class="event-info-chip" style="background:${color};color:${this._textColorFor(color)}">\u{1F9F9} ${__fhEsc(detail.personName || "")}</span></div>`);
+rows.push(`<div class="event-info-row"><div class="label">${this._t("event_info.chore_due", "Due")}</div>${__fhEsc(when)}</div>`);
+if (detail.choreStars) rows.push(`<div class="event-info-row"><div class="label">${this._t("event_info.chore_stars", "Stars")}</div>\u2B50 ${detail.choreStars}</div>`);
+if (detail.description) rows.push(`<div class="event-info-row"><div class="label">${this._t("event_info.details", "Details")}</div>${__fhEsc(detail.description)}</div>`);
+if (detail.choreAssignedTo) {
+rows.push(`<div class="event-info-row event-info-chore-done-row"><button type="button" class="event-info-reminder-done-btn event-info-chore-done-btn">${this._t("event_info.chore_mark_done", "\u2705 Mark done")}</button><div class="event-info-chore-status remind-hint"></div></div>`);
+} else {
+rows.push(`<div class="event-info-row remind-hint">${this._t("event_info.chore_bin_hint", "This chore is in the Chore Bin. Grab it on the Chores card.")}</div>`);
+}
+root.querySelector(".event-info-content").innerHTML = rows.join("");
+this._eventInfoOpenId = id;
+const doneBtn = root.querySelector(".event-info-chore-done-btn");
+if (doneBtn) {
+doneBtn.addEventListener("click", async () => {
+doneBtn.disabled = true;
+const statusEl = root.querySelector(".event-info-chore-status");
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/chores/complete", chore_id: detail.choreId });
+} catch (e) {
+doneBtn.disabled = false;
+if (statusEl) statusEl.textContent = this._t("event_info.chore_done_failed", "Couldn't mark it done. Only the person it's for, or someone allowed to complete anyone's chores, can.");
+return;
+}
+root.querySelector(".event-info-overlay").classList.remove("open");
+this._eventInfoOpenId = null;
+await this._fetchReminders();
+});
+}
+this._openModal(root.querySelector(".event-info-overlay"));
+}
 // best-effort lookup for the uid of the to-do item _saveAddReminder just created via the plain
 async _findJustAddedReminderUid(entityId, title, dueDatetime) {
 try {
@@ -23514,7 +23808,7 @@ let eventCount = 0;
 for (const p of people) {
 eventCount += this._privacyEventsFor(p.entity).length;
 }
-const reminderCount = this._privacyReminders().filter((r) => !r.projected).length;
+const reminderCount = this._privacyReminders().filter((r) => !r.projected && !r.isChore).length;
 const typeFilter = this._eventTypeFilter || [];
 const identityChipsHtml = order
 .map((key) => {
@@ -23618,7 +23912,7 @@ _renderMonthGrid() {
 const gridEl = this._root.querySelector(".grid");
 gridEl.className = "grid mode-month";
 const { dayNames, cellsHtml } = this._buildMonthCellsHtml(null);
-gridEl.innerHTML = `<div class="month-weekday-row">${dayNames.map((d) => `<div class="mwd">${d}</div>`).join("")}</div><div class="month-cells">${cellsHtml}</div>`;
+gridEl.innerHTML = `<div class="month-weekday-row">${[0, 1, 2, 3, 4, 5, 6].map((i) => `<div class="mwd">${dayNames[(i + this._firstWeekday()) % 7]}</div>`).join("")}</div><div class="month-cells">${cellsHtml}</div>`;
 }
 // split out of the old _renderMonthGrid so the classic Month view and the new "split" variant's own calendar pane
 _buildMonthCellsHtml(selectedDateKey) {
@@ -23730,7 +24024,7 @@ if (r.due >= dayStart && r.due < dayEnd) {
 // an individual list's reminders use their owning person's own color (r.color) instead of the fixed purple - the shared family list
 const remColor = r.color || REMINDER_COLOR;
 // A reminder is a single point in time, never all-day and never multi-day
-dayEvents.push({ summary: this._discreetText(r.summary), color: remColor, bg: `background:${remColor};color:${this._textColorFor(remColor)}`, isReminder: true, allDay: false, start: r.due, end: new Date(r.due.getTime() + 60000) });
+dayEvents.push({ summary: this._discreetText(r.summary), color: remColor, bg: `background:${remColor};color:${this._textColorFor(remColor)}`, isReminder: true, isChore: !!r.isChore, allDay: false, start: r.due, end: new Date(r.due.getTime() + 60000) });
 }
 }
 }
@@ -23757,7 +24051,7 @@ const continuesToNext = !e.isReminder && e.end && e.end.getTime() > dayEnd.getTi
 const continueClass = `${continuesFromPrev ? " mc-continue-prev" : ""}${continuesToNext ? " mc-continue-next" : ""}`;
 const prefix = continuesFromPrev ? "◂ " : "";
 const suffix = continuesToNext ? " ▸" : "";
-return `<div class="mc-pill${e.isReminder ? " mc-reminder-pill" : ""}${continueClass}${isPastEvent(e) ? " past" : ""}" style="${this._pillStyle(e)}">${e.isReminder ? "&#128276; " : ""}${prefix}${e.summary}${suffix}</div>`;
+return `<div class="mc-pill${e.isReminder ? " mc-reminder-pill" : ""}${continueClass}${isPastEvent(e) ? " past" : ""}" style="${this._pillStyle(e)}">${e.isReminder ? (e.isChore ? "&#129529; " : "&#128276; ") : ""}${prefix}${e.summary}${suffix}</div>`;
 })
 .join("") + (more > 0 ? `<div class="mc-more">${__fhT("text.x_more", "+%0% more", {0: more}, "h")}</div>` : "");
 // meals render BEFORE (above) events/reminders in each cell, not after
@@ -23808,7 +24102,7 @@ this._monthSplitSelectedDate = this._dateKey(todayInThisMonth ? today : anchor);
 }
 this._monthSplitAnchorKey = anchorKey;
 const { dayNames, cellsHtml } = this._buildMonthCellsHtml(this._monthSplitSelectedDate);
-const calHtml = `<div class="month-weekday-row">${dayNames.map((d) => `<div class="mwd">${d}</div>`).join("")}</div><div class="month-cells">${cellsHtml}</div>`;
+const calHtml = `<div class="month-weekday-row">${[0, 1, 2, 3, 4, 5, 6].map((i) => `<div class="mwd">${dayNames[(i + this._firstWeekday()) % 7]}</div>`).join("")}</div><div class="month-cells">${cellsHtml}</div>`;
 const detailHtml = this._buildMonthSplitDetailHtml(this._monthSplitSelectedDate);
 gridEl.innerHTML = `<div class="month-split-cal">${calHtml}</div><div class="month-split-detail">${detailHtml}</div>`;
 }
@@ -23908,8 +24202,12 @@ description: this._discreetText(r.description || ""),
 reminderMinutesList: [],
 isReminder: true,
 todoUid: r.uid,
+isChore: !!r.isChore,
+choreId: r.choreId || null,
+choreStars: r.choreStars || 0,
+choreAssignedTo: r.choreAssignedTo || null,
 };
-items.push({ id: reminderId, summary: this._discreetText(r.summary), start: r.due, allDay: false, bg: `background:${remColor};color:${this._textColorFor(remColor)}`, color: remColor, isReminder: true });
+items.push({ id: reminderId, summary: this._discreetText(r.summary), start: r.due, allDay: false, bg: `background:${remColor};color:${this._textColorFor(remColor)}`, color: remColor, isReminder: true, isChore: !!r.isChore });
 }
 }
 }
@@ -23921,7 +24219,7 @@ const itemsHtml = items.length
 (it) =>
 `<div class="msd-item event" data-event-id="${it.id}" style="${this._pillStyle(it)}">
 <span class="msd-item-time">${it.allDay ? __fhT("text.all_day", "All day", null, "h") : fmtTime(it.start)}</span>
-<span class="msd-item-summary">${it.isReminder ? "&#128276; " : ""}${it.isBirthday ? "\u{1F382} " : ""}${it.summary}</span>
+<span class="msd-item-summary">${it.isReminder ? (it.isChore ? "&#129529; " : "&#128276; ") : ""}${it.isBirthday ? "\u{1F382} " : ""}${it.summary}</span>
 </div>`
 )
 .join("")
@@ -24157,6 +24455,10 @@ description: this._discreetText(r.description || ""),
 reminderMinutesList: [],
 isReminder: true,
 todoUid: r.uid,
+isChore: !!r.isChore,
+choreId: r.choreId || null,
+choreStars: r.choreStars || 0,
+choreAssignedTo: r.choreAssignedTo || null,
 rollover: !!r.rollover,
 rolloverDays: r.rolloverDays || [],
 location: "",
@@ -24169,8 +24471,8 @@ end: new Date(r.due.getTime() + 60000),
 allDay: false,
 color: remColor,
 bg: `background:${remColor};color:${this._textColorFor(remColor)}`,
-initial: "\u{1F514}",
-isReminder: true,
+initial: r.isChore ? "\u{1F9F9}" : "\u{1F514}",
+isReminder: true, isChore: !!r.isChore,
 });
 }
 }
@@ -24215,7 +24517,7 @@ const left = `calc(32px + (100% - 34px) * ${col} / ${totalCols})`;
 const width = `calc((100% - 34px) / ${totalCols} - 2px)`;
 return `<div class="tl-event${ev.isReminder ? " reminder-event" : ""}${isPastEvent(ev) ? " past" : ""}" style="top:${top}px;height:${height}px;left:${left};width:${width};${this._pillStyle(ev)}" data-event-id="${ev.id}">
 <span class="tl-time">${timeLabel}</span>
-<span class="tl-summary">${ev.isReminder ? "&#128276; " : ""}${ev.summary}</span>
+<span class="tl-summary">${ev.isReminder ? (ev.isChore ? "&#129529; " : "&#128276; ") : ""}${ev.summary}</span>
 </div>`;
 })
 .join("");
@@ -24228,10 +24530,10 @@ const timeLabel = ev.allDay
 : this._fmtTimeOfDay(ev.start);
 return `<div class="event${ev.isReminder ? " reminder-event" : ""}${isPastEvent(ev) ? " past" : ""}" style="${this._pillStyle(ev)}" data-event-id="${ev.id}">
 <div class="event-top">
-<span class="avatar" style="background:rgba(0,0,0,0.3)">${ev.isReminder ? "&#128276;" : ev.initial}</span>
+<span class="avatar" style="background:rgba(0,0,0,0.3)">${ev.isReminder ? (ev.isChore ? "&#129529;" : "&#128276;") : ev.initial}</span>
 <span class="time">${timeLabel}</span>
 </div>
-<span class="summary">${ev.isReminder ? "&#128276; " : ""}${ev.summary}</span>
+<span class="summary">${ev.isReminder ? (ev.isChore ? "&#129529; " : "&#128276; ") : ""}${ev.summary}</span>
 </div>`;
 })
 .join("");
@@ -24408,7 +24710,7 @@ dayEvents.sort((a, b) => (a.allDay === b.allDay ? a.start - b.start : a.allDay ?
 const cellHtml = dayEvents
 .map((ev) => {
 const timeLabel = ev.allDay ? this._t("event_info.series_all_day", "All day") : this._fmtTimeOfDay(ev.start);
-return `<div class="event planner-event${ev.isReminder ? " reminder-event" : ""}" style="${this._pillStyle(ev)}" data-event-id="${ev.id}"><span class="time">${ev.isReminder ? "&#128276; " : ""}${timeLabel}</span><span class="summary">${ev.summary}</span></div>`;
+return `<div class="event planner-event${ev.isReminder ? " reminder-event" : ""}" style="${this._pillStyle(ev)}" data-event-id="${ev.id}"><span class="time">${ev.isReminder ? (ev.isChore ? "&#129529; " : "&#128276; ") : ""}${timeLabel}</span><span class="summary">${ev.summary}</span></div>`;
 })
 .join("");
 rowsHtml += `<div class="planner-person-cell">${cellHtml}</div>`;
@@ -24549,6 +24851,10 @@ description: this._discreetText(r.description || ""),
 reminderMinutesList: [],
 isReminder: true,
 todoUid: r.uid,
+isChore: !!r.isChore,
+choreId: r.choreId || null,
+choreStars: r.choreStars || 0,
+choreAssignedTo: r.choreAssignedTo || null,
 rollover: !!r.rollover,
 rolloverDays: r.rolloverDays || [],
 location: "",
@@ -24562,6 +24868,7 @@ allDay: false,
 color: remColor,
 bg: `background:${remColor};color:${this._textColorFor(remColor)}`,
 isReminder: true,
+isChore: !!r.isChore,
 });
 }
 laneEvents.sort((a, b) => (a.allDay === b.allDay ? a.start - b.start : a.allDay ? -1 : 1));
@@ -24602,7 +24909,7 @@ const left = `calc(32px + (100% - 34px) * ${col} / ${totalCols})`;
 const width = `calc((100% - 34px) / ${totalCols} - 2px)`;
 return `<div class="tl-event${ev.isReminder ? " reminder-event" : ""}${isPastEvent(ev) ? " past" : ""}" style="top:${top}px;height:${height}px;left:${left};width:${width};${this._pillStyle(ev)}" data-event-id="${ev.id}">
 <span class="tl-time">${timeLabel}</span>
-<span class="tl-summary">${ev.isReminder ? "&#128276; " : ""}${ev.summary}</span>
+<span class="tl-summary">${ev.isReminder ? (ev.isChore ? "&#129529; " : "&#128276; ") : ""}${ev.summary}</span>
 </div>`;
 })
 .join("");
@@ -24725,11 +25032,15 @@ description: this._discreetText(r.description || ""),
 reminderMinutesList: [],
 isReminder: true,
 todoUid: r.uid,
+isChore: !!r.isChore,
+choreId: r.choreId || null,
+choreStars: r.choreStars || 0,
+choreAssignedTo: r.choreAssignedTo || null,
 rollover: !!r.rollover,
 rolloverDays: r.rolloverDays || [],
 location: "",
 };
-items.push({ id: reminderId, summary: this._discreetText(r.summary), start: r.due, allDay: false, bg: `background:${remColor};color:${this._textColorFor(remColor)}`, color: remColor, isReminder: true, isBirthday: false });
+items.push({ id: reminderId, summary: this._discreetText(r.summary), start: r.due, allDay: false, bg: `background:${remColor};color:${this._textColorFor(remColor)}`, color: remColor, isReminder: true, isChore: !!r.isChore, isBirthday: false });
 }
 }
 }
@@ -24740,7 +25051,7 @@ const itemsHtml = items.length
 (it) =>
 `<div class="agenda-item event" data-event-id="${it.id}" style="${this._pillStyle(it)}">
 <span class="agenda-item-time">${it.allDay ? __fhT("text.all_day", "All day", null, "h") : fmtTime(it.start)}</span>
-<span class="agenda-item-summary">${it.isReminder ? "&#128276; " : ""}${it.isBirthday ? "\u{1F382} " : ""}${it.summary}</span>
+<span class="agenda-item-summary">${it.isReminder ? (it.isChore ? "&#129529; " : "&#128276; ") : ""}${it.isBirthday ? "\u{1F382} " : ""}${it.summary}</span>
 </div>`
 )
 .join("")

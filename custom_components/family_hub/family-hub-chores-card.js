@@ -1708,6 +1708,8 @@ class FamilyHubChoresCard extends HTMLElement {
       this._chores = [];
     }
     this._render();
+    // a chore changed, so its place on the schedule (and its next repeats) may have too
+    if (this._scheduleViewEnabled()) this._fetchSchedule();
     // approving or finishing a chore changes stars, so the header balances follow every chore refresh
     if (this._config && this._config.show_stars && !this._showRewardsColumn()) this._fetchRewardsState();
   }
@@ -2012,6 +2014,7 @@ class FamilyHubChoresCard extends HTMLElement {
         <div class="header">
           <div class="title"></div>
           <div class="actions">
+            <button class="schedule-view-toggle-btn" title="Show the chore schedule" data-i18n-title="chores.schedule_toggle_show">&#128197;</button>
             <button class="compact-view-toggle-btn" title="Switch to compact view" data-i18n-title="chores.compact_view_show">&#9776;</button>
             <button class="rewards-toggle-btn" title="Show/hide the Rewards column" data-i18n-title="chores.rewards_toggle_title" hidden>&#11088;</button>
             <button class="kiosk-login-btn" title="Log in as a specific household member on this kiosk display" data-i18n-title="chores.kiosk_login_title" hidden>&#128274; <span data-i18n="chores.login">Login</span></button>
@@ -2044,6 +2047,7 @@ class FamilyHubChoresCard extends HTMLElement {
     root.querySelector(".add-chore-fab").addEventListener("click", () => this._openCreateModal());
     root.querySelector(".rewards-toggle-btn").addEventListener("click", () => this._toggleRewardsColumn());
     root.querySelector(".compact-view-toggle-btn").addEventListener("click", () => this._toggleCompactView());
+    root.querySelector(".schedule-view-toggle-btn").addEventListener("click", () => this._toggleScheduleView());
     root.querySelectorAll(".modal-overlay").forEach((ov) => {
       ov.addEventListener("click", (e) => {
         if (e.target === ov) ov.classList.remove("open");
@@ -2120,6 +2124,7 @@ class FamilyHubChoresCard extends HTMLElement {
     await this._fetchChores();
   }
   _onBoardClick(e) {
+    if (e.target.closest(".sched") && this._onScheduleClick(e)) return;
     // timer controls first - both live inside .chore-actions alongside Done/Nudge
     const timerStartBtn = e.target.closest(".chore-timer-start-btn");
     if (timerStartBtn) {
@@ -2471,6 +2476,259 @@ class FamilyHubChoresCard extends HTMLElement {
       // no-op - this device just won't remember the choice across reloads
     }
     this._render();
+  }
+  // -- 📅 Schedule view (v1.168.89) ------------------------------------------
+  // An overview of when every chore is due: This week, Next week or a Month, with repeating chores projected ahead by the backend
+  // (family_hub/chores/schedule -> chore_engine.project_schedule). Swaps out the board while it's on; remembered per device like compact view.
+  _scheduleViewEnabled() {
+    try {
+      return window.localStorage.getItem("familyHubChoresScheduleView") === "on";
+    } catch (e) {
+      return !!this._scheduleViewFallback;
+    }
+  }
+  _toggleScheduleView() {
+    const next = !this._scheduleViewEnabled();
+    this._scheduleViewFallback = next;
+    try {
+      window.localStorage.setItem("familyHubChoresScheduleView", next ? "on" : "off");
+    } catch (e) {
+      // no-op - remembered for this page only
+    }
+    this._render();
+  }
+  _schedState() {
+    if (!this._sched) this._sched = { mode: "week", offset: 0, data: null, dataKey: "", key: "", loading: false, error: false, selected: "" };
+    return this._sched;
+  }
+  // The signed-in person's "First day of the week" from their Home Assistant profile (0 = Sunday ... 6 = Saturday), same as the calendar card
+  _firstWeekday() {
+    const loc = this._hass && this._hass.locale;
+    const setting = loc && loc.first_weekday;
+    const names = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+    if (setting && names.includes(setting)) return names.indexOf(setting);
+    if (!setting) return 0;
+    try {
+      const lang = (loc && loc.language) || (this._hass && this._hass.language);
+      if (lang && typeof Intl !== "undefined" && Intl.Locale) {
+        const l = new Intl.Locale(lang);
+        const info = typeof l.getWeekInfo === "function" ? l.getWeekInfo() : l.weekInfo;
+        if (info && info.firstDay) return info.firstDay % 7;
+      }
+    } catch (e) {
+      // fall through to Sunday
+    }
+    return 0;
+  }
+  _startOfWeek(date) {
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - ((d.getDay() - this._firstWeekday() + 7) % 7));
+    return d;
+  }
+  _schedDayKey(d) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  // {start, end} to fetch (end exclusive) plus, for a month, the month itself - the month grid shows whole weeks around it
+  _scheduleRange() {
+    const s = this._schedState();
+    const now = this._schedNow ? new Date(this._schedNow) : new Date();
+    if (s.mode === "month") {
+      const monthStart = new Date(now.getFullYear(), now.getMonth() + s.offset, 1);
+      const monthEnd = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 1);
+      const start = this._startOfWeek(monthStart);
+      const lastDay = new Date(monthEnd);
+      lastDay.setDate(lastDay.getDate() - 1);
+      const end = this._startOfWeek(lastDay);
+      end.setDate(end.getDate() + 7);
+      return { start, end, monthStart, monthEnd };
+    }
+    const start = this._startOfWeek(now);
+    start.setDate(start.getDate() + 7 * s.offset);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 7);
+    return { start, end };
+  }
+  async _fetchSchedule() {
+    if (!this._hass || !this._hass.connection || !this._scheduleViewEnabled()) return;
+    const s = this._schedState();
+    const r = this._scheduleRange();
+    const key = `${r.start.toISOString()}|${r.end.toISOString()}`;
+    s.key = key;
+    s.loading = true;
+    try {
+      const res = await this._hass.connection.sendMessagePromise({ type: "family_hub/chores/schedule", start: r.start.toISOString(), end: r.end.toISOString() });
+      if (s.key !== key) return; // moved on to another week while this was loading
+      s.data = { items: (res && Array.isArray(res.items)) ? res.items : [], undated: (res && Array.isArray(res.undated)) ? res.undated : [] };
+      s.error = false;
+    } catch (e) {
+      if (s.key !== key) return;
+      s.data = null;
+      s.error = true;
+    }
+    s.dataKey = key;
+    s.loading = false;
+    this._render();
+  }
+  _onScheduleClick(e) {
+    const s = this._schedState();
+    const tab = e.target.closest("[data-sched-tab]");
+    if (tab) {
+      const t = tab.dataset.schedTab;
+      s.mode = t === "month" ? "month" : "week";
+      s.offset = t === "next" ? 1 : 0;
+      s.selected = "";
+      this._render();
+      return true;
+    }
+    const step = e.target.closest("[data-sched-step]");
+    if (step) {
+      s.offset += Number(step.dataset.schedStep) || 0;
+      s.selected = "";
+      this._render();
+      return true;
+    }
+    const item = e.target.closest("[data-sched-chore]");
+    if (item) {
+      if (this._chores.some((c) => c.id === item.dataset.schedChore)) this._openChoreDetailModal(item.dataset.schedChore);
+      return true;
+    }
+    const day = e.target.closest("[data-sched-day]");
+    if (day) {
+      s.selected = day.dataset.schedDay;
+      this._render();
+      return true;
+    }
+    return false;
+  }
+  // allowedIds: the columns shown (person pills / the card's people setting), or null for everyone
+  _scheduleHtml(allowedIds) {
+    const s = this._schedState();
+    const r = this._scheduleRange();
+    const key = `${r.start.toISOString()}|${r.end.toISOString()}`;
+    if (s.dataKey !== key && !(s.loading && s.key === key)) this._fetchSchedule();
+    const allowed = allowedIds ? new Set(allowedIds) : null;
+    const keep = (x) => !allowed || allowed.has(x.assigned_to);
+    const fresh = s.dataKey === key && s.data;
+    const items = fresh ? s.data.items.filter(keep) : [];
+    const undated = fresh ? s.data.undated.filter(keep) : [];
+    const todayKey = this._schedDayKey(this._schedNow ? new Date(this._schedNow) : new Date());
+
+    const tabActive = (t) => (t === "month" ? s.mode === "month" : s.mode === "week" && s.offset === (t === "next" ? 1 : 0));
+    const tabs = [["this", this._t("chores.schedule_this_week", "This week")], ["next", this._t("chores.schedule_next_week", "Next week")], ["month", this._t("chores.schedule_month", "Month")]]
+      .map(([t, label]) => `<button type="button" class="sched-tab${tabActive(t) ? " active" : ""}" data-sched-tab="${t}">${this._esc(label)}</button>`).join("");
+    let rangeLabel;
+    if (s.mode === "month") {
+      rangeLabel = this._fmtDate(r.monthStart, { month: "long", year: "numeric" });
+    } else {
+      const last = new Date(r.end);
+      last.setDate(last.getDate() - 1);
+      rangeLabel = `${this._fmtDate(r.start, { month: "short", day: "numeric" })} – ${this._fmtDate(last, { month: "short", day: "numeric" })}`;
+    }
+    const bar = `
+      <div class="sched-bar">
+        <div class="sched-tabs">${tabs}</div>
+        <div class="sched-nav">
+          <button type="button" class="sched-step" data-sched-step="-1" aria-label="${this._escAttr(this._t("chores.schedule_previous", "Previous"))}">&#8249;</button>
+          <span class="sched-range">${this._esc(rangeLabel)}</span>
+          <button type="button" class="sched-step" data-sched-step="1" aria-label="${this._escAttr(this._t("chores.schedule_next", "Next"))}">&#8250;</button>
+        </div>
+      </div>`;
+    if (!fresh) {
+      const msg = s.error && s.dataKey === key ? this._t("chores.schedule_error", "Couldn't load the schedule.") : this._t("chores.schedule_loading", "Loading…");
+      return `<div class="sched">${bar}<div class="sched-note">${this._esc(msg)}</div></div>`;
+    }
+
+    // the month's own items only, for the summary (the grid's spill-over days belong to the months either side)
+    const inSummary = s.mode === "month"
+      ? items.filter((i) => { const d = new Date(i.due); return d >= r.monthStart && d < r.monthEnd; })
+      : items;
+    const count = (st) => inSummary.filter((i) => i.status === st).length;
+    const todo = inSummary.filter((i) => i.status !== "done");
+    const stars = todo.reduce((n, i) => n + (Number(i.star_value) || 0), 0);
+    const parts = [this._t("chores.schedule_summary_due", `${todo.length} to do`, { n: String(todo.length) })];
+    if (count("overdue")) parts.push(`<span class="sched-sum-overdue">${this._esc(this._t("chores.schedule_summary_overdue", `${count("overdue")} overdue`, { n: String(count("overdue")) }))}</span>`);
+    if (count("waiting")) parts.push(this._esc(this._t("chores.schedule_summary_waiting", `${count("waiting")} waiting for approval`, { n: String(count("waiting")) })));
+    if (count("done")) parts.push(this._esc(this._t("chores.schedule_summary_done", `${count("done")} done`, { n: String(count("done")) })));
+    if (this._config.show_stars !== false && stars) parts.push(this._esc(this._t("chores.schedule_summary_stars", `${stars} ⭐ to earn`, { n: String(stars) })));
+    const summary = `<div class="sched-summary">${parts.join(" · ")}</div>`;
+
+    const byDay = new Map();
+    items.forEach((i) => {
+      const k = this._schedDayKey(new Date(i.due));
+      if (!byDay.has(k)) byDay.set(k, []);
+      byDay.get(k).push(i);
+    });
+
+    let body;
+    if (s.mode === "month") {
+      const cells = [];
+      for (let d = new Date(r.start); d < r.end; d.setDate(d.getDate() + 1)) {
+        const k = this._schedDayKey(d);
+        const list = byDay.get(k) || [];
+        const outside = d < r.monthStart || d >= r.monthEnd;
+        const shown = list.slice(0, 3).map((i) => `<span class="sched-chip sched-${i.status}${i.projected ? " projected" : ""}"><span class="sched-dot" style="background:${this._userColor(i.assigned_to)}"></span>${this._esc(i.title)}</span>`).join("");
+        const more = list.length > 3 ? `<span class="sched-more">${this._esc(this._t("chores.schedule_more", `+${list.length - 3} more`, { n: String(list.length - 3) }))}</span>` : "";
+        const flags = [outside ? " outside" : "", k === todayKey ? " today" : "", k === s.selected ? " selected" : "", list.some((i) => i.status === "overdue") ? " has-overdue" : ""].join("");
+        cells.push(`<button type="button" class="sched-cell${flags}" data-sched-day="${k}"><span class="sched-cell-num">${d.getDate()}</span>${shown}${more}${list.length ? `<span class="sched-count">${list.length}</span>` : ""}</button>`);
+      }
+      const heads = [];
+      const h = new Date(r.start);
+      for (let i = 0; i < 7; i++) {
+        heads.push(`<div class="sched-head">${this._esc(this._fmtDate(h, { weekday: "short" }))}</div>`);
+        h.setDate(h.getDate() + 1);
+      }
+      let selKey = s.selected;
+      if (!selKey) {
+        const today = this._schedNow ? new Date(this._schedNow) : new Date();
+        selKey = today >= r.monthStart && today < r.monthEnd ? todayKey : this._schedDayKey(r.monthStart);
+      }
+      const [y, m, dd] = selKey.split("-").map(Number);
+      body = `<div class="sched-month">${heads.join("")}${cells.join("")}</div>${this._schedDayHtml(new Date(y, m - 1, dd), byDay.get(selKey) || [], todayKey)}`;
+    } else {
+      const days = [];
+      for (let d = new Date(r.start); d < r.end; d.setDate(d.getDate() + 1)) {
+        days.push(this._schedDayHtml(new Date(d), byDay.get(this._schedDayKey(d)) || [], todayKey));
+      }
+      body = `<div class="sched-week">${days.join("")}</div>`;
+    }
+    const empty = !items.length && !undated.length
+      ? `<div class="sched-note">${this._esc(this._t("chores.schedule_empty", "No chores are due here. Give a chore a due date (and a repeat) to see it on the schedule."))}</div>`
+      : "";
+    const legend = items.some((i) => i.projected) ? `<div class="sched-legend">${this._esc(this._t("chores.schedule_legend", "Faded ones are repeats still to come, if each one is done on time."))}</div>` : "";
+    const undatedHtml = undated.length
+      ? `<div class="sched-day sched-undated"><div class="sched-day-head">${this._esc(this._t("chores.schedule_no_due_date", "No due date"))}</div>${undated.map((i) => this._schedItemHtml(i, false)).join("")}</div>`
+      : "";
+    return `<div class="sched">${bar}${summary}${empty}${body}${legend}${undatedHtml}</div>`;
+  }
+  _schedDayHtml(date, list, todayKey) {
+    const k = this._schedDayKey(date);
+    const isToday = k === todayKey;
+    const label = this._fmtDate(date, { weekday: "long", month: "short", day: "numeric" });
+    const rows = list.length
+      ? list.map((i) => this._schedItemHtml(i, true)).join("")
+      : `<div class="sched-none">${this._esc(this._t("chores.schedule_nothing_due", "Nothing due"))}</div>`;
+    return `<div class="sched-day${isToday ? " today" : ""}${list.length ? "" : " empty"}" data-day="${k}">
+        <div class="sched-day-head">${isToday ? `<span class="sched-today-tag">${this._esc(this._t("chores.schedule_today", "Today"))}</span> ` : ""}${this._esc(label)}</div>
+        ${rows}
+      </div>`;
+  }
+  _schedItemHtml(i, withTime) {
+    const d = withTime && i.due ? new Date(i.due) : null;
+    const time = d && (d.getHours() !== 0 || d.getMinutes() !== 0) ? this._fmtTimeOfDay(d) : "";
+    const who = i.assigned_to === CHORE_BIN_SENTINEL ? this._t("chores.schedule_chore_bin", "Chore Bin") : this._userName(i.assigned_to);
+    const badge = i.status === "overdue" ? this._t("chores.schedule_overdue", "Overdue")
+      : i.status === "waiting" ? this._t("chores.schedule_waiting", "Waiting for approval")
+      : i.status === "done" ? `✓ ${this._t("chores.schedule_done", "Done")}` : "";
+    const title = i.projected ? ` title="${this._escAttr(this._t("chores.schedule_projected_title", "A repeat still to come, if the one before is done on time"))}"` : "";
+    return `<button type="button" class="sched-item sched-${this._escAttr(i.status)}${i.projected ? " projected" : ""}" data-sched-chore="${this._escAttr(i.chore_id)}"${title}>
+        <span class="sched-dot" style="background:${this._userColor(i.assigned_to)}"></span>
+        ${time ? `<span class="sched-time">${this._esc(time)}</span>` : ""}
+        <span class="sched-title">${i.important ? "&#10071; " : ""}${this._esc(i.title)}</span>
+        <span class="sched-who">${this._esc(who)}${i.rotation ? ` <span class="sched-rot" title="${this._escAttr(this._t("chores.schedule_takes_turns", "Takes turns"))}">&#8635;</span>` : ""}</span>
+        ${this._config.show_stars !== false && i.star_value ? `<span class="sched-stars">&#11088; ${Number(i.star_value) || 0}</span>` : ""}
+        ${badge ? `<span class="sched-badge">${this._esc(badge)}</span>` : ""}
+      </button>`;
   }
   _waitingToRecurColumnHtml() {
     const waiting = this._chores.filter((c) => this._isWaitingToRecur(c));
@@ -2983,7 +3241,12 @@ class FamilyHubChoresCard extends HTMLElement {
     const justMeNote = !columns.length && this._isJustMeCard()
       ? `<div class="just-me-empty">${this._esc(this._t("chores.just_me_empty", "This card shows whoever is signed in. Sign in (or log in with your PIN) as someone in the household to see your chores."))}</div>`
       : "";
-    board.innerHTML = justMeNote + columns
+    const scheduleOn = this._scheduleViewEnabled();
+    if (scheduleOn) {
+      // the pills (and the card's people setting) narrow the schedule the same way they narrow the board
+      const limited = columns.length && (shownIds.length || allColumns.length !== this._columns().length);
+      board.innerHTML = justMeNote || this._scheduleHtml(limited ? columns.map((c) => c.id) : null);
+    } else board.innerHTML = justMeNote + columns
       .map((col) => {
         // Excludes anything now sitting in the dedicated Waiting to Recur column (see _isWaitingToRecur)
         const allItems = this._chores.filter((c) => c.assigned_to === col.id && !this._isWaitingToRecur(c));
@@ -3013,7 +3276,7 @@ class FamilyHubChoresCard extends HTMLElement {
       })
       .join("") + (showWaitingColumn ? this._waitingToRecurColumnHtml() : "") + (this._showRewardsColumn() ? this._rewardsColumnHtml() : "");
 
-    if (this._canAssign()) this._attachDragHandlers();
+    if (this._canAssign() && !scheduleOn) this._attachDragHandlers();
     // Was plain _canAssign() - broadened to _canManageAnyRoutines()
     this._root.querySelector(".add-chore-fab").style.display = this._canManageAnyRoutines() || this._canRequestStarsAny() ? "" : "none";
     const rewardsToggleBtn = this._root.querySelector(".rewards-toggle-btn");
@@ -3028,7 +3291,18 @@ class FamilyHubChoresCard extends HTMLElement {
       compactToggleBtn.classList.toggle("active", compact);
       compactToggleBtn.title = compact ? this._t("chores.compact_view_hide", "Switch to the full view") : this._t("chores.compact_view_show", "Switch to compact view");
     }
-    this._root.querySelector(".board").classList.toggle("compact-view", this._compactViewEnabled());
+    this._root.querySelector(".board").classList.toggle("compact-view", this._compactViewEnabled() && !scheduleOn);
+    this._root.querySelector(".board").classList.toggle("schedule-view", scheduleOn);
+    const scheduleToggleBtn = this._root.querySelector(".schedule-view-toggle-btn");
+    if (scheduleToggleBtn) {
+      scheduleToggleBtn.classList.toggle("active", scheduleOn);
+      scheduleToggleBtn.title = scheduleOn ? this._t("chores.schedule_toggle_hide", "Back to the chore board") : this._t("chores.schedule_toggle_show", "Show the chore schedule");
+    }
+    if (compactToggleBtn) compactToggleBtn.hidden = scheduleOn;
+    if (scheduleOn) {
+      this._root.querySelector(".board").classList.remove("single-column");
+      return;
+    }
     this._applySingleColumnLayout();
   }
 
@@ -3438,6 +3712,7 @@ class FamilyHubChoresCard extends HTMLElement {
           <!-- -->
           <div class="remind-check-row">
             <label class="remind-check-opt"><input type="checkbox" class="f-important" /> <span class="chore-important-badge">&#10071;</span> Mark as important (always sorts to the top)</label>
+            <label class="remind-check-opt"><input type="checkbox" class="f-show-on-calendar" /> ${__fhT("text.show_on_the_calendar_on_its_due_date", "📅 Show on the calendar on its due date", null, "h")}</label>
           </div>
           ${this._approvalToggleHtml("f-no-approval", false, !this._canStarOverride(), "Only an admin (or someone granted star-override permission) can create a chore that skips verification.")}
           ${this._alarmAudienceToggleHtml("f-alarm-audience", "self")}
@@ -4289,6 +4564,7 @@ class FamilyHubChoresCard extends HTMLElement {
       // "Ability to Mark Chores Important" - sorts to the top of the
       // board and shows a red ! badge (see _sortChoresForColumn/_choreCardHtml).
       important: box.querySelector(".f-important").checked,
+      show_on_calendar: !!(box.querySelector(".f-show-on-calendar") && box.querySelector(".f-show-on-calendar").checked),
     };
     this._applyRecurFieldsToPayload(box, payload);
     if (mode === "direct") {
@@ -4389,6 +4665,7 @@ class FamilyHubChoresCard extends HTMLElement {
              modal's own header comment). -->
         <div class="remind-check-row">
           <label class="remind-check-opt"><input type="checkbox" class="f-important" ${chore.important ? "checked" : ""} /> <span class="chore-important-badge">&#10071;</span> ${__fhT("text.mark_as_important_always_sorts_to_the", "Mark as important (always sorts to the top)", null, "h")}</label>
+          <label class="remind-check-opt"><input type="checkbox" class="f-show-on-calendar" ${chore.show_on_calendar ? "checked" : ""} /> ${__fhT("text.show_on_the_calendar_on_its_due_date", "📅 Show on the calendar on its due date", null, "h")}</label>
         </div>
         ${this._approvalToggleHtml("f-no-approval", !!chore.no_approval_required, !(this._canStarOverride() || chore.no_approval_required), "Only an admin (or someone granted star-override permission) can mark a chore as not requiring approval.")}
         ${this._alarmAudienceToggleHtml("f-alarm-audience", chore.alarm_audience)}
@@ -4453,6 +4730,7 @@ class FamilyHubChoresCard extends HTMLElement {
       // "Ability to Mark Chores Important" - editable after creation,
       // unlike assignment_mode/assigned_to (see this modal's header comment).
       important: box.querySelector(".f-important").checked,
+      show_on_calendar: !!(box.querySelector(".f-show-on-calendar") && box.querySelector(".f-show-on-calendar").checked),
       // Always sent explicitly (even as ""), same reasoning as due_date just below
       notes: box.querySelector(".f-notes").value.trim(),
       // Sent as exactly what the form shows selected, same as the Create modal - unlike Create there IS a pre-existing value here
@@ -4562,6 +4840,54 @@ class FamilyHubChoresCard extends HTMLElement {
       .kiosk-login-error { color: #b3462c; font-size: 13px; min-height: 18px; margin-top: 6px; }
       .compact-view-toggle-btn { border: 1px solid var(--fc-border); border-radius: 12px; padding: 6px 10px; font-size: 13px; font-weight: 700; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; }
       .compact-view-toggle-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
+      .schedule-view-toggle-btn { border: 1px solid var(--fc-border); border-radius: 12px; padding: 6px 10px; font-size: 13px; font-weight: 700; background: var(--fc-surface-alt); color: var(--fc-text); cursor: pointer; }
+      .schedule-view-toggle-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
+      .compact-view-toggle-btn[hidden] { display: none; }
+      .board.schedule-view { display: block; overflow-y: auto; }
+      .sched { display: flex; flex-direction: column; gap: 10px; padding-bottom: 72px; }
+      .sched-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+      .sched-tabs { display: flex; gap: 4px; background: var(--fc-surface-alt); border-radius: 12px; padding: 3px; }
+      .sched-tab { border: none; background: transparent; color: var(--fc-text); font-weight: 700; font-size: 13px; padding: 6px 12px; border-radius: 9px; cursor: pointer; }
+      .sched-tab.active { background: var(--fc-accent); color: var(--fc-accent-text); }
+      .sched-nav { display: flex; align-items: center; gap: 6px; }
+      .sched-step { border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); border-radius: 10px; width: 32px; height: 32px; font-size: 18px; cursor: pointer; }
+      .sched-range { font-weight: 700; min-width: 120px; text-align: center; }
+      .sched-summary { font-size: 13px; color: var(--fc-text-secondary); }
+      .sched-sum-overdue { color: #b3462c; font-weight: 700; }
+      .sched-note, .sched-legend { color: var(--fc-text-secondary); font-size: 13px; }
+      .sched-week { display: flex; flex-direction: column; gap: 8px; }
+      .sched-day { background: var(--fc-card); border: 1px solid var(--fc-border); border-radius: 12px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
+      .sched-day.today { border-color: var(--fc-accent); box-shadow: 0 0 0 1px var(--fc-accent) inset; }
+      .sched-day.empty { opacity: 0.7; }
+      .sched-day-head { font-weight: 700; font-size: 13px; }
+      .sched-today-tag { background: var(--fc-accent); color: var(--fc-accent-text); border-radius: 8px; padding: 1px 6px; font-size: 11px; }
+      .sched-none { color: var(--fc-text-secondary); font-size: 12px; }
+      .sched-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: none; background: var(--fc-surface-alt); color: var(--fc-text); border-radius: 10px; padding: 7px 10px; font-size: 14px; cursor: pointer; }
+      .sched-item.projected { opacity: 0.6; }
+      .sched-item.sched-done .sched-title { text-decoration: line-through; }
+      .sched-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 10px; display: inline-block; }
+      .sched-time { font-size: 12px; color: var(--fc-text-secondary); white-space: nowrap; }
+      .sched-title { flex: 1; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      .sched-who, .sched-stars { font-size: 12px; color: var(--fc-text-secondary); white-space: nowrap; }
+      .sched-badge { font-size: 11px; font-weight: 700; border-radius: 8px; padding: 2px 6px; background: var(--fc-border); white-space: nowrap; }
+      .sched-overdue .sched-badge { background: #b3462c; color: #fff; }
+      .sched-waiting .sched-badge { background: #e0a030; color: #000; }
+      .sched-done .sched-badge { background: #3c8c5a; color: #fff; }
+      .sched-month { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+      .sched-head { text-align: center; font-size: 12px; font-weight: 700; color: var(--fc-text-secondary); }
+      .sched-cell { min-height: 72px; border: 1px solid var(--fc-border); border-radius: 10px; background: var(--fc-card); color: var(--fc-text); padding: 4px; display: flex; flex-direction: column; gap: 2px; align-items: stretch; text-align: left; cursor: pointer; overflow: hidden; font: inherit; }
+      .sched-cell.outside { opacity: 0.45; }
+      .sched-cell.today { border-color: var(--fc-accent); }
+      .sched-cell.selected { box-shadow: 0 0 0 2px var(--fc-accent) inset; }
+      .sched-cell.has-overdue .sched-cell-num { color: #b3462c; }
+      .sched-cell-num { font-size: 12px; font-weight: 700; }
+      .sched-chip { display: flex; align-items: center; gap: 3px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .sched-chip.projected { opacity: 0.6; }
+      .sched-chip.sched-done { text-decoration: line-through; }
+      .sched-chip .sched-dot { width: 7px; height: 7px; flex-basis: 7px; }
+      .sched-more { font-size: 11px; color: var(--fc-text-secondary); }
+      .sched-count { display: none; font-size: 11px; font-weight: 700; background: var(--fc-accent); color: var(--fc-accent-text); border-radius: 8px; padding: 0 5px; align-self: flex-start; }
+      @media (max-width: 520px) { .sched-chip, .sched-more { display: none; } .sched-count { display: inline-block; } .sched-cell { min-height: 44px; } }
       .board { flex: 1; display: flex; gap: 10px; overflow-x: auto; overflow-y: hidden; }
       /* min-width, not a fixed width: with room to spare (few columns) each
          column grows equally to fill the dashboard instead of leaving empty

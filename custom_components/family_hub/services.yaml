@@ -74,6 +74,15 @@ create_chore:
       required: false
       selector:
         object:
+    show_on_calendar:
+      name: Show on the calendar
+      description: >-
+        Also show this chore on the Family Week Calendar on its due date,
+        like a reminder, where it can be marked done.
+      required: false
+      default: false
+      selector:
+        boolean:
 
 complete_chore:
   name: Complete chore
@@ -236,6 +245,56 @@ stop_timer_alarm:
   fields:
     uid:
       name: Timer id
+      required: false
+      selector:
+        text:
+
+quick_add:
+  name: Quick Add
+  description: >-
+    Add something to Family Hub from one plain-English line, the same as the
+    Quick Add box and Assist: an event, a reminder, a meal, a chore, a reward
+    or a list item. For example "Soccer Tuesday 5pm for Emma", "tacos for
+    dinner Friday", "remind me to call the dentist at 3" or "add milk to
+    groceries". Returns what it added as `message`.
+  fields:
+    text:
+      name: Text
+      description: What to add, in plain English.
+      required: true
+      example: Soccer Tuesday 5pm for Emma
+      selector:
+        text:
+    user_id:
+      name: As user
+      description: >-
+        Optional Home Assistant user ID to add it as (their permissions, and
+        "me" means them). Defaults to whoever runs the action.
+      required: false
+      selector:
+        text:
+
+ask:
+  name: Ask Family Hub
+  description: >-
+    Answer one question in a sentence, the same as asking Assist: what's for
+    dinner (or breakfast or lunch, today or another day), what's on the
+    calendar or what someone is doing, any reminders, what chores are left,
+    or how many stars someone has. Returns `answer`, handy for announcing it
+    on a speaker.
+  fields:
+    question:
+      name: Question
+      description: The question, in plain English.
+      required: true
+      example: What's for dinner?
+      selector:
+        text:
+    user_id:
+      name: As user
+      description: >-
+        Optional Home Assistant user ID that "I" and "my" mean. Only
+        automations and admins can set it.
       required: false
       selector:
         text:

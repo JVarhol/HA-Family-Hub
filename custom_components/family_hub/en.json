@@ -42,7 +42,7 @@
       },
       "grocy": {
         "title": "Grocy (optional)",
-        "description": "Connect a self-hosted Grocy instance so the calendar card's Meal Suggestions box can offer 'Add from Grocy' - pulling in a recipe's name plus a link back to view it in Grocy. Leave both fields blank if you don't use Grocy; this can be added later from Configure.",
+        "description": "Connect a self-hosted Grocy instance to add Grocy recipes to your meals, the recipe viewer and importer, a grocery list from the week's meals, your Grocy shopping list, stock on the My Pantry card, and Expiring Soon and Low Stock lists. Leave both fields blank if you don't use Grocy; this can be added later from Configure.",
         "data": {
           "grocy_url": "Grocy URL (e.g. http://homeassistant.local:9192)",
           "grocy_api_key": "Grocy API key"
@@ -93,7 +93,7 @@
       },
       "grocy": {
         "title": "Grocy",
-        "description": "Optional: connect a self-hosted Grocy instance so the calendar card's Meal Suggestions box can offer 'Add from Grocy' - pulling in a recipe's name plus a link back to view it in Grocy (nothing else is copied in). Leave both fields blank if you don't use Grocy. The API key is stored here, in Family Hub's own integration settings - not in the card's Settings panel.",
+        "description": "Optional: connect a self-hosted Grocy instance to add Grocy recipes to your meals, the recipe viewer and importer, a grocery list from the week's meals, your Grocy shopping list, stock on the My Pantry card, and Expiring Soon and Low Stock lists. Leave both fields blank if you don't use Grocy. The API key is stored here, in Family Hub's own integration settings - not in the card's Settings panel.",
         "data": {
           "grocy_url": "Grocy URL (e.g. http://homeassistant.local:9192)",
           "grocy_api_key": "Grocy API key"
@@ -363,7 +363,14 @@
       "category": "Category",
       "repeat_current": "current",
       "repeat_left": "%n% left",
-      "repeat_until": "until %d%"
+      "repeat_until": "until %d%",
+      "chore": "Chore",
+      "chore_due": "Due",
+      "chore_stars": "Stars",
+      "chore_mark_done": "✅ Mark done",
+      "chore_bin": "Chore Bin",
+      "chore_bin_hint": "This chore is in the Chore Bin. Grab it on the Chores card.",
+      "chore_done_failed": "Couldn't mark it done. Only the person it's for, or someone allowed to complete anyone's chores, can."
     },
     "more_menu_tpl": {
       "blank_name": "Blank",
@@ -823,7 +830,7 @@
       "right_now_topbar_show_weather": "Weather",
       "right_now_topbar_style_hint": "Only visible at the Large size (see above) - that's the only tier with room for either one.",
       "right_now_topbar_people_label": "Who's shown on the top bar",
-      "right_now_topbar_people_hint": "Household ask: \"holidays dont need to show, may have other users you dont want to show as well.\" Uncheck anyone (or anything, like a Holidays row) that shouldn't get a tile on the top bar/sidebar - they still show up everywhere else in this card as usual. Everyone's checked by default, including anyone added later.",
+      "right_now_topbar_people_hint": "Uncheck anyone who shouldn't get a tile on the top bar or sidebar - they still show up everywhere else in this card as usual. Everyone's checked by default, including anyone added later.",
       "agenda_show_meals_label": "Agenda view: show meals",
       "agenda_show_meals_hint": "Agenda's days, Current day first and Rows shown now follow Week's own settings above - there's no separate Agenda day count anymore. Reminders always show in Agenda alongside calendar events.",
       "alarm_devices_heading": "Alarm Devices",
@@ -1065,7 +1072,33 @@
       "star_request_need_title": "Say what it was for.",
       "star_request_need_stars": "Ask for between 1 and 100 stars.",
       "star_request_failed": "Couldn't send the request.",
-      "star_request_for": "For"
+      "star_request_for": "For",
+      "schedule_toggle_show": "Show the chore schedule",
+      "schedule_toggle_hide": "Back to the chore board",
+      "schedule_this_week": "This week",
+      "schedule_next_week": "Next week",
+      "schedule_month": "Month",
+      "schedule_previous": "Previous",
+      "schedule_next": "Next",
+      "schedule_today": "Today",
+      "schedule_nothing_due": "Nothing due",
+      "schedule_loading": "Loading…",
+      "schedule_error": "Couldn't load the schedule.",
+      "schedule_overdue": "Overdue",
+      "schedule_waiting": "Waiting for approval",
+      "schedule_done": "Done",
+      "schedule_takes_turns": "Takes turns",
+      "schedule_projected_title": "A repeat still to come, if the one before is done on time",
+      "schedule_summary_due": "%n% to do",
+      "schedule_summary_overdue": "%n% overdue",
+      "schedule_summary_waiting": "%n% waiting for approval",
+      "schedule_summary_done": "%n% done",
+      "schedule_summary_stars": "%n% ⭐ to earn",
+      "schedule_no_due_date": "No due date",
+      "schedule_more": "+%n% more",
+      "schedule_empty": "No chores are due here. Give a chore a due date (and a repeat) to see it on the schedule.",
+      "schedule_legend": "Faded ones are repeats still to come, if each one is done on time.",
+      "schedule_chore_bin": "Chore Bin"
     },
     "daily_digest": {
       "title": "Daily Digest",
@@ -1398,8 +1431,8 @@
       },
       "board": {
         "drag_to_resize": "Drag to resize rows",
-        "no_lists": "No lists configured yet - tap the gear icon to pick one or more to-do lists to show.",
-        "no_lists_grocy": "No lists configured yet - tap the gear icon to pick one or more to-do or Grocy lists to show."
+        "no_lists": "No lists yet - tap the + button and pick one or more to-do lists on its List(s) tab.",
+        "no_lists_grocy": "No lists yet - tap the + button and pick one or more to-do or Grocy lists on its List(s) tab."
       },
       "column": {
         "completed": "Completed",
@@ -2423,7 +2456,8 @@
       "added_x_to_grocy_with_x_ingredient_x": "Added \"%0%\" to Grocy with %1% ingredient%2%.",
       "x_need_x_to_be_added_by_hand_x": " %0% need%1% to be added by hand: %2%.",
       "grocy_isn_t_connected_yet_set_it_up_3": "Grocy isn't connected yet — set it up under Settings > Devices & Services > Family Hub > Configure > Grocy.",
-      "px_pairs_with_transparency_above_for_a": "px) - pairs with transparency above for a \"liquid glass\" look"
+      "px_pairs_with_transparency_above_for_a": "px) - pairs with transparency above for a \"liquid glass\" look",
+      "show_on_the_calendar_on_its_due_date": "📅 Show on the calendar on its due date"
     },
     "privacy": {
       "locked_label": "Privacy Mode is on - tap to unlock",
@@ -2457,6 +2491,64 @@
       "saved": "Saved.",
       "restored": "Added back %n% built-in item(s).",
       "nothing_to_restore": "All the built-in items are already here."
+    },
+    "permissions": {
+      "group_chores": "Chores",
+      "group_rewards": "Rewards",
+      "group_menu": "Menu",
+      "group_wishlists": "Wish Lists",
+      "group_calendar": "Calendar",
+      "group_routines": "Routines",
+      "group_privacy": "Privacy",
+      "can_assign_label": "Assign to others",
+      "can_assign_hint": "Can assign chores to other people, not just pick up their own.",
+      "can_edit_chore_label": "Edit open chores",
+      "can_edit_chore_hint": "Can edit open chores (stars, due date and so on).",
+      "can_star_override_label": "Skip-approval chores",
+      "can_star_override_hint": "Can create or edit a chore that skips approval, so its stars are paid out right away.",
+      "can_verify_label": "Approve completed",
+      "can_verify_hint": "Can approve chores (and star requests) other people have marked done.",
+      "can_complete_any_label": "Complete anyone's",
+      "can_complete_any_hint": "Can mark any chore done, not just their own.",
+      "no_approval_required_label": "No approval needed",
+      "no_approval_required_hint": "Their own finished chores are approved, and the stars paid out, right away.",
+      "can_override_rewards_label": "Override star costs",
+      "can_override_rewards_hint": "Can change what a reward costs, add or subtract anyone's stars, and reverse or clear star history.",
+      "can_add_rewards_label": "Add to catalog",
+      "can_add_rewards_hint": "Can add rewards to the catalog with a star cost. Without this, what they add is a suggestion that needs approval.",
+      "can_edit_menu_label": "Edit the menu",
+      "can_edit_menu_hint": "Can edit the weekly meal plan. Without this they can still suggest a meal for any day, and someone with this permission decides.",
+      "can_see_wishlist_claims_label": "See claim status",
+      "can_see_wishlist_claims_hint": "Can see who has claimed what on other people's wish lists. A list's owner never sees this. Off by default, so a shared kiosk login can't spoil a surprise.",
+      "can_delete_event_label": "Delete calendar events",
+      "can_delete_event_hint": "Can delete calendar events, on calendars that allow it.",
+      "can_edit_event_label": "Edit/move calendar events",
+      "can_edit_event_hint": "Can edit calendar events, and drag them to another day in Edit mode, on calendars that allow it.",
+      "can_manage_own_routines_label": "Manage own routine items",
+      "can_manage_own_routines_hint": "Can add, edit, remove and reorder items in their own Morning, Afternoon and Night routines.",
+      "can_manage_any_routines_label": "Manage everyone's routine items",
+      "can_manage_any_routines_hint": "Can add, edit, remove and reorder anyone's routine items.",
+      "can_toggle_privacy_mode_label": "Turn off Privacy mode",
+      "can_toggle_privacy_mode_hint": "Can turn Privacy Mode back off with their kiosk PIN. Anyone can turn it on."
+    },
+    "quick_add": {
+      "menu": "Quick Add",
+      "menu_title": "Add an event, reminder, meal, chore, reward or list item by typing it",
+      "title": "Quick Add",
+      "hint": "Type it like you'd say it: an event, a reminder, a meal, a chore, a reward, or something for a list.",
+      "placeholder": "Soccer Tuesday 5pm for Emma",
+      "add": "Add",
+      "adding": "Adding…",
+      "failed": "Couldn't add that.",
+      "kind_pick_label": "Not right? It's a:",
+      "examples_label": "Try:",
+      "english_only": "Quick Add understands English for now.",
+      "kind_event": "Event",
+      "kind_reminder": "Reminder",
+      "kind_meal": "Meal",
+      "kind_chore": "Chore",
+      "kind_reward": "Reward",
+      "kind_list_item": "List item"
     }
   }
 }

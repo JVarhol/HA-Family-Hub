@@ -463,6 +463,8 @@ CHORE_KEY_QUANTITY_REMAINING = "quantity_remaining"
 
 # Plain opt-in boolean, editable via update_chore like every other simple flag here
 CHORE_KEY_IMPORTANT = "important"
+# Opt-in: show this chore on the Family Week Calendar on its due date, like a reminder
+CHORE_KEY_SHOW_ON_CALENDAR = "show_on_calendar"
 
 CHORE_KEY_IN_PROGRESS = "in_progress"
 

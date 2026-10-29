@@ -759,7 +759,17 @@ class FamilyHubTodoCard extends HTMLElement {
     if (this._kioskElevation) return !!this._kioskElevation.is_admin;
     return !!(this._hass && this._hass.user && this._hass.user.is_admin);
   }
+  // Signed in directly as a Kiosk account (no PIN login on top) - a shared screen anyone could be standing at
+  _isKioskAccountLogin() {
+    if (this._kioskElevation) return false;
+    const id = this._hass && this._hass.user && this._hass.user.id;
+    const profiles = this._settingsCache && this._settingsCache.userProfiles;
+    const profile = id && profiles && typeof profiles === "object" ? profiles[id] : null;
+    return !!(profile && profile.isKioskAccount);
+  }
   _hasPermission(key) {
+    // A kiosk login never sees wish-list claims, not even one that's a Home Assistant admin: the one permission with no admin bypass
+    if (key === "can_see_wishlist_claims" && this._isKioskAccountLogin()) return false;
     if (this._isAdmin()) return true;
     if (this._kioskElevation) return !!(this._kioskElevation.permissions && this._kioskElevation.permissions[key]);
     return !!this._myPermissions[key];
@@ -1961,8 +1971,8 @@ class FamilyHubTodoCard extends HTMLElement {
     const descriptors = this._listDescriptors();
     if (!descriptors.length) {
       const hint = this._grocyConfigured
-        ? this._t("todo.board.no_lists_grocy", "No lists configured yet - tap the gear icon to pick one or more to-do or Grocy lists to show.")
-        : this._t("todo.board.no_lists", "No lists configured yet - tap the gear icon to pick one or more to-do lists to show.");
+        ? this._t("todo.board.no_lists_grocy", "No lists yet - tap the + button and pick one or more to-do or Grocy lists on its List(s) tab.")
+        : this._t("todo.board.no_lists", "No lists yet - tap the + button and pick one or more to-do lists on its List(s) tab.");
       return `<div class="empty-state">${hint}</div>`;
     }
     // one `.todo-board-row` per chosen stack.

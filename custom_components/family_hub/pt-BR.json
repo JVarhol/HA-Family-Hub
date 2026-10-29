@@ -42,7 +42,7 @@
       },
       "grocy": {
         "title": "Grocy (opcional)",
-        "description": "Conecte uma instância Grocy auto-hospedada para que a caixa Sugestões de refeição do cartão de calendário ofereça 'Adicionar do Grocy' - trazendo o nome de uma receita e um link para vê-la no Grocy. Deixe os dois campos em branco se você não usa o Grocy; isso pode ser adicionado depois em Configurar.",
+        "description": "Conecte uma instância do Grocy hospedada por você para adicionar receitas do Grocy às refeições, o visualizador e o importador de receitas, uma lista de compras com as refeições da semana, sua lista de compras do Grocy, o estoque no cartão Minha despensa e as listas Vence em breve e Estoque baixo. Deixe os dois campos em branco se não usa o Grocy; dá para adicionar depois em Configurar.",
         "data": {
           "grocy_url": "URL do Grocy (ex.: http://homeassistant.local:9192)",
           "grocy_api_key": "Chave de API do Grocy"
@@ -93,7 +93,7 @@
       },
       "grocy": {
         "title": "Grocy",
-        "description": "Opcional: conecte uma instância Grocy auto-hospedada para que a caixa Sugestões de refeição do cartão de calendário ofereça 'Adicionar do Grocy' - trazendo o nome de uma receita e um link para vê-la no Grocy (nada mais é copiado). Deixe os dois campos em branco se você não usa o Grocy. A chave de API fica salva aqui, nas configurações da integração do Family Hub - não no painel de Configurações do cartão.",
+        "description": "Opcional: conecte uma instância do Grocy hospedada por você para adicionar receitas do Grocy às refeições, o visualizador e o importador de receitas, uma lista de compras com as refeições da semana, sua lista de compras do Grocy, o estoque no cartão Minha despensa e as listas Vence em breve e Estoque baixo. Deixe os dois campos em branco se não usa o Grocy. A chave de API fica guardada aqui, nas configurações da integração Family Hub - não nas configurações do cartão.",
         "data": {
           "grocy_url": "URL do Grocy (ex.: http://homeassistant.local:9192)",
           "grocy_api_key": "Chave de API do Grocy"
@@ -363,7 +363,14 @@
       "category": "Categoria",
       "repeat_current": "atual",
       "repeat_left": "restam %n%",
-      "repeat_until": "até %d%"
+      "repeat_until": "até %d%",
+      "chore": "Afazer",
+      "chore_due": "Prazo",
+      "chore_stars": "Estrelas",
+      "chore_mark_done": "✅ Marcar como feito",
+      "chore_bin": "Caixa de afazeres",
+      "chore_bin_hint": "Este afazer está na caixa de afazeres. Pegue-o no cartão Afazeres.",
+      "chore_done_failed": "Não foi possível marcar como feito. Só a pessoa a quem ele foi atribuído, ou alguém com permissão para concluir os afazeres de qualquer um, pode."
     },
     "more_menu_tpl": {
       "blank_name": "Em branco",
@@ -1065,7 +1072,33 @@
       "star_request_need_title": "Diga para que foi.",
       "star_request_need_stars": "Peça entre 1 e 100 estrelas.",
       "star_request_failed": "Não foi possível enviar o pedido.",
-      "star_request_for": "Para"
+      "star_request_for": "Para",
+      "schedule_toggle_show": "Ver a agenda de tarefas",
+      "schedule_toggle_hide": "Voltar ao quadro de tarefas",
+      "schedule_this_week": "Esta semana",
+      "schedule_next_week": "Próxima semana",
+      "schedule_month": "Mês",
+      "schedule_previous": "Anterior",
+      "schedule_next": "Próximo",
+      "schedule_today": "Hoje",
+      "schedule_nothing_due": "Nada para fazer",
+      "schedule_loading": "Carregando…",
+      "schedule_error": "Não foi possível carregar a agenda.",
+      "schedule_overdue": "Atrasada",
+      "schedule_waiting": "Aguardando aprovação",
+      "schedule_done": "Feita",
+      "schedule_takes_turns": "Revezamento",
+      "schedule_projected_title": "Uma repetição que ainda vem, se a anterior for feita no prazo",
+      "schedule_summary_due": "%n% a fazer",
+      "schedule_summary_overdue": "%n% atrasadas",
+      "schedule_summary_waiting": "%n% aguardando aprovação",
+      "schedule_summary_done": "%n% feitas",
+      "schedule_summary_stars": "%n% ⭐ para ganhar",
+      "schedule_no_due_date": "Sem prazo",
+      "schedule_more": "+%n% mais",
+      "schedule_empty": "Nenhuma tarefa com prazo aqui. Dê um prazo (e uma repetição) a uma tarefa para vê-la na agenda.",
+      "schedule_legend": "As esmaecidas são repetições que ainda vêm, se cada uma for feita no prazo.",
+      "schedule_chore_bin": "Caixa de tarefas"
     },
     "daily_digest": {
       "title": "Resumo diário",
@@ -1398,8 +1431,8 @@
       },
       "board": {
         "drag_to_resize": "Arraste para redimensionar as linhas",
-        "no_lists": "Nenhuma lista configurada ainda - toque na engrenagem para escolher uma ou mais listas de tarefas.",
-        "no_lists_grocy": "Nenhuma lista configurada ainda - toque na engrenagem para escolher uma ou mais listas de tarefas ou do Grocy."
+        "no_lists": "Nenhuma lista ainda - toque no botão + e escolha uma ou mais listas de tarefas na aba Lista(s).",
+        "no_lists_grocy": "Nenhuma lista ainda - toque no botão + e escolha uma ou mais listas de tarefas ou do Grocy na aba Lista(s)."
       },
       "column": {
         "completed": "Concluídos",
@@ -2423,7 +2456,8 @@
       "added_x_to_grocy_with_x_ingredient_x": "\"%0%\" adicionada ao Grocy com %1% ingrediente(s).",
       "x_need_x_to_be_added_by_hand_x": " %0% precisa(m) ser adicionado(s) à mão: %2%.",
       "grocy_isn_t_connected_yet_set_it_up_3": "O Grocy ainda não está conectado — configure em Configurações > Dispositivos e serviços > Family Hub > Configurar > Grocy.",
-      "px_pairs_with_transparency_above_for_a": "px) - combina com a transparência acima para um visual \"liquid glass\""
+      "px_pairs_with_transparency_above_for_a": "px) - combina com a transparência acima para um visual \"liquid glass\"",
+      "show_on_the_calendar_on_its_due_date": "📅 Mostrar no calendário no dia do prazo"
     },
     "privacy": {
       "locked_label": "Modo privacidade ativado - toque para desbloquear",
@@ -2457,6 +2491,64 @@
       "saved": "Salvo.",
       "restored": "%n% item(ns) padrão recuperado(s).",
       "nothing_to_restore": "Todos os itens padrão já estão aqui."
+    },
+    "permissions": {
+      "group_chores": "Afazeres",
+      "group_rewards": "Recompensas",
+      "group_menu": "Cardápio",
+      "group_wishlists": "Listas de desejos",
+      "group_calendar": "Calendário",
+      "group_routines": "Rotinas",
+      "group_privacy": "Privacidade",
+      "can_assign_label": "Atribuir a outros",
+      "can_assign_hint": "Pode atribuir afazeres a outras pessoas, não só pegar os seus.",
+      "can_edit_chore_label": "Editar afazeres abertos",
+      "can_edit_chore_hint": "Pode editar afazeres abertos (estrelas, prazo etc.).",
+      "can_star_override_label": "Afazeres sem aprovação",
+      "can_star_override_hint": "Pode criar ou editar um afazer sem aprovação, cujas estrelas são pagas na hora.",
+      "can_verify_label": "Aprovar concluídos",
+      "can_verify_hint": "Pode aprovar afazeres (e pedidos de estrelas) que outros marcaram como feitos.",
+      "can_complete_any_label": "Concluir os de qualquer um",
+      "can_complete_any_hint": "Pode marcar qualquer afazer como feito, não só os seus.",
+      "no_approval_required_label": "Sem aprovação",
+      "no_approval_required_hint": "Os afazeres que conclui são aprovados, e as estrelas pagas, na hora.",
+      "can_override_rewards_label": "Alterar custo em estrelas",
+      "can_override_rewards_hint": "Pode alterar quanto custa uma recompensa, somar ou tirar estrelas de qualquer um e desfazer ou limpar o histórico de estrelas.",
+      "can_add_rewards_label": "Adicionar ao catálogo",
+      "can_add_rewards_hint": "Pode adicionar recompensas ao catálogo com custo em estrelas. Sem isso, o que adiciona é uma sugestão que precisa de aprovação.",
+      "can_edit_menu_label": "Editar o cardápio",
+      "can_edit_menu_hint": "Pode editar o cardápio da semana. Sem isso, ainda pode sugerir uma refeição para qualquer dia, e alguém com esta permissão decide.",
+      "can_see_wishlist_claims_label": "Ver reservas",
+      "can_see_wishlist_claims_hint": "Pode ver quem reservou o quê nas listas de desejos dos outros. O dono de uma lista nunca vê isso. Desativado por padrão, para que uma conta de quiosque compartilhada não estrague uma surpresa.",
+      "can_delete_event_label": "Excluir eventos do calendário",
+      "can_delete_event_hint": "Pode excluir eventos do calendário, nos calendários que permitem.",
+      "can_edit_event_label": "Editar/mover eventos do calendário",
+      "can_edit_event_hint": "Pode editar eventos do calendário e arrastá-los para outro dia no modo Editar, nos calendários que permitem.",
+      "can_manage_own_routines_label": "Gerenciar as próprias rotinas",
+      "can_manage_own_routines_hint": "Pode adicionar, editar, remover e reordenar itens das próprias rotinas da manhã, da tarde e da noite.",
+      "can_manage_any_routines_label": "Gerenciar as rotinas de todos",
+      "can_manage_any_routines_hint": "Pode adicionar, editar, remover e reordenar os itens de rotina de qualquer pessoa.",
+      "can_toggle_privacy_mode_label": "Desativar o modo privacidade",
+      "can_toggle_privacy_mode_hint": "Pode desativar o modo privacidade com o próprio PIN de quiosque. Qualquer um pode ativá-lo."
+    },
+    "quick_add": {
+      "menu": "Adição rápida",
+      "menu_title": "Adicione um evento, lembrete, refeição, afazer, recompensa ou item de lista digitando",
+      "title": "Adição rápida",
+      "hint": "Digite como você falaria: um evento, um lembrete, uma refeição, um afazer, uma recompensa ou algo para uma lista.",
+      "placeholder": "Soccer Tuesday 5pm for Emma",
+      "add": "Adicionar",
+      "adding": "Adicionando…",
+      "failed": "Não foi possível adicionar.",
+      "kind_pick_label": "Não é isso? É um(a):",
+      "examples_label": "Tente:",
+      "english_only": "A adição rápida por enquanto só entende inglês.",
+      "kind_event": "Evento",
+      "kind_reminder": "Lembrete",
+      "kind_meal": "Refeição",
+      "kind_chore": "Afazer",
+      "kind_reward": "Recompensa",
+      "kind_list_item": "Item de lista"
     }
   }
 }

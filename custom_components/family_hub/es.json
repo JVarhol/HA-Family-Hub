@@ -42,7 +42,7 @@
       },
       "grocy": {
         "title": "Grocy (opcional)",
-        "description": "Conecta una instancia de Grocy autoalojada para que el cuadro Sugerencias de comidas de la tarjeta de calendario ofrezca 'Añadir desde Grocy': trae el nombre de una receta y un enlace para verla en Grocy. Deja ambos campos vacíos si no usas Grocy; se puede añadir más tarde desde Configurar.",
+        "description": "Conecta una instancia de Grocy alojada por ti para añadir recetas de Grocy a tus comidas, el visor e importador de recetas, una lista de la compra con las comidas de la semana, tu lista de la compra de Grocy, el inventario en la tarjeta Mi despensa y las listas Caduca pronto y Poco stock. Deja ambos campos vacíos si no usas Grocy; puedes añadirlo después desde Configurar.",
         "data": {
           "grocy_url": "URL de Grocy (p. ej., http://homeassistant.local:9192)",
           "grocy_api_key": "Clave API de Grocy"
@@ -93,7 +93,7 @@
       },
       "grocy": {
         "title": "Grocy",
-        "description": "Opcional: conecta una instancia de Grocy autoalojada para que el cuadro Sugerencias de comidas de la tarjeta de calendario ofrezca 'Añadir desde Grocy': trae el nombre de una receta y un enlace para verla en Grocy (no se copia nada más). Deja ambos campos vacíos si no usas Grocy. La clave API se guarda aquí, en los ajustes de la integración Family Hub, no en el panel de Ajustes de la tarjeta.",
+        "description": "Opcional: conecta una instancia de Grocy alojada por ti para añadir recetas de Grocy a tus comidas, el visor e importador de recetas, una lista de la compra con las comidas de la semana, tu lista de la compra de Grocy, el inventario en la tarjeta Mi despensa y las listas Caduca pronto y Poco stock. Deja ambos campos vacíos si no usas Grocy. La clave de API se guarda aquí, en los ajustes de la integración Family Hub, no en los ajustes de la tarjeta.",
         "data": {
           "grocy_url": "URL de Grocy (p. ej., http://homeassistant.local:9192)",
           "grocy_api_key": "Clave API de Grocy"
@@ -363,7 +363,14 @@
       "category": "Categoría",
       "repeat_current": "actual",
       "repeat_left": "quedan %n%",
-      "repeat_until": "hasta el %d%"
+      "repeat_until": "hasta el %d%",
+      "chore": "Tarea",
+      "chore_due": "Vence",
+      "chore_stars": "Estrellas",
+      "chore_mark_done": "✅ Marcar como hecha",
+      "chore_bin": "Contenedor de tareas",
+      "chore_bin_hint": "Esta tarea está en el contenedor de tareas. Cógela en la tarjeta de tareas.",
+      "chore_done_failed": "No se pudo marcar como hecha. Solo puede hacerlo la persona a la que está asignada, o alguien con permiso para completar las tareas de cualquiera."
     },
     "more_menu_tpl": {
       "blank_name": "En blanco",
@@ -1065,7 +1072,33 @@
       "star_request_need_title": "Di para qué era.",
       "star_request_need_stars": "Pide entre 1 y 100 estrellas.",
       "star_request_failed": "No se pudo enviar la petición.",
-      "star_request_for": "Para"
+      "star_request_for": "Para",
+      "schedule_toggle_show": "Ver el calendario de tareas",
+      "schedule_toggle_hide": "Volver al tablero de tareas",
+      "schedule_this_week": "Esta semana",
+      "schedule_next_week": "La próxima semana",
+      "schedule_month": "Mes",
+      "schedule_previous": "Anterior",
+      "schedule_next": "Siguiente",
+      "schedule_today": "Hoy",
+      "schedule_nothing_due": "Nada pendiente",
+      "schedule_loading": "Cargando…",
+      "schedule_error": "No se pudo cargar el calendario.",
+      "schedule_overdue": "Atrasada",
+      "schedule_waiting": "Esperando aprobación",
+      "schedule_done": "Hecha",
+      "schedule_takes_turns": "Por turnos",
+      "schedule_projected_title": "Una repetición futura, si la anterior se hace a tiempo",
+      "schedule_summary_due": "%n% por hacer",
+      "schedule_summary_overdue": "%n% atrasadas",
+      "schedule_summary_waiting": "%n% esperando aprobación",
+      "schedule_summary_done": "%n% hechas",
+      "schedule_summary_stars": "%n% ⭐ por ganar",
+      "schedule_no_due_date": "Sin fecha límite",
+      "schedule_more": "+%n% más",
+      "schedule_empty": "No hay tareas pendientes aquí. Dale a una tarea una fecha límite (y una repetición) para verla en el calendario.",
+      "schedule_legend": "Las atenuadas son repeticiones futuras, si cada una se hace a tiempo.",
+      "schedule_chore_bin": "Bolsa de tareas"
     },
     "daily_digest": {
       "title": "Resumen diario",
@@ -1398,8 +1431,8 @@
       },
       "board": {
         "drag_to_resize": "Arrastra para cambiar el tamaño de las filas",
-        "no_lists": "Aún no hay listas configuradas - toca el icono de ajustes para elegir una o más listas de tareas.",
-        "no_lists_grocy": "Aún no hay listas configuradas - toca el icono de ajustes para elegir una o más listas de tareas o de Grocy."
+        "no_lists": "Aún no hay listas - toca el botón + y elige una o más listas de tareas en su pestaña Lista(s).",
+        "no_lists_grocy": "Aún no hay listas - toca el botón + y elige una o más listas de tareas o de Grocy en su pestaña Lista(s)."
       },
       "column": {
         "completed": "Completadas",
@@ -2423,7 +2456,8 @@
       "added_x_to_grocy_with_x_ingredient_x": "\"%0%\" añadida a Grocy con %1% ingrediente(s).",
       "x_need_x_to_be_added_by_hand_x": " %0% hay que añadirlo(s) a mano: %2%.",
       "grocy_isn_t_connected_yet_set_it_up_3": "Grocy todavía no está conectado: configúralo en Ajustes > Dispositivos y servicios > Family Hub > Configurar > Grocy.",
-      "px_pairs_with_transparency_above_for_a": "px) - combínalo con la transparencia de arriba para un aspecto \"liquid glass\""
+      "px_pairs_with_transparency_above_for_a": "px) - combínalo con la transparencia de arriba para un aspecto \"liquid glass\"",
+      "show_on_the_calendar_on_its_due_date": "📅 Mostrar en el calendario el día que vence"
     },
     "privacy": {
       "locked_label": "Modo privacidad activado: toca para desbloquear",
@@ -2457,6 +2491,64 @@
       "saved": "Guardado.",
       "restored": "Se recuperaron %n% elemento(s) predeterminado(s).",
       "nothing_to_restore": "Ya están todos los elementos predeterminados."
+    },
+    "permissions": {
+      "group_chores": "Tareas",
+      "group_rewards": "Recompensas",
+      "group_menu": "Menú",
+      "group_wishlists": "Listas de deseos",
+      "group_calendar": "Calendario",
+      "group_routines": "Rutinas",
+      "group_privacy": "Privacidad",
+      "can_assign_label": "Asignar a otros",
+      "can_assign_hint": "Puede asignar tareas a otras personas, no solo coger las suyas.",
+      "can_edit_chore_label": "Editar tareas abiertas",
+      "can_edit_chore_hint": "Puede editar tareas abiertas (estrellas, fecha límite, etc.).",
+      "can_star_override_label": "Tareas sin aprobación",
+      "can_star_override_hint": "Puede crear o editar una tarea que no necesita aprobación, así sus estrellas se pagan al instante.",
+      "can_verify_label": "Aprobar completadas",
+      "can_verify_hint": "Puede aprobar tareas (y peticiones de estrellas) que otros han marcado como hechas.",
+      "can_complete_any_label": "Completar las de cualquiera",
+      "can_complete_any_hint": "Puede marcar como hecha cualquier tarea, no solo las suyas.",
+      "no_approval_required_label": "Sin aprobación",
+      "no_approval_required_hint": "Sus tareas terminadas se aprueban, y las estrellas se pagan, al instante.",
+      "can_override_rewards_label": "Cambiar coste en estrellas",
+      "can_override_rewards_hint": "Puede cambiar lo que cuesta una recompensa, sumar o restar estrellas a cualquiera y revertir o borrar el historial de estrellas.",
+      "can_add_rewards_label": "Añadir al catálogo",
+      "can_add_rewards_hint": "Puede añadir recompensas al catálogo con su coste en estrellas. Sin esto, lo que añade es una sugerencia que necesita aprobación.",
+      "can_edit_menu_label": "Editar el menú",
+      "can_edit_menu_hint": "Puede editar el menú semanal. Sin esto puede sugerir una comida para cualquier día, y alguien con este permiso decide.",
+      "can_see_wishlist_claims_label": "Ver reservas",
+      "can_see_wishlist_claims_hint": "Puede ver quién ha reservado qué en las listas de deseos de otros. El dueño de una lista nunca lo ve. Desactivado por defecto, para que una cuenta de quiosco compartida no estropee una sorpresa.",
+      "can_delete_event_label": "Eliminar eventos del calendario",
+      "can_delete_event_hint": "Puede eliminar eventos del calendario, en calendarios que lo permitan.",
+      "can_edit_event_label": "Editar/mover eventos del calendario",
+      "can_edit_event_hint": "Puede editar eventos del calendario y arrastrarlos a otro día en el modo Editar, en calendarios que lo permitan.",
+      "can_manage_own_routines_label": "Gestionar sus rutinas",
+      "can_manage_own_routines_hint": "Puede añadir, editar, quitar y reordenar elementos de sus rutinas de mañana, tarde y noche.",
+      "can_manage_any_routines_label": "Gestionar las rutinas de todos",
+      "can_manage_any_routines_hint": "Puede añadir, editar, quitar y reordenar los elementos de rutina de cualquiera.",
+      "can_toggle_privacy_mode_label": "Desactivar el modo privacidad",
+      "can_toggle_privacy_mode_hint": "Puede desactivar el modo privacidad con su PIN de quiosco. Cualquiera puede activarlo."
+    },
+    "quick_add": {
+      "menu": "Añadir rápido",
+      "menu_title": "Añade un evento, recordatorio, comida, tarea, recompensa o elemento de lista escribiéndolo",
+      "title": "Añadir rápido",
+      "hint": "Escríbelo como lo dirías: un evento, un recordatorio, una comida, una tarea, una recompensa o algo para una lista.",
+      "placeholder": "Soccer Tuesday 5pm for Emma",
+      "add": "Añadir",
+      "adding": "Añadiendo…",
+      "failed": "No se pudo añadir.",
+      "kind_pick_label": "¿No es correcto? Es un/una:",
+      "examples_label": "Prueba:",
+      "english_only": "Añadir rápido solo entiende inglés por ahora.",
+      "kind_event": "Evento",
+      "kind_reminder": "Recordatorio",
+      "kind_meal": "Comida",
+      "kind_chore": "Tarea",
+      "kind_reward": "Recompensa",
+      "kind_list_item": "Elemento de lista"
     }
   }
 }

@@ -42,7 +42,7 @@
       },
       "grocy": {
         "title": "Grocy (optioneel)",
-        "description": "Koppel een zelf gehoste Grocy-installatie zodat het Maaltijdsuggesties-vak van de agendakaart 'Toevoegen uit Grocy' kan aanbieden - met de naam van een recept plus een link om het in Grocy te bekijken. Laat beide velden leeg als je Grocy niet gebruikt; dit kan later via Configureren worden toegevoegd.",
+        "description": "Koppel een zelf gehoste Grocy-installatie voor Grocy-recepten bij je maaltijden, de receptweergave en receptimport, een boodschappenlijst uit de maaltijden van de week, je Grocy-boodschappenlijst, de voorraad op de kaart Mijn voorraad en de lijsten Bijna over de datum en Lage voorraad. Laat beide velden leeg als je Grocy niet gebruikt; je kunt het later toevoegen via Configureren.",
         "data": {
           "grocy_url": "Grocy-URL (bijv. http://homeassistant.local:9192)",
           "grocy_api_key": "Grocy API-sleutel"
@@ -93,7 +93,7 @@
       },
       "grocy": {
         "title": "Grocy",
-        "description": "Optioneel: koppel een zelf gehoste Grocy-installatie zodat het Maaltijdsuggesties-vak van de agendakaart 'Toevoegen uit Grocy' kan aanbieden - met de naam van een recept plus een link om het in Grocy te bekijken (verder wordt niets overgenomen). Laat beide velden leeg als je Grocy niet gebruikt. De API-sleutel wordt hier bewaard, in de eigen integratie-instellingen van Family Hub - niet in het Instellingen-paneel van de kaart.",
+        "description": "Optioneel: koppel een zelf gehoste Grocy-installatie voor Grocy-recepten bij je maaltijden, de receptweergave en receptimport, een boodschappenlijst uit de maaltijden van de week, je Grocy-boodschappenlijst, de voorraad op de kaart Mijn voorraad en de lijsten Bijna over de datum en Lage voorraad. Laat beide velden leeg als je Grocy niet gebruikt. De API-sleutel wordt hier opgeslagen, in de instellingen van de Family Hub-integratie - niet in de instellingen van de kaart.",
         "data": {
           "grocy_url": "Grocy-URL (bijv. http://homeassistant.local:9192)",
           "grocy_api_key": "Grocy API-sleutel"
@@ -363,7 +363,14 @@
       "category": "Categorie",
       "repeat_current": "huidig",
       "repeat_left": "nog %n%",
-      "repeat_until": "tot %d%"
+      "repeat_until": "tot %d%",
+      "chore": "Klusje",
+      "chore_due": "Deadline",
+      "chore_stars": "Sterren",
+      "chore_mark_done": "✅ Klaar",
+      "chore_bin": "Klusjesbak",
+      "chore_bin_hint": "Dit klusje zit in de klusjesbak. Pak het op de kaart Klusjes.",
+      "chore_done_failed": "Kon het niet als klaar markeren. Dat kan alleen degene voor wie het is, of iemand die klusjes van iedereen mag afronden."
     },
     "more_menu_tpl": {
       "blank_name": "Leeg",
@@ -1065,7 +1072,33 @@
       "star_request_need_title": "Zeg waarvoor het was.",
       "star_request_need_stars": "Vraag tussen 1 en 100 sterren.",
       "star_request_failed": "Het verzoek kon niet worden verstuurd.",
-      "star_request_for": "Voor"
+      "star_request_for": "Voor",
+      "schedule_toggle_show": "Klusjesplanning tonen",
+      "schedule_toggle_hide": "Terug naar het klusjesbord",
+      "schedule_this_week": "Deze week",
+      "schedule_next_week": "Volgende week",
+      "schedule_month": "Maand",
+      "schedule_previous": "Vorige",
+      "schedule_next": "Volgende",
+      "schedule_today": "Vandaag",
+      "schedule_nothing_due": "Niets gepland",
+      "schedule_loading": "Laden…",
+      "schedule_error": "De planning kon niet worden geladen.",
+      "schedule_overdue": "Te laat",
+      "schedule_waiting": "Wacht op goedkeuring",
+      "schedule_done": "Klaar",
+      "schedule_takes_turns": "Om de beurt",
+      "schedule_projected_title": "Een herhaling die nog komt, als de vorige op tijd gedaan is",
+      "schedule_summary_due": "%n% te doen",
+      "schedule_summary_overdue": "%n% te laat",
+      "schedule_summary_waiting": "%n% wachten op goedkeuring",
+      "schedule_summary_done": "%n% klaar",
+      "schedule_summary_stars": "%n% ⭐ te verdienen",
+      "schedule_no_due_date": "Geen deadline",
+      "schedule_more": "+%n% meer",
+      "schedule_empty": "Hier staan geen klusjes gepland. Geef een klusje een deadline (en een herhaling) om het in de planning te zien.",
+      "schedule_legend": "Vervaagde klusjes zijn herhalingen die nog komen, als elk op tijd gedaan is.",
+      "schedule_chore_bin": "Klusjesbak"
     },
     "daily_digest": {
       "title": "Dagelijks overzicht",
@@ -1398,8 +1431,8 @@
       },
       "board": {
         "drag_to_resize": "Sleep om rijen te vergroten/verkleinen",
-        "no_lists": "Nog geen lijsten ingesteld - tik op het tandwiel om een of meer takenlijsten te kiezen.",
-        "no_lists_grocy": "Nog geen lijsten ingesteld - tik op het tandwiel om een of meer taken- of Grocy-lijsten te kiezen."
+        "no_lists": "Nog geen lijsten - tik op de knop + en kies op het tabblad Lijst(en) een of meer takenlijsten.",
+        "no_lists_grocy": "Nog geen lijsten - tik op de knop + en kies op het tabblad Lijst(en) een of meer taken- of Grocy-lijsten."
       },
       "column": {
         "completed": "Voltooid",
@@ -2423,7 +2456,8 @@
       "added_x_to_grocy_with_x_ingredient_x": "\"%0%\" toegevoegd aan Grocy met %1% ingrediënt(en).",
       "x_need_x_to_be_added_by_hand_x": " %0% moet(en) met de hand worden toegevoegd: %2%.",
       "grocy_isn_t_connected_yet_set_it_up_3": "Grocy is nog niet gekoppeld — stel het in onder Instellingen > Apparaten & diensten > Family Hub > Configureren > Grocy.",
-      "px_pairs_with_transparency_above_for_a": "px) - combineert met de transparantie hierboven voor een \"liquid glass\"-look"
+      "px_pairs_with_transparency_above_for_a": "px) - combineert met de transparantie hierboven voor een \"liquid glass\"-look",
+      "show_on_the_calendar_on_its_due_date": "📅 Op de deadline in de agenda tonen"
     },
     "privacy": {
       "locked_label": "Privacymodus staat aan - tik om te ontgrendelen",
@@ -2457,6 +2491,64 @@
       "saved": "Opgeslagen.",
       "restored": "%n% standaarditem(s) teruggezet.",
       "nothing_to_restore": "Alle standaarditems staan er al."
+    },
+    "permissions": {
+      "group_chores": "Klusjes",
+      "group_rewards": "Beloningen",
+      "group_menu": "Menu",
+      "group_wishlists": "Verlanglijstjes",
+      "group_calendar": "Agenda",
+      "group_routines": "Routines",
+      "group_privacy": "Privacy",
+      "can_assign_label": "Aan anderen toewijzen",
+      "can_assign_hint": "Mag klusjes aan anderen toewijzen, niet alleen zelf oppakken.",
+      "can_edit_chore_label": "Open klusjes bewerken",
+      "can_edit_chore_hint": "Mag open klusjes bewerken (sterren, deadline enzovoort).",
+      "can_star_override_label": "Klusjes zonder goedkeuring",
+      "can_star_override_hint": "Mag een klusje zonder goedkeuring maken of bewerken, waarvan de sterren meteen worden uitbetaald.",
+      "can_verify_label": "Klaargemelde goedkeuren",
+      "can_verify_hint": "Mag klusjes (en sterrenverzoeken) goedkeuren die anderen als klaar hebben gemeld.",
+      "can_complete_any_label": "Klusjes van iedereen afronden",
+      "can_complete_any_hint": "Mag elk klusje als klaar markeren, niet alleen de eigen klusjes.",
+      "no_approval_required_label": "Geen goedkeuring nodig",
+      "no_approval_required_hint": "Eigen afgeronde klusjes worden meteen goedgekeurd en de sterren meteen uitbetaald.",
+      "can_override_rewards_label": "Sterkosten aanpassen",
+      "can_override_rewards_hint": "Mag aanpassen wat een beloning kost, bij iedereen sterren erbij doen of afhalen, en de sterrengeschiedenis terugdraaien of wissen.",
+      "can_add_rewards_label": "Aan catalogus toevoegen",
+      "can_add_rewards_hint": "Mag beloningen met sterkosten aan de catalogus toevoegen. Zonder dit wordt wat ze toevoegen een voorstel dat goedgekeurd moet worden.",
+      "can_edit_menu_label": "Menu bewerken",
+      "can_edit_menu_hint": "Mag het weekmenu bewerken. Zonder dit kan iemand nog steeds een maaltijd voor elke dag voorstellen, en beslist iemand met dit recht.",
+      "can_see_wishlist_claims_label": "Reserveringen zien",
+      "can_see_wishlist_claims_hint": "Ziet wie wat heeft gereserveerd op verlanglijstjes van anderen. De eigenaar van een lijst ziet dit nooit. Standaard uit, zodat een gedeeld kioskaccount geen verrassing verklapt.",
+      "can_delete_event_label": "Agenda-afspraken verwijderen",
+      "can_delete_event_hint": "Mag agenda-afspraken verwijderen, op agenda's die dat toestaan.",
+      "can_edit_event_label": "Agenda-afspraken bewerken/verplaatsen",
+      "can_edit_event_hint": "Mag agenda-afspraken bewerken en in de modus Bewerken naar een andere dag slepen, op agenda's die dat toestaan.",
+      "can_manage_own_routines_label": "Eigen routines beheren",
+      "can_manage_own_routines_hint": "Mag items in de eigen ochtend-, middag- en avondroutines toevoegen, bewerken, verwijderen en herschikken.",
+      "can_manage_any_routines_label": "Routines van iedereen beheren",
+      "can_manage_any_routines_hint": "Mag routine-items van iedereen toevoegen, bewerken, verwijderen en herschikken.",
+      "can_toggle_privacy_mode_label": "Privacymodus uitzetten",
+      "can_toggle_privacy_mode_hint": "Mag de privacymodus met de eigen kiosk-pincode weer uitzetten. Iedereen kan hem aanzetten."
+    },
+    "quick_add": {
+      "menu": "Snel toevoegen",
+      "menu_title": "Voeg een afspraak, herinnering, maaltijd, klusje, beloning of lijstitem toe door het te typen",
+      "title": "Snel toevoegen",
+      "hint": "Typ het zoals je het zou zeggen: een afspraak, een herinnering, een maaltijd, een klusje, een beloning of iets voor een lijst.",
+      "placeholder": "Soccer Tuesday 5pm for Emma",
+      "add": "Toevoegen",
+      "adding": "Toevoegen…",
+      "failed": "Kon het niet toevoegen.",
+      "kind_pick_label": "Klopt het niet? Het is een:",
+      "examples_label": "Probeer:",
+      "english_only": "Snel toevoegen begrijpt voorlopig alleen Engels.",
+      "kind_event": "Afspraak",
+      "kind_reminder": "Herinnering",
+      "kind_meal": "Maaltijd",
+      "kind_chore": "Klusje",
+      "kind_reward": "Beloning",
+      "kind_list_item": "Lijstitem"
     }
   }
 }

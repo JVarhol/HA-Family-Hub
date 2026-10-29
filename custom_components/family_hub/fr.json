@@ -42,7 +42,7 @@
       },
       "grocy": {
         "title": "Grocy (facultatif)",
-        "description": "Connectez une instance Grocy auto-hébergée pour que la zone Suggestions de repas de la carte calendrier propose « Ajouter depuis Grocy » - avec le nom d'une recette et un lien pour la voir dans Grocy. Laissez les deux champs vides si vous n'utilisez pas Grocy ; cela peut être ajouté plus tard via Configurer.",
+        "description": "Connectez une instance Grocy auto-hébergée pour ajouter des recettes Grocy à vos repas, la visionneuse et l'importateur de recettes, une liste de courses tirée des repas de la semaine, votre liste de courses Grocy, le stock sur la carte Mon garde-manger et les listes Bientôt périmé et Stock bas. Laissez les deux champs vides si vous n'utilisez pas Grocy ; vous pourrez l'ajouter plus tard depuis Configurer.",
         "data": {
           "grocy_url": "URL de Grocy (par ex. http://homeassistant.local:9192)",
           "grocy_api_key": "Clé API Grocy"
@@ -93,7 +93,7 @@
       },
       "grocy": {
         "title": "Grocy",
-        "description": "Facultatif : connectez une instance Grocy auto-hébergée pour que la zone Suggestions de repas de la carte calendrier propose « Ajouter depuis Grocy » - avec le nom d'une recette et un lien pour la voir dans Grocy (rien d'autre n'est copié). Laissez les deux champs vides si vous n'utilisez pas Grocy. La clé API est stockée ici, dans les paramètres d'intégration de Family Hub - pas dans le panneau Paramètres de la carte.",
+        "description": "Facultatif : connectez une instance Grocy auto-hébergée pour ajouter des recettes Grocy à vos repas, la visionneuse et l'importateur de recettes, une liste de courses tirée des repas de la semaine, votre liste de courses Grocy, le stock sur la carte Mon garde-manger et les listes Bientôt périmé et Stock bas. Laissez les deux champs vides si vous n'utilisez pas Grocy. La clé API est enregistrée ici, dans les paramètres de l'intégration Family Hub - pas dans les paramètres de la carte.",
         "data": {
           "grocy_url": "URL de Grocy (par ex. http://homeassistant.local:9192)",
           "grocy_api_key": "Clé API Grocy"
@@ -363,7 +363,14 @@
       "category": "Catégorie",
       "repeat_current": "actuel",
       "repeat_left": "encore %n%",
-      "repeat_until": "jusqu'au %d%"
+      "repeat_until": "jusqu'au %d%",
+      "chore": "Corvée",
+      "chore_due": "Échéance",
+      "chore_stars": "Étoiles",
+      "chore_mark_done": "✅ Marquer comme faite",
+      "chore_bin": "Bac à corvées",
+      "chore_bin_hint": "Cette corvée est dans le bac à corvées. Prenez-la sur la carte Corvées.",
+      "chore_done_failed": "Impossible de la marquer comme faite. Seule la personne concernée, ou quelqu'un autorisé à terminer les corvées des autres, peut le faire."
     },
     "more_menu_tpl": {
       "blank_name": "Vide",
@@ -1065,7 +1072,33 @@
       "star_request_need_title": "Dis pour quoi c'était.",
       "star_request_need_stars": "Demande entre 1 et 100 étoiles.",
       "star_request_failed": "Impossible d'envoyer la demande.",
-      "star_request_for": "Pour"
+      "star_request_for": "Pour",
+      "schedule_toggle_show": "Voir le planning des tâches",
+      "schedule_toggle_hide": "Retour au tableau des tâches",
+      "schedule_this_week": "Cette semaine",
+      "schedule_next_week": "La semaine prochaine",
+      "schedule_month": "Mois",
+      "schedule_previous": "Précédent",
+      "schedule_next": "Suivant",
+      "schedule_today": "Aujourd'hui",
+      "schedule_nothing_due": "Rien de prévu",
+      "schedule_loading": "Chargement…",
+      "schedule_error": "Impossible de charger le planning.",
+      "schedule_overdue": "En retard",
+      "schedule_waiting": "En attente de validation",
+      "schedule_done": "Faite",
+      "schedule_takes_turns": "À tour de rôle",
+      "schedule_projected_title": "Une répétition à venir, si la précédente est faite à temps",
+      "schedule_summary_due": "%n% à faire",
+      "schedule_summary_overdue": "%n% en retard",
+      "schedule_summary_waiting": "%n% en attente de validation",
+      "schedule_summary_done": "%n% faites",
+      "schedule_summary_stars": "%n% ⭐ à gagner",
+      "schedule_no_due_date": "Sans échéance",
+      "schedule_more": "+%n% de plus",
+      "schedule_empty": "Aucune tâche prévue ici. Donnez une échéance (et une répétition) à une tâche pour la voir dans le planning.",
+      "schedule_legend": "Les tâches estompées sont des répétitions à venir, si chacune est faite à temps.",
+      "schedule_chore_bin": "Bac à tâches"
     },
     "daily_digest": {
       "title": "Résumé quotidien",
@@ -1398,8 +1431,8 @@
       },
       "board": {
         "drag_to_resize": "Glisser pour redimensionner les lignes",
-        "no_lists": "Aucune liste configurée - touchez la roue dentée pour choisir une ou plusieurs listes de tâches à afficher.",
-        "no_lists_grocy": "Aucune liste configurée - touchez la roue dentée pour choisir une ou plusieurs listes de tâches ou Grocy à afficher."
+        "no_lists": "Pas encore de liste - touchez le bouton + et choisissez une ou plusieurs listes de tâches dans son onglet Liste(s).",
+        "no_lists_grocy": "Pas encore de liste - touchez le bouton + et choisissez une ou plusieurs listes de tâches ou Grocy dans son onglet Liste(s)."
       },
       "column": {
         "completed": "Terminés",
@@ -2423,7 +2456,8 @@
       "added_x_to_grocy_with_x_ingredient_x": "« %0% » ajoutée à Grocy avec %1% ingrédient(s).",
       "x_need_x_to_be_added_by_hand_x": " %0% doit/doivent être ajouté(s) à la main : %2%.",
       "grocy_isn_t_connected_yet_set_it_up_3": "Grocy n'est pas encore connecté — configurez-le dans Paramètres > Appareils et services > Family Hub > Configurer > Grocy.",
-      "px_pairs_with_transparency_above_for_a": "px) - à combiner avec la transparence ci-dessus pour un effet \"liquid glass\""
+      "px_pairs_with_transparency_above_for_a": "px) - à combiner avec la transparence ci-dessus pour un effet \"liquid glass\"",
+      "show_on_the_calendar_on_its_due_date": "📅 Afficher dans le calendrier le jour de l'échéance"
     },
     "privacy": {
       "locked_label": "Mode confidentialité activé - touchez pour déverrouiller",
@@ -2457,6 +2491,64 @@
       "saved": "Enregistré.",
       "restored": "%n% élément(s) par défaut rétabli(s).",
       "nothing_to_restore": "Tous les éléments par défaut sont déjà là."
+    },
+    "permissions": {
+      "group_chores": "Corvées",
+      "group_rewards": "Récompenses",
+      "group_menu": "Menu",
+      "group_wishlists": "Listes de souhaits",
+      "group_calendar": "Calendrier",
+      "group_routines": "Routines",
+      "group_privacy": "Confidentialité",
+      "can_assign_label": "Attribuer aux autres",
+      "can_assign_hint": "Peut attribuer des corvées à d'autres personnes, pas seulement prendre les siennes.",
+      "can_edit_chore_label": "Modifier les corvées ouvertes",
+      "can_edit_chore_hint": "Peut modifier les corvées ouvertes (étoiles, échéance, etc.).",
+      "can_star_override_label": "Corvées sans validation",
+      "can_star_override_hint": "Peut créer ou modifier une corvée sans validation, dont les étoiles sont versées tout de suite.",
+      "can_verify_label": "Valider les corvées faites",
+      "can_verify_hint": "Peut valider les corvées (et demandes d'étoiles) que d'autres ont marquées comme faites.",
+      "can_complete_any_label": "Terminer celles des autres",
+      "can_complete_any_hint": "Peut marquer n'importe quelle corvée comme faite, pas seulement les siennes.",
+      "no_approval_required_label": "Pas de validation",
+      "no_approval_required_hint": "Ses corvées terminées sont validées, et les étoiles versées, tout de suite.",
+      "can_override_rewards_label": "Changer le coût en étoiles",
+      "can_override_rewards_hint": "Peut changer le coût d'une récompense, ajouter ou retirer des étoiles à chacun, et annuler ou effacer l'historique des étoiles.",
+      "can_add_rewards_label": "Ajouter au catalogue",
+      "can_add_rewards_hint": "Peut ajouter des récompenses au catalogue avec un coût en étoiles. Sans cela, ce qu'il ajoute est une suggestion à valider.",
+      "can_edit_menu_label": "Modifier le menu",
+      "can_edit_menu_hint": "Peut modifier le menu de la semaine. Sans cela, il peut quand même suggérer un repas pour n'importe quel jour, et quelqu'un qui a ce droit décide.",
+      "can_see_wishlist_claims_label": "Voir les réservations",
+      "can_see_wishlist_claims_hint": "Peut voir qui a réservé quoi sur les listes de souhaits des autres. Le propriétaire d'une liste ne le voit jamais. Désactivé par défaut, pour qu'un compte kiosque partagé ne gâche pas une surprise.",
+      "can_delete_event_label": "Supprimer des événements",
+      "can_delete_event_hint": "Peut supprimer des événements, sur les calendriers qui le permettent.",
+      "can_edit_event_label": "Modifier/déplacer des événements",
+      "can_edit_event_hint": "Peut modifier des événements et les faire glisser vers un autre jour en mode Modifier, sur les calendriers qui le permettent.",
+      "can_manage_own_routines_label": "Gérer ses routines",
+      "can_manage_own_routines_hint": "Peut ajouter, modifier, retirer et réordonner les éléments de ses routines du matin, de l'après-midi et du soir.",
+      "can_manage_any_routines_label": "Gérer les routines de tous",
+      "can_manage_any_routines_hint": "Peut ajouter, modifier, retirer et réordonner les éléments de routine de tout le monde.",
+      "can_toggle_privacy_mode_label": "Désactiver le mode confidentialité",
+      "can_toggle_privacy_mode_hint": "Peut désactiver le mode confidentialité avec son code PIN kiosque. Tout le monde peut l'activer."
+    },
+    "quick_add": {
+      "menu": "Ajout rapide",
+      "menu_title": "Ajoutez un événement, un rappel, un repas, une corvée, une récompense ou un élément de liste en le tapant",
+      "title": "Ajout rapide",
+      "hint": "Écrivez-le comme vous le diriez : un événement, un rappel, un repas, une corvée, une récompense ou quelque chose pour une liste.",
+      "placeholder": "Soccer Tuesday 5pm for Emma",
+      "add": "Ajouter",
+      "adding": "Ajout…",
+      "failed": "Impossible de l'ajouter.",
+      "kind_pick_label": "Pas ça ? C'est un(e) :",
+      "examples_label": "Essayez :",
+      "english_only": "L'ajout rapide ne comprend que l'anglais pour l'instant.",
+      "kind_event": "Événement",
+      "kind_reminder": "Rappel",
+      "kind_meal": "Repas",
+      "kind_chore": "Corvée",
+      "kind_reward": "Récompense",
+      "kind_list_item": "Élément de liste"
     }
   }
 }

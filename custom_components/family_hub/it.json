@@ -42,7 +42,7 @@
       },
       "grocy": {
         "title": "Grocy (facoltativo)",
-        "description": "Collega un'istanza Grocy self-hosted in modo che il riquadro Suggerimenti pasti della scheda calendario possa offrire 'Aggiungi da Grocy' - con il nome di una ricetta e un link per vederla in Grocy. Lascia vuoti entrambi i campi se non usi Grocy; può essere aggiunto in seguito da Configura.",
+        "description": "Collega un'istanza Grocy self-hosted per aggiungere ricette Grocy ai pasti, il visualizzatore e l'importatore di ricette, una lista della spesa dai pasti della settimana, la tua lista della spesa Grocy, le scorte nella scheda La mia dispensa e le liste In scadenza e Scorte basse. Lascia vuoti entrambi i campi se non usi Grocy; potrai aggiungerlo più tardi da Configura.",
         "data": {
           "grocy_url": "URL di Grocy (ad es. http://homeassistant.local:9192)",
           "grocy_api_key": "Chiave API di Grocy"
@@ -93,7 +93,7 @@
       },
       "grocy": {
         "title": "Grocy",
-        "description": "Facoltativo: collega un'istanza Grocy self-hosted in modo che il riquadro Suggerimenti pasti della scheda calendario possa offrire 'Aggiungi da Grocy' - con il nome di una ricetta e un link per vederla in Grocy (nient'altro viene copiato). Lascia vuoti entrambi i campi se non usi Grocy. La chiave API è salvata qui, nelle impostazioni dell'integrazione Family Hub - non nel pannello Impostazioni della scheda.",
+        "description": "Facoltativo: collega un'istanza Grocy self-hosted per aggiungere ricette Grocy ai pasti, il visualizzatore e l'importatore di ricette, una lista della spesa dai pasti della settimana, la tua lista della spesa Grocy, le scorte nella scheda La mia dispensa e le liste In scadenza e Scorte basse. Lascia vuoti entrambi i campi se non usi Grocy. La chiave API viene salvata qui, nelle impostazioni dell'integrazione Family Hub - non nelle impostazioni della scheda.",
         "data": {
           "grocy_url": "URL di Grocy (ad es. http://homeassistant.local:9192)",
           "grocy_api_key": "Chiave API di Grocy"
@@ -363,7 +363,14 @@
       "category": "Categoria",
       "repeat_current": "attuale",
       "repeat_left": "ne restano %n%",
-      "repeat_until": "fino al %d%"
+      "repeat_until": "fino al %d%",
+      "chore": "Faccenda",
+      "chore_due": "Scadenza",
+      "chore_stars": "Stelle",
+      "chore_mark_done": "✅ Segna come fatta",
+      "chore_bin": "Cesto delle faccende",
+      "chore_bin_hint": "Questa faccenda è nel cesto delle faccende. Prendila dalla scheda Faccende.",
+      "chore_done_failed": "Impossibile segnarla come fatta. Può farlo solo la persona a cui è assegnata, o chi può completare le faccende di tutti."
     },
     "more_menu_tpl": {
       "blank_name": "Vuoto",
@@ -1065,7 +1072,33 @@
       "star_request_need_title": "Di' per cosa era.",
       "star_request_need_stars": "Chiedi da 1 a 100 stelle.",
       "star_request_failed": "Impossibile inviare la richiesta.",
-      "star_request_for": "Per"
+      "star_request_for": "Per",
+      "schedule_toggle_show": "Mostra il programma delle faccende",
+      "schedule_toggle_hide": "Torna alla bacheca delle faccende",
+      "schedule_this_week": "Questa settimana",
+      "schedule_next_week": "La prossima settimana",
+      "schedule_month": "Mese",
+      "schedule_previous": "Precedente",
+      "schedule_next": "Successivo",
+      "schedule_today": "Oggi",
+      "schedule_nothing_due": "Niente in scadenza",
+      "schedule_loading": "Caricamento…",
+      "schedule_error": "Impossibile caricare il programma.",
+      "schedule_overdue": "In ritardo",
+      "schedule_waiting": "In attesa di approvazione",
+      "schedule_done": "Fatta",
+      "schedule_takes_turns": "A turno",
+      "schedule_projected_title": "Una ripetizione futura, se la precedente viene fatta in tempo",
+      "schedule_summary_due": "%n% da fare",
+      "schedule_summary_overdue": "%n% in ritardo",
+      "schedule_summary_waiting": "%n% in attesa di approvazione",
+      "schedule_summary_done": "%n% fatte",
+      "schedule_summary_stars": "%n% ⭐ da guadagnare",
+      "schedule_no_due_date": "Senza scadenza",
+      "schedule_more": "+%n% altre",
+      "schedule_empty": "Nessuna faccenda in scadenza qui. Dai una scadenza (e una ripetizione) a una faccenda per vederla nel programma.",
+      "schedule_legend": "Quelle sbiadite sono ripetizioni future, se ognuna viene fatta in tempo.",
+      "schedule_chore_bin": "Cesto delle faccende"
     },
     "daily_digest": {
       "title": "Riepilogo giornaliero",
@@ -1398,8 +1431,8 @@
       },
       "board": {
         "drag_to_resize": "Trascina per ridimensionare le righe",
-        "no_lists": "Nessuna lista configurata - tocca l'ingranaggio per scegliere una o più liste attività da mostrare.",
-        "no_lists_grocy": "Nessuna lista configurata - tocca l'ingranaggio per scegliere una o più liste attività o Grocy da mostrare."
+        "no_lists": "Ancora nessuna lista - tocca il pulsante + e scegli una o più liste attività nella sua scheda Lista/e.",
+        "no_lists_grocy": "Ancora nessuna lista - tocca il pulsante + e scegli una o più liste attività o Grocy nella sua scheda Lista/e."
       },
       "column": {
         "completed": "Completati",
@@ -2423,7 +2456,8 @@
       "added_x_to_grocy_with_x_ingredient_x": "\"%0%\" aggiunta a Grocy con %1% ingrediente/i.",
       "x_need_x_to_be_added_by_hand_x": " %0% va/vanno aggiunto/i a mano: %2%.",
       "grocy_isn_t_connected_yet_set_it_up_3": "Grocy non è ancora collegato — configuralo in Impostazioni > Dispositivi e servizi > Family Hub > Configura > Grocy.",
-      "px_pairs_with_transparency_above_for_a": "px) - si abbina alla trasparenza qui sopra per un effetto \"liquid glass\""
+      "px_pairs_with_transparency_above_for_a": "px) - si abbina alla trasparenza qui sopra per un effetto \"liquid glass\"",
+      "show_on_the_calendar_on_its_due_date": "📅 Mostra nel calendario il giorno della scadenza"
     },
     "privacy": {
       "locked_label": "Modalità privacy attiva - tocca per sbloccare",
@@ -2457,6 +2491,64 @@
       "saved": "Salvato.",
       "restored": "Ripristinati %n% elementi predefiniti.",
       "nothing_to_restore": "Tutti gli elementi predefiniti sono già presenti."
+    },
+    "permissions": {
+      "group_chores": "Faccende",
+      "group_rewards": "Premi",
+      "group_menu": "Menu",
+      "group_wishlists": "Liste dei desideri",
+      "group_calendar": "Calendario",
+      "group_routines": "Routine",
+      "group_privacy": "Privacy",
+      "can_assign_label": "Assegnare ad altri",
+      "can_assign_hint": "Può assegnare faccende ad altre persone, non solo prendere le proprie.",
+      "can_edit_chore_label": "Modificare faccende aperte",
+      "can_edit_chore_hint": "Può modificare le faccende aperte (stelle, scadenza e così via).",
+      "can_star_override_label": "Faccende senza approvazione",
+      "can_star_override_hint": "Può creare o modificare una faccenda senza approvazione, così le stelle vengono pagate subito.",
+      "can_verify_label": "Approvare quelle fatte",
+      "can_verify_hint": "Può approvare le faccende (e le richieste di stelle) che altri hanno segnato come fatte.",
+      "can_complete_any_label": "Completare quelle di tutti",
+      "can_complete_any_hint": "Può segnare come fatta qualsiasi faccenda, non solo le proprie.",
+      "no_approval_required_label": "Nessuna approvazione",
+      "no_approval_required_hint": "Le sue faccende finite vengono approvate, e le stelle pagate, subito.",
+      "can_override_rewards_label": "Cambiare costo in stelle",
+      "can_override_rewards_hint": "Può cambiare quanto costa un premio, aggiungere o togliere stelle a chiunque e annullare o cancellare la cronologia delle stelle.",
+      "can_add_rewards_label": "Aggiungere al catalogo",
+      "can_add_rewards_hint": "Può aggiungere premi al catalogo con un costo in stelle. Senza questo permesso, ciò che aggiunge è un suggerimento da approvare.",
+      "can_edit_menu_label": "Modificare il menu",
+      "can_edit_menu_hint": "Può modificare il menu settimanale. Senza questo permesso può comunque suggerire un pasto per qualsiasi giorno, e decide chi ha il permesso.",
+      "can_see_wishlist_claims_label": "Vedere le prenotazioni",
+      "can_see_wishlist_claims_hint": "Può vedere chi ha prenotato cosa nelle liste dei desideri degli altri. Il proprietario di una lista non lo vede mai. Disattivato di default, così un account chiosco condiviso non rovina una sorpresa.",
+      "can_delete_event_label": "Eliminare eventi del calendario",
+      "can_delete_event_hint": "Può eliminare eventi del calendario, sui calendari che lo consentono.",
+      "can_edit_event_label": "Modificare/spostare eventi",
+      "can_edit_event_hint": "Può modificare eventi del calendario e trascinarli su un altro giorno in modalità Modifica, sui calendari che lo consentono.",
+      "can_manage_own_routines_label": "Gestire le proprie routine",
+      "can_manage_own_routines_hint": "Può aggiungere, modificare, rimuovere e riordinare le voci delle proprie routine di mattina, pomeriggio e sera.",
+      "can_manage_any_routines_label": "Gestire le routine di tutti",
+      "can_manage_any_routines_hint": "Può aggiungere, modificare, rimuovere e riordinare le voci di routine di chiunque.",
+      "can_toggle_privacy_mode_label": "Disattivare la modalità privacy",
+      "can_toggle_privacy_mode_hint": "Può disattivare la modalità privacy con il proprio PIN chiosco. Chiunque può attivarla."
+    },
+    "quick_add": {
+      "menu": "Aggiunta rapida",
+      "menu_title": "Aggiungi un evento, promemoria, pasto, faccenda, premio o voce di lista scrivendolo",
+      "title": "Aggiunta rapida",
+      "hint": "Scrivilo come lo diresti: un evento, un promemoria, un pasto, una faccenda, un premio o qualcosa per una lista.",
+      "placeholder": "Soccer Tuesday 5pm for Emma",
+      "add": "Aggiungi",
+      "adding": "Aggiunta in corso…",
+      "failed": "Impossibile aggiungerlo.",
+      "kind_pick_label": "Non è giusto? È un/una:",
+      "examples_label": "Prova:",
+      "english_only": "L'aggiunta rapida per ora capisce solo l'inglese.",
+      "kind_event": "Evento",
+      "kind_reminder": "Promemoria",
+      "kind_meal": "Pasto",
+      "kind_chore": "Faccenda",
+      "kind_reward": "Premio",
+      "kind_list_item": "Voce di lista"
     }
   }
 }
