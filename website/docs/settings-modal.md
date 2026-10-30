@@ -52,7 +52,9 @@ Which view (Week or Month) the card opens to.
 
 ### Layout ideas (this device only)
 
-Four one-tap presets (**Week**, **Portrait**, **Agenda**, **Two-Week Ahead**) that fill in the Week/Month view fields below with sensible starting values for that kind of screen. Tap one, then Save. It doesn't apply anything until you save.
+Five one-tap presets (**Week**, **Portrait**, **Agenda**, **Two-Week Ahead**, **Week + Next Week**) that fill in the Week/Month view fields below with sensible starting values for that kind of screen. Tap one, then Save. It doesn't apply anything until you save.
+
+**Week + Next Week** shows this week's 7 days in a 4 over 4 grid and uses the 8th cell as a summary of the following 7 days: one chip per event, styled like the day columns' own chips but showing the event's day instead of its time, **+N more** after 4 chips and **Nothing scheduled** when next week is empty. It follows the same filters as the day columns (selected people, Prevent duplicate events, Privacy and Discreet mode), and tapping the tile jumps to next week. It is the Portrait layout (7 days, 2 rows) plus the **Next-week summary tile** switch below, which is only used with 7 days in the Week view.
 
 ### Week view options (this device only)
 
@@ -60,6 +62,7 @@ Four one-tap presets (**Week**, **Portrait**, **Agenda**, **Two-Week Ahead**) th
 - **Agenda view: show meals**: Agenda follows the Days shown setting below and always includes reminders; turn this on to list meals too.
 - **Days shown in Week view**: 1–36 columns, for narrower screens that can't fit all 7 days.
 - **Rows shown at once in Week view**: 1–7, for the Two-Week-style layouts.
+- **Next-week summary tile**: Off by default. On (with 7 days shown in the Week view) adds the next-week summary as an 8th cell and lays the grid out 4 over 4. The **Week + Next Week** layout idea sets this for you.
 - **Current day always first**: keeps today in the leftmost column instead of a fixed Sunday/Monday start (synced household-wide by default, with optional per-device override via the Devices tab).
 - **Navigation step** (when Current day always first is On): choose whether Previous/Next advances by **1 day** at a time (rolling 7-day window) or by a **Full window** (7 days).
 
