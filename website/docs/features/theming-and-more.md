@@ -21,6 +21,7 @@ Family Hub ships with **10 ready-made themes**:
 The **Theme Builder** page in the Home Assistant sidebar is where you edit the built-in themes or make your own (up to 12 in total). For each theme you can set:
 
 - **Colors**: background, card, border, text, secondary text, three accents, text on the accent, and two surface colours.
+- **Font family**: the typeface used by every Family Hub card: the default rounded look, a system sans-serif, a serif, a monospace, or your own CSS font-family list (for example `"Lora", Georgia, serif`). Nothing is downloaded for you: a font that is not already on the device has to be loaded by you, for example with a Lovelace stylesheet resource. Leave it on Default to keep the current look.
 - **Fonts**: the size of day names, dates, weather, events, chips, headings, the countdown and the meal blocks.
 - **Appearance**: drop shadow, glow, border weight, **card/chip transparency** and **glass blur** (together these make the glass look), and a **background image** with its own fit, position, opacity, blur and tint.
 

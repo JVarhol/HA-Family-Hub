@@ -816,7 +816,7 @@ class FamilyScreensaverCard extends HTMLElement {
     });
     const cardOpacity = typeof g.cardOpacity === "number" ? g.cardOpacity : 100;
     const glassBlur = typeof g.glassBlur === "number" ? g.glassBlur : 0;
-    return { colors, cardOpacity, glassBlur };
+    return { colors, fontFamily: (typeof g.fontFamily === "string" && /^[\w\s,'"\-]{1,200}$/.test(g.fontFamily.trim()) ? g.fontFamily.trim() : ""), cardOpacity, glassBlur };
   }
   // Reads settings.theme (the household's Theme Builder default) the same
   // way every other card's own _resolveTheme does, off the separate raw-
@@ -868,6 +868,7 @@ class FamilyScreensaverCard extends HTMLElement {
   _applyThemeVars() {
     const theme = this._resolveTheme();
     const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
+    this.style.setProperty("--fc-font-family", theme.fontFamily || "");
     this.style.setProperty("--fc-bg", theme.colors.bg);
     this.style.setProperty("--fc-card", this._hexToRgba(theme.colors.card, cardOpacity / 100));
     this.style.setProperty("--fc-border", theme.colors.border);
@@ -896,6 +897,7 @@ class FamilyScreensaverCard extends HTMLElement {
       const __familyHubCacheVarNames = [
       "--fc-bg",
       "--fc-card",
+      "--fc-font-family",
       "--fc-border",
       "--fc-text",
       "--fc-text-secondary",
@@ -1394,7 +1396,7 @@ class FamilyScreensaverCard extends HTMLElement {
 <style>
 :host {
 display: block;
-font-family: "Arial Rounded MT Std", "Arial Rounded MT", "Varela Round", -apple-system, "Segoe UI Rounded", "Segoe UI", Roboto, sans-serif;
+font-family: var(--fc-font-family, "Arial Rounded MT Std", "Arial Rounded MT", "Varela Round", -apple-system, "Segoe UI Rounded", "Segoe UI", Roboto, sans-serif);
 /* v1.111.0+ defaults - same palette every other standalone Family Hub
    card's own _defaultTheme() returns, overridden by _applyThemeVars
    (inline style on the host, so it always wins over these) once

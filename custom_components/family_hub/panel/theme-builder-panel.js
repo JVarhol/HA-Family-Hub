@@ -211,6 +211,7 @@ class ThemeBuilderPanel extends HTMLElement {
         blockLabel: 9,
         blockMeal: 13,
       },
+      fontFamily: "",
       borderWidth: 1,
       accentBorderWidth: 2,
       cardOpacity: 100,
@@ -251,6 +252,7 @@ class ThemeBuilderPanel extends HTMLElement {
       name: (t && t.name) || blank.name,
       colors,
       fonts,
+      fontFamily: t && typeof t.fontFamily === "string" ? t.fontFamily : blank.fontFamily,
       borderWidth: t && typeof t.borderWidth === "number" ? t.borderWidth : blank.borderWidth,
       accentBorderWidth: t && typeof t.accentBorderWidth === "number" ? t.accentBorderWidth : blank.accentBorderWidth,
       cardOpacity: t && typeof t.cardOpacity === "number" ? t.cardOpacity : blank.cardOpacity,
@@ -376,6 +378,10 @@ class ThemeBuilderPanel extends HTMLElement {
         }
         .tb-delete-theme:disabled { opacity: 0.4; cursor: default; }
         .tb-preview { margin-bottom: 26px; }
+        .tb-preview-day { font-family: var(--p-font-family, inherit); }
+        .tb-font-family-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
+        .tb-font-family-row select, .tb-font-family-row input { padding: 6px 8px; border-radius: 8px; border: 1px solid var(--divider-color, #ccc); background: var(--card-background-color, #fff); color: var(--primary-text-color, #222); font: inherit; }
+        .tb-font-family-row input { flex: 1; min-width: 220px; }
         .tb-preview-label { font-size: 12px; color: var(--secondary-text-color, #888); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.03em; }
         .tb-preview-day {
           position: relative; overflow: hidden;
@@ -731,6 +737,17 @@ class ThemeBuilderPanel extends HTMLElement {
         </div>
       </div>
       <div class="tb-section">
+        <h2 data-fh-t="text.font_family">${__fhT("text.font_family", "Font family", null, "h")}</h2>
+        <div class="tb-font-family-row">
+          <select class="tb-font-family-select">
+            ${[...this._fontChoices(), ["__custom__", __fhT("text.font_family_custom", "Custom...", null, "h")]]
+              .map(([value, label]) => `<option value="${value.replace(/"/g, "&quot;")}"${value === this._fontChoiceValue(theme.fontFamily) ? " selected" : ""}>${label}</option>`)
+              .join("")}
+          </select>
+          <input type="text" class="tb-font-family-custom" maxlength="200" value="${(theme.fontFamily || "").replace(/"/g, "&quot;")}" placeholder="${__fhT("text.font_family_custom_placeholder", "CSS font-family, for example Georgia, serif", null, "h").replace(/"/g, "&quot;")}" style="${this._fontChoiceValue(theme.fontFamily) === "__custom__" ? "" : "display:none"}" />
+        </div>
+      </div>
+      <div class="tb-section">
         <h2 data-fh-t="text.fonts_px">${__fhT("text.fonts_px", "Fonts (px)", null, "h")}</h2>
         <div class="tb-font-grid">
           ${fontFields
@@ -871,6 +888,28 @@ class ThemeBuilderPanel extends HTMLElement {
           if (swatch) swatch.style.background = input.value;
         }
       });
+    });
+    const fontSelect = editor.querySelector(".tb-font-family-select");
+    const fontCustom = editor.querySelector(".tb-font-family-custom");
+    const fontPattern = /^[\w\s,'"\-]{0,200}$/;
+    fontSelect.addEventListener("change", () => {
+      if (fontSelect.value === "__custom__") {
+        fontCustom.style.display = "";
+        fontCustom.focus();
+        return;
+      }
+      fontCustom.style.display = "none";
+      theme.fontFamily = fontSelect.value;
+      fontCustom.value = theme.fontFamily;
+      this._markDirty();
+      this._updatePreview();
+    });
+    fontCustom.addEventListener("input", () => {
+      const value = fontCustom.value.trim();
+      if (!fontPattern.test(value)) return;
+      theme.fontFamily = value;
+      this._markDirty();
+      this._updatePreview();
     });
     editor.querySelectorAll(".tb-font-input").forEach((input) => {
       input.addEventListener("input", () => {
@@ -1042,6 +1081,18 @@ class ThemeBuilderPanel extends HTMLElement {
     return layers.length ? layers.join(", ") : "none";
   }
 
+  _fontChoices() {
+    return [
+      ["", __fhT("text.font_family_default", "Default (rounded)", null, "h")],
+      ['system-ui, -apple-system, "Segoe UI", Roboto, sans-serif', __fhT("text.font_family_system", "System sans-serif", null, "h")],
+      ['Georgia, "Times New Roman", serif', __fhT("text.font_family_serif", "Serif", null, "h")],
+      ['ui-monospace, Menlo, Consolas, monospace', __fhT("text.font_family_mono", "Monospace", null, "h")],
+    ];
+  }
+  _fontChoiceValue(fontFamily) {
+    const value = fontFamily || "";
+    return this._fontChoices().some(([v]) => v === value) ? value : "__custom__";
+  }
   _updatePreview() {
     const theme = this._themes[this._activeIndex];
     if (!theme) return;
@@ -1060,6 +1111,7 @@ class ThemeBuilderPanel extends HTMLElement {
     preview.style.setProperty("--p-accent-text", c.accentText);
     preview.style.setProperty("--p-block-bg", this._hexToRgba(c.surface2, theme.cardOpacity));
     preview.style.setProperty("--p-chip-bg", this._hexToRgba(c.surfaceAlt, theme.cardOpacity));
+    preview.style.setProperty("--p-font-family", theme.fontFamily || "");
     preview.style.setProperty("--p-day-name-size", `${theme.fonts.dayName}px`);
     preview.style.setProperty("--p-day-number-size", `${theme.fonts.dayNumber}px`);
     preview.style.setProperty("--p-event-size", `${theme.fonts.event}px`);

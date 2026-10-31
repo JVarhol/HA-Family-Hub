@@ -907,7 +907,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     });
     const cardOpacity = typeof g.cardOpacity === "number" ? g.cardOpacity : 100;
     const glassBlur = typeof g.glassBlur === "number" ? g.glassBlur : 0;
-    return { colors, cardOpacity, glassBlur, background: g.background || null };
+    return { colors, fontFamily: (typeof g.fontFamily === "string" && /^[\w\s,'"\-]{1,200}$/.test(g.fontFamily.trim()) ? g.fontFamily.trim() : ""), cardOpacity, glassBlur, background: g.background || null };
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
@@ -984,6 +984,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     // window.__familyHubThemeCache's own comment for why this fixes the
     // household's reported "loads the default theme first" flash.
     const vars = {
+      "--fc-font-family": theme.fontFamily || "",
       "--fc-bg": theme.colors.bg,
       "--fc-card": this._hexToRgba(theme.colors.card, cardOpacity / 100),
       "--fc-border": theme.colors.border,
@@ -1771,7 +1772,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     return `
       /* position:relative is the containing block .add-goal-fab
          needs when [fab-position="card"] switches it to position:absolute. */
-      :host { display: block; position: relative; font-family: 'Varela Round', sans-serif; }
+      :host { display: block; position: relative; font-family: var(--fc-font-family, 'Varela Round', sans-serif); }
       ha-card { background: var(--fc-bg); background-image: var(--fc-bg-overlay-image, none), var(--fc-bg-image, none); background-size: cover, var(--fc-bg-size, cover); background-position: center, var(--fc-bg-position, center); color: var(--fc-text); padding: 14px; }
       .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
       .title { font-size: 18px; font-weight: 800; }

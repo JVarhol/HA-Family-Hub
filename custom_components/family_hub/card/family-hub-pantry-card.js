@@ -623,7 +623,7 @@ class FamilyHubPantryCard extends HTMLElement {
     });
     const cardOpacity = typeof g.cardOpacity === "number" ? g.cardOpacity : 100;
     const glassBlur = typeof g.glassBlur === "number" ? g.glassBlur : 0;
-    return { colors, cardOpacity, glassBlur, background: g.background || null };
+    return { colors, fontFamily: (typeof g.fontFamily === "string" && /^[\w\s,'"\-]{1,200}$/.test(g.fontFamily.trim()) ? g.fontFamily.trim() : ""), cardOpacity, glassBlur, background: g.background || null };
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
@@ -692,6 +692,7 @@ class FamilyHubPantryCard extends HTMLElement {
     // window.__familyHubThemeCache's own comment for why this fixes the
     // household's reported "loads the default theme first" flash.
     const vars = {
+      "--fc-font-family": theme.fontFamily || "",
       "--fc-bg": theme.colors.bg,
       "--fc-card": this._hexToRgba(theme.colors.card, cardOpacity / 100),
       "--fc-border": theme.colors.border,
@@ -1529,7 +1530,7 @@ class FamilyHubPantryCard extends HTMLElement {
 
   _css() {
     return `
-      :host { display: block; font-family: 'Varela Round', sans-serif; }
+      :host { display: block; font-family: var(--fc-font-family, 'Varela Round', sans-serif); }
       /* matches the Chores/Rewards board's own ha-card chrome
          pixel-for-pixel (same padding/flex/overflow rules) so Pantry reads
          as another full board alongside them rather than a small stacked
