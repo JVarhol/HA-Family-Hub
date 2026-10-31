@@ -770,7 +770,7 @@ class FamilyRightNowCard extends HTMLElement {
     });
     const cardOpacity = typeof g.cardOpacity === "number" ? g.cardOpacity : 100;
     const glassBlur = typeof g.glassBlur === "number" ? g.glassBlur : 0;
-    return { colors, fonts, effects: g.effects || null, background: g.background || null, cardOpacity, glassBlur };
+    return { colors, fonts, fontFamily: (typeof g.fontFamily === "string" && /^[\w\s,'"\-]{1,200}$/.test(g.fontFamily.trim()) ? g.fontFamily.trim() : ""), effects: g.effects || null, background: g.background || null, cardOpacity, glassBlur };
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
@@ -820,6 +820,7 @@ class FamilyRightNowCard extends HTMLElement {
     const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
     this.classList.toggle("fh-glass", glassBlur > 0 || cardOpacity < 100);
     const vars = {
+      "--fc-font-family": theme.fontFamily || "",
       "--fc-bg": theme.colors.bg,
       "--fc-card": (cardOpacity < 100 ? this._hexToRgba(theme.colors.card, cardOpacity / 100) : theme.colors.card),
       "--fc-card-menu": (cardOpacity < 88 ? this._hexToRgba(theme.colors.card, 0.88) : cardOpacity < 100 ? this._hexToRgba(theme.colors.card, cardOpacity / 100) : theme.colors.card),
@@ -1338,7 +1339,7 @@ class FamilyRightNowCard extends HTMLElement {
   display: block;
   height: 100%;
   min-height: 0;
-  font-family: "Arial Rounded MT Std", "Arial Rounded MT", "Varela Round", -apple-system, "Segoe UI Rounded", "Segoe UI", Roboto, sans-serif;
+  font-family: var(--fc-font-family, "Arial Rounded MT Std", "Arial Rounded MT", "Varela Round", -apple-system, "Segoe UI Rounded", "Segoe UI", Roboto, sans-serif);
   --fc-shadow: 0 2px 8px rgba(58,53,44,0.12);
 }
 /* Household report: "at 2 rows its taller than 2 rows high" - root

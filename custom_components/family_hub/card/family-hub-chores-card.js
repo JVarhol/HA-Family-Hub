@@ -2155,7 +2155,7 @@ class FamilyHubChoresCard extends HTMLElement {
     // _resolveTheme already applies for its own global-theme branch.
     const cardOpacity = typeof g.cardOpacity === "number" ? g.cardOpacity : 100;
     const glassBlur = typeof g.glassBlur === "number" ? g.glassBlur : 0;
-    return { colors, cardOpacity, glassBlur, background: g.background || null };
+    return { colors, fontFamily: (typeof g.fontFamily === "string" && /^[\w\s,'"\-]{1,200}$/.test(g.fontFamily.trim()) ? g.fontFamily.trim() : ""), cardOpacity, glassBlur, background: g.background || null };
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
@@ -2224,6 +2224,7 @@ class FamilyHubChoresCard extends HTMLElement {
     // window.__familyHubThemeCache's own comment for why this fixes the
     // household's reported "loads the default theme first" flash.
     const vars = {
+      "--fc-font-family": theme.fontFamily || "",
       "--fc-bg": theme.colors.bg,
       "--fc-card": this._hexToRgba(theme.colors.card, cardOpacity / 100),
       "--fc-border": theme.colors.border,
@@ -5701,7 +5702,7 @@ class FamilyHubChoresCard extends HTMLElement {
       /* position:relative is the containing block .add-chore-fab
          needs when [fab-position="card"] switches it to position:absolute -
          harmless the rest of the time (default position:fixed doesn't care). */
-      :host { display: block; height: 100%; position: relative; font-family: "Arial Rounded MT Std", "Arial Rounded MT", "Varela Round", -apple-system, "Segoe UI Rounded", "Segoe UI", Roboto, sans-serif;
+      :host { display: block; height: 100%; position: relative; font-family: var(--fc-font-family, "Arial Rounded MT Std", "Arial Rounded MT", "Varela Round", -apple-system, "Segoe UI Rounded", "Segoe UI", Roboto, sans-serif);
         --fc-bg: #fbf7e5; --fc-card: #f5f3f0; --fc-border: #e6ddc4; --fc-text: #423d34; --fc-text-secondary: #96877a;
         --fc-accent: #8f5a00; --fc-accent-text: #fff8ea; --fc-accent2: #305545; --fc-accent3: #b5583c;
         --fc-surface-alt: #efe6cf; --fc-surface2: #f2eede;

@@ -929,7 +929,7 @@ class FamilyTodayCard extends HTMLElement {
     });
     const cardOpacity = typeof g.cardOpacity === "number" ? g.cardOpacity : 100;
     const glassBlur = typeof g.glassBlur === "number" ? g.glassBlur : 0;
-    return { colors, fonts, effects: g.effects || null, background: g.background || null, cardOpacity, glassBlur };
+    return { colors, fonts, fontFamily: (typeof g.fontFamily === "string" && /^[\w\s,'"\-]{1,200}$/.test(g.fontFamily.trim()) ? g.fontFamily.trim() : ""), effects: g.effects || null, background: g.background || null, cardOpacity, glassBlur };
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
@@ -990,6 +990,7 @@ class FamilyTodayCard extends HTMLElement {
   _applyThemeVars() {
     const settings = this._getSettings();
     const theme = this._resolveTheme(settings);
+    this.style.setProperty("--fc-font-family", theme.fontFamily || "");
     this.style.setProperty("--fc-bg", theme.colors.bg);
     // v1.168.79 - Liquid Glass support (cardOpacity/glassBlur): the
     // rows and cards go translucent and blur the theme's background
@@ -1047,6 +1048,7 @@ class FamilyTodayCard extends HTMLElement {
       "--fc-bg",
       "--fc-card",
       "--fc-card-menu",
+      "--fc-font-family",
       "--fc-border",
       "--fc-text",
       "--fc-text-secondary",
@@ -2260,7 +2262,7 @@ class FamilyTodayCard extends HTMLElement {
 display: block;
 height: 100%;
 min-height: 0;
-font-family: "Arial Rounded MT Std", "Arial Rounded MT", "Varela Round", -apple-system, "Segoe UI Rounded", "Segoe UI", Roboto, sans-serif;
+font-family: var(--fc-font-family, "Arial Rounded MT Std", "Arial Rounded MT", "Varela Round", -apple-system, "Segoe UI Rounded", "Segoe UI", Roboto, sans-serif);
 --fc-shadow: 0 2px 8px rgba(58,53,44,0.12);
 }
 .card-root {
