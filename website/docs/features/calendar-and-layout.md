@@ -33,7 +33,8 @@ The **Family Week Calendar** is the centerpiece card: a full-screen, tablet-frie
     columns, ideal for a narrow screen or a sidebar. It uses the same
     **Days shown** setting as Week, and can include meals too.
 - **Layout ideas**: one tap fills in a starting layout for your screen:
-  Week, Portrait (7 days on 2 rows), Agenda or Two-Week Ahead. See
+  Week, Portrait (7 days on 2 rows), Agenda, Two-Week Ahead or Week + Next
+  Week (7 days plus an 8th tile summarising the following 7 days). See
   [Settings Modal → Layout ideas](/docs/settings-modal#layout-ideas-this-device-only).
 - **Month + Day (split view)**: Month view can show the selected day's
   events in a panel beside the grid, with a **Go to this week** shortcut.

@@ -4290,6 +4290,9 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .grid.mode-week { display: flex; flex-direction: column; gap: 24px; }
 .week-row { display: flex; gap: 8px; flex: 1 1 0; min-height: 0; }
 .week-row .day-col { flex: 1 1 0; }
+.week-summary { flex: 1 1 0; min-width: 0; min-height: 0; overflow: hidden; cursor: pointer; background: var(--fc-card); border: 1px dashed var(--fc-border); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 3px; box-shadow: var(--fc-shadow); }
+.ws-heading { text-align: center; font-weight: 700; margin-bottom: 2px; }
+.ws-more, .ws-empty { font-size: 12px; color: var(--fc-text-secondary); }
 .planner-grid { display: grid; min-width: 100%; border: 1px solid var(--fc-border); border-radius: 10px; overflow: hidden; background: var(--fc-card); box-shadow: var(--fc-shadow); }
 /* v1.168.77: "planner view doesnt fill available space" - the 7 day rows
    now share whatever height the card has (each still grows to fit its
@@ -4601,7 +4604,7 @@ ha-card { height: auto; min-height: 100%; overflow: hidden; }
    pushing a big empty gap below. Each day-col needs to size to its own
    content at this width instead of flex-negotiating a share of a
    height nothing is providing. */
-.week-row .day-col { flex: 0 0 auto; }
+.week-row .day-col, .week-summary { flex: 0 0 auto; }
 /* Day view collapses the same way Week does above - a phone-width screen
    has no room for several side-by-side person lanes, so they stack into
    one scrolling column instead (the .day-col { min-height: unset; height:
@@ -7151,11 +7154,30 @@ return Number.isInteger(ln) && ln >= 1 && ln <= 7 ? ln : 2;
 // right below.
 _layoutPresetRegistry() {
 return {
-  week: { variant: "week", dayCount: 7, rows: 1 },
-  portrait: { variant: "week", dayCount: 7, rows: 2 },
-  agenda: { variant: "agenda", dayCount: 7, rows: 1 },
-  two_week: { variant: "week", dayCount: 14, rows: 2 },
+  week: { variant: "week", dayCount: 7, rows: 1, summary: false },
+  portrait: { variant: "week", dayCount: 7, rows: 2, summary: false },
+  agenda: { variant: "agenda", dayCount: 7, rows: 1, summary: false },
+  two_week: { variant: "week", dayCount: 14, rows: 2, summary: false },
+  week_summary: { variant: "week", dayCount: 7, rows: 2, summary: true },
 };
+}
+// Opt-in 8th-cell summary of the following 7 days (Week + Next Week
+// layout), this-device-only exactly like _getWeekRows above unless the
+// card shares one static layout across devices. Off unless explicitly
+// turned on, so every existing layout renders as it always has.
+_getWeekSummary() {
+if (this._getStaticLayoutAcrossDevices()) return !!this._getSettings().weekSummaryShared;
+let local = null;
+try {
+local = this._getScopedSettingItem("familyCalendarWeekSummaryLocal");
+} catch (e) {
+}
+return local === "on";
+}
+// The tile only makes sense on the plain 7-day Week grid (4 over 4); a
+// stale flag left behind on another variant or day count is ignored.
+_weekSummaryActive() {
+return this._getWeekSummary() && this._getWeekViewVariant() === "week" && this._getWeekViewDayCount() === 7 && (this._viewMode === "week" || !this._viewMode);
 }
 // Highlights whichever preset (if any) exactly matches the Settings
 // form's CURRENT, possibly-unsaved field values - called right after a
@@ -7176,6 +7198,8 @@ const dayCountEl = root.querySelector(".week-day-count-input");
 const dayCount = dayCountEl ? parseInt(dayCountEl.value, 10) : NaN;
 const rowsEl = root.querySelector(".week-rows-input");
 const rows = rowsEl ? parseInt(rowsEl.value, 10) : NaN;
+const activeSummaryBtn = root.querySelector(".week-summary-btn.active");
+const summary = !!activeSummaryBtn && activeSummaryBtn.dataset.value === "on";
 const registry = this._layoutPresetRegistry();
 root.querySelectorAll(".layout-preset-btn").forEach((btn) => {
 const preset = registry[btn.dataset.preset];
@@ -7183,7 +7207,7 @@ const preset = registry[btn.dataset.preset];
 // Agenda preset) ignores both (_weekViewDayCount always forces 7 for
 // it, and the rows field is hidden), so matching it shouldn't depend
 // on whatever those two inputs currently happen to hold.
-const matches = !!preset && preset.variant === variant && (preset.variant !== "week" || (preset.dayCount === dayCount && preset.rows === rows));
+const matches = !!preset && preset.variant === variant && (preset.variant !== "week" || (preset.dayCount === dayCount && preset.rows === rows && !!preset.summary === summary));
 btn.classList.toggle("active", matches);
 });
 }
@@ -9157,6 +9181,7 @@ weekViewVariantShared: "week",
 monthViewVariantShared: "split",
 weekDayCountShared: 7,
 weekRowsShared: 1,
+weekSummaryShared: false,
 currentDayFirstShared: false,
 // Shared mirror for the "Calendar top bar style" setting's third option
 // (Hidden) - same exception shape as smallScreenMode just below: this
@@ -10187,6 +10212,7 @@ const weekDayCountSharedRaw = parseInt(parsed.weekDayCountShared, 10);
 const weekDayCountShared = Number.isInteger(weekDayCountSharedRaw) && weekDayCountSharedRaw >= 1 && weekDayCountSharedRaw <= 36 ? weekDayCountSharedRaw : defaults.weekDayCountShared;
 const weekRowsSharedRaw = parseInt(parsed.weekRowsShared, 10);
 const weekRowsShared = Number.isInteger(weekRowsSharedRaw) && weekRowsSharedRaw >= 1 && weekRowsSharedRaw <= 7 ? weekRowsSharedRaw : defaults.weekRowsShared;
+const weekSummaryShared = typeof parsed.weekSummaryShared === "boolean" ? parsed.weekSummaryShared : defaults.weekSummaryShared;
 const currentDayFirstShared = typeof parsed.currentDayFirstShared === "boolean" ? parsed.currentDayFirstShared : defaults.currentDayFirstShared;
 const hideTopBarDeviceShared = typeof parsed.hideTopBarDeviceShared === "boolean" ? parsed.hideTopBarDeviceShared : defaults.hideTopBarDeviceShared;
 const rightNowTopBarEnabledShared = typeof parsed.rightNowTopBarEnabledShared === "boolean" ? parsed.rightNowTopBarEnabledShared : defaults.rightNowTopBarEnabledShared;
@@ -10427,6 +10453,7 @@ weekViewVariantShared,
 monthViewVariantShared,
 weekDayCountShared,
 weekRowsShared,
+weekSummaryShared,
 currentDayFirstShared,
 hideTopBarDeviceShared,
 rightNowTopBarEnabledShared,
@@ -13110,7 +13137,8 @@ end.setDate(start.getDate() + 1);
 // function's own comment for why).
 start = this._weekStart();
 end = new Date(start);
-end.setDate(start.getDate() + this._weekViewDayCount());
+// The Week + Next Week layout also summarises the 7 days after the window.
+end.setDate(start.getDate() + this._weekViewDayCount() + (this._weekSummaryActive() ? 7 : 0));
 }
 const startIso = start.toISOString();
 const endIso = end.toISOString();
@@ -15005,6 +15033,11 @@ ${FAMILY_HUB_SHARED_STYLE_BLOCK}
 <span class="layout-preset-name" data-i18n="settings.layout_preset_two_week_name">Two-Week Ahead</span>
 <span class="layout-preset-desc" data-i18n="settings.layout_preset_two_week_desc">14 days across 2 rows — plan meals and activities further out</span>
 </button>
+<button type="button" class="layout-preset-btn" data-preset="week_summary">
+<span class="layout-preset-icon"><span class="lp-row"><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span></span><span class="lp-row"><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span><span class="lp-cell"></span></span></span>
+<span class="layout-preset-name" data-i18n="settings.layout_preset_week_summary_name">Week + Next Week</span>
+<span class="layout-preset-desc" data-i18n="settings.layout_preset_week_summary_desc">7 days plus an 8th tile summarising next week — tap it to jump there</span>
+</button>
 </div>
 </div>
 <div class="field">
@@ -15031,6 +15064,13 @@ ${FAMILY_HUB_SHARED_STYLE_BLOCK}
 <span class="number-input-hint" data-i18n="settings.week_rows_hint">rows (1–7)</span>
 </div>
 </div>
+</div>
+</div>
+<div class="field">
+<label data-i18n="settings.week_summary_label">Next-week summary tile (7 days over 2 rows, 8th cell lists next week) — this device only</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn week-summary-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn week-summary-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 </div>
 <div class="field">
@@ -17426,6 +17466,14 @@ const dayCountEl = root.querySelector(".week-day-count-input");
 if (dayCountEl) dayCountEl.value = String(preset.dayCount);
 const rowsEl = root.querySelector(".week-rows-input");
 if (rowsEl) rowsEl.value = String(preset.rows);
+root.querySelectorAll(".week-summary-btn").forEach((b) => b.classList.toggle("active", b.dataset.value === (preset.summary ? "on" : "off")));
+this._updateActiveLayoutPresetHighlight();
+});
+});
+root.querySelectorAll(".week-summary-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".week-summary-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
 this._updateActiveLayoutPresetHighlight();
 });
 });
@@ -19835,6 +19883,9 @@ btn.classList.toggle("active", btn.dataset.value === (this._getCurrentDayFirst()
 });
 const weekRowsInputEl = root.querySelector(".week-rows-input");
 if (weekRowsInputEl) weekRowsInputEl.value = String(this._getWeekRows());
+root.querySelectorAll(".week-summary-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (this._getWeekSummary() ? "on" : "off"));
+});
 // Shows which "layout idea" (if any) this device is already on when
 // Settings is opened - see _updateActiveLayoutPresetHighlight's own
 // comment for why an exact-match-only, possibly-none-highlighted result
@@ -22059,6 +22110,12 @@ try {
 this._setScopedSettingItem("familyCalendarWeekRowsLocal", weekRows);
 } catch (e) {
 }
+const activeWeekSummaryBtn = root.querySelector(".week-summary-btn.active");
+const weekSummary = activeWeekSummaryBtn ? activeWeekSummaryBtn.dataset.value : "off";
+try {
+this._setScopedSettingItem("familyCalendarWeekSummaryLocal", weekSummary);
+} catch (e) {
+}
 const activeScrollLockBtn = root.querySelector(".scroll-lock-btn.active");
 const scrollLocked = activeScrollLockBtn ? activeScrollLockBtn.dataset.value === "on" : false;
 const bottomPaddingInputEl = root.querySelector(".bottom-padding-input");
@@ -22195,6 +22252,7 @@ weekViewVariantShared: weekViewVariant,
 monthViewVariantShared: monthViewVariant,
 weekDayCountShared: parseInt(weekViewDayCount, 10),
 weekRowsShared: parseInt(weekRows, 10),
+weekSummaryShared: weekSummary === "on",
 currentDayFirstShared: currentDayFirst,
 // smallScreenMode is the one exception - it stays OUT of settingsObj
 // (same as before this feature) unless THIS card placement's own static-
@@ -29658,13 +29716,16 @@ const gridEl = this._root.querySelector(".grid");
 gridEl.className = "grid mode-week";
 const ctx = this._buildWeekLikeContext();
 const dayCount = this._weekViewDayCount();
-const rows = Math.max(1, Math.min(this._getWeekRows(), dayCount));
+// Week + Next Week layout: the 7 days plus an 8th summary cell, always 4 over 4.
+const withSummary = this._weekSummaryActive();
+const rows = withSummary ? 2 : Math.max(1, Math.min(this._getWeekRows(), dayCount));
 const cols = [];
 for (let i = 0; i < dayCount; i++) {
 cols.push(this._buildDayColumnHtml(i, ctx));
 }
-const baseCols = Math.floor(dayCount / rows);
-const extra = dayCount % rows;
+if (withSummary) cols.push(this._buildWeekSummaryHtml(ctx));
+const baseCols = Math.floor(cols.length / rows);
+const extra = cols.length % rows;
 const rowsHtml = [];
 let idx = 0;
 for (let r = 0; r < rows; r++) {
@@ -29673,7 +29734,144 @@ rowsHtml.push(`<div class="week-row">${cols.slice(idx, idx + thisRowCount).join(
 idx += thisRowCount;
 }
 gridEl.innerHTML = rowsHtml.join("");
+const summaryEl = gridEl.querySelector(".week-summary");
+if (summaryEl) {
+summaryEl.addEventListener("click", () => this._setWeekOffset((this._weekOffset || 0) + 1));
+this._fitWeekSummary(summaryEl);
+}
 this._afterRenderDayColumns(ctx);
+}
+
+// The per-event visibility rules for ONE day, shared by the day columns
+// (_buildDayColumnHtml) and the next-week summary tile
+// (_buildWeekSummaryHtml) so both always agree on what is shown: date
+// overlap, a calendar's hide-when-contains / badge keywords, the event-type
+// filter, and the legend (selected people) filter. Returns null when the
+// event is hidden, else the reminder marker info and the people it is
+// tagged with. Privacy mode is applied by the caller via _privacyEventsFor.
+_eventPassesDayFilters(person, ev, dayStart, dayEnd, filterEntitySet, people) {
+const evStart = this._toDate(ev.start);
+const evEnd = this._toDate(ev.end) || evStart;
+if (!evStart || !(evEnd > dayStart && evStart < dayEnd)) return null;
+const personBadges = person.badges || [];
+const summaryLower = (ev.summary || "").toLowerCase();
+const hideMatched = personBadges.some((b) => {
+const hideMatch = (b.hideMatch || "").trim().toLowerCase();
+return hideMatch && summaryLower.includes(hideMatch);
+});
+if (hideMatched) return null;
+for (const b of personBadges) {
+const badgeMatch = (b.match || "").trim().toLowerCase();
+if (badgeMatch && summaryLower.includes(badgeMatch)) return null;
+}
+const reminderInfo = this._parseReminderMarker(ev.description);
+const typeFilter = this._eventTypeFilter || [];
+if (typeFilter.length && !typeFilter.includes(reminderInfo.isReminder ? "reminder" : "event")) return null;
+const peopleEntities = this._eventPeopleEntities(person.entity, evStart, ev.summary, people);
+if (filterEntitySet && !peopleEntities.some((e) => filterEntitySet.has(e))) return null;
+return { reminderInfo, peopleEntities };
+}
+
+// The 8th cell of the Week + Next Week layout: the 7 days after the last
+// day shown (start + 7 .. start + 13, so it follows whatever the first day
+// of the window is), one chip per event styled like the day columns' own
+// event chips (avatar, then title) but with the event's day where the time
+// would be, in day-then-time order. Events
+// come from the same this._events / _eventPassesDayFilters the day columns
+// use, so selected people, Prevent duplicate events (applied at fetch),
+// privacy and discreet mode all behave identically. At most
+// SUMMARY_MAX_LINES lines are listed; the rest collapse into "+N more".
+// Lines are not individually clickable: tapping the tile jumps to next week
+// (see _renderWeekGrid).
+_buildWeekSummaryHtml(ctx) {
+const { start, dayNames, people, colorMap, filterEntitySet } = ctx;
+const typeFilter = this._eventTypeFilter || [];
+const days = [];
+let total = 0;
+for (let d = 0; d < 7; d++) {
+const dayStart = new Date(start);
+dayStart.setDate(start.getDate() + 7 + d);
+const dayEnd = new Date(dayStart);
+dayEnd.setDate(dayStart.getDate() + 1);
+const items = [];
+for (const person of people) {
+for (const ev of this._privacyEventsFor(person.entity)) {
+const passed = this._eventPassesDayFilters(person, ev, dayStart, dayEnd, filterEntitySet, people);
+if (!passed) continue;
+items.push({
+summary: this._discreetText(ev.summary || "(untitled)"),
+start: this._toDate(ev.start),
+allDay: this._isAllDay(ev),
+bg: this._eventCollageStyle(passed.peopleEntities, people, colorMap),
+initial: this._discreetInitial(person, people) || (person.name || "?").trim().charAt(0).toUpperCase(),
+isReminder: passed.reminderInfo.isReminder,
+});
+}
+}
+if (!typeFilter.length || typeFilter.includes("reminder")) {
+for (const r of this._privacyReminders()) {
+if (r.due >= dayStart && r.due < dayEnd) {
+const remColor = r.color || REMINDER_COLOR;
+items.push({ summary: this._discreetText(r.summary), start: r.due, allDay: false, bg: `background:${remColor};color:${this._textColorFor(remColor)}`, initial: "\u{1F514}", isReminder: true });
+}
+}
+}
+items.sort((a, b) => (a.allDay === b.allDay ? a.start - b.start : a.allDay ? -1 : 1));
+total += items.length;
+if (items.length) days.push({ dayStart, items });
+}
+const lines = [];
+for (const { dayStart, items } of days) {
+for (const it of items) lines.push({ ...it, dayLabel: `${dayNames[dayStart.getDay()]} ${dayStart.getDate()}` });
+}
+let body = lines
+.map((it) => {
+return `<div class="event ws-event${it.isReminder ? " reminder-event" : ""}" style="${it.bg}">
+<div class="event-top">
+<span class="avatar" style="background:rgba(0,0,0,0.3)">${it.isReminder ? "&#128276;" : it.initial}</span>
+<span class="time ws-day">${it.dayLabel}</span>
+</div>
+<span class="summary ws-title">${it.isReminder ? "&#128276; " : ""}${it.summary}</span>
+</div>`;
+})
+.join("");
+if (!total) {
+body = `<div data-fh-t="text.nothing_scheduled" class="ws-empty">${__fhT("text.nothing_scheduled", "Nothing scheduled", null, "h")}</div>`;
+}
+return `<div class="week-summary"><div class="ws-heading">${this._t("nav.label_next_week", "Next Week")}</div>${body}</div>`;
+}
+
+// Fits the summary tile to the room it actually has: chips that do not fit
+// are dropped from the end and replaced by one "+N more" line, so the number
+// shown follows the tile's real height (screen size, row count, text size)
+// instead of a fixed count. Where layout cannot be measured (no height at
+// all) it falls back to FALLBACK_LINES chips.
+_fitWeekSummary(tile) {
+const FALLBACK_LINES = 4;
+const chips = Array.from(tile.querySelectorAll(".ws-event"));
+if (!chips.length) return;
+const more = document.createElement("div");
+more.className = "ws-more";
+const setMore = (n) => {
+more.textContent = __fhT("text.x_more", "+%0% more", {0: n});
+};
+let hidden = 0;
+if (!tile.clientHeight) {
+while (chips.length - hidden > FALLBACK_LINES) chips[chips.length - 1 - hidden++].remove();
+if (hidden) {
+setMore(hidden);
+tile.appendChild(more);
+}
+return;
+}
+setMore(1);
+tile.appendChild(more);
+while (tile.scrollHeight > tile.clientHeight + 1 && hidden < chips.length - 1) {
+chips[chips.length - 1 - hidden++].remove();
+setMore(hidden);
+}
+if (!hidden) more.remove();
+else setMore(hidden);
 }
 
 // Shared setup for any view that lays out the current week as day-
@@ -29815,34 +30013,14 @@ badges.push({ text: b.text, color: personColor });
 // - see the entities-intersection check below, filterEntitySet above.
 for (const person of people) {
 const evs = this._privacyEventsFor(person.entity);
-const personBadges = person.badges || [];
 const personColor = this._colorFor(person, colorMap);
 for (const ev of evs) {
 const evStart = this._toDate(ev.start);
 const evEnd = this._toDate(ev.end) || evStart;
 if (!evStart) continue;
-if (evEnd > dayStart && evStart < dayEnd) {
-const summaryLower = (ev.summary || "").toLowerCase();
-const hideMatched = personBadges.some((b) => {
-const hideMatch = (b.hideMatch || "").trim().toLowerCase();
-return hideMatch && summaryLower.includes(hideMatch);
-});
-if (hideMatched) {
-continue;
-}
-let matchedBadge = false;
-for (const b of personBadges) {
-const badgeMatch = (b.match || "").trim().toLowerCase();
-if (badgeMatch && summaryLower.includes(badgeMatch)) {
-matchedBadge = true;
-}
-}
-if (matchedBadge) continue;
-const reminderInfo = this._parseReminderMarker(ev.description);
-const typeFilter = this._eventTypeFilter || [];
-if (typeFilter.length && !typeFilter.includes(reminderInfo.isReminder ? "reminder" : "event")) continue;
-const peopleEntities = this._eventPeopleEntities(person.entity, evStart, ev.summary, people);
-if (filterEntitySet && !peopleEntities.some((e) => filterEntitySet.has(e))) continue;
+const passed = this._eventPassesDayFilters(person, ev, dayStart, dayEnd, filterEntitySet, people);
+if (passed) {
+const { reminderInfo, peopleEntities } = passed;
 const eventId = `ev-${i}-${dayEvents.length}-${person.entity}`;
 const evColor = personColor;
 const evBg = this._eventCollageStyle(peopleEntities, people, colorMap);
