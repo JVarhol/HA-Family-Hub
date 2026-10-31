@@ -3621,7 +3621,7 @@ height: 100vh;
 height: 100dvh;
 box-sizing: border-box;
 overflow: hidden;
-font-family: "Arial Rounded MT Std", "Arial Rounded MT", "Varela Round", -apple-system, "Segoe UI Rounded", "Segoe UI", Roboto, sans-serif;
+font-family: var(--fc-font-family, "Arial Rounded MT Std", "Arial Rounded MT", "Varela Round", -apple-system, "Segoe UI Rounded", "Segoe UI", Roboto, sans-serif);
 --fc-bg: #fbf7e5;
 --fc-card: #f5f3f0;
 --fc-card-opaque: #f5f3f0;
@@ -11698,7 +11698,7 @@ fonts[k] = Number.isFinite(n) && n >= 6 && n <= 72 ? n : defaultTheme.fonts[k];
 // fonts above.
 const cardOpacity = typeof g.cardOpacity === "number" ? g.cardOpacity : 100;
 const glassBlur = typeof g.glassBlur === "number" ? g.glassBlur : 0;
-return { colors, fonts, effects: g.effects || null, background: g.background || null, cardOpacity, glassBlur };
+return { colors, fonts, fontFamily: (typeof g.fontFamily === "string" && /^[\w\s,'"\-]{1,200}$/.test(g.fontFamily.trim()) ? g.fontFamily.trim() : ""), effects: g.effects || null, background: g.background || null, cardOpacity, glassBlur };
 }
 _hexToRgba(hex, alpha) {
 const h = (hex || "#000000").replace("#", "");
@@ -12913,6 +12913,7 @@ const theme = this._resolveTheme(settings);
 // glassBlur (see the Liquid Glass presets) changes anything.
 const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
 const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
+this.style.setProperty("--fc-font-family", theme.fontFamily || "");
 this.style.setProperty("--fc-bg", theme.colors.bg);
 // v1.168.66: the week/month label (and countdown line) sit straight on
 // the page background, but many themes pick their text color for light
@@ -13047,6 +13048,7 @@ const __familyHubCacheVarNames = [
 "--fc-card",
 "--fc-card-menu",
 "--fc-card-opaque",
+"--fc-font-family",
 "--fc-border",
 "--fc-text",
 "--fc-text-secondary",

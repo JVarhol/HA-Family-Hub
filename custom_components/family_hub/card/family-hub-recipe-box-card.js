@@ -3041,7 +3041,7 @@ this._editingDishSteps = recipe ? recipe.steps || [] : [];
     });
     const cardOpacity = typeof g.cardOpacity === "number" ? g.cardOpacity : 100;
     const glassBlur = typeof g.glassBlur === "number" ? g.glassBlur : 0;
-    return { colors, cardOpacity, glassBlur, background: g.background || null };
+    return { colors, fontFamily: (typeof g.fontFamily === "string" && /^[\w\s,'"\-]{1,200}$/.test(g.fontFamily.trim()) ? g.fontFamily.trim() : ""), cardOpacity, glassBlur, background: g.background || null };
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
@@ -3106,6 +3106,7 @@ this._editingDishSteps = recipe ? recipe.steps || [] : [];
     // window.__familyHubThemeCache's own comment for why this fixes the
     // household's reported "loads the default theme first" flash.
     const vars = {
+      "--fc-font-family": theme.fontFamily || "",
       "--fc-bg": theme.colors.bg,
       "--fc-card": this._hexToRgba(theme.colors.card, cardOpacity / 100),
       "--fc-card-menu": this._hexToRgba(theme.colors.card, Math.max(cardOpacity, 88) / 100),
@@ -3265,7 +3266,7 @@ this._editingDishSteps = recipe ? recipe.steps || [] : [];
         --fc-text-secondary: #96877a; --fc-accent: #8f5a00; --fc-accent-text: #fff8ea;
         --fc-accent2: #305545; --fc-accent3: #b5583c; --fc-surface-alt: #efe6cf;
         --fc-surface2: #f2eede; --fc-shadow: 0 2px 5px rgba(58, 53, 44, 0.16);
-        display: block; font-family: inherit;
+        display: block; font-family: var(--fc-font-family, inherit);
       }
       * { box-sizing: border-box; }
       ha-card { background: var(--fc-bg); background-image: var(--fc-bg-overlay-image, none), var(--fc-bg-image, none); background-size: cover, var(--fc-bg-size, cover); background-position: center, var(--fc-bg-position, center); color: var(--fc-text); border-radius: 14px; padding: 16px; }

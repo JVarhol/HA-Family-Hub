@@ -226,6 +226,9 @@ DEFAULT_BACKGROUND = {
 # Prefix used when registering Theme Builder themes as native HA themes
 HA_THEME_PREFIX = "Theme Builder - "
 
+# A theme's fontFamily is a CSS font-family list: letters, digits, spaces, commas, quotes and hyphens only
+FONT_FAMILY_RE = re.compile(r"""[\w\s,'"\-]{1,200}""")
+
 
 def _theme(
     theme_id: str,
@@ -247,6 +250,7 @@ def _theme(
     card_opacity: int = 100,
     glass_blur: int = 0,
     bg_image: str = "",
+    font_family: str = "",
 ) -> dict:
     """Build a theme dict with the standard (generic) shape."""
     return {
@@ -276,6 +280,7 @@ def _theme(
             "blockLabel": 9,
             "blockMeal": 13,
         },
+        "fontFamily": font_family,
         "borderWidth": border_width,
         "accentBorderWidth": accent_border_width,
         "cardOpacity": card_opacity,
@@ -421,6 +426,9 @@ def _migrate_theme(theme: dict) -> dict:
     theme.setdefault("accentBorderWidth", 2)
     theme.setdefault("cardOpacity", 100)
     theme.setdefault("glassBlur", 0)
+    font_family = theme.get("fontFamily")
+    font_family = font_family.strip() if isinstance(font_family, str) else ""
+    theme["fontFamily"] = font_family if FONT_FAMILY_RE.fullmatch(font_family) else ""
     return theme
 
 
