@@ -94,8 +94,8 @@ const config = {
             to: '/docs/card-configuration',
             items: [
               {to: '/docs/card-configuration', label: 'All cards'},
-              {to: '/docs/cards/family-week-calendar', label: 'Family Week Calendar'},
-              {to: '/docs/cards/family-today', label: 'Family Today'},
+              {to: '/docs/cards/family-week-calendar', label: 'Family Hub Week Calendar'},
+              {to: '/docs/cards/family-today', label: 'Family Hub Today'},
               {to: '/docs/cards/right-now', label: 'Right Now'},
               {to: '/docs/cards/chores', label: 'Chores'},
               {to: '/docs/cards/rewards', label: 'Rewards'},

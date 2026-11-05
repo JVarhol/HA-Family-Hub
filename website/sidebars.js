@@ -21,6 +21,8 @@ const sidebars = {
         'features/reminders-and-countdown',
         'features/theming-and-more',
         'features/todo-lists-and-wishlists',
+        'features/eink-screens',
+        'features/accessibility',
         'features/privacy-mode',
         'features/holiday-backgrounds',
         'features/automations-and-entities',
