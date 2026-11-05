@@ -7,6 +7,8 @@ Every timer running in the house on one board: chore timers, reward timers and q
 
 How timers, alarms, speakers and the timer log work is in [Timers](/docs/features/timers).
 
+![The Active Timers card with three timers counting down](/img/screenshots/active-timers.webp)
+
 ## YAML
 
 ```yaml

@@ -3,7 +3,6 @@ title: Timers
 sidebar_position: 5
 ---
 
-
 - **Timers on chores and rewards**: give a chore an optional timer ("clean
   for 30 minutes") and it gains a **▶ Start** button that counts down and
   then completes the chore itself; it obeys the approval rules you already
@@ -15,6 +14,9 @@ sidebar_position: 5
   with the colour of whoever it's assigned to (the same per-person colour you
   set on the Users tab), with unassigned ones in neutral grey. Live
   countdowns, soonest-finishing first, and a ✕ to stop one.
+
+![The Active Timers card: a kitchen timer, a chore timer and a reward timer, each in its person's color](/img/screenshots/active-timers.webp)
+
 - **Quick household timers**: **＋ Start Timer** on that card opens a small
   modal with four one-tap presets (5m / 15m / 30m / 1h), a custom-minutes box
   for anything else, an optional label ("Oven", "Sam's turn") and an optional

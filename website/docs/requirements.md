@@ -5,7 +5,7 @@ sidebar_position: 3
 
 `family_hub` is installed as a real custom integration (`custom_components/family_hub`), not a raw card file. It serves all [12 cards](/docs/card-configuration) and the **Theme Builder** sidebar page (see [Theming](/docs/features/theming-and-more)), and registers the cards as dashboard resources for you, so there's nothing to add under Resources.
 
-The recipe box, meal plan, meal templates, meal suggestions and reminders are stored as Home Assistant `todo` lists, so they sync across every device. **You don't need to create them**: Family Hub makes the ones below as **Local To-do** lists the first time it needs them (the meal plan from Settings → Menu Blocks → **+ Add list**). Each person added under Settings → Users also gets their own reminders list and wish list automatically. If you'd rather use lists you already have, point the card at them (see [Family Week Calendar](/docs/cards/family-week-calendar)). Settings, Chores, Rewards, Goals, Routines, timers and the pantry's extra items need no `todo` list at all.
+The recipe box, meal plan, meal templates, meal suggestions and reminders are stored as Home Assistant `todo` lists, so they sync across every device. **You don't need to create them**: Family Hub makes the ones below as **Local To-do** lists the first time it needs them (the meal plan from Settings → Menu Blocks → **+ Add list**). Each person added under Settings → Users also gets their own reminders list and wish list automatically. If you'd rather use lists you already have, point the card at them (see [Family Hub Week Calendar](/docs/cards/family-week-calendar)). Settings, Chores, Rewards, Goals, Routines, timers and the pantry's extra items need no `todo` list at all.
 
 | Purpose | Default list |
 |---|---|

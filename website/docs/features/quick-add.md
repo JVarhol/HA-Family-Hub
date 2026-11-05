@@ -32,6 +32,8 @@ No #tags needed, though they still work.
 
 Open the calendar's **⋮ More** menu and pick **⚡ Quick Add**.
 
+![Quick Add with a live preview: Event · Soccer Thursday at 5 PM for Emma, On Emma's calendar](/img/screenshots/quick-add.webp)
+
 - As you type, a preview shows what it understood: **Event · Soccer Tuesday at 5 PM**, or a problem to fix ("How many stars?").
 - Wrong guess? Tap **Not right? It's a:** Event, Reminder, Meal, Chore, Reward or List item, and it re-reads the line as that.
 - **Add** (or Enter) saves it, shows what was added, and clears the box for the next one.

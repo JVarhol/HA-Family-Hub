@@ -58,7 +58,11 @@ Tap an empty meal block (or the pencil on a planned one) to open the editor:
   the Recipe Box twice under different spellings.
 - **Description** (notes, sides), **Category**, and **💡 Also add to Meal
   Suggestions**.
-- **Recipe link**, with a 🔗 button to open it.
+- **Recipe link**, with a 🔗 button to open it. When there's no link yet the
+  button is greyed out; tap it anyway and it says **No link here! Add one
+  now!** with a box to paste one into. **Save** adds the link and saves the
+  meal (or sends it as a suggestion, for someone who can't edit the menu).
+  Leaving off `https://` is fine. (2026.11.1.8+)
 - **👍 Who's cooking**: tap a person. Their color shows as a bar along the
   bottom of that meal block, so everyone can see whose night it is.
 - **More options**: edit the recipe link, **Servings** (for the Grocy

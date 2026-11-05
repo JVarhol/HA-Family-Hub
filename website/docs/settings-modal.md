@@ -1,9 +1,9 @@
 ---
 title: Settings
-description: Everything behind the ⚙️ Settings button on the Family Week Calendar card.
+description: Everything behind the ⚙️ Settings button on the Family Hub Week Calendar card.
 ---
 
-Household settings live behind the **⚙️ Settings** button on the **Family Week Calendar** card, and only there. (With the top bar hidden or minimal, Settings moves into the card's **+** button menu.) Settings has four tabs: **General**, **Users**, and for admins **Devices** and **Developer tools**.
+Household settings live behind the **⚙️ Settings** button on the **Family Hub Week Calendar** card, and only there. (With the top bar hidden or minimal, Settings moves into the card's **+** button menu.) Settings has four tabs: **General**, **Users**, and for admins **Devices** and **Developer tools**.
 
 Most fields save together when you tap **Save**, which stays pinned to the bottom while you scroll. A few, called out below, save the moment you change them, and fields marked **this device only** are saved on that one screen.
 
@@ -12,6 +12,8 @@ Children and kiosk accounts see a reduced Settings: no Users tab and none of the
 A few things are set up in Home Assistant's own integration screen instead (calendar reminders, Grocy, backups, updates). See [Integration Options](/docs/integration-options).
 
 ## General tab
+
+![Settings, General tab: this device, weather entity and the collapsible sections](/img/screenshots/settings-general.webp)
 
 ### This device
 
@@ -33,7 +35,7 @@ The one place to add calendars and say whose calendar is whose; no YAML editing 
 - **A row of buttons** under each calendar (v1.168.88+):
   - **⏳ Countdown**: add this calendar's events to the countdown banner.
   - **🎉 Holidays**: treat it as a holiday calendar, so its days show as banners under the meals instead of as events in a column. Calendars with "holiday" in the name are switched on automatically. See [Holiday calendars](/docs/features/calendar-and-layout#holiday-calendars).
-  - **➕ Add badge**: a keyword to watch for in event titles, which puts a small colored badge (like "N") next to the date, plus an optional keyword for events to hide from the grid entirely (handy for a background custody-schedule calendar).
+  - **➕ Add badge**: a keyword to watch for in event titles. On days it matches, a small colored badge (like "D") shows under the date instead of the event. An optional hide keyword hides matching events entirely. Built for custody schedules: see [Badges: who's where](/docs/features/calendar-and-layout#badges-whos-where).
   - **✕ Remove**: removes the calendar and unlinks it from its person, so it doesn't come back as their column.
 
 Who gets *reminders* from a calendar is set per person under the **Users** tab (**Get reminders from**), not here.
@@ -45,6 +47,8 @@ Off by default. When it's on and the same event shows up on more than one of you
 ### Categories
 
 At the bottom of the Calendars section. Admins only. Add categories with a name and a color; events and reminders given one show a bar in its color. Removing a category takes the bar off everything that had it. See [Calendar](/docs/features/calendar-and-layout#adding-and-editing-events).
+
+![Settings → Calendars → categories: Sports, School and Work, each with its color](/img/screenshots/settings-categories.webp)
 
 ### Default view
 
@@ -75,6 +79,14 @@ Five one-tap presets (**Week**, **Portrait**, **Agenda**, **Two-Week Ahead**, **
 
 Today's events dim one by one as they end; any earlier day dims entirely, since the whole day is already over.
 
+### Show people's pictures
+
+On by default (2026.11.1.2+). Uses each person's Home Assistant profile picture instead of their initial, on every card. Off, or in Discreet Mode, the initials come back.
+
+### Show the Now marker
+
+On by default (2026.11.1.2+). Events happening right now get a "Now ·" label and a bar showing how far through they are.
+
 ### Name pills (this device only)
 
 Show or hide the row of names with counts above the calendar (and the Reminders pill). Hiding it gives the calendar more room, and the calendar then shows everyone. (v1.168.88+)
@@ -89,9 +101,19 @@ Show or hide the row of names with counts above the calendar (and the Reminders 
 
  This is saved to this device/browser only, like the other "this device only" fields above, unless the card's own **Static layout** config option (set from its Edit Card screen) is turned on, in which case it becomes shared household-wide instead.
 
+### Accessibility
+
+Color vision (Shapes & patterns, plus a check for people's colors that look alike), High contrast, Text size, Font (Easy to read or Dyslexia-friendly), Reduce motion and Bigger buttons (2026.11.1.16+). They apply to every Family Hub card, for the whole household or just this device. See [Accessibility](/docs/features/accessibility).
+
+### E-ink screen
+
+Off, Black & white, Color (6 ink) or Color (Kaleido), for this device only (2026.11.1.15+), plus **Can be tapped** for a frame that only shows the calendar. See [E-ink Screens](/docs/features/eink-screens).
+
 ### Lock vertical scrolling
 
-Unlocked/Locked, for a kiosk display you don't want someone accidentally scrolling.
+Unlocked/Locked, for a kiosk display you don't want someone accidentally scrolling. It's saved for this device and this calendar card only (2026.11.1.12+), and it only holds while the calendar is on screen: open another dashboard or Home Assistant's own pages and they scroll as usual. A device that hasn't picked yet starts from the setting the whole household used to share. It can also be set per device from the [Devices tab](/docs/settings-modal#devices-tab-admin-only), and with the card's **Static layout** option on it's shared household-wide instead.
+
+<img src="/HA-Family-Hub/img/screenshots/settings-scroll-lock.webp" alt="Lock vertical scrolling: Unlocked and Locked buttons, with the note that it's just this device and only while the calendar is on screen" width="420" />
 
 ### Bottom padding
 

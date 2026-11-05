@@ -7,6 +7,8 @@ A tiny card with a gear button. Tap it to pick a theme for **this device only**:
 
 It changes the whole dashboard page on that device, not just Family Hub cards.
 
+![The week view in all ten built-in themes](/img/screenshots/themes.webp)
+
 ## YAML
 
 ```yaml

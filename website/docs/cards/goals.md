@@ -28,3 +28,6 @@ fab_position: dashboard  # or "card"
 - **Log** (or **Mark done** for a single-count goal) adds one to the count. Reaching the target sends it for approval.
 - **Approve** pays the reward. **Send back** (with an optional note) resets the count to zero for a real retry.
 - **✎** edits a goal: title, who it's for, target count, due date, and the reward (a number of stars, or one specific item from the Rewards catalog).
+
+<img src="/HA-Family-Hub/img/screenshots/goals.webp" alt="The Goals card" width="520" />
+

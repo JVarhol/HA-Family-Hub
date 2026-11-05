@@ -66,10 +66,13 @@ The visual editor lists people by name, so you don't need to look up IDs.
 
 - **Name pills** across the top, one per person plus the Chore Bin and Waiting to Recur, each with a count. Tap people to show only their columns; tap again to turn them off. Each screen remembers its choice, separately for each dashboard view.
 - **☰ Compact view**: a tighter layout for long lists. Each screen remembers it.
+
+![The 📅 Schedule view on the Chores card](/img/screenshots/chores-schedule-week.webp)
+
 - **📅 Schedule**: swaps the board for an overview of when every chore is due, **This week**, **Next week** or a **Month**, with repeating chores shown ahead. See [Chore schedule](/docs/features/chores-rewards-goals-routines#chore-schedule). Each screen remembers it.
 - **Rewards column**: a button in the header shows or hides a Rewards column with everyone's balances and the catalog, right on the chore board. This one is shared by the whole household.
 - **Drag an open chore** onto someone else's column (or the Chore Bin) to reassign it, if you can assign chores. Routine items are reordered by dragging them in the **+** button's Routine tab.
-- **🔒 Login** (on a shared kiosk): pick your name and enter your Kiosk PIN to use the board as yourself: mark your own chores done, or approve others' if you have that permission. It logs out after 45 seconds of no taps. An admin turns this on per person under Settings → Users → **Kiosk PIN login**.
+- **🔒 Login** (on a shared kiosk): pick your name and enter your Kiosk PIN to use the board as yourself: claim a chore from the Chore Bin, mark your own chores done, or approve others' if you have that permission. It logs out after 45 seconds of no taps. An admin turns this on per person under Settings → Users → **Kiosk PIN login**.
 - **+ button**: a **New** pop-up with tabs for **Chore**, **Goal**, **Routine** (when Routines is on) and **Ask for stars**. You only see the tabs you're allowed to use.
 - **Confetti** when a chore is done, if it's turned on in Settings → General → Chores, Rewards & Routines.
 

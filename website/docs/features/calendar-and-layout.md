@@ -3,7 +3,7 @@ title: Calendar & Layout
 sidebar_position: 1
 ---
 
-The **Family Week Calendar** is the centerpiece card: a full-screen, tablet-friendly calendar with each person's events in their own color, the week's meals, weather for each day, and reminders.
+The **Family Hub Week Calendar** is the centerpiece card: a full-screen, tablet-friendly calendar with each person's events in their own color, the week's meals, weather for each day, and reminders.
 
 ![Week view: meals at the top of each day, colored events below, a pencil on events that can be edited](/img/screenshots/calendar-week.webp)
 
@@ -41,7 +41,32 @@ The **Family Week Calendar** is the centerpiece card: a full-screen, tablet-frie
 - **Optional hourly timeline** view, toggle is **device-specific** (saved to
   that browser/tablet only, via `localStorage`). Range is configurable start
   hour to end hour, with the end able to reach **Midnight**.
+  (2026.11.1.2+) Each event sits at its real time and is as tall as it is
+  long. The hours are labelled once per row, every day lines up on the same
+  hours, and the days scroll together. A red line marks the current time on
+  today. An event that starts inside another one (a call in the middle of a
+  work block) sits on top of it, slightly indented, instead of squeezing both
+  into narrow columns. Short events show just the time and title; longer ones
+  add the end time, the people's faces and the location. All-day events stay
+  in a band at the top of each day.
+- **The date block** (2026.11.1.5+): each day shows the weekday and a large
+  date on the left, and the weather (icon over the high and low) on the
+  right. On narrow columns (a 14-day layout, a small tablet) the weather
+  moves to a line under the date. A person's day badges (set per person in
+  Settings) sit in a row under the date. Every day's date block is
+  left-aligned and the same height (2026.11.1.12+), so the meals and events
+  under them line up across the week, including days past the forecast
+  and days without a badge.
+
+  ![A week of date blocks: weekday and date on the left, the weather on the right, and a school badge under Monday and Tuesday](/img/screenshots/calendar-day-headers.webp)
+
 - **Word-wrapped event names** in both Week and Month view: full titles are shown rather than truncated.
+- **Today opens on what's next** (2026.11.1.3+): when today's column has
+  more events than fit, it opens with the next event (or the one happening
+  now) at the top. Scroll up for earlier events, down for later ones. Once
+  everything today is over, it shows the last ones. If you scroll it
+  yourself, it stays where you put it for a minute before going back to the
+  next event. In the hour view, today already opens at the current hour.
 - **Phones**: on a narrow screen the week stacks one day per row, and the
   person pills wrap onto two lines.
 
@@ -49,7 +74,32 @@ The **Family Week Calendar** is the centerpiece card: a full-screen, tablet-frie
 
 ![Planner layout: a row per day and a column per person](/img/screenshots/calendar-planner.webp)
 
-![Agenda layout in the Liquid Glass Dark theme](/img/screenshots/calendar-agenda.webp)
+![Agenda layout: every day as a list](/img/screenshots/calendar-agenda.webp)
+
+![The hour-by-hour view: events at their real times, with a now line](/img/screenshots/calendar-hours.webp)
+
+## Pictures, ages and what's happening now
+
+These work on every card (2026.11.1.2+):
+
+- **People's pictures**: if a person has a picture in Home Assistant
+  (Settings → People), it's used instead of their initial on their events,
+  name pills, the Right Now bar, the Today card, and the Chores and Rewards
+  cards. An event for several people shows up to three faces. The picture
+  is found through the person entity set as their presence entity, or the
+  Home Assistant person linked to their user. Turn it off under Settings →
+  General → **Show people's pictures**. Discreet Mode always hides them.
+- **Birthday ages**: put the year in an event's description, like
+  `YEAR=1956` or `born 1956`, and the title shows the age: "Grandma's
+  birthday (70)". Anniversaries say "(10 years)". `since` and `married`
+  work too. The title itself isn't changed, so editing the event still shows
+  what you typed.
+- **Happening now**: an event that's on right now gets a "Now ·" label and a
+  thin bar showing how far through it is, in Week view, Agenda and the Today
+  card (the Right Now bar always had one). Turn it off under Settings →
+  General → **Show the Now marker**.
+
+![Faces, a birthday age and a "Now" event in Week view](/img/screenshots/calendar-faces.webp)
 
 ## People and calendars
 
@@ -81,17 +131,67 @@ The **Family Week Calendar** is the centerpiece card: a full-screen, tablet-frie
   same name at the same time - it only appears once. Repeating events still
   show every occurrence. Give separate events different names ("Sam Soccer",
   "Taylor Soccer") so both show.
-- **Per-calendar badges**: any calendar can define a keyword to watch for in
-  event titles, a short badge (e.g. "N") to display next to the date when it
-  matches, and a separate keyword for events that should be hidden from the
-  grid entirely (e.g. a background custody-schedule calendar).
+- **Per-calendar badges**: a small badge on the days a keyword shows up in a
+  calendar's events, in place of the event itself. See
+  [Badges: who's where](#badges-whos-where) below.
 
 <img src="/HA-Family-Hub/img/screenshots/calendar-phone.webp" alt="The calendar on a phone" width="320" />
+
+## Badges: who's where
+
+Badges were built for custody schedules. When kids split their time between
+two homes, the schedule is usually a calendar full of events like "Kids at
+Dad's" or "Mom's week". You need to know who's in the house each day, but you
+don't want those events filling every day of the calendar. A badge turns them
+into a small mark under the date instead.
+
+How it works:
+
+- Each calendar (or person) can have badges, set in Settings → Calendars →
+  **➕ Add badge**, or on the person under Users.
+- A badge has a short **text** (a letter or emoji, like "D" or "🏠") and a
+  **keyword**. On any day where one of that calendar's events contains the
+  keyword, the badge shows under the date in that person's color, and the
+  event itself isn't shown.
+- A badge can also have a **hide** keyword: events containing it are hidden
+  without a badge. Handy for the other half of the schedule, or anything you
+  don't need to see.
+- **Hide from digest** keeps matching events out of the Daily Digest too.
+- **What it means** (2026.11.1.7+): each badge also says what it tells
+  Family Hub about who's home. **Means they're home** (the default for new
+  badges): they're home on the days it shows, and away on the days it
+  doesn't. **Means they're away**: they're away on the days it shows. **Just
+  a label**: nothing, it's only a mark (badges made before 2026.11.1.7 start
+  as labels, so pick one for your custody badges).
+- **Who it's about**: tick the people the badge is about. On a calendar
+  linked to a person, leaving them all unticked means that person. On a
+  shared calendar (like one "Custody" calendar for all the kids), tick each
+  child it covers.
+
+![A custody calendar with an "M" badge that means Emma and Leo are home, and a "D" badge that means away](/img/screenshots/settings-badge-presence.webp)
+
+Chores and routines use this: see
+[When someone's away](/docs/features/chores-rewards-goals-routines#when-someones-away).
+
+An example: the kids' custody schedule is a calendar where every day has an
+all-day event, "At Mom's" or "At Dad's". Give that calendar a badge "M" with
+the keyword "Mom's", set it to **Means they're home**, and tick the kids.
+Add a hide keyword "Dad's". Now the days they're home get a small "M" under
+the date, neither event takes up space in the columns, and on the other days
+Family Hub knows they're away: their chores go to someone else and they have
+no routine. (If you'd rather mark the days they're away, use a "D" badge for
+"Dad's" set to **Means they're away** instead.)
+
+Badges work for anything you want to know at a glance without an event:
+who's traveling, who has the car, whose week it is to cook, or a nanny or
+grandparent day.
 
 ## Hashtags
 
 Type `#Name` or `#Category` in an event's title or notes, even from Google
 or Apple Calendar on your phone (v1.168.88+):
+
+![Halloween as a banner under Saturday's meals, colored category bars under Soccer practice and Field trip, and Trick or treating striped for Emma and Leo](/img/screenshots/calendar-holiday-categories.webp)
 
 - `#Emma` also shows the event on Emma's calendar, like **Also for**. A
   person's name from Settings → Users, their first name (when no one else
@@ -140,6 +240,8 @@ the countdown banner.
   (a read-only Holidays feed isn't in the list).
 
 ![The New Event form](/img/screenshots/add-event.webp)
+
+![An event's pop-up: calendar, when, Also for, category, Remind me, checklist and Use as meal](/img/screenshots/event-info.webp)
 
 - **Edit pencil**: events on a calendar that Home Assistant can edit (for
   example the built-in **Local Calendar**) show a small ✎ pencil. Tap it to
@@ -251,6 +353,8 @@ Grocy the **Shopping List**, **Expiring Soon** and **Low Stock**, plus
 **Daily Digest** (your own digest as a pop-up), **Privacy Mode** and any
 buttons your household added. Admins choose what's in it: see
 [Settings → More menu](/docs/settings-modal#more-menu-admin-only).
+
+![The ⋮ More menu open, with ⚡ Quick Add at the top](/img/screenshots/more-menu.webp)
 
 **Calendar top bar style** (per screen) can shrink it to **Minimal** or
 **Hidden**, or swap it for the Right Now bar. With the bar hidden, Settings

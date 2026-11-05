@@ -32,6 +32,9 @@ sidebar_position: 7
   Assistant's own to-do list. Upcoming dates show faded on the calendar. The
   event-info popup can change or stop the repeat. The last one (or one past
   its end date) finishes normally.
+
+![The New Reminder form with Repeat open: weekly, every 1 week, on chosen days, ending never](/img/screenshots/add-reminder.webp)
+
 - **Categories** (v1.168.88+): reminders can have a category too; see
   [Calendar](/docs/features/calendar-and-layout#adding-and-editing-events).
 - **Calendar-event reminders**: any event can get a "remind me N minutes

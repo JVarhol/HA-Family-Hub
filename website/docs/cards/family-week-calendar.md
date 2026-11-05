@@ -1,5 +1,5 @@
 ---
-title: Family Week Calendar
+title: Family Hub Week Calendar
 description: The main Family Hub card - calendar, meals, reminders, and Settings for the whole household.
 ---
 
@@ -73,5 +73,5 @@ You can put the calendar card on several dashboards, or twice on one dashboard. 
 
 ## Related cards
 
-- [Family Today](/docs/cards/family-today) and [Right Now](/docs/cards/right-now) take their people, colors, lists and theme from this card automatically.
+- [Family Hub Today](/docs/cards/family-today) and [Right Now](/docs/cards/right-now) take their people, colors, lists and theme from this card automatically.
 - The Recipe Box is also its own card: [Recipe Box](/docs/cards/recipe-box).

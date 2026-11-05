@@ -11,6 +11,8 @@ Turning Privacy Mode on blanks out calendar events and reminders: every day/week
 
 A small locked pill appears over the card instead: "Privacy Mode is on - tap to unlock."
 
+![Privacy Mode on: the week shows its meals and weather but no events, with "Privacy Mode is on - tap to unlock" over the card](/img/screenshots/privacy-mode.webp)
+
 ## Turning it on
 
 Anyone can turn Privacy Mode on, with no PIN and no permission needed. From the calendar's **⋮ More** menu, tap **Enable Privacy Mode**. There's deliberately no gate on making the screen *more* private.

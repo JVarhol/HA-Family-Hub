@@ -1,13 +1,13 @@
 ---
-title: Family Today
+title: Family Hub Today
 description: A small single-day card for phones and dashboard corners - today's events, meals and reminders.
 ---
 
 A small companion to the calendar: just today. It shows today's events, today's meals and the reminders due today, for a phone or the corner of any dashboard.
 
-<img src="/HA-Family-Hub/img/screenshots/today-card.webp" alt="The Family Today card" width="360" />
+<img src="/HA-Family-Hub/img/screenshots/today-card.webp" alt="The Family Hub Today card" width="360" />
 
-It takes everything from your Family Week Calendar card: the people and their colors, the meal plan, the reminders lists, the weather, the theme and the categories. A new Today card needs only a title.
+It takes everything from your Family Hub Week Calendar card: the people and their colors, the meal plan, the reminders lists, the weather, the theme and the categories. A new Today card needs only a title.
 
 ## YAML
 

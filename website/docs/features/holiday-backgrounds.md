@@ -9,6 +9,8 @@ Show a photo on a holiday or special day, from Settings → General → **Holida
 - **Show the photo**: **Behind its day** (a soft background behind just that day's own cell: a Week view day column, a Month view cell, or a Planner day), or **Full screen** for that day, that week or that month.
 - **Theme** (v1.168.88+): optionally switch every Family Hub card to one of your themes while the holiday is showing, then back afterwards. It follows the same dates as the photo: the day, or the whole week or month when the photo is set to fill the screen for it. A holiday can change the theme without a photo, too. A card that has its own theme set in its card editor keeps it.
 
+![A holiday photo behind Friday's day column, with that day's meals and events on top of it](/img/screenshots/holiday-background.webp)
+
 ## Built-in holidays
 
 Toggle on any of the built-in dates (New Year's Day, Valentine's Day, St. Patrick's Day, Easter, 4th of July, Halloween, Thanksgiving, and Christmas) and upload your own photo for it (these are dates only; no image ships bundled with any of them). Easter and Thanksgiving are computed fresh each year (the actual Sunday/4th-Thursday), not a fixed month/day, so they land correctly every year with no maintenance. Any built-in holiday can be renamed from Settings too.

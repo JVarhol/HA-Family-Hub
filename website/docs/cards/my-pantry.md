@@ -5,6 +5,8 @@ description: Grocy stock on a card, plus an "Also Tracking" list for anything el
 
 What's in the house. With [Grocy](/docs/features/grocy-integration) connected, the top section is your live **Grocy Stock**. Below it, **Also Tracking** is a simple list for anything you don't keep in Grocy (paper towels, the freezer, the garage fridge), and it works with or without Grocy.
 
+<img src="/HA-Family-Hub/img/screenshots/my-pantry.webp" alt="My Pantry: Grocy Stock with locations, categories, expiry dates, a low stock tag and quick buttons, and Also Tracking with paper towels and birthday candles" width="560" />
+
 ## YAML
 
 ```yaml

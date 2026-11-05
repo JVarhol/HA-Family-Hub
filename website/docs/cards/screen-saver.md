@@ -7,6 +7,8 @@ The screen saver already runs on every dashboard that has any Family Hub card, s
 
 The screen saver itself (video or camera, idle time, widgets, which logins get it) is set up in Settings. See [Screen Saver](/docs/features/screen-saver).
 
+![The screen saver with a clock, weather, Next up and a light](/img/screenshots/screensaver-landscape.webp)
+
 ## YAML
 
 ```yaml

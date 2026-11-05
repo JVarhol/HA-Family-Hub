@@ -8,8 +8,8 @@ Family Hub ships **12 dashboard cards**. Add any of them from **Edit dashboard �
 
 | Card | Type | What it's for |
 |---|---|---|
-| [Family Week Calendar](/docs/cards/family-week-calendar) | `custom:family-week-calendar-card` | The main card: Week/Month/Planner/Agenda calendar, meals, reminders, and **⚙️ Settings for all of Family Hub** |
-| [Family Today](/docs/cards/family-today) | `custom:family-today-card` | Today's events, meals and reminders, for a phone or a corner of any dashboard |
+| [Family Hub Week Calendar](/docs/cards/family-week-calendar) | `custom:family-week-calendar-card` | The main card: Week/Month/Planner/Agenda calendar, meals, reminders, and **⚙️ Settings for all of Family Hub** |
+| [Family Hub Today](/docs/cards/family-today) | `custom:family-today-card` | Today's events, meals and reminders, for a phone or a corner of any dashboard |
 | [Right Now](/docs/cards/right-now) | `custom:family-right-now-card` | Who's home, what everyone is doing now, and what's next |
 | [Chores](/docs/cards/chores) | `custom:family-hub-chores-card` | The chore board, the Chore Bin, routines and star requests |
 | [Rewards](/docs/cards/rewards) | `custom:family-hub-rewards-card` | Star balances, the reward catalog, suggestions and history |
@@ -22,7 +22,7 @@ Family Hub ships **12 dashboard cards**. Add any of them from **Edit dashboard �
 | [Theme Selector](/docs/cards/theme-selector) | `custom:theme-selector-card` | A small gear that picks this device's theme |
 
 :::tip Start with the calendar
-Settings for the whole household live behind the **⚙️** on the **Family Week Calendar** card, and it's the only place to change them. Add that card first, even on a dashboard you don't use much.
+Settings for the whole household live behind the **⚙️** on the **Family Hub Week Calendar** card, and it's the only place to change them. Add that card first, even on a dashboard you don't use much.
 :::
 
 ## Options every card shares
@@ -39,7 +39,7 @@ Settings for the whole household live behind the **⚙️** on the **Family Week
 
 `card` anchors the button to the bottom-right of **this card's own box** instead. Use it on a sections or grid dashboard where the card shares a row with other cards, so the button sits under the card it belongs to. A card-corner button leaves the shared stack, but the Chores and Rewards cards still hide the standalone Goals card's button when they already offer a Goal tab.
 
-The calendar card can also hide its button entirely with `hide_fab` (see [Family Week Calendar](/docs/cards/family-week-calendar)).
+The calendar card can also hide its button entirely with `hide_fab` (see [Family Hub Week Calendar](/docs/cards/family-week-calendar)).
 
 ### Where card data lives
 

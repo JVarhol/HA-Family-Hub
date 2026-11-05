@@ -15,14 +15,14 @@ Commercial smart displays like Skylight solve the display problem. They don't so
 
 Family Hub is the Home Assistant-native answer: a **12-card ecosystem** built from the ground up for Home Assistant, modular and fully configurable, deployable across wall tablets, desktops, and phones. It's built to compete with commercial family-hub tablets (Skylight, Dragon Touch, Cozyla, Nori, and similar) while running entirely on infrastructure you already own and control.
 
-![The Family Week Calendar in Week view, with meals, weather and colored person pills](/img/screenshots/calendar-week.webp)
+![The Family Hub Week Calendar in Week view, with meals, weather and colored person pills](/img/screenshots/calendar-week.webp)
 
-*The Family Week Calendar on a 1280×800 wall tablet (demo household, made-up data).*
+*The Family Hub Week Calendar on a 1280×800 wall tablet (demo household, made-up data).*
 
 ## What's included
 
-- **Family Week Calendar**: the centerpiece, a full-screen, tablet-friendly Week/Month calendar with per-day meal planning, a recipe box, weather, a countdown banner, and a Daily Digest.
-- **Family Today**: a small single-day companion card for any dashboard, sharing the main card's config automatically.
+- **Family Hub Week Calendar**: the centerpiece, a full-screen, tablet-friendly Week/Month calendar with per-day meal planning, a recipe box, weather, a countdown banner, and a Daily Digest.
+- **Family Hub Today**: a small single-day companion card for any dashboard, sharing the main card's config automatically.
 - **Right Now**: who's home, what everyone is doing right now, and what's next. Use it as its own card, or turn it on as a bar across the top (or down the side) of the calendar.
 - **Chores, Rewards, Goals & Routines**: assignable/rotating/first-come chores with a star economy, a redeemable rewards catalog, one-off goals, and Morning/Afternoon/Night routine checklists.
 - **To-Do Lists, Recipe Box & Pantry**: native Home Assistant to-do integration, a searchable recipe box, and pantry/grocery tracking via an optional [Grocy](https://grocy.info) connection.

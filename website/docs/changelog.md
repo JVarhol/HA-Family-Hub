@@ -9,6 +9,23 @@ This page mirrors the actual tagged releases on [GitHub](https://github.com/JVar
 
 These builds are newer than the last tagged GitHub release below. They're summarized here so the docs match what you'll see once they're released.
 
+- **v2026.11.1.16**: New Accessibility page: shapes & patterns for color blindness with a check for colors that look alike, high contrast, text size, easy-to-read and dyslexia-friendly fonts, reduce motion and bigger buttons, for the household or one device. E-ink screen now covers Today, Right Now, Chores, Rewards, Goals and To-Do Lists, and can be turned on from the dashboard link.
+- **v2026.11.1.15**: New E-ink Screens page: Black & white, Color (6 ink) and Color (Kaleido) modes per device, and display-only frames.
+- **v2026.11.1.14**: Manage Ingredients with Grocy is picked before importing, and with it off a recipe imports without any Grocy matching.
+- **v2026.11.1.13**: The page behind an open popup no longer scrolls, so popup buttons always work.
+- **v2026.11.1.12**: Day headers are all left-aligned and the same height, and Lock vertical scrolling is per device and only on the calendar.
+- **v2026.11.1.11**: The recipe importer and Recipe Viewer handle headings inside a recipe's ingredient list, and print-page links import.
+- **v2026.11.1.10**: The recipe importer keeps a recipe's sections (Chicken, Sauce, Pasta), and Grocy recipes show up in the Recipe Box within about a minute.
+- **v2026.11.1.9**: Ingredients added without Grocy managing them still show on the recipe's ingredient list.
+- **v2026.11.1.8**: Tap the greyed-out link button on a meal with no link to add one right there.
+- **v2026.11.1.7**: Badges as a custody schedule: they can say who's home, and chores and routines follow it. Rotation settings sit on the main chore form.
+- **v2026.11.1.6**: Day badges sit in their own row under the date.
+- **v2026.11.1.5**: A cleaner date block in Week view: the date on the left, the weather on the right.
+- **v2026.11.1.4**: Screen saver widgets drawn straight on the picture (clock, weather, next up, entities, cameras), placed in 9 spots that work on any screen shape, with night mode and burn-in protection.
+- **v2026.11.1.3**: Today's column opens on the next event instead of the first one of the day.
+- **v2026.11.1.2**: People's pictures on every card, birthday ages, a "Now" marker for what's on right now, and a cleaner hour-by-hour view.
+- **v2026.11.1.1**: Rewards fire `family_hub_reward_event` for automations (#26), the cards reach the card picker even with YAML-managed resources, and every card's picker name starts with "Family Hub" (#22).
+- **v2026.11.1**: Chores can take turns in blocks of days, like "two weeks each" (#27), Claim on a kiosk goes to the person signed in with their Kiosk PIN instead of the tablet's login (#30), a **Week + Next Week** layout with a tile summarising the following week (#29), and a **Font family** choice in the Theme Builder (#31).
 - **v2026.10.4**: **2026.10.4**: Versions now follow the date (Year.Month.Week). The same as v1.168.91: Quick Add and Assist (beta), the chore schedule, chores on the calendar and weeks that start on your first day of the week.
 - **v1.168.91**: **v1.168.91**: Assist understands everyday phrasing ("Can you remind me to get candy tomorrow?", "Add trick or treating to my calendar Saturday at 6", "Add take out the trash to my chores", "Add feed the cat to Emma's chores tomorrow"), and Quick Add understands holidays like Halloween, Thanksgiving and Christmas as dates.
 - **v1.168.90**: **v1.168.90**: Assist answers more ways of asking about chores ("What are my chores?", "What are Jaret's chores?", "Does Emma have any chores?"), and names work without the apostrophe.

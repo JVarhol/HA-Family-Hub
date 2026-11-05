@@ -9,11 +9,19 @@ unlock a deeper recipe/grocery layer on top of the meal planner above.
 Leave both fields blank and none of this appears. Family Hub works exactly
 as described everywhere else on this site with no Grocy at all.
 
-- **Pick a meal straight from Grocy**: the Recipe Box gets an "Add from
-  Grocy" option that pulls in one of your existing Grocy recipes by name,
-  instead of typing one in by hand.
+- **Your Grocy recipes are in the Recipe Box automatically**: every recipe
+  in Grocy shows up in the Recipe Box on its own, and renaming one in Grocy
+  renames it here too. A recipe added in Grocy appears the next time the
+  Recipe Box loads (within about a minute on a screen that stays open), and
+  one made with Family Hub's importer appears straight away (2026.11.1.10+).
+  Your own rating, category, photo and notes on a Grocy recipe are never
+  overwritten, and deleting a recipe from Grocy leaves its Recipe Box copy
+  alone. Grocy's own meal-plan entries aren't recipes, so they're left out.
+  The Recipe Box's "Add from Grocy" option is still there for picking one by
+  name.
 - **In-card Recipe Viewer**: tapping a Grocy-backed recipe opens a
-  full-screen viewer (servings, grouped ingredients, instructions, photo)
+  full-screen viewer (servings, ingredients under their section headings
+  with each section numbered from 1, instructions, photo)
   fetched live through Family Hub, instead of sending you to Grocy's own
   website (which needs its own separate login the API key doesn't satisfy).
   A **live servings scaler** (+/- stepper) rescales every numeric ingredient
@@ -23,10 +31,15 @@ as described everywhere else on this site with no Grocy at all.
   if the stepper's been touched), the same thing as Grocy's own "Consume
   all ingredients needed" button, confirmed first since it's a real,
   one-way stock transaction.
+
+  <img src="/HA-Family-Hub/img/screenshots/recipe-viewer-sections.webp" alt="The Recipe Viewer: prep, cook and total time, the servings scaler, ingredients under Chicken, Sauce and Pasta numbered from 1 in each, and the steps under the same headings" width="520" />
+
 - **Import a recipe into Grocy**: "Import a Recipe" offers three ways in:
   paste a link (reads the same schema.org structured data most recipe sites
   publish for Google/Pinterest: name, ingredients, instructions, servings,
-  and Prep/Cook time when published, no AI involved), paste the recipe's
+  and Prep/Cook time when published, no AI involved; a page without that
+  data, like a recipe card's print page, is read from the recipe card
+  itself, 2026.11.1.11+), paste the recipe's
   raw text (a best-effort "Ingredients"/"Instructions" section-header
   parser), or skip straight to a blank form and enter it by hand. Every
   ingredient line is fuzzy-matched against your existing Grocy products
@@ -43,6 +56,38 @@ as described everywhere else on this site with no Grocy at all.
   and shopping-list pushes work the same regardless. Image and source-link
   fields carry through, and the created recipe's photo, ingredients, and
   Prep/Cook time all show up back on the meal view-card once it's planned.
+  **Manage Ingredients with Grocy** (on by default, remembered per device)
+  decides whether the ingredients are matched to Grocy products at all.
+  It sits at the top of the import screen, above the link box
+  (2026.11.1.14+), so you pick before importing: turned off, nothing is
+  looked up in Grocy and the recipe goes straight to a short review (name,
+  photo, servings, steps), for a quick import. Turned off, or for any line
+  left unmatched, the ingredient still goes on the recipe's ingredient list
+  in the viewer as plain text, just not linked to a Grocy product, so it
+  doesn't count toward stock or shopping lists (2026.11.1.9+). Turning it
+  on after a quick fetch matches the ingredients then. Editing a recipe's
+  ingredients later always matches them, and keeps the plain ones too.
+
+  <img src="/HA-Family-Hub/img/screenshots/recipe-import-quick.webp" alt="The top of Import a Recipe: Manage Ingredients with Grocy turned off, with the note that it's a quick import, above the link box and Fetch Recipe" width="520" />
+
+  **Sections** (2026.11.1.10+): a recipe split into parts, like Chicken,
+  Sauce and Pasta, keeps them. From a link they come from the recipe page's
+  own ingredient list, including headings a site mixes into the list itself
+  ("For the sauce:", "SAUCE"). In pasted text, a line like "Chicken:", "For
+  the sauce", "## Pasta" or "Sauce Ingredients" starts a section, and so
+  does a plain "Sauce" on its own line when the list is clearly split into
+  parts (it starts with one, and an ingredient follows each) (2026.11.1.11+).
+  On the review
+  screen each section has a heading you can rename, and **➕ Add section**
+  starts a new one; in the instructions box, a line starting with ## is a
+  section heading. The recipe is saved with Grocy's own ingredient groups,
+  so the Recipe Viewer shows the ingredients and steps under the same
+  headings, and the servings scaler scales every section.
+
+  <img src="/HA-Family-Hub/img/screenshots/recipe-import-sections.webp" alt="The importer's review screen: ingredients under Chicken, Sauce and Pasta headings, each matched to a Grocy product, with Add ingredient line and Add section buttons" width="520" />
+
+  <img src="/HA-Family-Hub/img/screenshots/recipe-import-steps.webp" alt="The instructions box, with ## Chicken, ## Sauce and ## Pasta lines as section headings" width="520" />
+
   Each ingredient's real quantity (e.g. the "2" in "2 cups flour") is parsed
   automatically and shown as an editable amount + unit next to the raw text
   ; this is the number Grocy actually uses for stock math (shopping-list

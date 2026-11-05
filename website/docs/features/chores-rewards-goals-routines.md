@@ -28,6 +28,15 @@ a granular per-person permissions system.
   ordered rotation group), or **First come, first served** (anyone can
   self-claim it with a **Claim** button). Chore Bin and First-come-first-
   served chores both start out sitting in a shared **Chore Bin** column.
+- **Turns in blocks of days** (2026.11.1+): an Auto-rotation chore can keep the same person for a stretch instead of
+  switching every time it's done, for jobs like "Emma is kitchen helper for two weeks, then Leo". In the chore form
+  (right under **Auto Rotation**, with the rotation group; 2026.11.1.7+), set **Switch turns** to **Every day**, **Every week**, **Every 2 weeks**,
+  **Every 4 weeks** or **Every … days**, then pick when the **First turn starts** and **Who goes first**. Make the chore
+  repeat as usual (daily, say): each day's chore goes to whoever's turn that day falls in, and marking it done doesn't move
+  the turn on early. A chore's details show "Turns of 2 weeks · Emma's turn until Nov 15", and the schedule shows whose
+  turn each future day is. Someone away for a day? Drag that day's chore to someone else; the next day it's back to the
+  person whose turn it is. Changing the turns from Edit re-assigns the chore that's open now. **Each time it's done** keeps
+  the old behaviour.
 - **Mark in progress**: an open chore has a **Mark in progress** button so
   everyone can see someone has started it; tap it again to clear it. It
   clears itself when the chore is done, sent back, reassigned or comes
@@ -47,6 +56,27 @@ a granular per-person permissions system.
   entity state change, e.g. "Dryer finished") that cycles it back to open
   on its own. A separate auto-complete trigger can also mark a chore done
   automatically from a sensor.
+<a id="when-someones-away"></a>
+
+- **When someone's away** (2026.11.1.7+): Family Hub knows who's away from
+  the day badges on the calendar (a custody schedule, say: see
+  [Badges: who's where](/docs/features/calendar-and-layout#badges-whos-where)).
+  Each chore's **If they're away** setting, on the main form, decides what
+  happens on a day its person is away:
+  - **Give it to the next person who's home** (the default for a rotation).
+    The turn doesn't move on, so it's theirs again when they're back.
+  - **Put it in the Chore Bin**, for whoever's home to claim.
+  - **Skip it that day** (the default for a chore that's one person's, like
+    "Make your bed"). A one-off chore stays theirs for when they're back.
+
+  Nobody loses stars for a chore while they're away, or while covering for
+  someone who is. Their column says **Away today** and shows no routine, a
+  covered chore says **Covering for Emma**, and the Schedule view shows
+  skipped days and who's covering. Chore Bin and first-come chores aren't
+  anyone's, so being away doesn't change them.
+
+![Leo's column on a day he's away](/img/screenshots/chores-away.webp)
+
 - **Dependencies, rotation groups, and notes**: a chore can require other
   chores be approved first, cycle through an ordered rotation group of
   people, and carry a free-text Notes field.
@@ -69,24 +99,31 @@ a granular per-person permissions system.
     Everyone); **Quantity** ("3 loads of laundry": each Done counts one
     down and the chore shows how many are left); **Timer** (minutes: adds a
     **▶ Start** button and the chore finishes itself when time's up, see
-    [Timers](/docs/features/timers)); **Notes**; **Depends on**; and
-    **Rotation group** (in order).
+    [Timers](/docs/features/timers)); **Notes**; and **Depends on**. (The
+    **Rotation group** and **Switch turns** appear on the main form as soon
+    as you pick **Auto Rotation**.)
   - **Automate**: an **Auto-create trigger** (an entity, an optional From
     state and a To state, like the dryer going from `on` to `off`) that
     reopens the chore, and an **Auto-complete trigger** (like the dishwasher
     door opening) that marks it done.
+
+![The New pop-up's Chore tab: Pick from library, title, assignment mode, stars, due date and the Repeat, Advanced Settings and Automate sections](/img/screenshots/chore-create.webp)
+
 - **Chores on the calendar** (v1.168.89+): tick **📅 Show on the calendar
   on its due date** in a chore's Advanced Settings and, while it's open and
-  has a due date, it shows on the Family Week Calendar on that day, like a
+  has a due date, it shows on the Family Hub Week Calendar on that day, like a
   reminder: with a 🧹 instead of a 🔔, in the color of whoever it's
   assigned to (Chore Bin chores in the reminder color). It shows in Week,
   Day, Month, Planner and Agenda. Tap it for who it's for, when it's due, its
   stars and notes, and **✅ Mark done**, which works exactly like Done on
-  the Chores card (approval and all). It also shows in the **Family Today**
+  the Chores card (approval and all). It also shows in the **Family Hub Today**
   card's Due Today list on its day, with a **Done** button. Once it's done, or waiting for
   approval, it leaves the calendar; a repeating chore comes back on its next
   due date. Privacy Mode hides it like a reminder. It's off by default, per
   chore, and it isn't counted on the Reminders pill.
+
+![A chore on the calendar, opened: who it's for, when it's due, its stars and ✅ Mark done](/img/screenshots/chore-on-calendar.webp)
+
 - **Assign to multiple people**: in Direct mode, tick several people and
   everyone gets their own copy of the chore, with their own Done, approval
   and stars.
@@ -108,6 +145,9 @@ a granular per-person permissions system.
   chores approves it (the stars are added) or rejects it (the request goes
   away). People with chore-assignment permission can also pick someone else
   under **For**. Turn the tab off per card with **Show "Ask for stars"**.
+
+<img src="/HA-Family-Hub/img/screenshots/ask-for-stars.webp" alt="The Ask for stars tab: who it's for, what they did and how many stars" width="560" />
+
 - **One column at a time**: for phones and small tablets, set the card's
   **Layout** to "One column at a time". Swipe left or right (or tap the
   arrows beside the name) to move between people; dots show where you are.
@@ -146,9 +186,16 @@ a granular per-person permissions system.
 
 The **📅** button at the top of the Chores card (v1.168.89+) swaps the board for an overview of when every chore is due, so you can look ahead and spread the work out. Tap it again to go back to the board. Each screen remembers which one it shows.
 
+![The Schedule view, This week: each day's chores with time, person, stars and Overdue, Waiting for approval and Done badges](/img/screenshots/chores-schedule-week.webp)
+
 - **This week**, **Next week** and **Month** tabs, with **‹ ›** to step back or forward a week (or a month) at a time. Weeks start on the day you picked in your Home Assistant profile (**First day of the week**), like the calendar.
 - **Week**: one row per day with each chore due that day: a dot in the person's color, the time, the chore, who it's for and its stars. Today is outlined.
 - **Month**: a grid with the chores on each day (on a phone, a count). A day with something overdue has a red date. Tap a day to list its chores under the grid.
+
+![The Schedule view, Month: November with every repeat on its day, and the 3rd's chores listed under the grid](/img/screenshots/chores-schedule-month.webp)
+
+<img src="/HA-Family-Hub/img/screenshots/chores-schedule-phone.webp" alt="The month schedule on a phone: a count on each day" width="320" />
+
 - **Repeating chores show ahead.** A chore that repeats every few days, on set weekdays, or on the "first Saturday" of the month shows on each day it will come round, assuming each one is done on its day. These are **faded**, since the dates move if one is done late. Auto-rotation chores show whose turn each one will be (marked **↻**). Chores that come round from a sensor (Automate) can't be predicted, so only the current one shows.
 - **Badges**: **Overdue** (red), **Waiting for approval**, and **✓ Done** for chores already done in that week.
 - **Summary** at the top: how many are left to do, overdue, waiting for approval and done, and the stars still to earn.
@@ -158,7 +205,6 @@ The **📅** button at the top of the Chores card (v1.168.89+) swaps the board f
 - Star requests aren't shown. It updates whenever a chore changes.
 
 ## Just me (replaces My Chores)
-
 
 <img src="/HA-Family-Hub/img/screenshots/chores-just-me.webp" alt="The Chores card set to Just me on a phone: your own chores and the Chore Bin" width="320" />
 
@@ -179,7 +225,6 @@ The **📅** button at the top of the Chores card (v1.168.89+) swaps the board f
   card. It's no longer offered when adding a card.
 
 ## Rewards
-
 
 ![The Rewards card: name pills with star balances, each person's balance, and the reward catalog](/img/screenshots/rewards.webp)
 
@@ -245,6 +290,8 @@ The **📅** button at the top of the Chores card (v1.168.89+) swaps the board f
   Goals can also be created from the Goal tab on the Chores and Rewards
   **+** buttons.
 
+<img src="/HA-Family-Hub/img/screenshots/goals.webp" alt="The Goals card: one goal waiting for approval and two in progress" width="520" />
+
 ## Routines
 
 - **Morning/Afternoon/Night checklists**: a per-person daily checklist
@@ -290,6 +337,9 @@ The **📅** button at the top of the Chores card (v1.168.89+) swaps the board f
 
 ## Automations
 
+- Rewards fire `family_hub_reward_event` when one is redeemed, fulfilled,
+  reversed or (for a banked reward) used, so an automation can add screen
+  time, pay pocket money or tell a parent.
 - Chores can be created, completed, approved, sent back and nudged from
   Home Assistant actions, and every change fires an event. See
   [Automations & Entities](/docs/features/automations-and-entities).

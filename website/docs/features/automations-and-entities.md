@@ -45,9 +45,27 @@ Listen for these with an **Event** trigger.
 |---|---|---|
 | `family_hub_chore_event` | Any chore change: created, assigned, claimed, marked in progress, completed, approved, sent back, recurred, overdue, nudged, a star request, or one unit of a quantity chore done | `chore_id`, `title`, `status`, `previous_status`, `assigned_to`, `actor`, and `event` for the named kinds (`assigned`, `claimed`, `in_progress`, `in_progress_cleared`, `quantity_decremented`, `rejected`, `recurred`, `overdue`, `nudged`, `star_request`). Approvals carry `stars_disbursed`; a sent-back chore carries `reason`; an overdue one carries `penalty`. |
 | `family_hub_goal_event` | A goal is created, logged, approved or sent back | `goal_id`, `title`, `status`, `previous_status`, `assigned_to`, `actor`, plus `event: logged` with `current_count`, `event: rejected` with `reason`, or `stars_disbursed` on approval |
+| `family_hub_reward_event` | A reward is redeemed (including a timer reward), marked fulfilled, reversed, a banked reward is used or marked fulfilled, or a goal hands out a catalog reward (2026.11.1.1+) | `event` (`redeemed`, `fulfilled`, `reversed`, `bank_used`, `bank_usage_fulfilled`, `granted`), `reward_id`, `redemption_id` (or `usage_id` for a banked use), `title`, `user_id` (who it's for), `actor` (who tapped it), `cost` (stars), `status` (`fulfilled`, `waiting_for_fulfillment`, `reversed`), `requires_fulfillment`, `redeem_mode`, `balance` (stars after), and when they apply `timer_minutes`, `amount`, `unit_label`, `bank_balance`, `reason` |
 | `family_hub_routine_event` | A routine item is checked or unchecked, approved, or someone finishes a whole routine | `event` (`item_toggled`, `item_approved`, `routine_completed`), `user_id`, `category` (`morning`, `afternoon`, `night`), and for items `item_id`, `title`, `done`, `actor` |
 | `family_hub_privacy_mode_changed` | Privacy Mode turns on or off | `enabled` |
 | `family_hub_timer_started`, `family_hub_timer_finished`, `family_hub_timer_cancelled`, `family_hub_timer_alarm_stopped` | Timer changes | See [Timers](/docs/features/timers#actions-and-events-for-automations) |
+
+Example: add screen time when someone redeems "30 min TV" (GitHub #26). The reward's own timer length comes along as `timer_minutes`, or match on its title.
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: family_hub_reward_event
+    event_data:
+      event: redeemed
+      title: 30 min TV
+actions:
+  - action: input_number.set_value
+    target:
+      entity_id: input_number.emma_tv_minutes
+    data:
+      value: "{{ states('input_number.emma_tv_minutes') | int + 30 }}"
+```
 
 Example: flash the hallway light when a chore is waiting for approval.
 
