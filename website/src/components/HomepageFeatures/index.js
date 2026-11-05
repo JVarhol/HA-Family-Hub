@@ -4,7 +4,7 @@ import styles from './styles.module.css';
 
 const FeatureList = [
   {
-    title: 'Family Week Calendar',
+    title: 'Family Hub Week Calendar',
     emoji: '🗓️',
     description: (
       <>

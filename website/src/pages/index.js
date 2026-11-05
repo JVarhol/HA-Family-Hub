@@ -58,11 +58,11 @@ function HomepageHeader() {
 
 function Screenshots() {
   const shots = [
-    {src: 'calendar-liquid-glass', alt: 'The family calendar in the Liquid Glass theme: a week of colour-coded events with meals at the top of each day', caption: 'The family calendar in the Liquid Glass theme'},
-    {src: 'chores', alt: 'The Chores board with name pills', caption: 'Chores'},
-    {src: 'rewards', alt: 'The Rewards card with star balances and a reward catalog', caption: 'Rewards'},
+    {src: 'calendar-week', alt: 'The family calendar in the Slate theme: a week of colour-coded events with meals at the top of each day and Halloween as a banner', caption: 'The family calendar'},
+    {src: 'chores-schedule-week', alt: 'The chore schedule: this week day by day, with Overdue, Waiting for approval and Done badges', caption: 'Chore schedule'},
+    {src: 'quick-add', alt: 'Quick Add: type one line and see what it will add', caption: 'Quick Add (beta)'},
     {src: 'right-now-top', alt: 'The calendar with the Right Now bar: who is home, what everyone is doing, and what is next', caption: 'The Right Now bar'},
-    {src: 'calendar-agenda', alt: 'The Agenda layout in the Liquid Glass Dark theme', caption: 'Agenda layout, Liquid Glass Dark'},
+    {src: 'rewards', alt: 'The Rewards card with star balances and a reward catalog', caption: 'Rewards'},
   ];
   return (
     <section className={styles.shots}>
