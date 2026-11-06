@@ -32,6 +32,7 @@ fab_position: dashboard    # or "card"
 | `show_stars` | `true` | **Show star balance next to names** in each column header. |
 | `show_waiting_to_recur` | `true` | **Show Waiting to Recur**: the pill and column for approved recurring chores waiting for their next date. |
 | `allow_star_requests` | `true` | **Show "Ask for stars"**: the tab in the **+** button's pop-up for asking for stars for something that isn't on the chart. People who can't create chores still get the **+** button for this. |
+| `kid_view` | `false` | **Kid-friendly view**: big picture tiles for each child, with their stars, streak, this week and the reward they're saving for. With `layout: single` it shows one child at a time. See [Kid-Friendly Views](/docs/features/kid-friendly-views). |
 | `fab_position` | `dashboard` | **+ button position**. See [All Cards](/docs/card-configuration#the--button-position). |
 | `theme_override` | device theme | Pin this card to one theme. |
 

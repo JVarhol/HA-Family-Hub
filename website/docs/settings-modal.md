@@ -34,7 +34,7 @@ The one place to add calendars and say whose calendar is whose; no YAML editing 
 - **Color**: tap it for **Choose a color…** or **Reset to calendar color** (back to its Home Assistant/Google color).
 - **A row of buttons** under each calendar (v1.168.88+):
   - **⏳ Countdown**: add this calendar's events to the countdown banner.
-  - **🎉 Holidays**: treat it as a holiday calendar, so its days show as banners under the meals instead of as events in a column. Calendars with "holiday" in the name are switched on automatically. See [Holiday calendars](/docs/features/calendar-and-layout#holiday-calendars).
+  - **Type**: 📅 Events (ordinary), 🎉 Holidays, 🎂 Birthdays or 💍 Special days (anniversaries, celebrations). Holidays, birthdays and special days show as banners under the meals instead of as events in a column, with ages and years when the event's notes say "born 1956" or "married 2016". Calendars with "holiday" in the name start as Holidays. See [Holiday calendars](/docs/features/calendar-and-layout#holiday-calendars) and [Birthdays and special days](/docs/features/calendar-and-layout#birthdays-and-special-days).
   - **➕ Add badge**: a keyword to watch for in event titles. On days it matches, a small colored badge (like "D") shows under the date instead of the event. An optional hide keyword hides matching events entirely. Built for custody schedules: see [Badges: who's where](/docs/features/calendar-and-layout#badges-whos-where).
   - **✕ Remove**: removes the calendar and unlinks it from its person, so it doesn't come back as their column.
 
@@ -95,7 +95,7 @@ Show or hide the row of names with counts above the calendar (and the Reminders 
 
 **Normal**, **Minimal**, **Hidden**, or **Right Now**.
 
-- **Minimal** hides the top bar (Settings/Week/Month/Edit Meals/Suggestions/Recipe Box/More) to save space on a small device. Settings moves into the **+** button's menu instead, alongside Calendar Entry/Reminder/Meal Suggestion/Recipe.
+- **Minimal** hides the top bar (Settings, the view switch, Edit, the week and More) to save space on a small device. Settings moves into the **+** button's menu instead, alongside Calendar Entry, Reminder, Meal Suggestion, Meal Block and Recipe.
 - **Hidden** hides the bar completely; Settings still moves into the **+** button's menu so you can always get back.
 - **Right Now** shows a live clock/weather/who's-home strip. Pick its **placement** (Top, Left or Right; always a top strip on a phone), its **size** for Top (Small, Medium or Large), whether it shows the **clock & date** and **weather**, and **who's shown** on it. See [The Right Now bar](/docs/features/calendar-and-layout#the-right-now-bar).
 
@@ -125,6 +125,7 @@ Reserves extra space (px) at the bottom of the card, e.g. for a dock, taskbar, o
 - **Menu blocks per day**: how many meal slots each day gets.
 - **Breakfast on weekends**: whether weekend days get a breakfast block too.
 - **Block size**: Small/Medium/Large.
+- **Meals in their own view**: adds **Meals** to the Week/Day/Month menu and moves every meal there, so Week, Month and Agenda show only events (and the two settings below don't apply).
 - **Show meal plan in month view**: whether planned meals also show in the Month grid.
 - **Block 1/2/3 name**: rename the meal slots (defaults are usually Breakfast/Lunch/Dinner).
 
@@ -268,6 +269,8 @@ Tap a person to open their profile, or **Remove** to take them out of Family Hub
 - **Their wish list**: their wish list, created automatically. Pointing it at another list flags that list as their wish list.
 - **Other people's reminder lists**: for each other person's own list: **None** (out of sight), **Add to calendar** (shown on this person's calendar in its owner's color, no notifications) or **Add to calendar + alert** (also notifies this person when one comes due). Everyone always sees their own list.
 - **Reminders**: whether they get a notification when a reminder comes due, on the shared Family Reminders list and their own lists. Off by default.
+
+**Companion screen** (2026.11.1+): for a child's own bedside screen with the [Companion](/docs/cards/companion) card. Their wake-up and bedtime (school days and weekends), when school's out, when the bedtime routine starts, the wake-up alarm and sleep sound, what the screen does at night, their room light and more lights for waking up (amber nightlight, a sunrise before the alarm, green or bright at wake-up, and a scene or script to run), who **I need a hug** tells, and a box to send a message to their screen.
 
 **Instant notifications**: sent right away, not saved for the Daily Digest. Pick any:
 

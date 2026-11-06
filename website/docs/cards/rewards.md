@@ -33,6 +33,7 @@ people:
 |---|---|---|
 | `title` | `Rewards` | Card title. |
 | `people` | `[]` (everyone) | **People on this card**: Home Assistant user IDs, or `me` for whoever is signed in. Balances, goals, suggestions, pending rewards and history follow it; the catalog always shows in full. |
+| `kid_view` | `false` | **Kid-friendly view**: a star jar and a picture shop for one child at a time. See [Kid-Friendly Views](/docs/features/kid-friendly-views). |
 | `fab_position` | `dashboard` | **+ button position**. See [All Cards](/docs/card-configuration#the--button-position). |
 | `theme_override` | device theme | Pin this card to one theme. |
 

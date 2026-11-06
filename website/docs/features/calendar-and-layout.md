@@ -216,10 +216,38 @@ name: 🎃 Halloween, 🎄 Christmas, 🦃 Thanksgiving, 🎉 for anything else.
 Tap a banner to see the holiday's details.
 
 Calendars with "holiday" in their name are treated this way automatically.
-Use the **🎉 Holidays** button on any calendar in Settings → General →
-Calendars to turn it on or off. Someone's own calendar is never treated
-as a holiday calendar. A holiday calendar set to **Countdown** still feeds
-the countdown banner.
+Someone's own calendar is never treated as a holiday calendar. A holiday
+calendar set to **Countdown** still feeds the countdown banner.
+
+## Birthdays and special days
+
+Each calendar in Settings → General → Calendars has a type picker (2026.11.1+):
+
+![A week with a birthday, an anniversary and an adoption day as banners under the meals](/img/screenshots/special-days.webp)
+
+| Type | What it shows |
+|------|---------------|
+| 📅 **Events** | Ordinary events (the default). |
+| 🎉 **Holidays** | Banners, as above. |
+| 🎂 **Birthdays** | Banners with a cake, e.g. "🎂 Grandma's birthday (70)". |
+| 💍 **Special days** | Banners for anniversaries and celebrations, e.g. "💍 Mom & Dad (10 years)". |
+
+Point a Birthdays or Special days calendar at any calendar that holds
+those dates: a shared Google "Birthdays" calendar, a local calendar of
+family anniversaries, a "Celebrations" calendar.
+
+- **Ages and years**: put the year in the event's notes, like `born 1956`,
+  `married 2016` or `since 2001`. Birthdays then show the age
+  ("(70)"), and special days show how many years ("(10 years)").
+  Discreet Mode hides it.
+- **Icons on special days** come from the title or notes: 💍 anniversaries
+  and weddings, 🎓 graduations, 🍼 baby showers and christenings,
+  🌴 retirements, 🕯️ memorials, 🐾 adoption days, 🎒 first days of school,
+  🎉 anything else.
+- **Countdown** works the same way: turn it on and the next birthday or
+  special day shows in the countdown banner.
+- The Today card shows them as chips next to the date, and the Right Now
+  card leaves them out of its people.
 
 ## Adding and editing events
 
@@ -245,8 +273,9 @@ the countdown banner.
 
 - **Edit pencil**: events on a calendar that Home Assistant can edit (for
   example the built-in **Local Calendar**) show a small ✎ pencil. Tap it to
-  open the event with its edit form already open: title, date, times and
-  location. Tapping anywhere else on the event opens its details as usual.
+  open the event with its edit form already open: title, date, times,
+  location and details (the description). Clearing the details box and
+  saving removes them; reminders and the category set on the event stay. Tapping anywhere else on the event opens its details as usual.
   You need the **Edit/move calendar events** permission to see it.
 - **Read-only calendars say so**: events from a calendar that can't be
   changed from Home Assistant (e.g. Google Calendar, a holidays feed) don't
@@ -345,16 +374,27 @@ for any other dashboard. See [Right Now card](/docs/cards/right-now).
 
 ## The top bar and the More menu
 
-The calendar's top bar has ⚙️ Settings, the view switch (Week, Day, Month), the
-arrows and week label, **✏️ Edit** (rearrange meals), 💡
-**Suggestions**, the 🍽️ **Recipe Box** and the **⋮ More** menu. The More
-menu holds **⚡ Quick Add** (type one line to add an event, reminder, meal, chore, reward or list item: see [Quick Add](/docs/features/quick-add)), **Templates** (whole-week meal templates), **Print**, and with
-Grocy the **Shopping List**, **Expiring Soon** and **Low Stock**, plus
-**Daily Digest** (your own digest as a pop-up), **Privacy Mode** and any
-buttons your household added. Admins choose what's in it: see
+The calendar's top bar is kept short: ⚙️ Settings, the view switch (Week, Day,
+Month), **✏️ Edit** (rearrange meals), the arrows and week label, and the
+**⋮ More** menu (2026.11.1+). The More menu is in small groups:
+
+- **⚡ Quick Add** (type one line to add an event, reminder, meal, chore, reward
+  or list item: see [Quick Add](/docs/features/quick-add)) and **Templates**
+  (whole-week meal templates).
+- **Kitchen:** the 🍽️ **Recipe Box**, 💡 **Suggestions** and, with Grocy, a
+  🛒 **Grocy** entry that opens to the **Shopping List**, **Expiring Soon** and
+  **Low Stock** (just the one item if only one of them is turned on).
+- **Shortcuts:** any buttons your household added.
+- **Share & print:** **Print** and **Daily Digest** (your own digest as a pop-up).
+- **Privacy Mode**, on its own at the bottom.
+
+Admins choose what's in it and the order inside each group: see
 [Settings → More menu](/docs/settings-modal#more-menu-admin-only).
 
-![The ⋮ More menu open, with ⚡ Quick Add at the top](/img/screenshots/more-menu.webp)
+The **+** button adds things: a **Calendar Entry**, a **Reminder**, a **Meal
+Suggestion** or **Meal Block** (side by side), or a **Recipe**.
+
+<img src="/HA-Family-Hub/img/screenshots/more-menu.webp" alt="The ⋮ More menu open: Quick Add and Templates, then the Kitchen and Share &amp; print groups, and Privacy Mode at the bottom" width="380" />
 
 **Calendar top bar style** (per screen) can shrink it to **Minimal** or
 **Hidden**, or swap it for the Right Now bar. With the bar hidden, Settings

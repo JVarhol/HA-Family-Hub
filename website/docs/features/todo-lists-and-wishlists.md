@@ -39,6 +39,41 @@ Tap an item later to change its name, note, link or picture. Items without a pic
 
 The link, picture and claim are saved inside the to-do item's description, so a wish list needs a to-do list that supports descriptions. Home Assistant's **Local To-do** lists do, and Family Hub's own wish lists are Local To-do lists.
 
+### Linked GoWish and Amazon lists
+
+If someone already keeps a wish list on **GoWish** or **Amazon**, link it to their
+profile and everything on it shows up on their Family Hub wish list too, with its
+picture, price and link. Their own wish list is where it goes, so claiming and
+star values work on these wishes like on any other.
+
+<img src="/HA-Family-Hub/img/screenshots/wishlist-linked-items.webp" alt="A wish list with wishes from GoWish and Amazon showing their pictures, prices and a GoWish or Amazon tag, next to one added by hand" width="460" />
+
+To link one: Settings → Users → their profile → **Lists** → **Linked wish lists** →
+**➕ Add a link**, paste the link and tap **Save**. A person can have as many links
+as they like, from either site.
+
+<img src="/HA-Family-Hub/img/screenshots/settings-linked-wishlists.webp" alt="Linked wish lists in a person's profile: a GoWish link and two Amazon links, each with how many wishes it has, or why it couldn't be read" width="460" />
+
+- **GoWish:** in the GoWish app, open the list, tap **Share** and **Copy link**.
+  Links that look like `gowish.com/s/…`, `gowish.com/share/…`, `gowish.com/wishlists/…` and a
+  creator's `gowish.com/creator/…/wishlist/…` all work.
+- **Amazon:** the list has to be **Public** (in Amazon: the list's **⋯** menu →
+  **Manage list** → **Privacy: Public**). Copy its address
+  (`amazon.com/hz/wishlist/ls/…`, any Amazon country) or the short
+  `a.co/…` link from **Send list to others**. Things already bought from the list
+  on Amazon are left out.
+- **Staying up to date:** new wishes come in every 6 hours, and straight away
+  when you save a new link. **↻ Sync now** checks again on the spot. A wish
+  that's taken off GoWish or Amazon goes from here too, unless someone has
+  already claimed it or tied a reward to it. Delete one here and it stays
+  deleted. Prices and pictures follow the original; a name or note you change
+  here is kept.
+- Each link shows how many wishes it has, or why it couldn't be read (a private
+  list, a deleted one, or Amazon asking for a robot check, which Family Hub
+  simply tries again later).
+- Remove a link and its wishes go from their list, except the claimed ones.
+- Wishes added by hand are never touched.
+
 ### Claiming
 
 - **Claim** on an item marks it as yours ("I'll get this one"). Everyone allowed to see claims then sees **Claimed by Dad**, and the button is greyed out for them.

@@ -4,13 +4,14 @@ sidebar_label: All Cards
 description: Every Family Hub card, what it's for, and the options every card shares.
 ---
 
-Family Hub ships **12 dashboard cards**. Add any of them from **Edit dashboard → Add card** and search "Family", or paste the YAML from each card's page. Every card has a visual editor, so YAML is optional.
+Family Hub ships **13 dashboard cards**. Add any of them from **Edit dashboard → Add card** and search "Family", or paste the YAML from each card's page. Every card has a visual editor, so YAML is optional.
 
 | Card | Type | What it's for |
 |---|---|---|
 | [Family Hub Week Calendar](/docs/cards/family-week-calendar) | `custom:family-week-calendar-card` | The main card: Week/Month/Planner/Agenda calendar, meals, reminders, and **⚙️ Settings for all of Family Hub** |
 | [Family Hub Today](/docs/cards/family-today) | `custom:family-today-card` | Today's events, meals and reminders, for a phone or a corner of any dashboard |
 | [Right Now](/docs/cards/right-now) | `custom:family-right-now-card` | Who's home, what everyone is doing now, and what's next |
+| [Companion](/docs/cards/companion) | `custom:family-hub-companion-card` | A child's own bedside screen: wake-up, routines step by step, timers, stars, messages |
 | [Chores](/docs/cards/chores) | `custom:family-hub-chores-card` | The chore board, the Chore Bin, routines and star requests |
 | [Rewards](/docs/cards/rewards) | `custom:family-hub-rewards-card` | Star balances, the reward catalog, suggestions and history |
 | [Goals](/docs/cards/goals) | `custom:family-hub-goals-card` | One-off goals with progress and a reward |

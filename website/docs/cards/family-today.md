@@ -36,6 +36,6 @@ calendar_button_label: Open calendar
 
 - **Tap anything** to see its details: an event's time, location and notes, a meal's notes and recipe link, or a reminder with a **Mark done** button. Marking a repeating reminder done moves it to its next date.
 - **Chores** that have **Show on the calendar** ticked show in Due Today on their due date, with a 🧹 and a **Done** button that marks the chore done (approval still applies). Chore Bin chores show without Done; grab them on the Chores card.
-- **Holidays** from a holiday calendar show as small chips next to the date instead of as events.
+- **Holidays, birthdays and special days** from a calendar of that type show as small chips next to the date instead of as events.
 - **Reminders** are the ones the signed-in person sees on the calendar: the shared Family Reminders list, their own lists, and anyone else's lists they've chosen to see (Settings → Users → their profile → Lists).
 - **Privacy Mode and Discreet Mode** only cover the calendar and Right Now cards. The Today card keeps showing everything, so leave it off shared screens that should go private.

@@ -22,6 +22,12 @@ features described in its own section below.
 - **Whole-week meal templates**: save an entire week's plan as a named
   template ("Taco Tuesday week", "Camping week", etc.) and apply it to any
   week with one click.
+- **Meals in their own view** (optional, 2026.11.1+): Settings → Menu Blocks → **Meals in their own view** adds
+  **Meals** next to Week, Day and Month in the view menu and moves all the meals there. The Meals view is the week
+  with only the meals in each day, big and easy to read, with **Edit** to rearrange them; Week, Month and Agenda
+  then show just your events.
+
+  ![The Meals view: a week of breakfasts, lunches and dinners](/img/screenshots/meals-view.webp)
 - **Meal plan in Month view** (optional toggle): planned meals show as
   pills; tapping one opens that day's meal editor directly.
 - **Recipe box ("Loved Dishes")** with heart/thumbs-down ratings, recipe

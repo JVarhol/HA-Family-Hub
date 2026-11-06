@@ -49,7 +49,7 @@ static_layout_across_devices: false
 | `birthdays_entity` | `calendar.birthdays` | If this calendar is one of your calendars, its events get a 🎂 in Month view and in the countdown banner. Events with "birthday" in the title get the 🎂 in the countdown too. |
 | `fab_position` | `dashboard` | **+ button position**: the screen corner or this card's corner. See [All Cards](/docs/card-configuration#the--button-position). |
 | `hide_fab` | `false` | **Hide the + button** on this placement of the card, for a display-only screen. Settings and Add Event stay reachable from any other placement. |
-| `hide_top_bar` | `false` | **Hide the top bar** (Settings, view switch, arrows, Suggestions, Recipe Box, More) and the "jump to a week" row on this placement. Settings moves into the **+** button's menu. |
+| `hide_top_bar` | `false` | **Hide the top bar** (Settings, view switch, Edit, arrows, More) and the "jump to a week" row on this placement. Settings moves into the **+** button's menu. |
 | `static_layout_across_devices` | `false` | **Static layout across devices**: normally each screen keeps its own view and layout (days shown, rows, Week/Planner/Agenda, timeline, top bar style). Turn this on to make every screen showing this card share one layout instead. |
 
 The `title` option is accepted but not shown.
