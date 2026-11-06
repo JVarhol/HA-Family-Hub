@@ -1,10 +1,12 @@
 ---
-title: Companion
+title: Companion - ALPHA 
 description: A child's own bedside screen - wake-up, routines one step at a time, timers, stars, messages and a comfort button.
 ---
 
 **Family Hub Companion** is a screen for one child, made for the little display by their bed: a smart clock running a
 browser, an 8" tablet on a stand, or a smart display. Through the day it changes on its own:
+
+**ALPHA STATUS** This card is in alpha it is being published to allow people to test and provide feedback!
 
 | Part of the day | What they see |
 |---|---|
