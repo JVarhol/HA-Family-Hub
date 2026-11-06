@@ -70,7 +70,7 @@ from .const import (
     GOAL_STATUS_OPEN,
     GOAL_STATUS_PENDING_VERIFICATION,
 )
-from .reward_engine import LEDGER_SOURCE_GOAL_ACHIEVED, RewardError, add_stars, grant_item
+from .reward_engine import LEDGER_SOURCE_GOAL_ACHIEVED, RewardError, add_stars, fire_reward_event, grant_item
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -286,7 +286,8 @@ def approve_goal(
         item_id = goal.get("reward_item_id")
         if item_id:
             try:
-                grant_item(rewards, assignee, item_id, reason=f"Goal achieved: {goal.get('title')}")
+                granted = grant_item(rewards, assignee, item_id, reason=f"Goal achieved: {goal.get('title')}")
+                fire_reward_event(hass, rewards, "granted", granted, actor=approver)
             except RewardError as err:
                 _LOGGER.warning(
                     "Family Hub: goal %s approved but its reward_item_id %r couldn't be granted (%s) - "

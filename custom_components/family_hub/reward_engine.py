@@ -273,6 +273,52 @@ def delete_catalog_item(rewards: dict[str, Any], item_id: str) -> None:
     rewards["catalog"] = remaining
 
 
+def fire_reward_event(hass: Any, rewards: dict[str, Any], event: str, record: dict[str, Any], actor: Optional[str] = None) -> dict[str, Any]:
+    """family_hub_reward_event (GitHub #26), so automations can react to rewards like they do to chores:
+    event = redeemed | granted (a goal's reward) | fulfilled | reversed | bank_used | bank_usage_fulfilled.
+    record is the redemption (or bank usage) dict the engine just returned. Returns the payload it fired."""
+    from .const import REWARD_EVENT_TYPE  # noqa: PLC0415 - kept local so this module stays importable on its own
+    user_id = record.get("user_id")
+    item_id = record.get("catalog_item_id") or record.get("item_id")
+    item = next((it for it in rewards.get("catalog") or [] if it.get("id") == item_id), None) or {}
+    if event == "reversed":
+        status = "reversed"
+    else:
+        status = "fulfilled" if record.get("fulfilled") else "waiting_for_fulfillment"
+    payload: dict[str, Any] = {
+        "event": event,
+        "reward_id": item_id,
+        "title": record.get("title") or item.get("title") or "",
+        "user_id": user_id,
+        "actor": actor,
+        "cost": int(record.get("cost_stars") or 0),
+        "status": status,
+        "requires_fulfillment": bool(record.get("requires_fulfillment")),
+        "redeem_mode": record.get("redeem_mode") or item.get("redeem_mode") or REWARD_REDEEM_MODE_INSTANT,
+        "balance": get_balance(rewards, user_id) if user_id else None,
+    }
+    if record.get("usage_id") or event.startswith("bank_"):
+        payload["usage_id"] = record.get("id")
+        payload["amount"] = record.get("amount")
+    else:
+        payload["redemption_id"] = record.get("id")
+    if record.get("bank_delta") is not None:
+        payload["amount"] = record.get("bank_delta")
+    if record.get("unit_label") is not None or record.get("bank_balance_after") is not None:
+        payload["unit_label"] = record.get("unit_label") or ""
+        payload["bank_balance"] = record.get("bank_balance_after")
+    minutes = item.get("timer_minutes")
+    if minutes:
+        payload["timer_minutes"] = minutes
+    if record.get("granted"):
+        payload["reason"] = record.get("grant_reason") or ""
+    try:
+        hass.bus.async_fire(REWARD_EVENT_TYPE, payload)
+    except Exception:  # noqa: BLE001 - an event that can't be fired must never undo the redemption
+        pass
+    return payload
+
+
 def redeem_item(rewards: dict[str, Any], user_id: str, item_id: str) -> dict[str, Any]:
     """Self-serve claim: deduct cost_stars from user_id's balance right now (raising if the balance doesn't cover it, regardless of redeem_mode"""
     catalog = rewards.setdefault("catalog", [])

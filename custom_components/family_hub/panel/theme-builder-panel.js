@@ -1,20 +1,4 @@
-// Must match const.py's MAX_THEMES - 6 original presets + Liquid Glass/
-// Liquid Glass Dark = 8 built-ins, bumped to 10 so a fresh install still
-// has room for 2 custom themes instead of the Add button being disabled
-// from the first load.
-// ---- Family Hub shared translation helper (v1.168.76) -------------------
-// __fhT(key, english, vars, mode) looks a string up in Home Assistant's
-// loaded "fh_ui" translations (translations/<language>.json → fh_ui.text.*)
-// and falls back to the English text written right here in the source.
-// vars fill %0%, %1%, ... placeholders. mode "h" escapes the translated
-// text (not the vars, which callers already prepared) for use inside HTML
-// markup or an attribute value. Identical copy in every Family Hub card and
-// in the Theme Builder panel - whichever loads first sets it up.
-// __fhSweep(root) re-translates markup that was drawn before the language
-// file finished loading (elements tagged data-fh-t / data-fh-title /
-// data-fh-placeholder / data-fh-aria / data-fh-alt), but only while they
-// still show the English original, so text a card later replaced with
-// something else is never overwritten.
+// Must match const.py's MAX_THEMES - 6 original presets + Liquid Glass/ Liquid Glass Dark = 8 built-ins
 var __fhI18n = (window.__familyHubI18n = window.__familyHubI18n || { hass: null, fb: {}, loading: null, loaded: null });
 var __fhEsc = function (s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -104,9 +88,7 @@ class ThemeBuilderPanel extends HTMLElement {
     return this._hass;
   }
 
-  // v1.168.76: the Theme Builder page is a panel, not a card, so nothing
-  // else loads Family Hub's "fh_ui" strings for it - do that here, then
-  // re-translate what's already on screen and redraw the editor.
+  // the Theme Builder page is a panel, not a card, so nothing else loads Family Hub's "fh_ui" strings for it - do that here
   _fhEnsureI18n() {
     const hass = this._hass;
     if (!hass || typeof hass.loadBackendTranslation !== "function") return;
@@ -153,9 +135,7 @@ class ThemeBuilderPanel extends HTMLElement {
 
   set panel(v) {
     this._panel = v;
-    // The panel property can arrive after the initial render - re-render
-    // the header once it's available so the logo doesn't stay stuck as the
-    // emoji fallback for a load that happened to race it.
+    // The panel property can arrive after the initial render - re-render the header once it's available so the logo doesn't stay stuck as the
     if (this._root) this._updateHeaderIcon();
   }
 
@@ -224,11 +204,7 @@ class ThemeBuilderPanel extends HTMLElement {
     };
   }
 
-  // Normalizes a theme from the backend (or a stale cached copy) into the
-  // current generic shape: renames legacy calendar-flavored color keys
-  // (gold -> accent, etc.) and fills in defaults for any missing field,
-  // including the newer effects/background objects. Safe to call on an
-  // already-current theme.
+  // Normalizes a theme from the backend (or a stale cached copy) into the current generic shape: renames legacy calendar-flavored color keys
   _migrateTheme(t) {
     const blank = this._blankTheme();
     const colors = Object.assign({}, (t && t.colors) || {});
@@ -495,19 +471,7 @@ class ThemeBuilderPanel extends HTMLElement {
     this._bindDeviceThemeSection();
   }
 
-  // --- "This device's theme" picker ---------------------------------------
-  // Lets THIS browser/tablet pick any Home Assistant theme (native themes.yaml
-  // /HACS themes, or a Theme Builder theme - those auto-register as native HA
-  // themes, see _register_ha_themes on the backend) to look at, without
-  // affecting any other device. Deliberately does NOT call the
-  // frontend.set_theme service, since that changes the theme for every
-  // browser signed into the same HA account - not what you want on a
-  // wall-mounted kiosk where each tablet might want its own look. Instead the
-  // chosen theme's CSS variables are written directly onto <html> in this
-  // browser only, and the choice is remembered in this browser's
-  // localStorage. Same storage key and mechanism as the standalone "Theme
-  // Selector" dashboard card, so picking a theme here or there stays in
-  // sync on the same device.
+  // -- "This device's theme" picker --------------------------------------- Lets THIS browser/tablet pick any Home Assistant theme
 
   _deviceThemeStorageKey() {
     return "family-hub-device-theme";

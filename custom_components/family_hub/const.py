@@ -249,6 +249,9 @@ SCREENSAVER_CARD_JS_URL = "/family_hub_screensaver_card/family-screensaver-card.
 # A small standalone companion card - "what's going on for everyone right now": each person's current event (with a progress bar
 RIGHT_NOW_CARD_JS_URL = "/family_hub_right_now_card/family-right-now-card.js"
 
+# 2026.11.1: Family Hub Companion - a child's bedside screen (see family-hub-companion-card.js / companion.py)
+COMPANION_CARD_JS_URL = "/family_hub_companion_card/family-hub-companion-card.js"
+
 ICON_URL = "/family_hub_static/icon.png"
 
 # Optional integration with a self-hosted Grocy instance, so the Meal Suggestions box can offer "Add from Grocy"
@@ -263,6 +266,10 @@ CONF_GROCY_LOW_STOCK_ENABLED = "grocy_low_stock_enabled"
 # Which Grocy recipes' ingredients have already been pushed onto Grocy's shopping list, per planning week
 GROCERY_PUSHED_STORAGE_KEY_PREFIX = "family_hub_grocery_pushed"
 GROCERY_PUSHED_STORAGE_VERSION = 1
+# 2026.11.1.9: a Grocy recipe's ingredients that aren't linked to a Grocy product (imported with "Manage Ingredients with
+# Grocy" off, or left unmatched) - Grocy's own ingredient rows need a product, so these are kept here, per recipe id
+RECIPE_PLAIN_INGREDIENTS_STORAGE_KEY_PREFIX = "family_hub_recipe_plain_ingredients"
+RECIPE_PLAIN_INGREDIENTS_STORAGE_VERSION = 1
 
 # Tracks the "generation" of family_hub's own standard English/metric unit conversion set (teaspoon, tablespoon, cup, pint, quart, gallon
 GROCY_CONVERSIONS_SYNC_GENERATION = 1
@@ -365,6 +372,45 @@ DEVICE_SETTINGS_FIELDS = {
         "type": "enum", "choices": ["on", "off"], "default": "off",
         "label": "Small screen mode", "scope": "instance",
     },
+    # 2026.11.1.12: Lock vertical scrolling, per device and per calendar card
+    "familyCalendarScrollLockLocal": {
+        "type": "enum", "choices": ["on", "off"], "default": "off",
+        "label": "Lock vertical scrolling", "scope": "instance",
+    },
+    # 2026.11.1.15: E-ink screen, for the whole device
+    "familyHubEinkModeLocal": {
+        "type": "enum", "choices": ["off", "bw", "color6", "kaleido"], "default": "off",
+        "label": "E-ink screen", "scope": "device",
+    },
+    "familyHubEinkTappableLocal": {
+        "type": "enum", "choices": ["on", "off"], "default": "on",
+        "label": "Can be tapped", "scope": "device",
+    },
+    # 2026.11.1.16: Accessibility, this device's own choices ("household" = follow the household)
+    "familyHubA11yColorVisionLocal": {
+        "type": "enum", "choices": ["household", "off", "shapes"], "default": "household",
+        "label": "Color vision", "scope": "device",
+    },
+    "familyHubA11yHighContrastLocal": {
+        "type": "enum", "choices": ["household", "off", "on"], "default": "household",
+        "label": "High contrast", "scope": "device",
+    },
+    "familyHubA11yTextScaleLocal": {
+        "type": "enum", "choices": ["household", "100", "125", "150", "175", "200"], "default": "household",
+        "label": "Text size", "scope": "device",
+    },
+    "familyHubA11yFontLocal": {
+        "type": "enum", "choices": ["household", "theme", "legible", "dyslexia"], "default": "household",
+        "label": "Font", "scope": "device",
+    },
+    "familyHubA11yMotionLocal": {
+        "type": "enum", "choices": ["household", "device", "always", "off"], "default": "household",
+        "label": "Reduce motion", "scope": "device",
+    },
+    "familyHubA11yBigButtonsLocal": {
+        "type": "enum", "choices": ["household", "off", "on"], "default": "household",
+        "label": "Bigger buttons", "scope": "device",
+    },
     # The "Hidden" option of the General tab's "Calendar top bar style" picker
     "familyCalendarHideTopBarDeviceLocal": {
         "type": "enum", "choices": ["on", "off"], "default": "off",
@@ -465,6 +511,22 @@ CHORE_KEY_QUANTITY_REMAINING = "quantity_remaining"
 CHORE_KEY_IMPORTANT = "important"
 # Opt-in: show this chore on the Family Week Calendar on its due date, like a reminder
 CHORE_KEY_SHOW_ON_CALENDAR = "show_on_calendar"
+# Auto-rotation in blocks of time (GitHub #27): "each person's turn lasts N days" instead of switching every time it's done.
+# 0 / missing = the old behaviour (next person each time). The block containing rotation_start (YYYY-MM-DD, local) belongs to
+# rotation_group[rotation_start_index]; every rotation_every_days after that it moves to the next person.
+CHORE_KEY_ROTATION_EVERY_DAYS = "rotation_every_days"
+CHORE_KEY_ROTATION_START = "rotation_start"
+CHORE_KEY_ROTATION_START_INDEX = "rotation_start_index"
+# 2026.11.1.7: what happens when the person a chore is for is away (see presence.py - day badges as a custody schedule):
+# "next" = the next person in the rotation who's home, "bin" = the Chore Bin, "skip" = not that day.
+CHORE_KEY_AWAY_MODE = "away_mode"
+CHORE_AWAY_NEXT = "next"
+CHORE_AWAY_BIN = "bin"
+CHORE_AWAY_SKIP = "skip"
+CHORE_AWAY_MODES = (CHORE_AWAY_NEXT, CHORE_AWAY_BIN, CHORE_AWAY_SKIP)
+# who an occurrence was moved away from, so the turn order stays put and nobody's penalized
+CHORE_KEY_AWAY_COVER_FOR = "away_cover_for"
+CHORE_KEY_AWAY_SKIPPED_AT = "away_skipped_at"
 
 CHORE_KEY_IN_PROGRESS = "in_progress"
 
@@ -496,6 +558,8 @@ CHORE_KEY_RECUR_DUE_OFFSET_MINUTES = "recur_due_offset_minutes"
 
 # Fired on every status change (assignment, claim, complete, approve
 CHORE_EVENT_TYPE = "family_hub_chore_event"
+# Fired for every reward redemption and what follows it (GitHub #26) - see reward_engine.fire_reward_event for the payload.
+REWARD_EVENT_TYPE = "family_hub_reward_event"
 
 # Chores already had CHORE_EVENT_TYPE above; Routines (routine_engine.py's per-person daily checklists) never fired anything onto hass.bus at
 ROUTINE_EVENT_TYPE = "family_hub_routine_event"

@@ -1,40 +1,661 @@
-// Family Hub My Pantry card - a household's stock at a glance, in
-// two parts: a live Grocy Stock list (every product currently in stock,
-// read/written straight through Grocy's own REST API - see __init__.py's
-// _fetch_pantry_stock/_ws_get_pantry_stock and friends, right alongside
-// this project's other Grocy passthrough handlers) and a separate "Also
-// Tracking" list of plain household notes that were deliberately never
-// taught to Grocy as real stock (see pantry_engine.py's own module
-// docstring for the full reasoning on why that split exists rather than
-// forcing everything through Grocy's product/quantity-unit machinery).
-//
-// A standalone card, independently addable to any dashboard - same
-// "either put it on its own view, or drop it below another Family Hub card"
-// shape as family-hub-goals-card.js, and copy-pasting that same file's
-// boilerplate (PALETTE/theme handling/_esc/_escAttr) rather than importing
-// it, matching this project's established convention for every Family Hub
-// card.
+// FH-EINK START - source: tools/eink_kit.js, copied into each card by tools/sync_eink_kit.py
+// 2026.11.1.16: E-ink screen and Accessibility for every card. Each card attaches with the bits that show a person's
+// colour (dots, pills, avatars, tiles) and a little CSS of its own; this does the rest.
+//  - E-ink screen (per device, from the calendar's Settings or ?fh_eink=...): black on white with outlines, no
+//    shadows/blur/motion, each person's colour turned into the same pattern (black & white) or real ink (6 ink) the
+//    calendar gives them, or a stronger version of it (Kaleido).
+//  - Accessibility (household setting, settings.accessibility, with per-device overrides, like the rest of Settings):
+//    Color vision (a shape and a pattern per person, not just a colour), High contrast (the black & white e-ink look on
+//    any screen), Text size, Font (Atkinson Hyperlegible / Lexend, bundled), Reduce motion, Bigger buttons.
+(function () {
+if (window.__familyHubEink) return;
+const MODES = ["bw", "color6", "kaleido"];
+const PATTERNS = [
+"linear-gradient(#000,#000)",
+"repeating-linear-gradient(45deg,#000 0 3px,#fff 3px 6px)",
+"radial-gradient(circle,#000 1.6px,#fff 1.9px) 0 0/6px 6px",
+"repeating-linear-gradient(0deg,#000 0 2px,#fff 2px 5px)",
+"repeating-linear-gradient(90deg,#000 0 2px,#fff 2px 4px)",
+"repeating-linear-gradient(45deg,#000 0 1.5px,transparent 1.5px 5px),repeating-linear-gradient(-45deg,#000 0 1.5px,#fff 1.5px 5px)",
+"repeating-conic-gradient(#000 0 25%,#fff 0 50%) 0 0/6px 6px",
+"repeating-linear-gradient(-45deg,#000 0 6px,#fff 6px 10px)",
+];
+// Color vision: one shape per person, in the household's order (circle, square, diamond, hexagon, triangle, star,
+// pentagon, cross) - used as a clip-path on their avatar/dot
+const SHAPES = [
+"circle(50% at 50% 50%)",
+"inset(6% round 3px)",
+"polygon(50% 0,100% 50%,50% 100%,0 50%)",
+"polygon(25% 3%,75% 3%,100% 50%,75% 97%,25% 97%,0 50%)",
+"polygon(50% 0,100% 95%,0 95%)",
+"polygon(50% 0,61% 35%,98% 35%,68% 57%,79% 91%,50% 70%,21% 91%,32% 57%,2% 35%,39% 35%)",
+"polygon(50% 0,100% 38%,82% 100%,18% 100%,0 38%)",
+"polygon(33% 0,67% 0,67% 33%,100% 33%,100% 67%,67% 67%,67% 100%,33% 100%,33% 67%,0 67%,0 33%,33% 33%)",
+];
+const SHAPE_NAMES = ["circle", "square", "diamond", "hexagon", "triangle", "star", "pentagon", "cross"];
+const INKS = [["red", "#d0201a", 0], ["yellow", "#f0c400", 50], ["green", "#1d8a3a", 130], ["blue", "#1a4fc0", 220]];
+// a dashboard link can switch E-ink screen on for the device that opens it: ?fh_eink=bw|color6|kaleido|off
+// (&fh_eink_tap=off) - for a frame showing only Today or Chores, where there's no calendar Settings to do it from
+function fromUrl() {
+try {
+const q = new URLSearchParams(window.location.search);
+const m = q.get("fh_eink");
+if (m && (MODES.includes(m) || m === "off")) localStorage.setItem("familyHubEinkModeLocal", m);
+const t = q.get("fh_eink_tap");
+if (t === "on" || t === "off") localStorage.setItem("familyHubEinkTappableLocal", t);
+} catch (e) {
+}
+}
+fromUrl();
+// ---- Accessibility ----
+const A11Y = {
+colorVision: ["familyHubA11yColorVisionLocal", ["off", "shapes"], "off"],
+highContrast: ["familyHubA11yHighContrastLocal", ["off", "on"], "off"],
+textScale: ["familyHubA11yTextScaleLocal", ["100", "125", "150", "175", "200"], "100"],
+font: ["familyHubA11yFontLocal", ["theme", "legible", "dyslexia"], "theme"],
+motion: ["familyHubA11yMotionLocal", ["device", "always", "off"], "device"],
+bigButtons: ["familyHubA11yBigButtonsLocal", ["off", "on"], "off"],
+};
+function a11yClean(obj) {
+const out = {};
+Object.keys(A11Y).forEach((k) => {
+const [, ok, def] = A11Y[k];
+const v = obj && obj[k] !== undefined && obj[k] !== null ? String(obj[k]) : def;
+out[k] = ok.includes(v) ? v : def;
+});
+return out;
+}
+function a11yHousehold() {
+try {
+const v = JSON.parse(localStorage.getItem("familyHubA11yHouseholdLocal") || "{}");
+return a11yClean(v && typeof v === "object" ? v : {});
+} catch (e) {
+return a11yClean({});
+}
+}
+// this device's own choices ("household" or nothing = follow the household)
+function a11yDevice() {
+const out = {};
+Object.keys(A11Y).forEach((k) => {
+try {
+const v = localStorage.getItem(A11Y[k][0]);
+if (v && v !== "household" && A11Y[k][1].includes(v)) out[k] = v;
+} catch (e) {
+}
+});
+return out;
+}
+function a11y() {
+const v = Object.assign(a11yHousehold(), a11yDevice());
+let reduce = v.motion === "always";
+if (v.motion === "device") {
+try {
+reduce = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+} catch (e) {
+}
+}
+v.reduceMotion = reduce;
+return v;
+}
+function setHousehold(obj) {
+const next = JSON.stringify(a11yClean(obj || {}));
+let before = null;
+try {
+before = localStorage.getItem("familyHubA11yHouseholdLocal");
+} catch (e) {
+}
+if (before === next) return;
+try {
+localStorage.setItem("familyHubA11yHouseholdLocal", next);
+} catch (e) {
+}
+refreshAll();
+}
+// every card loads the household settings itself; this reads the Accessibility part of them, at most every 5 minutes
+let householdFetch = null, householdAt = 0;
+function loadHousehold(hass) {
+if (!hass || !hass.connection || householdFetch || Date.now() - householdAt < 5 * 60 * 1000) return;
+householdFetch = hass.connection.sendMessagePromise({ type: "family_hub/get_settings" })
+.then((r) => {
+const s = r && r.settings;
+if (s && typeof s === "object") setHousehold(s.accessibility || {});
+})
+.catch(() => {})
+.then(() => {
+householdFetch = null;
+householdAt = Date.now();
+});
+}
+let fontsAdded = false;
+function ensureFonts() {
+if (fontsAdded || !document.head) return;
+fontsAdded = true;
+const face = (family, file, weight, range) => `@font-face { font-family: "${family}"; font-style: normal; font-display: swap; font-weight: ${weight}; src: url("/family_hub_fonts/${file}.woff2") format("woff2"); unicode-range: ${range}; }`;
+const LATIN = "U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD";
+const EXT = "U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF";
+const css = [];
+[["FH Atkinson Hyperlegible", "atkinson-hyperlegible"], ["FH Lexend", "lexend"]].forEach(([family, file]) => {
+[400, 700].forEach((w) => {
+css.push(face(family, `${file}-latin-${w}-normal`, w, LATIN));
+css.push(face(family, `${file}-latin-ext-${w}-normal`, w, EXT));
+});
+});
+const st = document.createElement("style");
+st.id = "family-hub-a11y-fonts";
+st.textContent = css.join("\n");
+document.head.appendChild(st);
+}
+// ---- E-ink ----
+// the real E-ink screen setting of this device
+function deviceMode() {
+try {
+const v = localStorage.getItem("familyHubEinkModeLocal");
+return MODES.includes(v) ? v : "off";
+} catch (e) {
+return "off";
+}
+}
+// the look: the device's E-ink screen, or High contrast (the black & white e-ink look on a normal screen)
+function mode() {
+const m = deviceMode();
+if (m !== "off") return m;
+return a11y().highContrast === "on" ? "bw" : "off";
+}
+function tappable() {
+try {
+return localStorage.getItem("familyHubEinkTappableLocal") !== "off";
+} catch (e) {
+return true;
+}
+}
+function toHex(color) {
+const c = String(color || "").trim().toLowerCase();
+let m = c.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/);
+if (m) return m[1].length === 3 ? "#" + m[1].split("").map((x) => x + x).join("") : c;
+m = c.match(/^rgba?\(\s*(\d+)[ ,]+(\d+)[ ,]+(\d+)(?:[ ,/]+([\d.]+))?/);
+if (!m) return null;
+if (m[4] !== undefined && parseFloat(m[4]) < 0.5) return null;
+return "#" + [m[1], m[2], m[3]].map((n) => (+n).toString(16).padStart(2, "0")).join("");
+}
+function hsl(hex) {
+const r = parseInt(hex.slice(1, 3), 16) / 255, g = parseInt(hex.slice(3, 5), 16) / 255, b = parseInt(hex.slice(5, 7), 16) / 255;
+const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2;
+let h = 0, s = 0;
+if (max !== min) {
+const d = max - min;
+s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+h = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+h *= 60;
+}
+return { h, s, l };
+}
+// the household's people colours in order, as the calendar last worked them out on this device
+function household() {
+try {
+const v = JSON.parse(localStorage.getItem("familyHubEinkPeopleLocal") || "[]");
+return Array.isArray(v) ? v.map((x) => toHex(x)).filter(Boolean) : [];
+} catch (e) {
+return [];
+}
+}
+const seen = [];
+let cache = { sig: "", map: {} };
+function order() {
+const list = household();
+seen.forEach((c) => { if (!list.includes(c)) list.push(c); });
+return list;
+}
+// where a colour sits in the household's order (new colours join the end, in the order they're seen)
+function personIndex(hex) {
+let list = order();
+if (!list.includes(hex)) {
+seen.push(hex);
+list = order();
+}
+return list.indexOf(hex);
+}
+function mapFor(m) {
+const list = order();
+const sig = m + "|" + list.join(",");
+if (cache.sig === sig) return cache.map;
+const map = {};
+const used = new Set();
+list.forEach((c, i) => {
+if (m === "bw") {
+map[c] = PATTERNS[i % PATTERNS.length];
+return;
+}
+const x = hsl(c);
+const ranked = x.s < 0.12 ? [["black", "#000", 0]] : INKS.slice().sort((a, b) => {
+const d = (k) => Math.min(Math.abs(x.h - k[2]), 360 - Math.abs(x.h - k[2]));
+return d(a) - d(b);
+}).concat([["black", "#000", 0]]);
+const free = ranked.find((ink) => !used.has(ink[0]));
+if (free) {
+used.add(free[0]);
+map[c] = `linear-gradient(${free[1]},${free[1]})`;
+} else {
+map[c] = `repeating-linear-gradient(45deg,${ranked[0][1]} 0 3px,#fff 3px 6px)`;
+}
+});
+cache = { sig, map };
+return map;
+}
+// the background a person's colour gets on this e-ink screen; null to leave it as it is
+function background(color, m) {
+m = m || mode();
+if (m === "off") return null;
+const hex = toHex(color);
+if (!hex) return null;
+const x = hsl(hex);
+if (x.l > 0.94) return null; // white-ish: already fine
+if (m === "kaleido") return `hsl(${Math.round(x.h)} ${Math.round(Math.min(1, Math.max(0.6, x.s * 1.6 + 0.15)) * 100)}% 58%)`;
+if (!household().includes(hex) && !seen.includes(hex)) seen.push(hex);
+return mapFor(m)[hex];
+}
+// Color vision: a person's shape, a darker shade of their colour (for the shape and the pattern) and their pattern in it
+function darker(hex) {
+const n = (i) => Math.round(parseInt(hex.slice(i, i + 2), 16) * 0.42);
+return `rgb(${n(1)}, ${n(3)}, ${n(5)})`;
+}
+function cvFor(color) {
+const hex = toHex(color);
+if (!hex || hsl(hex).l > 0.94) return null;
+const i = personIndex(hex);
+const dark = darker(hex);
+const pattern = PATTERNS[i % PATTERNS.length].replace(/#000/g, dark).replace(/#fff/g, "transparent");
+return { shape: SHAPES[i % SHAPES.length], shapeName: SHAPE_NAMES[i % SHAPE_NAMES.length], dark, pattern, index: i };
+}
+const BASE_CSS = `
+:host([eink]) > * { --fc-bg: #fff; --fc-card: #fff; --fc-card-opaque: #fff; --fc-card-menu: #fff; --fc-surface-alt: #fff; --fc-surface2: #fff; --fc-text: #000; --fc-text-secondary: #222; --fc-text-muted: #333; --fc-border: #000; --fc-accent: #000; --fc-accent-text: #fff; --fc-accent2: #000; --fc-accent3: #000; --fc-accent-soft: #fff; --fc-shadow: none; --fc-now: #000; --fc-now-text: #fff; --fc-glass-blur: 0px; --fc-bg-blur: 0px; --fc-bg-image: none; --fc-bg-overlay-image: none; --fc-danger: #000; }
+:host([eink]) *, :host([eink]) *::before, :host([eink]) *::after { transition: none !important; animation: none !important; box-shadow: none !important; text-shadow: none !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+:host([eink]) ha-card { background: #fff !important; color: #000 !important; border: 2px solid #000 !important; border-radius: 8px !important; }
+:host([eink]) button:not([data-fh-eink-dot]), :host([eink]) select, :host([eink]) input { border-color: #000 !important; }
+:host([eink]) [data-fh-eink-dot] { outline: 1.5px solid #000; outline-offset: -1.5px; }
+:host([eink="kaleido"]) [data-fh-eink-dot] { outline: none; }
+:host([eink]) .confetti, :host([eink]) .confetti-piece, :host([eink]) .fh-confetti, :host([eink]) [class*="confetti"] { display: none !important; }
+:host([eink]) .person-pill, :host([eink]) .pill { color: #000 !important; border: 2px solid #000 !important; }
+:host([eink]) .person-pill *, :host([eink]) .pill * { color: #000 !important; }
+:host([eink="bw"]) [data-fh-eink-strip], :host([eink="color6"]) [data-fh-eink-strip] { background: linear-gradient(90deg, transparent 0 10px, #fff 10px), var(--fh-eink-strip) !important; padding-left: 15px !important; color: #000 !important; border: 2px solid #000 !important; }
+:host([eink="kaleido"]) [data-fh-eink-strip] { color: #000 !important; }
+:host([eink]) button:disabled, :host([eink]) button[disabled] { background: #fff !important; color: #444 !important; border: 2px dashed #000 !important; opacity: 1 !important; }
+:host([eink]) .person-pill.active-filter, :host([eink]) .pill.active { outline: 3px solid #000; outline-offset: 1px; }
+:host([eink]) .person-pill.dimmed { opacity: 1 !important; border-style: dashed !important; }
+:host([eink="bw"]) img, :host([eink="bw"]) .has-pic { filter: grayscale(1) contrast(1.3); }
+:host([eink-static]) [class$="-fab"], :host([eink-static]) [class*="-fab "], :host([eink-static]) .fab { display: none !important; }
+`;
+// Accessibility styling every card shares (the calendar has the same rules for its own parts)
+const A11Y_CSS = `
+:host([a11y-cv]) [data-fh-cv-fill] { clip-path: var(--fh-cv-shape); border-radius: 0 !important; outline: none !important; min-width: 14px; min-height: 14px; }
+:host([a11y-cv]) [data-fh-cv-strip] { background: linear-gradient(90deg, transparent 0 10px, var(--fh-cv-base) 10px), var(--fh-cv-pattern), var(--fh-cv-base) !important; padding-left: 15px !important; }
+:host([a11y-cv]) [data-fh-cv-strip-avatar] .avatar:not(.has-pic), :host([a11y-cv]) [data-fh-cv-strip-avatar] .person-pill-avatar:not(.has-pic) { clip-path: var(--fh-cv-shape); border-radius: 0 !important; background: var(--fh-cv-dark) !important; color: #fff !important; }
+:host([a11y-cv][eink]) [data-fh-cv-strip-avatar] .avatar:not(.has-pic), :host([a11y-cv][eink]) [data-fh-cv-strip-avatar] .person-pill-avatar:not(.has-pic) { background: #000 !important; border: none !important; }
+:host([a11y-motion]) *, :host([a11y-motion]) *::before, :host([a11y-motion]) *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+:host([a11y-motion]) .confetti, :host([a11y-motion]) .confetti-piece, :host([a11y-motion]) [class*="confetti"] { display: none !important; }
+:host([a11y-font="legible"]) > * { --fc-font-family: "FH Atkinson Hyperlegible", Verdana, sans-serif; font-family: "FH Atkinson Hyperlegible", Verdana, sans-serif !important; }
+:host([a11y-font="dyslexia"]) > * { --fc-font-family: "FH Lexend", Verdana, sans-serif; font-family: "FH Lexend", Verdana, sans-serif !important; letter-spacing: 0.02em; word-spacing: 0.08em; }
+:host([a11y-font]) button, :host([a11y-font]) input, :host([a11y-font]) select, :host([a11y-font]) textarea { font-family: inherit !important; letter-spacing: inherit; }
+:host([a11y-scale]) > :not(style) { zoom: var(--fh-text-scale, 1); }
+:host([a11y-scale]) * { -webkit-hyphens: auto; hyphens: auto; word-break: normal !important; overflow-wrap: break-word; }
+:host([a11y-big]) button, :host([a11y-big]) select, :host([a11y-big]) [role="button"] { min-height: 46px; min-width: 46px; }
+:host([a11y-big]) input[type="checkbox"], :host([a11y-big]) input[type="radio"] { width: 24px !important; height: 24px !important; }
+:host([a11y-big]) [class$="-fab"], :host([a11y-big]) .fab { width: 72px !important; height: 72px !important; font-size: 34px !important; }
+`;
+const attached = new Map();
+// what the kit changed on an element, so it can put it back when it's turned off
+function restore(el) {
+if (el.dataset.fhEinkSet === undefined) return;
+el.dataset.fhEinkSet.split(",").filter(Boolean).forEach((prop) => el.style.removeProperty(prop));
+if (el.dataset.fhEinkOrigBg) el.style.backgroundColor = el.dataset.fhEinkOrigBg;
+const from = el.dataset.fhEinkFrom;
+if (from && el.dataset.fhEinkOrig) {
+if (from === "border") el.style.borderColor = el.dataset.fhEinkOrig;
+else if (from.startsWith("--")) el.style.setProperty(from, el.dataset.fhEinkOrig);
+}
+["fhEinkFrom", "fhEinkMode", "fhEinkSet", "fhEinkOrig", "fhEinkOrigBg", "fhEinkStrip", "fhEinkDot", "fhCvFill", "fhCvStrip", "fhCvStripAvatar"].forEach((k) => delete el.dataset[k]);
+}
+function setProps(el, props) {
+const names = [];
+Object.keys(props).forEach((prop) => {
+el.style.setProperty(prop, props[prop], prop.startsWith("--") ? "" : "important");
+names.push(prop);
+});
+el.dataset.fhEinkSet = names.join(",");
+}
+// where a person's colour sits on an element: its background, its border, or a CSS variable (--person-color)
+function colorOf(el, from) {
+if (!from || from === "background") return el.style.backgroundColor;
+if (from === "border") return el.style.borderTopColor || el.style.borderColor;
+return el.style.getPropertyValue(from);
+}
+function recolor(host, st) {
+const root = host.shadowRoot;
+if (!root) return;
+const m = mode();
+const cv = a11y().colorVision === "shapes";
+const key = m + (cv ? "+cv" : "");
+const groups = [];
+(st.opts.strip || []).forEach((sel) => groups.push([sel, "background", "strip"]));
+(st.opts.stripFrom || []).forEach(([sel, from]) => groups.push([sel, from, "strip"]));
+(st.opts.recolor || []).forEach((sel) => groups.push([sel, "background", "fill"]));
+(st.opts.shapes || []).forEach((sel) => groups.push([sel, "background", "shape"]));
+groups.forEach(([sel, from, kind]) => root.querySelectorAll(sel).forEach((el) => {
+if (m === "off" && !cv) return restore(el);
+if (kind !== "strip" && (el.classList.contains("has-pic") || /url\(/.test(el.style.backgroundImage || ""))) return;
+const orig = el.dataset.fhEinkOrig !== undefined ? el.dataset.fhEinkOrig : colorOf(el, from);
+if (!orig) return;
+if (el.dataset.fhEinkOrig === orig && el.dataset.fhEinkMode === key) return;
+const bg = m !== "off" && kind !== "shape" ? background(orig, m) : null;
+const c = cv ? cvFor(orig) : null;
+if (!bg && !c) {
+if (el.dataset.fhEinkSet !== undefined) restore(el);
+return;
+}
+if (el.dataset.fhEinkSet !== undefined) restore(el);
+el.dataset.fhEinkOrig = orig;
+el.dataset.fhEinkMode = key;
+el.dataset.fhEinkFrom = from;
+if (from === "background") el.dataset.fhEinkOrigBg = orig;
+const props = {};
+if (c) {
+props["--fh-cv-shape"] = c.shape;
+props["--fh-cv-dark"] = c.dark;
+}
+if (bg) {
+if (kind === "fill") {
+el.dataset.fhEinkDot = "1";
+props.background = bg;
+} else if (m === "kaleido") {
+// a colour tablet keeps the person's colour, stronger: as the fill it was, or as the border/variable it came from
+el.dataset.fhEinkStrip = "1";
+if (from === "background") props.background = bg;
+else if (from === "border") props["border-color"] = bg;
+else props[from] = bg;
+} else {
+el.dataset.fhEinkStrip = "1";
+props["--fh-eink-strip"] = bg;
+}
+}
+if (c && (kind === "fill" || kind === "shape")) el.dataset.fhCvFill = "1";
+if (c && kind === "strip" && !bg) {
+// a strip down the left in the person's own pattern, over the colour the element already had
+el.dataset.fhCvStrip = "1";
+props["--fh-cv-pattern"] = c.pattern;
+props["--fh-cv-base"] = from === "background" ? orig : `color-mix(in srgb, ${orig} 16%, white)`;
+}
+if (c && kind === "strip") el.dataset.fhCvStripAvatar = "1";
+setProps(el, props);
+}));
+}
+function applyA11y(host) {
+const v = a11y();
+const set = (name, on, value) => (on ? host.setAttribute(name, value === undefined ? "" : value) : host.removeAttribute(name));
+set("a11y-cv", v.colorVision === "shapes");
+set("a11y-motion", v.reduceMotion || deviceMode() !== "off");
+set("a11y-big", v.bigButtons === "on");
+set("a11y-font", v.font !== "theme", v.font);
+set("a11y-scale", v.textScale !== "100");
+if (v.textScale !== "100") host.style.setProperty("--fh-text-scale", String(parseInt(v.textScale, 10) / 100));
+else host.style.removeProperty("--fh-text-scale");
+if (v.font !== "theme") ensureFonts();
+return v;
+}
+function anyA11y(v) {
+return v.colorVision !== "off" || v.reduceMotion || v.bigButtons !== "off" || v.font !== "theme" || v.textScale !== "100";
+}
+function apply(host) {
+const st = attached.get(host);
+if (!st) return;
+// the calendar loads the household settings itself (and hands the Accessibility part over with setHousehold)
+if (!st.opts.a11yOnly) loadHousehold(host._hass || host.hass);
+const v = applyA11y(host);
+const root = host.shadowRoot;
+if (st.opts.a11yOnly) {
+// the calendar draws its own e-ink and colour vision; this just gives it the shared accessibility attributes
+if (root && !root.querySelector("style[data-fh-a11y]")) {
+const s = document.createElement("style");
+s.setAttribute("data-fh-a11y", "");
+s.textContent = A11Y_CSS;
+root.appendChild(s);
+}
+return;
+}
+const m = mode();
+if (m !== "off") host.setAttribute("eink", m);
+else host.removeAttribute("eink");
+if (deviceMode() !== "off" && !tappable()) host.setAttribute("eink-static", "");
+else host.removeAttribute("eink-static");
+if (!root) return;
+const on = m !== "off" || anyA11y(v);
+let styleEl = root.querySelector("style[data-fh-eink]");
+if (on && !styleEl) {
+styleEl = document.createElement("style");
+styleEl.setAttribute("data-fh-eink", "");
+styleEl.textContent = BASE_CSS + A11Y_CSS + (st.opts.css || "");
+root.appendChild(styleEl);
+} else if (!on && styleEl) {
+styleEl.remove();
+}
+recolor(host, st);
+}
+function attach(host, opts, tries) {
+let st = attached.get(host);
+if (!st) {
+st = { opts: opts || {}, obs: null, timer: null, queued: false };
+attached.set(host, st);
+}
+if (st.obs) return;
+if (!host.shadowRoot) {
+if ((tries || 0) < 120) st.timer = setTimeout(() => attach(host, opts, (tries || 0) + 1), 250);
+apply(host);
+return;
+}
+st.obs = new MutationObserver(() => {
+if (st.queued) return;
+st.queued = true;
+Promise.resolve().then(() => {
+st.queued = false;
+if (mode() !== "off" || anyA11y(a11y()) || host.shadowRoot.querySelector("[data-fh-eink-orig],style[data-fh-eink],style[data-fh-a11y]")) apply(host);
+else if (!st.opts.a11yOnly) loadHousehold(host._hass || host.hass);
+});
+});
+st.obs.observe(host.shadowRoot, { childList: true, subtree: true });
+apply(host);
+}
+function detach(host) {
+const st = attached.get(host);
+if (!st) return;
+if (st.obs) st.obs.disconnect();
+clearTimeout(st.timer);
+attached.delete(host);
+}
+const refreshAll = () => attached.forEach((st, host) => apply(host));
+window.addEventListener("family-hub-eink-changed", refreshAll);
+window.addEventListener("storage", (e) => { if (!e.key || /^familyHub(Eink|A11y)/.test(e.key)) refreshAll(); });
+try {
+if (window.matchMedia) {
+const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+if (mq && mq.addEventListener) mq.addEventListener("change", refreshAll);
+}
+} catch (e) {
+}
+window.__familyHubEink = {
+mode, deviceMode, tappable, background, cvFor, a11y, a11yClean, setHousehold, ensureFonts, A11Y_KEYS: A11Y, SHAPES, SHAPE_NAMES,
+attach: (host, opts) => attach(host, opts, 0), detach, refreshAll, BASE_CSS, A11Y_CSS,
+};
+})();
+// FH-EINK END
+// FH-MODAL-SCROLL START - source: tools/modal_scroll_guard.js, copied into each card by tools/sync_modal_scroll_guard.py
+// 2026.11.1.13: the page behind a card's open popup doesn't scroll. Home Assistant's dashboard layout can make a card's
+// "fixed" popups move with the card instead of staying on screen, so scrolling under one carried the popup (and its
+// buttons) away. While a popup (.modal-overlay.open) is open the page is locked, and anything that still scrolls it -
+// a phone ignoring the lock, a dashboard scrolling its own container - is put straight back.
+(function () {
+if (window.__familyHubModalScroll) return;
+if (!window.__familyCalendarSetScrollLock) {
+const holders = new Set();
+const render = () => {
+let styleEl = document.getElementById("family-calendar-scroll-lock-style");
+if (!styleEl) {
+styleEl = document.createElement("style");
+styleEl.id = "family-calendar-scroll-lock-style";
+document.head.appendChild(styleEl);
+}
+styleEl.textContent = holders.size
+? `html, body { overflow: hidden !important; height: 100% !important; height: 100dvh !important; overscroll-behavior: none; }`
+: "";
+};
+window.__familyCalendarSetScrollLock = (holder, locked) => {
+if (locked) holders.add(holder);
+else holders.delete(holder);
+render();
+};
+window.__familyCalendarApplyScrollLock = (locked) => window.__familyCalendarSetScrollLock(window, !!locked);
+}
+const watched = new Map();
+const composedParent = (n) => {
+const pn = n.parentNode;
+return pn && pn.nodeType === 11 && pn.host ? pn.host : n.parentElement || null;
+};
+function sync(host) {
+const st = watched.get(host);
+if (!st) return;
+st.queued = false;
+const root = host.shadowRoot;
+const open = host.isConnected && !!(root && root.querySelector(".modal-overlay.open"));
+window.__familyCalendarSetScrollLock(st.key, open);
+if (open && !st.guard) {
+const spots = [];
+for (let n = composedParent(host); n; n = composedParent(n)) {
+if (n.nodeType === 1 && (n.scrollHeight > n.clientHeight + 1 || n.scrollTop)) spots.push([n, n.scrollTop]);
+}
+const winY = window.scrollY || 0;
+st.guard = () => {
+if ((window.scrollY || 0) !== winY) window.scrollTo(window.scrollX || 0, winY);
+for (const [el, top] of spots) if (el.scrollTop !== top) el.scrollTop = top;
+};
+window.addEventListener("scroll", st.guard, { capture: true, passive: true });
+} else if (!open && st.guard) {
+window.removeEventListener("scroll", st.guard, { capture: true });
+st.guard = null;
+}
+}
+function attach(host, tries) {
+const st = watched.get(host);
+if (!st || st.obs) return;
+const root = host.shadowRoot;
+if (!root) {
+if (tries < 120) st.timer = setTimeout(() => attach(host, tries + 1), 250);
+return;
+}
+st.obs = new MutationObserver(() => {
+if (st.queued) return;
+st.queued = true;
+Promise.resolve().then(() => sync(host));
+});
+st.obs.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] });
+sync(host);
+}
+window.__familyHubModalScroll = {
+watch(host) {
+if (watched.has(host)) return;
+watched.set(host, { key: { modalOf: host }, obs: null, guard: null, timer: null, queued: false });
+attach(host, 0);
+},
+unwatch(host) {
+const st = watched.get(host);
+if (!st) return;
+if (st.obs) st.obs.disconnect();
+clearTimeout(st.timer);
+if (st.guard) window.removeEventListener("scroll", st.guard, { capture: true });
+window.__familyCalendarSetScrollLock(st.key, false);
+watched.delete(host);
+},
+};
+})();
+// FH-MODAL-SCROLL END
+// Holiday themes, shared by every Family Hub card: a holiday background can switch the theme
+// while it's showing. The backend works out the dates (family_hub/holiday_themes/get); this
+// checks today against them, refreshes every 30 minutes, and tells cards to re-theme when the
+// answer changes (including at midnight).
+if (!window.__fhHolidayTheme) {
+  window.__fhHolidayTheme = (function () {
+    let schedule = null;
+    let fetchedAt = 0;
+    let loading = null;
+    let midnightTimer = null;
+    let lastId = null;
+    const listeners = new Set();
+    const todayKey = () => {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    };
+    const span = (s) => (Date.parse(s.end) - Date.parse(s.start)) || 0;
+    function current() {
+      if (!Array.isArray(schedule)) return "";
+      const k = todayKey();
+      // the most specific wins: a day beats a week, a week beats a month (same rule as the backgrounds)
+      const hits = schedule.filter((s) => s && s.theme_id && s.start <= k && k <= s.end).sort((a, b) => span(a) - span(b));
+      return hits.length ? hits[0].theme_id : "";
+    }
+    function notify() {
+      const id = current();
+      if (id === lastId) return;
+      lastId = id;
+      listeners.forEach((cb) => {
+        try {
+          cb();
+        } catch (e) {
+          // one card's error never stops the others
+        }
+      });
+    }
+    function armMidnight() {
+      clearTimeout(midnightTimer);
+      const now = new Date();
+      const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+      midnightTimer = setTimeout(() => {
+        notify();
+        armMidnight();
+      }, next.getTime() - now.getTime());
+    }
+    function refresh(hass) {
+      if (!hass || !hass.connection) return Promise.resolve();
+      if (loading) return loading;
+      loading = hass.connection
+        .sendMessagePromise({ type: "family_hub/holiday_themes/get" })
+        .then((r) => {
+          schedule = (r && Array.isArray(r.schedule) && r.schedule) || [];
+        })
+        .catch(() => {
+          schedule = schedule || [];
+        })
+        .then(() => {
+          fetchedAt = Date.now();
+          loading = null;
+          armMidnight();
+          notify();
+        });
+      return loading;
+    }
+    return {
+      themeId(hass) {
+        if (hass && !loading && Date.now() - fetchedAt > 30 * 60 * 1000) refresh(hass);
+        return current();
+      },
+      subscribe(cb) {
+        listeners.add(cb);
+        return () => listeners.delete(cb);
+      },
+      invalidate(hass) {
+        fetchedAt = 0;
+        return refresh(hass);
+      },
+    };
+  })();
+}
+// Family Hub My Pantry card - a household's stock at a glance, in two parts: a live Grocy Stock list (every product currently in stock
 
-// Household-wide timer alarm sound+modal (v1.119.0+, widened in
-// v1.132.55+) - see family-hub-active-timers-card.js's own top comment
-// above this same block for the full design note. Added here in
-// v1.132.59+ after a - this card never carried this singleton or subscribed to
-// the widened-alarm broadcast at all, so a kiosk whose dashboard shows
-// it silently never rang for anyone else's widened timer alarm. Kept
-// byte-identical to every other card's copy on purpose.
-// ---- Family Hub shared translation helper (v1.168.76) -------------------
-// __fhT(key, english, vars, mode) looks a string up in Home Assistant's
-// loaded "fh_ui" translations (translations/<language>.json → fh_ui.text.*)
-// and falls back to the English text written right here in the source.
-// vars fill %0%, %1%, ... placeholders. mode "h" escapes the translated
-// text (not the vars, which callers already prepared) for use inside HTML
-// markup or an attribute value. Identical copy in every Family Hub card and
-// in the Theme Builder panel - whichever loads first sets it up.
-// __fhSweep(root) re-translates markup that was drawn before the language
-// file finished loading (elements tagged data-fh-t / data-fh-title /
-// data-fh-placeholder / data-fh-aria / data-fh-alt), but only while they
-// still show the English original, so text a card later replaced with
-// something else is never overwritten.
 var __fhI18n = (window.__familyHubI18n = window.__familyHubI18n || { hass: null, fb: {}, loading: null, loaded: null });
 var __fhEsc = function (s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -91,19 +712,7 @@ var __fhSweep = function (root) {
 // -------------------------------------------------------------------------
 
 if (!window.__familyHubTimerAlarm) {
-  // v1.168.74 (timer + alarm overhaul): the on-screen half of a Family Hub
-  // timer alarm - a full-screen "time's up" with a looping alarm sound that
-  // keeps going until someone taps Stop, shared by every Family Hub card on
-  // the page (one modal, one sound, appended to document.body).
-  //
-  // A screen rings when the backend's family_hub_timer_alarm_ring event
-  // says so: it's the screen that started the timer (origin_client_id =
-  // this tab's id), it's logged in as one of target_user_ids (the owner, a
-  // kiosk login on a "kiosks" alarm), or broadcast_all ("everyone"). The
-  // tab that started a timer also rings on its own the instant its local
-  // countdown reaches zero (check()), so there's no wait for the server.
-  // Several alarms at once each get their own row and Stop button. Stop
-  // here stops it everywhere (screens, phones, speakers).
+  // (timer + alarm overhaul): the on-screen half of a Family Hub timer alarm
   window.__familyHubTimerAlarm = (function () {
     let modalEl = null;
     let audioCtx = null;
@@ -247,9 +856,7 @@ if (!window.__familyHubTimerAlarm) {
       }
     }
     return {
-      // From a card's 1-second countdown tick: the tab that started a timer
-      // rings the moment it reaches zero (any timer it started, alarm-style
-      // or not, assigned or not).
+      // From a card's 1-second countdown tick: the tab that started a timer rings the moment it reaches zero (any timer it started
       check(timers, clientId, remainingSecondsFn, hass) {
         if (hass) lastHass = hass;
         const me = clientId || myClientId();
@@ -288,50 +895,7 @@ if (!window.__familyHubTimerAlarm) {
   })();
 }
 
-// Theme flash-of-default fix - Root cause: EVERY themed card's first paint happens
-// with no theme CSS vars set at all (falls back to _defaultTheme()'s own
-// hardcoded palette), because resolving the household's actual theme
-// takes two sequential, awaited websocket round trips after `hass` is
-// first set - family_hub/get_settings (_fetchSettings), THEN
-// theme_builder/list (_fetchGlobalThemes, which is what a Global Theme
-// selection actually needs to resolve into real colors) - both happening
-// well after `_build()` has already rendered the card once. There was no
-// way to know the real colors before those round trips finished.
-//
-// Fix: cache the last set of CSS var values this device actually applied
-// (in memory for the rest of this page load, in localStorage across
-// reloads), and apply that cache SYNCHRONOUSLY in `_build()` - before the
-// very first paint, before any fetch has even started - so a reload shows
-// last-known-good colors immediately instead of _defaultTheme()'s
-// hardcoded ones. Once the real fetches resolve, `_applyThemeVars()` runs
-// as it always has and reconciles - a no-op re-application (no visible
-// change) if nothing changed since last time, which is the overwhelmingly
-// common case on an ordinary refresh; a visible switch only when the
-// household's theme has genuinely changed since this device last saw it,
-// which is unavoidable (nothing can know about a change before asking).
-//
-// Same shared-singleton, "only the first card whose script actually runs
-// this block sets it up" pattern as window.__familyHubFabCoordinator/
-// __familyHubKioskSession/__familyHubScreenSaver/__familyHubTimerAlarm
-// above - copy-pasted byte-identically into every themed card file, since
-// these are independently-loaded Lovelace resources rather than ES
-// modules that could import one shared file (same reasoning as those).
-//
-// Cached under a KEY, not one single blob, because different cards (or
-// even the SAME card on a different dashboard placement) can legitimately
-// resolve to different colors at once - a per-card-placement Theme
-// override (`_config.theme_override`) or a per-device override
-// (`_getDeviceThemeOverride()`) both exist specifically so one card can
-// look different from the household's shared theme. Caching under one
-// shared key would "fix" the flash for the common case but introduce a
-// WRONG flash for an overridden card (briefly showing the household's
-// theme before its own override kicks in) - a strictly worse bug than
-// the one being fixed. The key is derived the same way every time
-// (`_familyHubThemeCacheKey`, called identically from `_build()` before
-// first paint and from `_applyThemeVars()` after resolving for real), so
-// a card with no override at all shares one cache entry with every other
-// un-overridden card/placement (the common case this exists for), while
-// an overridden card/placement gets its own.
+// Theme flash-of-default fix - Root cause: EVERY themed card's first paint happens with no theme CSS vars set at all
 if (!window.__familyHubThemeCache) {
   window.__familyHubThemeCache = (function () {
     const STORAGE_PREFIX = "familyHubThemeVarsCache::";
@@ -359,9 +923,7 @@ if (!window.__familyHubThemeCache) {
       try {
         localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(vars));
       } catch (e) {
-        // Best-effort only - the in-memory copy above still helps every
-        // OTHER card mounted later in this same page load even if
-        // localStorage itself is unavailable.
+        // Best-effort only - the in-memory copy above still helps every OTHER card mounted later in this same page load even if localStorage itself
       }
     }
     return { get, set };
@@ -372,9 +934,7 @@ class FamilyHubPantryCard extends HTMLElement {
   static getStubConfig() {
     return { title: "My Pantry" };
   }
-  // switched to getConfigElement (a real custom element) so the
-  // new theme_override field can offer a live-fetched theme list - see
-  // FamilyHubPantryCardEditor at the bottom of this file.
+  // switched to getConfigElement (a real custom element) so the new theme_override field can offer a live-fetched theme list
   static getConfigElement() {
     return document.createElement("family-hub-pantry-card-editor");
   }
@@ -391,13 +951,7 @@ class FamilyHubPantryCard extends HTMLElement {
     if (this._pickerProducts === undefined) this._pickerProducts = [];
     if (this._pickerUnits === undefined) this._pickerUnits = [];
     if (this._locations === undefined) this._locations = [];
-    // full-CRUD pass - categories (Grocy's "product groups"),
-    // plus the toolbar's own live search/sort/filter state. These are
-    // deliberately plain instance fields rather than persisted Settings -
-    // same "just how much room THIS device gives a feature right now"
-    // spirit as the calendar/chores cards' own device-local UI toggles,
-    // except even more transient: there's no reason a search term or a
-    // "show expired only" toggle should survive a page reload.
+    // full-CRUD pass - categories (Grocy's "product groups"), plus the toolbar's own live search/sort/filter state.
     if (this._categories === undefined) this._categories = [];
     if (this._searchQuery === undefined) this._searchQuery = "";
     if (this._sortBy === undefined) this._sortBy = "name";
@@ -438,15 +992,17 @@ class FamilyHubPantryCard extends HTMLElement {
     if (!this._hass || typeof this._hass.loadBackendTranslation !== "function") return;
     const lang = this._baseLanguage(this._hass.language);
     if (this._i18nLoadedLang === lang) {
-      // v1.168.67 fix (GitHub issue #10 - "German localization on buttons
-      // only after click on settings"): Home Assistant hands cards the hass
-      // object that actually knows the newly loaded strings a moment AFTER
-      // loadBackendTranslation resolves, so the redraw in .then() below
-      // still ran with the old, English-only localize. Redraw once more
-      // whenever a new localize arrives for the already-loaded language.
+      // Home Assistant hands cards the hass object that actually knows the newly loaded strings a moment AFTER loadBackendTranslation resolves
       if (this._hass.localize !== this._i18nLocalize) {
         this._i18nLocalize = this._hass.localize;
-        this._onTranslationsReady();
+        // redraw only when our strings changed - a new localize function alone made cards flicker (GitHub issue #16)
+        let probe = "";
+        try { probe = this._hass.localize("component.family_hub.fh_ui.nav.settings") || ""; } catch (e) { probe = ""; }
+        probe = `${this._hass.language}|${probe}`;
+        if (probe !== this._i18nLastProbe) {
+          this._i18nLastProbe = probe;
+          this._onTranslationsReady();
+        }
       }
       return;
     }
@@ -494,25 +1050,13 @@ class FamilyHubPantryCard extends HTMLElement {
     // list regardless of the household's own useGlobalTheme setting.
     await this._fetchGlobalThemes();
     this._startPolling();
-    // - see this
-    // file's own copy of the window.__familyHubTimerAlarm singleton
-    // (below) for the full design note. Kept byte-identical to every
-    // other card's copy on purpose.
+    // see this file's own copy of the window.__familyHubTimerAlarm singleton (below) for the full design note.
     this._subscribeAlarmEvents();
     this._render();
   }
   _myUserId() {
     return this._hass && this._hass.user ? this._hass.user.id : null;
   }
-  // household-wide timer alarms - subscribe to the two bus
-  // events chores_websocket_api.py's _dispatch_timer_alarm/
-  // _reannounce_active_alarms fire (see const.py's
-  // EVENT_FAMILY_HUB_TIMER_ALARM_RING/_STOP), and hand each one to the
-  // shared window.__familyHubTimerAlarm singleton below - same "one modal/
-  // audio loop shared by every card on the dashboard" convention its own
-  // top comment describes. Subscribed once per card instance (guarded by
-  // _alarmUnsub so a re-run of _initFirstLoad, which shouldn't happen but
-  // costs nothing to guard against, never double-subscribes).
   async _subscribeAlarmEvents() {
     if (this._alarmUnsub || !this._hass || !this._hass.connection) return;
     const myUserId = this._myUserId();
@@ -532,14 +1076,9 @@ class FamilyHubPantryCard extends HTMLElement {
         try { unsubStop(); } catch (e) { /* no-op */ }
       };
     } catch (e) {
-      // Best-effort - a dashboard that can't subscribe (e.g. a very old
-      // frontend build) simply never gets the WIDENED alarm reach; the
-      // same-tab-only local alarm (window.__familyHubTimerAlarm.check,
-      // unaffected by any of this) still works exactly as before.
+      // Best-effort - a dashboard that can't subscribe (e.g. a very old frontend build) simply never gets the WIDENED alarm reach
     }
-    // Catch up on anything already ringing before this tab opened, rather
-    // than waiting up to ALARM_REANNOUNCE_SECONDS for the next re-
-    // announcement's RING event.
+    // Catch up on anything already ringing before this tab opened
     if (this._hass.connection.sendMessagePromise) {
       try {
         const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/timers/list_active_alarms" });
@@ -554,21 +1093,23 @@ class FamilyHubPantryCard extends HTMLElement {
   }
   _startPolling() {
     if (this._interval) return;
-    // 60s, slower than Goals' 20s - stock levels don't change nearly as
-    // often as chore/goal state, and every tick is a real Grocy HTTP round
-    // trip (unlike Goals/Chores, which just read this project's own Store).
+    // 60s, slower than Goals' 20s - stock levels don't change nearly as often as chore/goal state
     this._interval = setInterval(() => {
       this._fetchStock();
       this._fetchExtras();
     }, 60 * 1000);
   }
   connectedCallback() {
+    if (window.__familyHubEink) window.__familyHubEink.attach(this, Object.assign({}, { css: this.constructor.EINK_CSS || "" }));
+    if (window.__familyHubModalScroll) window.__familyHubModalScroll.watch(this);
     if (this._hass && !this._interval) {
       if (this._firstLoadPromise) this._firstLoadPromise.then(() => this.isConnected && this._startPolling());
       else this._startPolling();
     }
   }
   disconnectedCallback() {
+    if (window.__familyHubEink) window.__familyHubEink.detach(this);
+    if (window.__familyHubModalScroll) window.__familyHubModalScroll.unwatch(this);
     if (this._interval) clearInterval(this._interval);
     this._interval = null;
   }
@@ -594,16 +1135,6 @@ class FamilyHubPantryCard extends HTMLElement {
   _getSettings() {
     return this._settingsCache || this._defaultSettings();
   }
-  // "This device's theme" - a device-local override of the shared
-  // Settings > Appearance theme choice, same key/mechanism
-  // family-week-calendar-card.js's own _getDeviceThemeOverride uses (see
-  // its own comment) and configured from that card's Settings modal (this
-  // card has none of its own - see the top-of-file comment on why Settings
-  // lives only on the calendar card). "" = follow the household setting
-  // (nothing changes for anyone who hasn't touched this); "__default__" =
-  // force this device's own plain/local look regardless of what the
-  // household picked; anything else is a specific theme id this device
-  // wants instead.
   _getDeviceThemeOverride() {
     let raw = "";
     try {
@@ -627,13 +1158,18 @@ class FamilyHubPantryCard extends HTMLElement {
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
-    // a per-card-placement Theme override (from this card's own
-    // native "Edit Card" dialog) wins over this device's own override and
-    // the household's Global Theme.
+    // a per-card-placement Theme override (from this card's own native "Edit Card" dialog) wins over this device's own override and the
     const cardOverride = this._config && this._config.theme_override;
     if (cardOverride) {
       const g = (this._globalThemes || []).find((t) => t && t.id === cardOverride);
       if (g) return this._themeFromGlobalEntry(g);
+    }
+    // a holiday background set to change the theme wins while it's showing
+    if (window.__fhHolidayTheme) {
+      if (!this.__fhHolidaySub) this.__fhHolidaySub = window.__fhHolidayTheme.subscribe(() => { if (this.isConnected) this._applyThemeVars(); });
+      const holidayThemeId = window.__fhHolidayTheme.themeId(this._hass);
+      const hg = holidayThemeId && (this._globalThemes || []).find((t) => t && t.id === holidayThemeId);
+      if (hg) return this._themeFromGlobalEntry(hg);
     }
     const override = this._getDeviceThemeOverride();
     const useGlobalTheme = override ? override !== "__default__" : settings.useGlobalTheme;
@@ -652,13 +1188,7 @@ class FamilyHubPantryCard extends HTMLElement {
     const a = Math.max(0, Math.min(1, typeof alpha === "number" ? alpha : 1));
     return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
-  // see window.__familyHubThemeCache's own comment above the
-  // class for the full "why a key, not one shared blob" reasoning. Called
-  // identically from here (after resolving the REAL theme) and from
-  // `_build()` (before the real theme is known yet, to look up whatever
-  // was cached last time) - both call sites MUST derive the same key for
-  // a given card/placement, or the cache lookup in `_build()` would never
-  // find what `_applyThemeVars()` just wrote for it.
+  // see window.__familyHubThemeCache's own comment above the class for the full "why a key, not one shared blob" reasoning.
   _familyHubThemeCacheKey() {
     const cardOverride = this._config && this._config.theme_override;
     if (cardOverride) return `card:${cardOverride}`;
@@ -679,18 +1209,10 @@ class FamilyHubPantryCard extends HTMLElement {
   }
   _applyThemeVars() {
     const theme = this._resolveTheme(this._getSettings());
-    // same "liquid glass" support family-week-calendar-card.js has
-    // - a theme's cardOpacity/glassBlur (100/0 defaults, both no-ops) turn
-    // the card/surface backgrounds translucent and blur whatever shows
-    // through them, so picking a Liquid Glass theme actually looks glassy
-    // on this card too, not just the calendar.
+    // same "liquid glass" support family-week-calendar-card.js has - a theme's cardOpacity/glassBlur (100/0 defaults
     const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
     const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
-    // built as a plain object first (rather than each var going
-    // straight into its own setProperty call, as before) purely so the
-    // exact same values that get applied here also get cached - see
-    // window.__familyHubThemeCache's own comment for why this fixes the
-    // household's reported "loads the default theme first" flash.
+    // built as a plain object first (rather than each var going straight into its own setProperty call
     const vars = {
       "--fc-font-family": theme.fontFamily || "",
       "--fc-bg": theme.colors.bg,
@@ -706,25 +1228,12 @@ class FamilyHubPantryCard extends HTMLElement {
       "--fc-surface2": this._hexToRgba(theme.colors.surface2, cardOpacity / 100),
       "--fc-glass-blur": `${glassBlur}px`,
     };
-        // v1.168.79 - the theme's own background image (the Liquid Glass
-    // aurora, or any image a theme sets in Theme Builder) now paints
-    // behind this card too, not just the calendar/Today cards - without
-    // it a glass theme's translucent surfaces only had a flat color to
-    // show through, so nothing looked like glass. Always set (to "none"
-    // when there's no image) so a cached earlier theme can't leave a
-    // stale image behind.
+        // the theme's own background image (the Liquid Glass aurora, or any image a theme sets in Theme Builder) now paints behind this card too
     Object.assign(vars, this._fhThemeBgVars(theme.background));
     Object.keys(vars).forEach((name) => this.style.setProperty(name, vars[name]));
     if (window.__familyHubThemeCache) window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
   }
-  // applies whatever theme this device/placement last actually
-  // resolved to, SYNCHRONOUSLY, before the real fetches that would
-  // otherwise be the only way to know it - see window.__familyHubTheme
-  // Cache's own comment above the class. Called once from `_build()`,
-  // before the very first `_render()`/paint. A no-op (does nothing,
-  // leaves `_defaultTheme()`'s plain colors as the first paint exactly
-  // like before this fix) on the very first time ANY card resolves this
-  // particular key - there's nothing to have cached yet.
+  // applies whatever theme this device/placement last actually resolved to, SYNCHRONOUSLY
   _applyCachedThemeVarsIfAny() {
     if (!window.__familyHubThemeCache) return;
     const cached = window.__familyHubThemeCache.get(this._familyHubThemeCacheKey());
@@ -829,7 +1338,7 @@ class FamilyHubPantryCard extends HTMLElement {
       this._configured = !!(result && result.configured);
       this._stock = (result && Array.isArray(result.stock)) ? result.stock : [];
     } catch (e) {
-      /* keep whatever we had */
+      // keep whatever we had
     }
     this._render();
   }
@@ -838,7 +1347,7 @@ class FamilyHubPantryCard extends HTMLElement {
       const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/pantry_extras/list" });
       this._extras = (result && Array.isArray(result.extras)) ? result.extras : [];
     } catch (e) {
-      /* keep whatever we had */
+      // keep whatever we had
     }
     this._render();
   }
@@ -876,9 +1385,7 @@ class FamilyHubPantryCard extends HTMLElement {
   _escAttr(s) {
     return this._esc(s).replace(/"/g, "&quot;");
   }
-  // Days-until display for a best-before date, mirroring the calendar
-  // card's own "expiring soon" framing so the two features read the same
-  // way to a household ("today"/"tomorrow"/"in N days"/"expired").
+  // Days-until display for a best-before date, mirroring the calendar card's own "expiring soon" framing so the two features read the same way
   _daysUntilLabel(dateStr) {
     if (!dateStr) return "";
     const days = this._daysUntil(dateStr);
@@ -888,10 +1395,7 @@ class FamilyHubPantryCard extends HTMLElement {
     if (days <= 7) return `<span class="expiring-soon">${this._t("pantry.expires_in_days", "Expires in %days% days", { days })}</span>`;
     return this._t("pantry.expires_on", "Expires %date%", { date: this._esc(dateStr) });
   }
-  // Plain integer days-until (negative once past) - the numeric half of
-  // _daysUntilLabel above, split out so the toolbar's "Show expired"/
-  // "Show expiring soon" filters can test a date without re-parsing/
-  // re-formatting it themselves.
+  // Plain integer days-until (negative once past) - the numeric half of _daysUntilLabel above
   _daysUntil(dateStr) {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -901,19 +1405,11 @@ class FamilyHubPantryCard extends HTMLElement {
 
   _build() {
     this._built = true;
-    // applied BEFORE attachShadow/the first innerHTML paint -
-    // see _applyCachedThemeVarsIfAny's own comment and window.__familyHub
-    // ThemeCache's above the class for why this is what actually fixes
-    // the household's reported "loads the default theme first" flash.
+    // applied BEFORE attachShadow/the first innerHTML paint - see _applyCachedThemeVarsIfAny's own comment and window.__familyHub ThemeCache's
     this._applyCachedThemeVarsIfAny();
     this.attachShadow({ mode: "open" });
     const root = this.shadowRoot;
-    // restyled to match the Chores/Rewards board's own chrome
-    // (see this card's own docstring at the top of the file) - a real
-    // .header + .actions bar and a .board of side-by-side columns, same
-    // classes/shapes those cards already use, rather than the old single
-    // stacked-list layout. _render() below still only ever touches
-    // .stock-list/.extras-list, so none of that logic needed to change.
+    // restyled to match the Chores/Rewards board's own chrome (see this card's own docstring at the top of the file)
     root.innerHTML = `
       <style>${this._css()}</style>
       <ha-card>
@@ -965,9 +1461,7 @@ class FamilyHubPantryCard extends HTMLElement {
     });
     root.querySelector(".stock-list").addEventListener("click", (e) => this._onStockListClick(e));
     root.querySelector(".extras-list").addEventListener("click", (e) => this._onExtrasListClick(e));
-    // Toolbar: search/sort/filter are all pure client-side over whatever
-    // stock/extras this card already has loaded - none of these send a
-    // websocket message, they just re-run _render() below.
+    // Toolbar: search/sort/filter are all pure client-side over whatever stock/extras this card already has loaded
     root.querySelector(".pantry-search").addEventListener("input", (e) => {
       this._searchQuery = e.target.value || "";
       this._render();
@@ -1110,7 +1604,7 @@ class FamilyHubPantryCard extends HTMLElement {
         type: "family_hub/pantry_consume_stock", product_id: parseInt(productId, 10), amount,
       });
     } catch (e) {
-      /* server already validated this - a stale click just no-ops */
+      // server already validated this - a stale click just no-ops
     }
     await this._fetchStock();
   }
@@ -1128,10 +1622,7 @@ class FamilyHubPantryCard extends HTMLElement {
     ]);
     const entries = (entriesResult && Array.isArray(entriesResult.entries)) ? entriesResult.entries : [];
     const locationOptions = `<option value="">${this._t("pantry.product_default_location", "(product's default)")}</option>` + this._locations.map((l) => `<option value="${l.id}">${this._esc(l.name)}</option>`).join("");
-    // price/location per entry, alongside the original amount/
-    // best-before - see _ws_update_grocy_stock_entry's own docstring on why
-    // both are optional on the backend (a blank price field just omits
-    // price from that entry's save, same as before this existed).
+    // price/location per entry, alongside the original amount/ best-before
     const rowsHtml = entries.length
       ? entries
           .map(
@@ -1194,14 +1685,7 @@ class FamilyHubPantryCard extends HTMLElement {
     await this._fetchStock();
   }
 
-  // --- Edit product (full CRUD on the Grocy product itself) -----------
-  // Add/Read/Update/Delete on a product's own core fields (name,
-  // category, default location, stock/purchase quantity unit, min stock
-  // amount, description) - as opposed to _openEditStockModal just above,
-  // which only ever touched individual stock purchases (amount/best-before/
-  // price/entry-location). Create already existed (the Add Stock modal's
-  // "this isn't in Grocy yet" flow); this rounds out Read/Update/Delete on
-  // the product record behind that "gear" icon per stock row.
+  // -- Edit product (full CRUD on the Grocy product itself) ----------- Add/Read/Update/Delete on a product's own core fields (name, category
 
   async _openEditProductModal(productId, name) {
     const overlay = this._root.querySelector(".edit-product-modal");
@@ -1406,7 +1890,6 @@ class FamilyHubPantryCard extends HTMLElement {
     try {
       await this._hass.connection.sendMessagePromise({ type: "family_hub/pantry_extras/delete", extra_id: extraId });
     } catch (e) {
-      /* ignore */
     }
     await this._fetchExtras();
   }
@@ -1459,10 +1942,7 @@ class FamilyHubPantryCard extends HTMLElement {
     `;
   }
 
-  // the toolbar's search/sort/expired/expiring-soon controls, all
-  // applied client-side over whatever this._stock already holds (no extra
-  // round trip per keystroke/toggle) - _render() below calls this instead
-  // of using this._stock directly.
+  // the toolbar's search/sort/expired/expiring-soon controls, all applied client-side over whatever this._stock already holds
   _visibleStock() {
     const query = this._searchQuery.trim().toLowerCase();
     let items = this._stock.filter((it) => {
@@ -1629,9 +2109,7 @@ class FamilyHubPantryCard extends HTMLElement {
 
 customElements.define("family-hub-pantry-card", FamilyHubPantryCard);
 
-// native "Edit Card" config editor - a thin wrapper around
-// Home Assistant's own <ha-form>, needed only because the new
-// theme_override field's option list has to be fetched live.
+// native "Edit Card" config editor - a thin wrapper around Home Assistant's own <ha-form>
 class FamilyHubPantryCardEditor extends HTMLElement {
   setConfig(config) {
     this._config = config || {};

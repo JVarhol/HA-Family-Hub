@@ -1,38 +1,4 @@
 // family-hub-my-chores-card.js - DEPRECATED since v1.168.66.
-//
-// "My Chores" used to be its own small card: the signed-in person's own
-// chores plus a claimable Chore Bin. The Chores card can now do the same
-// thing with its "People on this card" option set to "Just me" (whoever is
-// signed in - on a kiosk, whoever logged in with their PIN) plus the Chore
-// Bin, so this separate ~1,500-line copy of the chores plumbing was retired
-// (household ask: "depreciate my chores ... any current dashboards with my
-// chores switches over to chores set as just me").
-//
-// Two layers keep existing dashboards working:
-//  1. On startup the integration rewrites every saved (UI-edited)
-//     dashboard, replacing `custom:family-hub-my-chores-card` with
-//     `custom:family-hub-chores-card` + `people: [me, chore_bin]` (see
-//     _migrate_my_chores_cards in __init__.py).
-//  2. This file: anything that still says family-hub-my-chores-card (a
-//     YAML-mode dashboard the integration can't rewrite, or a browser that
-//     loaded the old config before the rewrite) renders a Chores card with
-//     that same config instead. It's no longer offered in the card picker.
-//
-// The conversion below must stay identical to __init__.py's
-// _my_chores_to_chores_config.
-// ---- Family Hub shared translation helper (v1.168.76) -------------------
-// __fhT(key, english, vars, mode) looks a string up in Home Assistant's
-// loaded "fh_ui" translations (translations/<language>.json → fh_ui.text.*)
-// and falls back to the English text written right here in the source.
-// vars fill %0%, %1%, ... placeholders. mode "h" escapes the translated
-// text (not the vars, which callers already prepared) for use inside HTML
-// markup or an attribute value. Identical copy in every Family Hub card and
-// in the Theme Builder panel - whichever loads first sets it up.
-// __fhSweep(root) re-translates markup that was drawn before the language
-// file finished loading (elements tagged data-fh-t / data-fh-title /
-// data-fh-placeholder / data-fh-aria / data-fh-alt), but only while they
-// still show the English original, so text a card later replaced with
-// something else is never overwritten.
 var __fhI18n = (window.__familyHubI18n = window.__familyHubI18n || { hass: null, fb: {}, loading: null, loaded: null });
 var __fhEsc = function (s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -128,9 +94,7 @@ var __fhSweep = function (root) {
     _mount() {
       if (this._mounting) return;
       this._mounting = true;
-      // The Chores card is its own dashboard resource (registered
-      // automatically alongside this one). If it somehow never loads, say
-      // so instead of staying blank.
+      // The Chores card is its own dashboard resource (registered automatically alongside this one).
       const waitTimer = setTimeout(() => {
         if (this._inner) return;
         const note = document.createElement("div");
@@ -156,5 +120,5 @@ var __fhSweep = function (root) {
     }
   }
 
-  customElements.define("family-hub-my-chores-card", FamilyHubMyChoresCard);
+  if (!customElements.get("family-hub-my-chores-card")) customElements.define("family-hub-my-chores-card", FamilyHubMyChoresCard);
 })();

@@ -1,54 +1,662 @@
-// Family Hub Goals card (v133+, v143+ "My Goals") - progress-tracked
-// achievements a household attaches a reward to ("get 3 Bs in math,"
-// "practice piano 2 times"), as opposed to family-hub-chores-card.js's own
-// "do this one concrete thing, on a schedule" chores. See goal_engine.py's
-// own module docstring for the full backend picture (open ->
-// pending_verification -> approved, same shape as Chores' own verification
-// gate) and const.py's GOAL_REWARD_TYPE_* docstring for the per-goal
-// stars-vs-catalog-item reward choice.
-//
-// this used to render one column PER household member (a
-// shared board, same shape as Chores' own board) - it's now
-// a personal "My Goals" card instead, showing only the logged-
-// in viewer's own goals, so a kiosk/tablet parked in one person's room (or
-// several people sharing one dashboard) doesn't have to scroll past
-// everyone else's goals to find their own. See _boardHtml below for the
-// single-list rendering this replaced the per-person columns with. The
-// custom element tag (family-hub-goals-card) and every websocket command it
-// calls are UNCHANGED - only what gets displayed narrowed - so an existing
-// dashboard that already has this card keeps working with no reconfiguration;
-// create/edit still lets someone with manage authority set a goal up for any
-// household member (a parent setting up a goal for a kid from their own
-// tablet), it just won't show back up on the CREATOR's own board unless it's
-// also assigned to them - same as My Chores never showing chores assigned to
-// someone else.
-//
-// A standalone card, independently addable to any dashboard - deliberately
-// NOT nested inside family-hub-chores-card.js (the household's own answer to
-// "same page or separate" was "either is fine," and a standalone card is the
-// one shape that supports BOTH: put it on its own view for "separate," or
-// drop it onto the same dashboard view right below the Chores board for
-// "same page" - either way it's the identical card, no toggle to build or
-// maintain).
-//
-// Same self-contained, independently-loaded-Lovelace-resource shape as every
-// other Family Hub card - small constants (PALETTE) and helpers (_esc/
-// _escAttr/_isoToLocalDatetimeInputValue) are copy-pasted rather than
-// imported, matching this project's established convention.
+// FH-EINK START - source: tools/eink_kit.js, copied into each card by tools/sync_eink_kit.py
+// 2026.11.1.16: E-ink screen and Accessibility for every card. Each card attaches with the bits that show a person's
+// colour (dots, pills, avatars, tiles) and a little CSS of its own; this does the rest.
+//  - E-ink screen (per device, from the calendar's Settings or ?fh_eink=...): black on white with outlines, no
+//    shadows/blur/motion, each person's colour turned into the same pattern (black & white) or real ink (6 ink) the
+//    calendar gives them, or a stronger version of it (Kaleido).
+//  - Accessibility (household setting, settings.accessibility, with per-device overrides, like the rest of Settings):
+//    Color vision (a shape and a pattern per person, not just a colour), High contrast (the black & white e-ink look on
+//    any screen), Text size, Font (Atkinson Hyperlegible / Lexend, bundled), Reduce motion, Bigger buttons.
+(function () {
+if (window.__familyHubEink) return;
+const MODES = ["bw", "color6", "kaleido"];
+const PATTERNS = [
+"linear-gradient(#000,#000)",
+"repeating-linear-gradient(45deg,#000 0 3px,#fff 3px 6px)",
+"radial-gradient(circle,#000 1.6px,#fff 1.9px) 0 0/6px 6px",
+"repeating-linear-gradient(0deg,#000 0 2px,#fff 2px 5px)",
+"repeating-linear-gradient(90deg,#000 0 2px,#fff 2px 4px)",
+"repeating-linear-gradient(45deg,#000 0 1.5px,transparent 1.5px 5px),repeating-linear-gradient(-45deg,#000 0 1.5px,#fff 1.5px 5px)",
+"repeating-conic-gradient(#000 0 25%,#fff 0 50%) 0 0/6px 6px",
+"repeating-linear-gradient(-45deg,#000 0 6px,#fff 6px 10px)",
+];
+// Color vision: one shape per person, in the household's order (circle, square, diamond, hexagon, triangle, star,
+// pentagon, cross) - used as a clip-path on their avatar/dot
+const SHAPES = [
+"circle(50% at 50% 50%)",
+"inset(6% round 3px)",
+"polygon(50% 0,100% 50%,50% 100%,0 50%)",
+"polygon(25% 3%,75% 3%,100% 50%,75% 97%,25% 97%,0 50%)",
+"polygon(50% 0,100% 95%,0 95%)",
+"polygon(50% 0,61% 35%,98% 35%,68% 57%,79% 91%,50% 70%,21% 91%,32% 57%,2% 35%,39% 35%)",
+"polygon(50% 0,100% 38%,82% 100%,18% 100%,0 38%)",
+"polygon(33% 0,67% 0,67% 33%,100% 33%,100% 67%,67% 67%,67% 100%,33% 100%,33% 67%,0 67%,0 33%,33% 33%)",
+];
+const SHAPE_NAMES = ["circle", "square", "diamond", "hexagon", "triangle", "star", "pentagon", "cross"];
+const INKS = [["red", "#d0201a", 0], ["yellow", "#f0c400", 50], ["green", "#1d8a3a", 130], ["blue", "#1a4fc0", 220]];
+// a dashboard link can switch E-ink screen on for the device that opens it: ?fh_eink=bw|color6|kaleido|off
+// (&fh_eink_tap=off) - for a frame showing only Today or Chores, where there's no calendar Settings to do it from
+function fromUrl() {
+try {
+const q = new URLSearchParams(window.location.search);
+const m = q.get("fh_eink");
+if (m && (MODES.includes(m) || m === "off")) localStorage.setItem("familyHubEinkModeLocal", m);
+const t = q.get("fh_eink_tap");
+if (t === "on" || t === "off") localStorage.setItem("familyHubEinkTappableLocal", t);
+} catch (e) {
+}
+}
+fromUrl();
+// ---- Accessibility ----
+const A11Y = {
+colorVision: ["familyHubA11yColorVisionLocal", ["off", "shapes"], "off"],
+highContrast: ["familyHubA11yHighContrastLocal", ["off", "on"], "off"],
+textScale: ["familyHubA11yTextScaleLocal", ["100", "125", "150", "175", "200"], "100"],
+font: ["familyHubA11yFontLocal", ["theme", "legible", "dyslexia"], "theme"],
+motion: ["familyHubA11yMotionLocal", ["device", "always", "off"], "device"],
+bigButtons: ["familyHubA11yBigButtonsLocal", ["off", "on"], "off"],
+};
+function a11yClean(obj) {
+const out = {};
+Object.keys(A11Y).forEach((k) => {
+const [, ok, def] = A11Y[k];
+const v = obj && obj[k] !== undefined && obj[k] !== null ? String(obj[k]) : def;
+out[k] = ok.includes(v) ? v : def;
+});
+return out;
+}
+function a11yHousehold() {
+try {
+const v = JSON.parse(localStorage.getItem("familyHubA11yHouseholdLocal") || "{}");
+return a11yClean(v && typeof v === "object" ? v : {});
+} catch (e) {
+return a11yClean({});
+}
+}
+// this device's own choices ("household" or nothing = follow the household)
+function a11yDevice() {
+const out = {};
+Object.keys(A11Y).forEach((k) => {
+try {
+const v = localStorage.getItem(A11Y[k][0]);
+if (v && v !== "household" && A11Y[k][1].includes(v)) out[k] = v;
+} catch (e) {
+}
+});
+return out;
+}
+function a11y() {
+const v = Object.assign(a11yHousehold(), a11yDevice());
+let reduce = v.motion === "always";
+if (v.motion === "device") {
+try {
+reduce = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+} catch (e) {
+}
+}
+v.reduceMotion = reduce;
+return v;
+}
+function setHousehold(obj) {
+const next = JSON.stringify(a11yClean(obj || {}));
+let before = null;
+try {
+before = localStorage.getItem("familyHubA11yHouseholdLocal");
+} catch (e) {
+}
+if (before === next) return;
+try {
+localStorage.setItem("familyHubA11yHouseholdLocal", next);
+} catch (e) {
+}
+refreshAll();
+}
+// every card loads the household settings itself; this reads the Accessibility part of them, at most every 5 minutes
+let householdFetch = null, householdAt = 0;
+function loadHousehold(hass) {
+if (!hass || !hass.connection || householdFetch || Date.now() - householdAt < 5 * 60 * 1000) return;
+householdFetch = hass.connection.sendMessagePromise({ type: "family_hub/get_settings" })
+.then((r) => {
+const s = r && r.settings;
+if (s && typeof s === "object") setHousehold(s.accessibility || {});
+})
+.catch(() => {})
+.then(() => {
+householdFetch = null;
+householdAt = Date.now();
+});
+}
+let fontsAdded = false;
+function ensureFonts() {
+if (fontsAdded || !document.head) return;
+fontsAdded = true;
+const face = (family, file, weight, range) => `@font-face { font-family: "${family}"; font-style: normal; font-display: swap; font-weight: ${weight}; src: url("/family_hub_fonts/${file}.woff2") format("woff2"); unicode-range: ${range}; }`;
+const LATIN = "U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD";
+const EXT = "U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF";
+const css = [];
+[["FH Atkinson Hyperlegible", "atkinson-hyperlegible"], ["FH Lexend", "lexend"]].forEach(([family, file]) => {
+[400, 700].forEach((w) => {
+css.push(face(family, `${file}-latin-${w}-normal`, w, LATIN));
+css.push(face(family, `${file}-latin-ext-${w}-normal`, w, EXT));
+});
+});
+const st = document.createElement("style");
+st.id = "family-hub-a11y-fonts";
+st.textContent = css.join("\n");
+document.head.appendChild(st);
+}
+// ---- E-ink ----
+// the real E-ink screen setting of this device
+function deviceMode() {
+try {
+const v = localStorage.getItem("familyHubEinkModeLocal");
+return MODES.includes(v) ? v : "off";
+} catch (e) {
+return "off";
+}
+}
+// the look: the device's E-ink screen, or High contrast (the black & white e-ink look on a normal screen)
+function mode() {
+const m = deviceMode();
+if (m !== "off") return m;
+return a11y().highContrast === "on" ? "bw" : "off";
+}
+function tappable() {
+try {
+return localStorage.getItem("familyHubEinkTappableLocal") !== "off";
+} catch (e) {
+return true;
+}
+}
+function toHex(color) {
+const c = String(color || "").trim().toLowerCase();
+let m = c.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/);
+if (m) return m[1].length === 3 ? "#" + m[1].split("").map((x) => x + x).join("") : c;
+m = c.match(/^rgba?\(\s*(\d+)[ ,]+(\d+)[ ,]+(\d+)(?:[ ,/]+([\d.]+))?/);
+if (!m) return null;
+if (m[4] !== undefined && parseFloat(m[4]) < 0.5) return null;
+return "#" + [m[1], m[2], m[3]].map((n) => (+n).toString(16).padStart(2, "0")).join("");
+}
+function hsl(hex) {
+const r = parseInt(hex.slice(1, 3), 16) / 255, g = parseInt(hex.slice(3, 5), 16) / 255, b = parseInt(hex.slice(5, 7), 16) / 255;
+const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2;
+let h = 0, s = 0;
+if (max !== min) {
+const d = max - min;
+s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+h = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+h *= 60;
+}
+return { h, s, l };
+}
+// the household's people colours in order, as the calendar last worked them out on this device
+function household() {
+try {
+const v = JSON.parse(localStorage.getItem("familyHubEinkPeopleLocal") || "[]");
+return Array.isArray(v) ? v.map((x) => toHex(x)).filter(Boolean) : [];
+} catch (e) {
+return [];
+}
+}
+const seen = [];
+let cache = { sig: "", map: {} };
+function order() {
+const list = household();
+seen.forEach((c) => { if (!list.includes(c)) list.push(c); });
+return list;
+}
+// where a colour sits in the household's order (new colours join the end, in the order they're seen)
+function personIndex(hex) {
+let list = order();
+if (!list.includes(hex)) {
+seen.push(hex);
+list = order();
+}
+return list.indexOf(hex);
+}
+function mapFor(m) {
+const list = order();
+const sig = m + "|" + list.join(",");
+if (cache.sig === sig) return cache.map;
+const map = {};
+const used = new Set();
+list.forEach((c, i) => {
+if (m === "bw") {
+map[c] = PATTERNS[i % PATTERNS.length];
+return;
+}
+const x = hsl(c);
+const ranked = x.s < 0.12 ? [["black", "#000", 0]] : INKS.slice().sort((a, b) => {
+const d = (k) => Math.min(Math.abs(x.h - k[2]), 360 - Math.abs(x.h - k[2]));
+return d(a) - d(b);
+}).concat([["black", "#000", 0]]);
+const free = ranked.find((ink) => !used.has(ink[0]));
+if (free) {
+used.add(free[0]);
+map[c] = `linear-gradient(${free[1]},${free[1]})`;
+} else {
+map[c] = `repeating-linear-gradient(45deg,${ranked[0][1]} 0 3px,#fff 3px 6px)`;
+}
+});
+cache = { sig, map };
+return map;
+}
+// the background a person's colour gets on this e-ink screen; null to leave it as it is
+function background(color, m) {
+m = m || mode();
+if (m === "off") return null;
+const hex = toHex(color);
+if (!hex) return null;
+const x = hsl(hex);
+if (x.l > 0.94) return null; // white-ish: already fine
+if (m === "kaleido") return `hsl(${Math.round(x.h)} ${Math.round(Math.min(1, Math.max(0.6, x.s * 1.6 + 0.15)) * 100)}% 58%)`;
+if (!household().includes(hex) && !seen.includes(hex)) seen.push(hex);
+return mapFor(m)[hex];
+}
+// Color vision: a person's shape, a darker shade of their colour (for the shape and the pattern) and their pattern in it
+function darker(hex) {
+const n = (i) => Math.round(parseInt(hex.slice(i, i + 2), 16) * 0.42);
+return `rgb(${n(1)}, ${n(3)}, ${n(5)})`;
+}
+function cvFor(color) {
+const hex = toHex(color);
+if (!hex || hsl(hex).l > 0.94) return null;
+const i = personIndex(hex);
+const dark = darker(hex);
+const pattern = PATTERNS[i % PATTERNS.length].replace(/#000/g, dark).replace(/#fff/g, "transparent");
+return { shape: SHAPES[i % SHAPES.length], shapeName: SHAPE_NAMES[i % SHAPE_NAMES.length], dark, pattern, index: i };
+}
+const BASE_CSS = `
+:host([eink]) > * { --fc-bg: #fff; --fc-card: #fff; --fc-card-opaque: #fff; --fc-card-menu: #fff; --fc-surface-alt: #fff; --fc-surface2: #fff; --fc-text: #000; --fc-text-secondary: #222; --fc-text-muted: #333; --fc-border: #000; --fc-accent: #000; --fc-accent-text: #fff; --fc-accent2: #000; --fc-accent3: #000; --fc-accent-soft: #fff; --fc-shadow: none; --fc-now: #000; --fc-now-text: #fff; --fc-glass-blur: 0px; --fc-bg-blur: 0px; --fc-bg-image: none; --fc-bg-overlay-image: none; --fc-danger: #000; }
+:host([eink]) *, :host([eink]) *::before, :host([eink]) *::after { transition: none !important; animation: none !important; box-shadow: none !important; text-shadow: none !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+:host([eink]) ha-card { background: #fff !important; color: #000 !important; border: 2px solid #000 !important; border-radius: 8px !important; }
+:host([eink]) button:not([data-fh-eink-dot]), :host([eink]) select, :host([eink]) input { border-color: #000 !important; }
+:host([eink]) [data-fh-eink-dot] { outline: 1.5px solid #000; outline-offset: -1.5px; }
+:host([eink="kaleido"]) [data-fh-eink-dot] { outline: none; }
+:host([eink]) .confetti, :host([eink]) .confetti-piece, :host([eink]) .fh-confetti, :host([eink]) [class*="confetti"] { display: none !important; }
+:host([eink]) .person-pill, :host([eink]) .pill { color: #000 !important; border: 2px solid #000 !important; }
+:host([eink]) .person-pill *, :host([eink]) .pill * { color: #000 !important; }
+:host([eink="bw"]) [data-fh-eink-strip], :host([eink="color6"]) [data-fh-eink-strip] { background: linear-gradient(90deg, transparent 0 10px, #fff 10px), var(--fh-eink-strip) !important; padding-left: 15px !important; color: #000 !important; border: 2px solid #000 !important; }
+:host([eink="kaleido"]) [data-fh-eink-strip] { color: #000 !important; }
+:host([eink]) button:disabled, :host([eink]) button[disabled] { background: #fff !important; color: #444 !important; border: 2px dashed #000 !important; opacity: 1 !important; }
+:host([eink]) .person-pill.active-filter, :host([eink]) .pill.active { outline: 3px solid #000; outline-offset: 1px; }
+:host([eink]) .person-pill.dimmed { opacity: 1 !important; border-style: dashed !important; }
+:host([eink="bw"]) img, :host([eink="bw"]) .has-pic { filter: grayscale(1) contrast(1.3); }
+:host([eink-static]) [class$="-fab"], :host([eink-static]) [class*="-fab "], :host([eink-static]) .fab { display: none !important; }
+`;
+// Accessibility styling every card shares (the calendar has the same rules for its own parts)
+const A11Y_CSS = `
+:host([a11y-cv]) [data-fh-cv-fill] { clip-path: var(--fh-cv-shape); border-radius: 0 !important; outline: none !important; min-width: 14px; min-height: 14px; }
+:host([a11y-cv]) [data-fh-cv-strip] { background: linear-gradient(90deg, transparent 0 10px, var(--fh-cv-base) 10px), var(--fh-cv-pattern), var(--fh-cv-base) !important; padding-left: 15px !important; }
+:host([a11y-cv]) [data-fh-cv-strip-avatar] .avatar:not(.has-pic), :host([a11y-cv]) [data-fh-cv-strip-avatar] .person-pill-avatar:not(.has-pic) { clip-path: var(--fh-cv-shape); border-radius: 0 !important; background: var(--fh-cv-dark) !important; color: #fff !important; }
+:host([a11y-cv][eink]) [data-fh-cv-strip-avatar] .avatar:not(.has-pic), :host([a11y-cv][eink]) [data-fh-cv-strip-avatar] .person-pill-avatar:not(.has-pic) { background: #000 !important; border: none !important; }
+:host([a11y-motion]) *, :host([a11y-motion]) *::before, :host([a11y-motion]) *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+:host([a11y-motion]) .confetti, :host([a11y-motion]) .confetti-piece, :host([a11y-motion]) [class*="confetti"] { display: none !important; }
+:host([a11y-font="legible"]) > * { --fc-font-family: "FH Atkinson Hyperlegible", Verdana, sans-serif; font-family: "FH Atkinson Hyperlegible", Verdana, sans-serif !important; }
+:host([a11y-font="dyslexia"]) > * { --fc-font-family: "FH Lexend", Verdana, sans-serif; font-family: "FH Lexend", Verdana, sans-serif !important; letter-spacing: 0.02em; word-spacing: 0.08em; }
+:host([a11y-font]) button, :host([a11y-font]) input, :host([a11y-font]) select, :host([a11y-font]) textarea { font-family: inherit !important; letter-spacing: inherit; }
+:host([a11y-scale]) > :not(style) { zoom: var(--fh-text-scale, 1); }
+:host([a11y-scale]) * { -webkit-hyphens: auto; hyphens: auto; word-break: normal !important; overflow-wrap: break-word; }
+:host([a11y-big]) button, :host([a11y-big]) select, :host([a11y-big]) [role="button"] { min-height: 46px; min-width: 46px; }
+:host([a11y-big]) input[type="checkbox"], :host([a11y-big]) input[type="radio"] { width: 24px !important; height: 24px !important; }
+:host([a11y-big]) [class$="-fab"], :host([a11y-big]) .fab { width: 72px !important; height: 72px !important; font-size: 34px !important; }
+`;
+const attached = new Map();
+// what the kit changed on an element, so it can put it back when it's turned off
+function restore(el) {
+if (el.dataset.fhEinkSet === undefined) return;
+el.dataset.fhEinkSet.split(",").filter(Boolean).forEach((prop) => el.style.removeProperty(prop));
+if (el.dataset.fhEinkOrigBg) el.style.backgroundColor = el.dataset.fhEinkOrigBg;
+const from = el.dataset.fhEinkFrom;
+if (from && el.dataset.fhEinkOrig) {
+if (from === "border") el.style.borderColor = el.dataset.fhEinkOrig;
+else if (from.startsWith("--")) el.style.setProperty(from, el.dataset.fhEinkOrig);
+}
+["fhEinkFrom", "fhEinkMode", "fhEinkSet", "fhEinkOrig", "fhEinkOrigBg", "fhEinkStrip", "fhEinkDot", "fhCvFill", "fhCvStrip", "fhCvStripAvatar"].forEach((k) => delete el.dataset[k]);
+}
+function setProps(el, props) {
+const names = [];
+Object.keys(props).forEach((prop) => {
+el.style.setProperty(prop, props[prop], prop.startsWith("--") ? "" : "important");
+names.push(prop);
+});
+el.dataset.fhEinkSet = names.join(",");
+}
+// where a person's colour sits on an element: its background, its border, or a CSS variable (--person-color)
+function colorOf(el, from) {
+if (!from || from === "background") return el.style.backgroundColor;
+if (from === "border") return el.style.borderTopColor || el.style.borderColor;
+return el.style.getPropertyValue(from);
+}
+function recolor(host, st) {
+const root = host.shadowRoot;
+if (!root) return;
+const m = mode();
+const cv = a11y().colorVision === "shapes";
+const key = m + (cv ? "+cv" : "");
+const groups = [];
+(st.opts.strip || []).forEach((sel) => groups.push([sel, "background", "strip"]));
+(st.opts.stripFrom || []).forEach(([sel, from]) => groups.push([sel, from, "strip"]));
+(st.opts.recolor || []).forEach((sel) => groups.push([sel, "background", "fill"]));
+(st.opts.shapes || []).forEach((sel) => groups.push([sel, "background", "shape"]));
+groups.forEach(([sel, from, kind]) => root.querySelectorAll(sel).forEach((el) => {
+if (m === "off" && !cv) return restore(el);
+if (kind !== "strip" && (el.classList.contains("has-pic") || /url\(/.test(el.style.backgroundImage || ""))) return;
+const orig = el.dataset.fhEinkOrig !== undefined ? el.dataset.fhEinkOrig : colorOf(el, from);
+if (!orig) return;
+if (el.dataset.fhEinkOrig === orig && el.dataset.fhEinkMode === key) return;
+const bg = m !== "off" && kind !== "shape" ? background(orig, m) : null;
+const c = cv ? cvFor(orig) : null;
+if (!bg && !c) {
+if (el.dataset.fhEinkSet !== undefined) restore(el);
+return;
+}
+if (el.dataset.fhEinkSet !== undefined) restore(el);
+el.dataset.fhEinkOrig = orig;
+el.dataset.fhEinkMode = key;
+el.dataset.fhEinkFrom = from;
+if (from === "background") el.dataset.fhEinkOrigBg = orig;
+const props = {};
+if (c) {
+props["--fh-cv-shape"] = c.shape;
+props["--fh-cv-dark"] = c.dark;
+}
+if (bg) {
+if (kind === "fill") {
+el.dataset.fhEinkDot = "1";
+props.background = bg;
+} else if (m === "kaleido") {
+// a colour tablet keeps the person's colour, stronger: as the fill it was, or as the border/variable it came from
+el.dataset.fhEinkStrip = "1";
+if (from === "background") props.background = bg;
+else if (from === "border") props["border-color"] = bg;
+else props[from] = bg;
+} else {
+el.dataset.fhEinkStrip = "1";
+props["--fh-eink-strip"] = bg;
+}
+}
+if (c && (kind === "fill" || kind === "shape")) el.dataset.fhCvFill = "1";
+if (c && kind === "strip" && !bg) {
+// a strip down the left in the person's own pattern, over the colour the element already had
+el.dataset.fhCvStrip = "1";
+props["--fh-cv-pattern"] = c.pattern;
+props["--fh-cv-base"] = from === "background" ? orig : `color-mix(in srgb, ${orig} 16%, white)`;
+}
+if (c && kind === "strip") el.dataset.fhCvStripAvatar = "1";
+setProps(el, props);
+}));
+}
+function applyA11y(host) {
+const v = a11y();
+const set = (name, on, value) => (on ? host.setAttribute(name, value === undefined ? "" : value) : host.removeAttribute(name));
+set("a11y-cv", v.colorVision === "shapes");
+set("a11y-motion", v.reduceMotion || deviceMode() !== "off");
+set("a11y-big", v.bigButtons === "on");
+set("a11y-font", v.font !== "theme", v.font);
+set("a11y-scale", v.textScale !== "100");
+if (v.textScale !== "100") host.style.setProperty("--fh-text-scale", String(parseInt(v.textScale, 10) / 100));
+else host.style.removeProperty("--fh-text-scale");
+if (v.font !== "theme") ensureFonts();
+return v;
+}
+function anyA11y(v) {
+return v.colorVision !== "off" || v.reduceMotion || v.bigButtons !== "off" || v.font !== "theme" || v.textScale !== "100";
+}
+function apply(host) {
+const st = attached.get(host);
+if (!st) return;
+// the calendar loads the household settings itself (and hands the Accessibility part over with setHousehold)
+if (!st.opts.a11yOnly) loadHousehold(host._hass || host.hass);
+const v = applyA11y(host);
+const root = host.shadowRoot;
+if (st.opts.a11yOnly) {
+// the calendar draws its own e-ink and colour vision; this just gives it the shared accessibility attributes
+if (root && !root.querySelector("style[data-fh-a11y]")) {
+const s = document.createElement("style");
+s.setAttribute("data-fh-a11y", "");
+s.textContent = A11Y_CSS;
+root.appendChild(s);
+}
+return;
+}
+const m = mode();
+if (m !== "off") host.setAttribute("eink", m);
+else host.removeAttribute("eink");
+if (deviceMode() !== "off" && !tappable()) host.setAttribute("eink-static", "");
+else host.removeAttribute("eink-static");
+if (!root) return;
+const on = m !== "off" || anyA11y(v);
+let styleEl = root.querySelector("style[data-fh-eink]");
+if (on && !styleEl) {
+styleEl = document.createElement("style");
+styleEl.setAttribute("data-fh-eink", "");
+styleEl.textContent = BASE_CSS + A11Y_CSS + (st.opts.css || "");
+root.appendChild(styleEl);
+} else if (!on && styleEl) {
+styleEl.remove();
+}
+recolor(host, st);
+}
+function attach(host, opts, tries) {
+let st = attached.get(host);
+if (!st) {
+st = { opts: opts || {}, obs: null, timer: null, queued: false };
+attached.set(host, st);
+}
+if (st.obs) return;
+if (!host.shadowRoot) {
+if ((tries || 0) < 120) st.timer = setTimeout(() => attach(host, opts, (tries || 0) + 1), 250);
+apply(host);
+return;
+}
+st.obs = new MutationObserver(() => {
+if (st.queued) return;
+st.queued = true;
+Promise.resolve().then(() => {
+st.queued = false;
+if (mode() !== "off" || anyA11y(a11y()) || host.shadowRoot.querySelector("[data-fh-eink-orig],style[data-fh-eink],style[data-fh-a11y]")) apply(host);
+else if (!st.opts.a11yOnly) loadHousehold(host._hass || host.hass);
+});
+});
+st.obs.observe(host.shadowRoot, { childList: true, subtree: true });
+apply(host);
+}
+function detach(host) {
+const st = attached.get(host);
+if (!st) return;
+if (st.obs) st.obs.disconnect();
+clearTimeout(st.timer);
+attached.delete(host);
+}
+const refreshAll = () => attached.forEach((st, host) => apply(host));
+window.addEventListener("family-hub-eink-changed", refreshAll);
+window.addEventListener("storage", (e) => { if (!e.key || /^familyHub(Eink|A11y)/.test(e.key)) refreshAll(); });
+try {
+if (window.matchMedia) {
+const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+if (mq && mq.addEventListener) mq.addEventListener("change", refreshAll);
+}
+} catch (e) {
+}
+window.__familyHubEink = {
+mode, deviceMode, tappable, background, cvFor, a11y, a11yClean, setHousehold, ensureFonts, A11Y_KEYS: A11Y, SHAPES, SHAPE_NAMES,
+attach: (host, opts) => attach(host, opts, 0), detach, refreshAll, BASE_CSS, A11Y_CSS,
+};
+})();
+// FH-EINK END
+// FH-MODAL-SCROLL START - source: tools/modal_scroll_guard.js, copied into each card by tools/sync_modal_scroll_guard.py
+// 2026.11.1.13: the page behind a card's open popup doesn't scroll. Home Assistant's dashboard layout can make a card's
+// "fixed" popups move with the card instead of staying on screen, so scrolling under one carried the popup (and its
+// buttons) away. While a popup (.modal-overlay.open) is open the page is locked, and anything that still scrolls it -
+// a phone ignoring the lock, a dashboard scrolling its own container - is put straight back.
+(function () {
+if (window.__familyHubModalScroll) return;
+if (!window.__familyCalendarSetScrollLock) {
+const holders = new Set();
+const render = () => {
+let styleEl = document.getElementById("family-calendar-scroll-lock-style");
+if (!styleEl) {
+styleEl = document.createElement("style");
+styleEl.id = "family-calendar-scroll-lock-style";
+document.head.appendChild(styleEl);
+}
+styleEl.textContent = holders.size
+? `html, body { overflow: hidden !important; height: 100% !important; height: 100dvh !important; overscroll-behavior: none; }`
+: "";
+};
+window.__familyCalendarSetScrollLock = (holder, locked) => {
+if (locked) holders.add(holder);
+else holders.delete(holder);
+render();
+};
+window.__familyCalendarApplyScrollLock = (locked) => window.__familyCalendarSetScrollLock(window, !!locked);
+}
+const watched = new Map();
+const composedParent = (n) => {
+const pn = n.parentNode;
+return pn && pn.nodeType === 11 && pn.host ? pn.host : n.parentElement || null;
+};
+function sync(host) {
+const st = watched.get(host);
+if (!st) return;
+st.queued = false;
+const root = host.shadowRoot;
+const open = host.isConnected && !!(root && root.querySelector(".modal-overlay.open"));
+window.__familyCalendarSetScrollLock(st.key, open);
+if (open && !st.guard) {
+const spots = [];
+for (let n = composedParent(host); n; n = composedParent(n)) {
+if (n.nodeType === 1 && (n.scrollHeight > n.clientHeight + 1 || n.scrollTop)) spots.push([n, n.scrollTop]);
+}
+const winY = window.scrollY || 0;
+st.guard = () => {
+if ((window.scrollY || 0) !== winY) window.scrollTo(window.scrollX || 0, winY);
+for (const [el, top] of spots) if (el.scrollTop !== top) el.scrollTop = top;
+};
+window.addEventListener("scroll", st.guard, { capture: true, passive: true });
+} else if (!open && st.guard) {
+window.removeEventListener("scroll", st.guard, { capture: true });
+st.guard = null;
+}
+}
+function attach(host, tries) {
+const st = watched.get(host);
+if (!st || st.obs) return;
+const root = host.shadowRoot;
+if (!root) {
+if (tries < 120) st.timer = setTimeout(() => attach(host, tries + 1), 250);
+return;
+}
+st.obs = new MutationObserver(() => {
+if (st.queued) return;
+st.queued = true;
+Promise.resolve().then(() => sync(host));
+});
+st.obs.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] });
+sync(host);
+}
+window.__familyHubModalScroll = {
+watch(host) {
+if (watched.has(host)) return;
+watched.set(host, { key: { modalOf: host }, obs: null, guard: null, timer: null, queued: false });
+attach(host, 0);
+},
+unwatch(host) {
+const st = watched.get(host);
+if (!st) return;
+if (st.obs) st.obs.disconnect();
+clearTimeout(st.timer);
+if (st.guard) window.removeEventListener("scroll", st.guard, { capture: true });
+window.__familyCalendarSetScrollLock(st.key, false);
+watched.delete(host);
+},
+};
+})();
+// FH-MODAL-SCROLL END
+// Holiday themes, shared by every Family Hub card: a holiday background can switch the theme
+// while it's showing. The backend works out the dates (family_hub/holiday_themes/get); this
+// checks today against them, refreshes every 30 minutes, and tells cards to re-theme when the
+// answer changes (including at midnight).
+if (!window.__fhHolidayTheme) {
+  window.__fhHolidayTheme = (function () {
+    let schedule = null;
+    let fetchedAt = 0;
+    let loading = null;
+    let midnightTimer = null;
+    let lastId = null;
+    const listeners = new Set();
+    const todayKey = () => {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    };
+    const span = (s) => (Date.parse(s.end) - Date.parse(s.start)) || 0;
+    function current() {
+      if (!Array.isArray(schedule)) return "";
+      const k = todayKey();
+      // the most specific wins: a day beats a week, a week beats a month (same rule as the backgrounds)
+      const hits = schedule.filter((s) => s && s.theme_id && s.start <= k && k <= s.end).sort((a, b) => span(a) - span(b));
+      return hits.length ? hits[0].theme_id : "";
+    }
+    function notify() {
+      const id = current();
+      if (id === lastId) return;
+      lastId = id;
+      listeners.forEach((cb) => {
+        try {
+          cb();
+        } catch (e) {
+          // one card's error never stops the others
+        }
+      });
+    }
+    function armMidnight() {
+      clearTimeout(midnightTimer);
+      const now = new Date();
+      const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+      midnightTimer = setTimeout(() => {
+        notify();
+        armMidnight();
+      }, next.getTime() - now.getTime());
+    }
+    function refresh(hass) {
+      if (!hass || !hass.connection) return Promise.resolve();
+      if (loading) return loading;
+      loading = hass.connection
+        .sendMessagePromise({ type: "family_hub/holiday_themes/get" })
+        .then((r) => {
+          schedule = (r && Array.isArray(r.schedule) && r.schedule) || [];
+        })
+        .catch(() => {
+          schedule = schedule || [];
+        })
+        .then(() => {
+          fetchedAt = Date.now();
+          loading = null;
+          armMidnight();
+          notify();
+        });
+      return loading;
+    }
+    return {
+      themeId(hass) {
+        if (hass && !loading && Date.now() - fetchedAt > 30 * 60 * 1000) refresh(hass);
+        return current();
+      },
+      subscribe(cb) {
+        listeners.add(cb);
+        return () => listeners.delete(cb);
+      },
+      invalidate(hass) {
+        fetchedAt = 0;
+        return refresh(hass);
+      },
+    };
+  })();
+}
+// Family Hub Goals card (v133+, v143+ "My Goals") - progress-tracked achievements a household attaches a reward to
 
-// ---- Family Hub shared translation helper (v1.168.76) -------------------
-// __fhT(key, english, vars, mode) looks a string up in Home Assistant's
-// loaded "fh_ui" translations (translations/<language>.json → fh_ui.text.*)
-// and falls back to the English text written right here in the source.
-// vars fill %0%, %1%, ... placeholders. mode "h" escapes the translated
-// text (not the vars, which callers already prepared) for use inside HTML
-// markup or an attribute value. Identical copy in every Family Hub card and
-// in the Theme Builder panel - whichever loads first sets it up.
-// __fhSweep(root) re-translates markup that was drawn before the language
-// file finished loading (elements tagged data-fh-t / data-fh-title /
-// data-fh-placeholder / data-fh-aria / data-fh-alt), but only while they
-// still show the English original, so text a card later replaced with
-// something else is never overwritten.
+// --- Family Hub shared translation helper (v1.168.76) ------------------- __fhT(key, english, vars
 var __fhI18n = (window.__familyHubI18n = window.__familyHubI18n || { hass: null, fb: {}, loading: null, loaded: null });
 var __fhEsc = function (s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -110,72 +718,10 @@ const GOAL_REWARD_TYPE_CATALOG_ITEM = "catalog_item";
 const GOAL_STATUS_OPEN = "open";
 const GOAL_STATUS_PENDING_VERIFICATION = "pending_verification";
 const GOAL_STATUS_APPROVED = "approved";
-// An approved goal used to just sit in the same flat My Goals list forever
-// (see _goalCardHtml's own `.status-approved { opacity: 0.6 }` - the only
-// concession that was ever made for it), same complaint as chores had
-// before their own Completed accordion existed, except chores age
-// themselves out automatically and goals had no equivalent at all - see
-// goal_engine.archive_goal's own docstring.
+// An approved goal used to just sit in the same flat My Goals list forever (see _goalCardHtml's own `.status-approved { opacity: 0.6 }`
 const GOAL_STATUS_ARCHIVED = "archived";
 
-// Shared, dashboard-wide FAB coordinator - "when a user has more than one
-// card on the same screen, the FAB buttons overlap, what is the solution?
-// Can we detect and combine them? If they have the same tabs can we make
-// them not duplicate?" Every Family Hub card with a floating "+" button
-// (Calendar's Add Event, Chores, Rewards, Goals, To-Do) independently
-// fixed-positions it at the same bottom-right spot, so two or more of
-// these cards on one dashboard view (Chores+Rewards+Goals together is
-// explicitly supported - see goalsShowInChores/goalsShowInRewards) stack
-// their FABs directly on top of each other.
-//
-// Same shared-singleton shape as window.__familyHubScreenSaver just above
-// (copy-pasted identically into every FAB-bearing card file, since these
-// are independently-loaded Lovelace resources rather than ES modules that
-// could import one shared file) - only the FIRST card whose script
-// actually runs this block sets it up; every other card's identical copy
-// just sees the flag already set and no-ops. Cards register on connect
-// and unregister on disconnect, exactly mirroring registerClient/
-// unregisterClient/_registerScreenSaver below, so a dashboard-edit that
-// adds/removes a card (or switching HA tabs, which disconnects/reconnects
-// every card on the old one) never leaves a stale slot reserved for a
-// card that's gone, or fails to reserve one for a card that's arrived.
-//
-// DESIGN CHOICE - stack, don't merge. A single mega-FAB trying to stand in
-// for "add a chore OR an event OR a reward" would hide which action does
-// what behind an extra tap, for buttons that already open very different
-// modals. Instead, each FAB stays itself but the coordinator assigns it a
-// distinct vertical slot (via a --fh-fab-offset CSS custom property set on
-// the card's own HOST element, which cascades into its shadow DOM the same
-// way any inherited custom property does - no direct DOM/element handle
-// needed, so this survives the card's own _render() rebuilding its shadow
-// DOM on every data refresh without having to be re-applied each time),
-// stacked in a fixed, deterministic order (FAB_KIND_ORDER below) so the
-// same household always sees Calendar/Chores/Rewards/Goals/To-Do FABs in
-// the same relative stack position regardless of which card's script
-// happened to load or register first.
-//
-// DESIGN CHOICE - Goals tab de-duplication. Goals can appear on-screen
-// from up to three sources at once: the standalone Goals card's own "+"
-// FAB, AND a "Goal" tab on the Chores FAB (when goalsShowInChores is on),
-// AND a "Goal" tab on the Rewards FAB (when goalsShowInRewards is on) -
-// the same underlying add-a-goal action reachable three different ways.
-// Rather than teaching the Chores/Rewards creation modals to strip their
-// own Goal tab (which would mean each of those two files reaching across
-// to know about the OTHER two, and about the standalone Goals card too -
-// a combinatorial mess for marginal benefit, since a Goal tab embedded in
-// a board the household is already looking at is not really "duplicate
-// UI" so much as "the same action, conveniently placed"), only the
-// LOWEST-RISK, clearest case is handled: when the coordinator sees ANY
-// other registered card is already offering a Goal tab, the standalone
-// Goals card suppresses its own add-goal-fab entirely (nothing left to
-// add there that isn't one tap away already) - see registerClient's
-// `meta.providesGoalTab` and the onLayout callback's `otherProvidesGoalTab`
-// below, and family-hub-goals-card.js's own _applyFabCoordinatorState.
-// Chores' and Rewards' own Goal tabs are left alone in both directions -
-// a household running Chores+Rewards with both goals toggles on still
-// sees a Goal tab on each, which is judged acceptable (accomplishing the
-// same underlying thing twice from two boards you're already looking at
-// is harmless, unlike a whole redundant floating button).
+// Shared, dashboard-wide FAB coordinator - "when a user has more than one card on the same screen, the FAB buttons overlap
 if (!window.__familyHubFabCoordinator) {
   window.__familyHubFabCoordinator = (function () {
     // Deterministic stacking order - unrecognized/future kinds sort last,
@@ -185,24 +731,7 @@ if (!window.__familyHubFabCoordinator) {
     const SLOT_HEIGHT_PX = 66;
     const entries = new Map(); // client -> { kind, seq, meta, onUpdate }
     let seq = 0;
-    // Every FAB here is position:fixed, pinned to the viewport corner (or,
-    // for a fab-position:"card" client, to its own card's box) - each card
-    // is its own independently-loaded custom element with no idea what
-    // other Family Hub cards are doing on the same dashboard, so a full-
-    // screen modal opened by ANY of them (most visibly the calendar card's
-    // own Settings screen) could end up with a totally unrelated card's
-    // FAB painted on top of it: depending on how the dashboard lays out
-    // its cards (Home Assistant's newer Sections view in particular can
-    // give each card's container its own CSS containment/stacking
-    // context), a sibling card's FAB z-index isn't guaranteed to actually
-    // lose to this card's modal overlay the way a plain same-shadow-DOM
-    // z-index comparison would. Rather than depend on that, every FAB-
-    // bearing card asks every OTHER one to physically hide
-    // (fab.hidden = true, not just "behind" via z-index - see each card's
-    // own onUpdate) while any of them has a full-screen modal open, via
-    // openModalCount/pushModalOpen/popModalOpen below - same "don't trust
-    // cross-shadow-DOM z-index, coordinate explicitly instead" approach as
-    // this project's shared screensaver controller.
+    // Every FAB here is position:fixed, pinned to the viewport corner (or, for a fab-position:"card" client, to its own card's box)
     let openModalCount = 0;
 
     function orderIndex(kind) {
@@ -216,10 +745,7 @@ if (!window.__familyHubFabCoordinator) {
         if (oa !== ob) return oa - ob;
         return a[1].seq - b[1].seq;
       });
-      // entries with takesSlot:false (a fab_position: "card"
-      // client - see registerClient's own doc below) are skipped when
-      // handing out stacking slots/offsets, but still walked here so they
-      // still see otherProvidesGoalTab and still get an onUpdate call.
+      // entries with takesSlot:false (a fab_position: "card" client
       const slotCount = list.filter(([, entry]) => entry.takesSlot).length;
       let slotIndex = 0;
       const hideForModal = openModalCount > 0;
@@ -234,51 +760,20 @@ if (!window.__familyHubFabCoordinator) {
       });
     }
     return {
-      // `kind` is one of FAB_KIND_ORDER's entries (or anything else, which
-      // just sorts last). `meta` is a plain object of extra facts other
-      // cards' layout decisions might care about - today only
-      // `providesGoalTab` (see this block's own docstring above). `onUpdate`
-      // is called once immediately (so a lone card on an otherwise-empty
-      // dashboard still gets offsetPx: 0) and again on every subsequent
-      // register/unregister/updateClientMeta/pushModalOpen/popModalOpen
-      // from ANY card, since adding a second FAB changes where the first
-      // one's slot is too, and any card's modal opening/closing changes
-      // whether every FAB should currently be hidden.
-      //
-      // `opts.takesSlot` (default true) - pass `{ takesSlot:
-      // false }` for a card whose FAB has opted out of the shared
-      // viewport-corner stack (fab_position: "card" - anchored to its own
-      // card's box instead, see each card's own _registerFabCoordinator).
-      // It's still a full member of the coordinator (still contributes/
-      // reads `meta.providesGoalTab`, so goal-tab de-duplication keeps
-      // working across a mixed dashboard/card-positioned set of FABs), it
-      // just never occupies - or shifts - a stacking slot, since a
-      // shared viewport-corner offset is meaningless once a FAB is
-      // positioned relative to its own card instead.
+      // `kind` is one of FAB_KIND_ORDER's entries (or anything else, which just sorts last).
       registerClient(client, kind, meta, onUpdate, opts) {
         const takesSlot = !(opts && opts.takesSlot === false);
         entries.set(client, { kind, seq: seq++, meta: meta || {}, onUpdate, takesSlot });
         recompute();
       },
-      // Call whenever a fact in `meta` changes at runtime (e.g. the
-      // household flips goalsShowInChores in Settings without reloading
-      // the dashboard) - see chores/rewards cards' _fetchSettings.
+      // Call whenever a fact in `meta` changes at runtime (e.g. the household flips goalsShowInChores in Settings without reloading the dashboard)
       updateClientMeta(client, meta) {
         const entry = entries.get(client);
         if (!entry) return;
         entry.meta = Object.assign({}, entry.meta, meta || {});
         recompute();
       },
-      // Call when THIS card opens a full-screen modal that every OTHER
-      // Family Hub card's FAB should get out of the way of (today: only
-      // the calendar card's own Settings screen calls this - see its
-      // _setupSettingsFabCoordination). A plain counter, not a per-client
-      // flag, so this stays correct even if more than one such modal is
-      // ever open across more than one card at once - every pushModalOpen
-      // needs a matching popModalOpen before FABs reappear, and a card
-      // that unmounts while its own modal was still open (see
-      // disconnectedCallback) pops on its way out rather than leaking the
-      // count forever.
+      // Call when THIS card opens a full-screen modal that every OTHER Family Hub card's FAB should get out of the way of
       pushModalOpen() {
         openModalCount += 1;
         recompute();
@@ -287,9 +782,7 @@ if (!window.__familyHubFabCoordinator) {
         openModalCount = Math.max(0, openModalCount - 1);
         recompute();
       },
-      // Call from disconnectedCallback. Frees this card's slot so every
-      // remaining card's FAB shifts back down to close the gap, and (for
-      // Goals) re-checks whether it's still safe to suppress its own FAB.
+      // Call from disconnectedCallback.
       unregisterClient(client) {
         if (entries.delete(client)) recompute();
       },
@@ -297,27 +790,8 @@ if (!window.__familyHubFabCoordinator) {
   })();
 }
 
-// Household-wide timer alarm sound+modal (v1.119.0+, widened in
-// v1.132.55+) - see family-hub-active-timers-card.js's own top comment
-// above this same block for the full design note. Added here in
-// v1.132.59+ after a - this card never carried this singleton or subscribed to
-// the widened-alarm broadcast at all, so a kiosk whose dashboard shows
-// it silently never rang for anyone else's widened timer alarm. Kept
-// byte-identical to every other card's copy on purpose.
 if (!window.__familyHubTimerAlarm) {
-  // v1.168.74 (timer + alarm overhaul): the on-screen half of a Family Hub
-  // timer alarm - a full-screen "time's up" with a looping alarm sound that
-  // keeps going until someone taps Stop, shared by every Family Hub card on
-  // the page (one modal, one sound, appended to document.body).
-  //
-  // A screen rings when the backend's family_hub_timer_alarm_ring event
-  // says so: it's the screen that started the timer (origin_client_id =
-  // this tab's id), it's logged in as one of target_user_ids (the owner, a
-  // kiosk login on a "kiosks" alarm), or broadcast_all ("everyone"). The
-  // tab that started a timer also rings on its own the instant its local
-  // countdown reaches zero (check()), so there's no wait for the server.
-  // Several alarms at once each get their own row and Stop button. Stop
-  // here stops it everywhere (screens, phones, speakers).
+  // (timer + alarm overhaul): the on-screen half of a Family Hub timer alarm
   window.__familyHubTimerAlarm = (function () {
     let modalEl = null;
     let audioCtx = null;
@@ -461,9 +935,7 @@ if (!window.__familyHubTimerAlarm) {
       }
     }
     return {
-      // From a card's 1-second countdown tick: the tab that started a timer
-      // rings the moment it reaches zero (any timer it started, alarm-style
-      // or not, assigned or not).
+      // From a card's 1-second countdown tick: the tab that started a timer rings the moment it reaches zero (any timer it started
       check(timers, clientId, remainingSecondsFn, hass) {
         if (hass) lastHass = hass;
         const me = clientId || myClientId();
@@ -502,50 +974,7 @@ if (!window.__familyHubTimerAlarm) {
   })();
 }
 
-// Theme flash-of-default fix - Root cause: EVERY themed card's first paint happens
-// with no theme CSS vars set at all (falls back to _defaultTheme()'s own
-// hardcoded palette), because resolving the household's actual theme
-// takes two sequential, awaited websocket round trips after `hass` is
-// first set - family_hub/get_settings (_fetchSettings), THEN
-// theme_builder/list (_fetchGlobalThemes, which is what a Global Theme
-// selection actually needs to resolve into real colors) - both happening
-// well after `_build()` has already rendered the card once. There was no
-// way to know the real colors before those round trips finished.
-//
-// Fix: cache the last set of CSS var values this device actually applied
-// (in memory for the rest of this page load, in localStorage across
-// reloads), and apply that cache SYNCHRONOUSLY in `_build()` - before the
-// very first paint, before any fetch has even started - so a reload shows
-// last-known-good colors immediately instead of _defaultTheme()'s
-// hardcoded ones. Once the real fetches resolve, `_applyThemeVars()` runs
-// as it always has and reconciles - a no-op re-application (no visible
-// change) if nothing changed since last time, which is the overwhelmingly
-// common case on an ordinary refresh; a visible switch only when the
-// household's theme has genuinely changed since this device last saw it,
-// which is unavoidable (nothing can know about a change before asking).
-//
-// Same shared-singleton, "only the first card whose script actually runs
-// this block sets it up" pattern as window.__familyHubFabCoordinator/
-// __familyHubKioskSession/__familyHubScreenSaver/__familyHubTimerAlarm
-// above - copy-pasted byte-identically into every themed card file, since
-// these are independently-loaded Lovelace resources rather than ES
-// modules that could import one shared file (same reasoning as those).
-//
-// Cached under a KEY, not one single blob, because different cards (or
-// even the SAME card on a different dashboard placement) can legitimately
-// resolve to different colors at once - a per-card-placement Theme
-// override (`_config.theme_override`) or a per-device override
-// (`_getDeviceThemeOverride()`) both exist specifically so one card can
-// look different from the household's shared theme. Caching under one
-// shared key would "fix" the flash for the common case but introduce a
-// WRONG flash for an overridden card (briefly showing the household's
-// theme before its own override kicks in) - a strictly worse bug than
-// the one being fixed. The key is derived the same way every time
-// (`_familyHubThemeCacheKey`, called identically from `_build()` before
-// first paint and from `_applyThemeVars()` after resolving for real), so
-// a card with no override at all shares one cache entry with every other
-// un-overridden card/placement (the common case this exists for), while
-// an overridden card/placement gets its own.
+// Theme flash-of-default fix - Root cause: EVERY themed card's first paint happens with no theme CSS vars set at all
 if (!window.__familyHubThemeCache) {
   window.__familyHubThemeCache = (function () {
     const STORAGE_PREFIX = "familyHubThemeVarsCache::";
@@ -573,9 +1002,7 @@ if (!window.__familyHubThemeCache) {
       try {
         localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(vars));
       } catch (e) {
-        // Best-effort only - the in-memory copy above still helps every
-        // OTHER card mounted later in this same page load even if
-        // localStorage itself is unavailable.
+        // Best-effort only - the in-memory copy above still helps every OTHER card mounted later in this same page load even if localStorage itself
       }
     }
     return { get, set };
@@ -583,30 +1010,26 @@ if (!window.__familyHubThemeCache) {
 }
 
 class FamilyHubGoalsCard extends HTMLElement {
+  // 2026.11.1.16: this card's own e-ink styling, on top of the shared kit (FH-EINK)
+  static get EINK_CSS() {
+    return `
+:host([eink]) .progress-fill, :host([eink]) .goal-progress-fill, :host([eink]) [class*="progress-fill"] { background: #000 !important; }
+:host([eink]) .goal, :host([eink]) .goal-card, :host([eink]) .goal-item { background: #fff !important; border: 2px solid #000 !important; }
+`;
+  }
   static getStubConfig() {
     return { title: "My Goals" };
   }
-  // switched from getConfigForm (a static schema) to
-  // getConfigElement (a real custom element with its own hass/config
-  // lifecycle) solely so the new theme_override field below can offer a
-  // live-fetched list of themes - see FamilyHubGoalsCardEditor at the
-  // bottom of this file for the full reasoning and the rest of the form.
+  // switched from getConfigForm (a static schema) to getConfigElement
   static getConfigElement() {
     return document.createElement("family-hub-goals-card-editor");
   }
-  // see family-hub-chores-card.js's identical setConfig/
-  // _registerFabCoordinator comment for the full "dashboard" vs "card"
-  // design note - same option, same mechanism, on every FAB-bearing card.
+  // see family-hub-chores-card.js's identical setConfig/ _registerFabCoordinator comment for the full "dashboard" vs "card" design note
   setConfig(config) {
     this._config = {
       title: (config && config.title) || "My Goals",
       fab_position: config && config.fab_position === "card" ? "card" : "dashboard",
-      // per-card-placement Theme override, set from this card's
-      // own "Edit Card" dialog - "" (the default, untouched by every
-      // existing dashboard) means "Use device settings," i.e. exactly the
-      // pre-1.111.0 behavior (device override, else household Global
-      // Theme, else this card's own local theme). See _resolveTheme below
-      // for where this actually takes priority.
+      // per-card-placement Theme override, set from this card's own "Edit Card" dialog - "" (the default
       theme_override: (config && typeof config.theme_override === "string") ? config.theme_override : "",
     };
     this._registerFabCoordinator();
@@ -629,28 +1052,14 @@ class FamilyHubGoalsCard extends HTMLElement {
   }
   async _initFirstLoad() {
     await Promise.all([this._fetchSettings(), this._fetchUsers(), this._fetchGoals(), this._fetchCatalog(), this._fetchMyPermissions()]);
-    // always fetched now, not just when the household has
-    // useGlobalTheme on - a per-card theme_override needs this list
-    // regardless of the household's own Global Theme setting.
+    // always fetched now, not just when the household has useGlobalTheme on
     await this._fetchGlobalThemes();
     this._startPolling();
     this._registerFabCoordinator();
-    // - see this
-    // file's own copy of the window.__familyHubTimerAlarm singleton
-    // (below) for the full design note. Kept byte-identical to every
-    // other card's copy on purpose.
+    // see this file's own copy of the window.__familyHubTimerAlarm singleton (below) for the full design note.
     this._subscribeAlarmEvents();
     this._render();
   }
-  // household-wide timer alarms - subscribe to the two bus
-  // events chores_websocket_api.py's _dispatch_timer_alarm/
-  // _reannounce_active_alarms fire (see const.py's
-  // EVENT_FAMILY_HUB_TIMER_ALARM_RING/_STOP), and hand each one to the
-  // shared window.__familyHubTimerAlarm singleton below - same "one modal/
-  // audio loop shared by every card on the dashboard" convention its own
-  // top comment describes. Subscribed once per card instance (guarded by
-  // _alarmUnsub so a re-run of _initFirstLoad, which shouldn't happen but
-  // costs nothing to guard against, never double-subscribes).
   async _subscribeAlarmEvents() {
     if (this._alarmUnsub || !this._hass || !this._hass.connection) return;
     const myUserId = this._myUserId();
@@ -670,14 +1079,9 @@ class FamilyHubGoalsCard extends HTMLElement {
         try { unsubStop(); } catch (e) { /* no-op */ }
       };
     } catch (e) {
-      // Best-effort - a dashboard that can't subscribe (e.g. a very old
-      // frontend build) simply never gets the WIDENED alarm reach; the
-      // same-tab-only local alarm (window.__familyHubTimerAlarm.check,
-      // unaffected by any of this) still works exactly as before.
+      // Best-effort - a dashboard that can't subscribe (e.g. a very old frontend build) simply never gets the WIDENED alarm reach
     }
-    // Catch up on anything already ringing before this tab opened, rather
-    // than waiting up to ALARM_REANNOUNCE_SECONDS for the next re-
-    // announcement's RING event.
+    // Catch up on anything already ringing before this tab opened
     if (this._hass.connection.sendMessagePromise) {
       try {
         const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/timers/list_active_alarms" });
@@ -690,21 +1094,7 @@ class FamilyHubGoalsCard extends HTMLElement {
       }
     }
   }
-  // joins the shared FAB-stacking coordinator (see the
-  // singleton block above this class) - unlike Chores/Rewards this card
-  // never SETS `providesGoalTab` (it has no tab, just its own single FAB),
-  // but it READS `otherProvidesGoalTab` off every layout update to decide
-  // whether to suppress its own add-goal-fab - see the coordinator block's
-  // own docstring for the full reasoning on why only this direction is
-  // handled.
-  //
-  // fab_position "card" toggles the [fab-position="card"] host
-  // attribute (position:fixed -> :host-relative position:absolute) and
-  // registers with takesSlot:false - it stays a full coordinator member
-  // (so it still reads otherProvidesGoalTab and still suppresses itself
-  // correctly even while card-relative), it just never occupies a shared
-  // viewport-corner stacking slot. See family-hub-chores-card.js's
-  // identical comment for the fuller reasoning.
+  // joins the shared FAB-stacking coordinator (see the singleton block above this class)
   _registerFabCoordinator() {
     if (!window.__familyHubFabCoordinator) return;
     const cardRelative = this._config && this._config.fab_position === "card";
@@ -713,10 +1103,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     window.__familyHubFabCoordinator.registerClient(this, "goals", {}, (state) => {
       this.style.setProperty("--fh-fab-offset", `${state.offsetPx}px`);
       this._fabSuppressedByOther = state.otherProvidesGoalTab;
-      // hideForModal is true while ANY Family Hub card on this dashboard
-      // has a full-screen modal open (most visibly the calendar card's
-      // own Settings screen) - see the coordinator's own doc for why this
-      // can't just rely on z-index across cards.
+      // hideForModal is true while ANY Family Hub card on this dashboard has a full-screen modal open
       this._fabHiddenForModal = state.hideForModal;
       this._applyFabVisibility();
     }, { takesSlot: !cardRelative });
@@ -730,6 +1117,8 @@ class FamilyHubGoalsCard extends HTMLElement {
     this._interval = setInterval(() => this._fetchGoals(), 20 * 1000);
   }
   connectedCallback() {
+    if (window.__familyHubEink) window.__familyHubEink.attach(this, Object.assign({}, { css: this.constructor.EINK_CSS || "" }));
+    if (window.__familyHubModalScroll) window.__familyHubModalScroll.watch(this);
     if (this._hass && !this._interval) {
       if (this._firstLoadPromise) this._firstLoadPromise.then(() => this.isConnected && this._startPolling());
       else this._startPolling();
@@ -737,13 +1126,12 @@ class FamilyHubGoalsCard extends HTMLElement {
     this._registerFabCoordinator();
   }
   disconnectedCallback() {
+    if (window.__familyHubEink) window.__familyHubEink.detach(this);
+    if (window.__familyHubModalScroll) window.__familyHubModalScroll.unwatch(this);
     if (this._interval) clearInterval(this._interval);
     this._interval = null;
     if (window.__familyHubFabCoordinator) window.__familyHubFabCoordinator.unregisterClient(this);
-    // same "force-remove a still-animating portal" cleanup as
-    // family-hub-chores-card.js's own disconnectedCallback - see
-    // _fireConfetti's own comment for why this lives in document.body
-    // rather than this card's shadow root.
+    // same "force-remove a still-animating portal" cleanup as family-hub-chores-card.js's own disconnectedCallback
     if (this._confettiPortals && this._confettiPortals.length) {
       this._confettiPortals.forEach((portal) => portal.remove());
       this._confettiPortals = [];
@@ -761,9 +1149,7 @@ class FamilyHubGoalsCard extends HTMLElement {
   _myUserId() {
     return this._hass && this._hass.user ? this._hass.user.id : null;
   }
-  // Same family_hub/permissions/get_mine pattern as every other Family Hub
-  // card - see family-hub-rewards-card.js's own identical _fetchMyPermissions
-  // for the full reasoning on why this is copy-pasted rather than shared.
+  // Same family_hub/permissions/get_mine pattern as every other Family Hub card
   async _fetchMyPermissions() {
     if (!this._hass) return;
     try {
@@ -777,16 +1163,11 @@ class FamilyHubGoalsCard extends HTMLElement {
     if (this._isAdmin()) return true;
     return !!this._myPermissions[key];
   }
-  // Same PERMISSION_ASSIGN tier Chores itself uses for create/edit/delete -
-  // chores_websocket_api.py's own ws_create_goal/ws_update_goal/ws_delete_goal
-  // gate on this same permission server-side (see that file's Goals
-  // section), this is purely the UI-gating mirror of that check.
+  // Same PERMISSION_ASSIGN tier Chores itself uses for create/edit/delete
   _canManageGoals() {
     return this._hasPermission("can_assign");
   }
-  // Same PERMISSION_VERIFY-or-PERMISSION_COMPLETE_ANY tier ws_complete_chore
-  // already uses, mirrored here for "can log progress on someone else's
-  // goal" - the assignee themselves never needs this (see _canLogProgress).
+  // Same PERMISSION_VERIFY-or-PERMISSION_COMPLETE_ANY tier ws_complete_chore already uses
   _canLogForOthers() {
     return this._hasPermission("can_verify") || this._hasPermission("can_complete_any");
   }
@@ -807,23 +1188,13 @@ class FamilyHubGoalsCard extends HTMLElement {
     };
   }
   _defaultSettings() {
-    // defaults ON, matching family-hub-chores-card.js's own
-    // _defaultSettings (see that file's comment for why this has to be
-    // listed here too, not just in the calendar card's own Settings-form
-    // default - a household that's never (re-)saved Settings since this
-    // shipped ON by default would otherwise silently get no confetti at
-    // all from this card).
+    // defaults ON, matching family-hub-chores-card.js's own _defaultSettings (see that file's comment for why this has to be listed here too
     return { theme: this._defaultTheme(), useGlobalTheme: true, globalThemeId: "slate", choresConfettiOnComplete: true };
   }
   _getSettings() {
     return this._settingsCache || this._defaultSettings();
   }
-  // Reuses the exact same choresConfettiOnComplete setting and
-  // _fireConfetti/_confettiCss trio as family-hub-chores-card.js's own
-  // (byte-identical, same "independently-loaded Lovelace resource, not an
-  // ES module that could share one file" convention as everything else
-  // copy-pasted across these card files) - one household-wide "on/off" for
-  // every kind of completion celebration, not a separate toggle per card.
+  // Reuses the exact same choresConfettiOnComplete setting and _fireConfetti/_confettiCss trio as family-hub-chores-card.js's own
   _confettiOnCompleteEnabled() {
     return !!(this._settingsCache && this._settingsCache.choresConfettiOnComplete);
   }
@@ -876,16 +1247,6 @@ class FamilyHubGoalsCard extends HTMLElement {
       }
     }, maxLifetimeMs + 200);
   }
-  // "This device's theme" - a device-local override of the shared
-  // Settings > Appearance theme choice, same key/mechanism
-  // family-week-calendar-card.js's own _getDeviceThemeOverride uses (see
-  // its own comment) and configured from that card's Settings modal (this
-  // card has none of its own - see the top-of-file comment on why Settings
-  // lives only on the calendar card). "" = follow the household setting
-  // (nothing changes for anyone who hasn't touched this); "__default__" =
-  // force this device's own plain/local look regardless of what the
-  // household picked; anything else is a specific theme id this device
-  // wants instead.
   _getDeviceThemeOverride() {
     let raw = "";
     try {
@@ -894,10 +1255,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     }
     return raw;
   }
-  // Shared by both the new per-card override branch and the existing
-  // household-global branch below - factored out so the color-validation/
-  // liquid-glass-fallback logic (see the v144.5+ comment this used to live
-  // under) only needs to exist once in this file.
+  // Shared by both the new per-card override branch and the existing household-global branch below
   _themeFromGlobalEntry(g) {
     const defaultTheme = this._defaultTheme();
     const colors = {};
@@ -911,21 +1269,19 @@ class FamilyHubGoalsCard extends HTMLElement {
   }
   _resolveTheme(settings) {
     const local = settings.theme || this._defaultTheme();
-    // a per-card-placement Theme override (set from this card's
-    // own native "Edit Card" dialog) wins over everything else, including
-    // this device's own override and the household's Global Theme - it's
-    // the most specific choice available, same "more specific wins"
-    // precedent the device override below already established over the
-    // household setting. "" (untouched/default) falls straight through to
-    // the exact pre-1.111.0 behavior.
+    // a per-card-placement Theme override (set from this card's own native "Edit Card" dialog) wins over everything else
     const cardOverride = this._config && this._config.theme_override;
     if (cardOverride) {
       const g = (this._globalThemes || []).find((t) => t && t.id === cardOverride);
       if (g) return this._themeFromGlobalEntry(g);
-      // An override pointing at a theme that's since been deleted/renamed
-      // falls back to the normal device/household resolution below rather
-      // than silently going blank - same "never leave a stale reference
-      // broken, just fall through" convention as a stale primaryCalendar.
+      // An override pointing at a theme that's since been deleted/renamed falls back to the normal device/household resolution below rather than
+    }
+    // a holiday background set to change the theme wins while it's showing
+    if (window.__fhHolidayTheme) {
+      if (!this.__fhHolidaySub) this.__fhHolidaySub = window.__fhHolidayTheme.subscribe(() => { if (this.isConnected) this._applyThemeVars(); });
+      const holidayThemeId = window.__fhHolidayTheme.themeId(this._hass);
+      const hg = holidayThemeId && (this._globalThemes || []).find((t) => t && t.id === holidayThemeId);
+      if (hg) return this._themeFromGlobalEntry(hg);
     }
     const override = this._getDeviceThemeOverride();
     const useGlobalTheme = override ? override !== "__default__" : settings.useGlobalTheme;
@@ -944,13 +1300,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     const a = Math.max(0, Math.min(1, typeof alpha === "number" ? alpha : 1));
     return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
-  // see window.__familyHubThemeCache's own comment above the
-  // class for the full "why a key, not one shared blob" reasoning. Called
-  // identically from here (after resolving the REAL theme) and from
-  // `_build()` (before the real theme is known yet, to look up whatever
-  // was cached last time) - both call sites MUST derive the same key for
-  // a given card/placement, or the cache lookup in `_build()` would never
-  // find what `_applyThemeVars()` just wrote for it.
+  // see window.__familyHubThemeCache's own comment above the class for the full "why a key, not one shared blob" reasoning.
   _familyHubThemeCacheKey() {
     const cardOverride = this._config && this._config.theme_override;
     if (cardOverride) return `card:${cardOverride}`;
@@ -971,18 +1321,10 @@ class FamilyHubGoalsCard extends HTMLElement {
   }
   _applyThemeVars() {
     const theme = this._resolveTheme(this._getSettings());
-    // same "liquid glass" support family-week-calendar-card.js has
-    // - a theme's cardOpacity/glassBlur (100/0 defaults, both no-ops) turn
-    // the card/surface backgrounds translucent and blur whatever shows
-    // through them, so picking a Liquid Glass theme actually looks glassy
-    // on this card too, not just the calendar.
+    // same "liquid glass" support family-week-calendar-card.js has - a theme's cardOpacity/glassBlur (100/0 defaults
     const cardOpacity = typeof theme.cardOpacity === "number" ? theme.cardOpacity : 100;
     const glassBlur = typeof theme.glassBlur === "number" ? theme.glassBlur : 0;
-    // built as a plain object first (rather than each var going
-    // straight into its own setProperty call, as before) purely so the
-    // exact same values that get applied here also get cached - see
-    // window.__familyHubThemeCache's own comment for why this fixes the
-    // household's reported "loads the default theme first" flash.
+    // built as a plain object first (rather than each var going straight into its own setProperty call
     const vars = {
       "--fc-font-family": theme.fontFamily || "",
       "--fc-bg": theme.colors.bg,
@@ -998,25 +1340,12 @@ class FamilyHubGoalsCard extends HTMLElement {
       "--fc-surface2": this._hexToRgba(theme.colors.surface2, cardOpacity / 100),
       "--fc-glass-blur": `${glassBlur}px`,
     };
-        // v1.168.79 - the theme's own background image (the Liquid Glass
-    // aurora, or any image a theme sets in Theme Builder) now paints
-    // behind this card too, not just the calendar/Today cards - without
-    // it a glass theme's translucent surfaces only had a flat color to
-    // show through, so nothing looked like glass. Always set (to "none"
-    // when there's no image) so a cached earlier theme can't leave a
-    // stale image behind.
+        // the theme's own background image (the Liquid Glass aurora, or any image a theme sets in Theme Builder) now paints behind this card too
     Object.assign(vars, this._fhThemeBgVars(theme.background));
     Object.keys(vars).forEach((name) => this.style.setProperty(name, vars[name]));
     if (window.__familyHubThemeCache) window.__familyHubThemeCache.set(this._familyHubThemeCacheKey(), vars);
   }
-  // applies whatever theme this device/placement last actually
-  // resolved to, SYNCHRONOUSLY, before the real fetches that would
-  // otherwise be the only way to know it - see window.__familyHubTheme
-  // Cache's own comment above the class. Called once from `_build()`,
-  // before the very first `_render()`/paint. A no-op (does nothing,
-  // leaves `_defaultTheme()`'s plain colors as the first paint exactly
-  // like before this fix) on the very first time ANY card resolves this
-  // particular key - there's nothing to have cached yet.
+  // applies whatever theme this device/placement last actually resolved to, SYNCHRONOUSLY
   _applyCachedThemeVarsIfAny() {
     if (!window.__familyHubThemeCache) return;
     const cached = window.__familyHubThemeCache.get(this._familyHubThemeCacheKey());
@@ -1044,19 +1373,11 @@ class FamilyHubGoalsCard extends HTMLElement {
     } catch (e) {
       custom = [];
     }
-    // also merge in every installed native Home Assistant theme
-    // - duplicated (not shared/imported) from family-week-calendar-card.js's
-    // own _fetchGlobalThemes/_nativeHaThemeEntries, same "independently
-    // loaded Lovelace resources duplicate small helpers" convention as
-    // every native/websocket pair elsewhere in this project. Needed so a
-    // per-card theme_override can point at a native theme too, matching
-    // exactly what the household's own Global Theme picker already offers.
+    // also merge in every installed native Home Assistant theme - duplicated
     this._globalThemes = custom.concat(this._nativeHaThemeEntries());
     this._applyThemeVars();
   }
-  // --- Native HA theme support (duplicated from family-week-calendar-
-  // card.js's identical methods - see that file's own comments for the
-  // full reasoning on each) ---
+  // -- Native HA theme support (duplicated from family-week-calendar- card.js's identical methods
   _haVarsToBuilderColors(vars) {
     const v = vars || {};
     const accent = v["primary-color"];
@@ -1109,10 +1430,7 @@ class FamilyHubGoalsCard extends HTMLElement {
       return {};
     }
   }
-  // Note: this card's own theme shape has no `fonts` concept (unlike
-  // family-week-calendar-card.js's version of this same method) - only
-  // `colors`/`cardOpacity`/`glassBlur` are ever read via
-  // _themeFromGlobalEntry, so these entries carry colors only.
+  // Note: this card's own theme shape has no `fonts` concept (unlike family-week-calendar-card.js's version of this same method)
   _nativeHaThemeEntries() {
     const entries = [
       {
@@ -1149,14 +1467,11 @@ class FamilyHubGoalsCard extends HTMLElement {
       const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/goals/list" });
       this._goals = (result && Array.isArray(result.goals)) ? result.goals : [];
     } catch (e) {
-      /* keep whatever we had */
+      // keep whatever we had
     }
     this._render();
   }
-  // Only the catalog array is actually used here (the reward-item picker on
-  // the Create/Edit modal, and showing a chosen item's own title/icon on a
-  // goal card) - family_hub/rewards/get_state is the only websocket command
-  // that exposes it, so the rest of its response is simply ignored.
+  // Only the catalog array is actually used here (the reward-item picker on the Create/Edit modal
   async _fetchCatalog() {
     try {
       const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/rewards/get_state" });
@@ -1180,16 +1495,13 @@ class FamilyHubGoalsCard extends HTMLElement {
     const memberIds = (this._settingsCache && this._settingsCache.memberUserIds) || [];
     return memberIds.includes(userId);
   }
-  // Same narrower includeInChores opt-out Chores/Rewards already read -
-  // Goals shares the exact same assignee-eligibility pool as Chores (see
-  // chores_websocket_api.py's own _make_is_chores_eligible reuse for the
-  // Goals commands), so there's no separate "includeInGoals" flag to check
-  // here either.
+  // Same narrower includeInChores opt-out Chores/Rewards already read - Goals shares the exact same assignee-eligibility pool as Chores
   _isChoresIncluded(userId) {
     if (!this._isFamilyHubMember(userId)) return false;
     const profiles = (this._settingsCache && this._settingsCache.userProfiles) || {};
     const profile = profiles[userId];
-    return !profile || profile.includeInChores !== false;
+    // a kiosk account (a shared tablet login) is never on Chores, Rewards or Goals
+    return !profile || (profile.includeInChores !== false && !profile.isKioskAccount);
   }
   _memberUsers() {
     return this._users.filter((u) => this._isChoresIncluded(u.id));
@@ -1237,15 +1549,17 @@ class FamilyHubGoalsCard extends HTMLElement {
     if (!this._hass || typeof this._hass.loadBackendTranslation !== "function") return;
     const lang = this._baseLanguage(this._hass.language);
     if (this._i18nLoadedLang === lang) {
-      // v1.168.67 fix (GitHub issue #10 - "German localization on buttons
-      // only after click on settings"): Home Assistant hands cards the hass
-      // object that actually knows the newly loaded strings a moment AFTER
-      // loadBackendTranslation resolves, so the redraw in .then() below
-      // still ran with the old, English-only localize. Redraw once more
-      // whenever a new localize arrives for the already-loaded language.
+      // Home Assistant hands cards the hass object that actually knows the newly loaded strings a moment AFTER loadBackendTranslation resolves
       if (this._hass.localize !== this._i18nLocalize) {
         this._i18nLocalize = this._hass.localize;
-        this._onTranslationsReady();
+        // redraw only when our strings changed - a new localize function alone made cards flicker (GitHub issue #16)
+        let probe = "";
+        try { probe = this._hass.localize("component.family_hub.fh_ui.nav.settings") || ""; } catch (e) { probe = ""; }
+        probe = `${this._hass.language}|${probe}`;
+        if (probe !== this._i18nLastProbe) {
+          this._i18nLastProbe = probe;
+          this._onTranslationsReady();
+        }
       }
       return;
     }
@@ -1264,9 +1578,7 @@ class FamilyHubGoalsCard extends HTMLElement {
         console.warn("[family_hub] failed to load \"" + lang + "\" translations - staying on English fallback text", e);
       });
   }
-  // v1.168.67 (GitHub issue #10): dates and times follow the Home
-  // Assistant user's own language and time format (Profile > Language /
-  // Time format), not the browser's.
+  // (GitHub issue #10): dates and times follow the Home Assistant user's own language and time format (Profile > Language / Time format)
   _uiLocale() {
     const h = this._hass;
     const lang = (h && h.locale && h.locale.language) || (h && h.language) || "";
@@ -1339,10 +1651,7 @@ class FamilyHubGoalsCard extends HTMLElement {
 
   _build() {
     this._built = true;
-    // applied BEFORE attachShadow/the first innerHTML paint -
-    // see _applyCachedThemeVarsIfAny's own comment and window.__familyHub
-    // ThemeCache's above the class for why this is what actually fixes
-    // the household's reported "loads the default theme first" flash.
+    // applied BEFORE attachShadow/the first innerHTML paint - see _applyCachedThemeVarsIfAny's own comment and window.__familyHub ThemeCache's
     this._applyCachedThemeVarsIfAny();
     this.attachShadow({ mode: "open" });
     const root = this.shadowRoot;
@@ -1367,11 +1676,7 @@ class FamilyHubGoalsCard extends HTMLElement {
         if (e.target === overlay) overlay.classList.remove("open");
       });
     });
-    // Delegated click handling for every goal-card action button, same
-    // pattern family-hub-chores-card.js's own board uses - the board's
-    // innerHTML gets fully rebuilt on every render, so binding once on a
-    // stable ancestor (not per-button, per-render) is what actually keeps
-    // working after a re-render.
+    // Delegated click handling for every goal-card action button, same pattern family-hub-chores-card.js's own board uses
     root.querySelector(".board").addEventListener("click", (e) => this._onBoardClick(e));
   }
 
@@ -1400,7 +1705,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     try {
       await this._hass.connection.sendMessagePromise({ type: "family_hub/goals/log_progress", goal_id: goalId });
     } catch (e) {
-      /* server already validated/permission-gated this - a stale click just no-ops */
+      // server already validated/permission-gated this - a stale click just no-ops
     }
     await this._fetchGoals();
   }
@@ -1408,19 +1713,10 @@ class FamilyHubGoalsCard extends HTMLElement {
     try {
       await this._hass.connection.sendMessagePromise({ type: "family_hub/goals/approve", goal_id: goalId });
     } catch (e) {
-      /* ignore */
     }
     await this._fetchGoals();
   }
-  // was a bare window.prompt() for the optional reason - replaced
-  // with a proper modal (the household's own "send back reason should be a
-  // modal" request, applied here and to both of family-hub-chores-card.js's
-  // own reject flows - chores and its embedded Goals view - the same way).
-  // Same "reason is always optional, Cancel truly cancels (unlike the old
-  // prompt(), where hitting Cancel/Esc still sent the reject through with
-  // an empty reason - a real modal can actually tell 'Cancel the whole
-  // thing' apart from 'Send back with nothing written')" behavior, just in
-  // a modal instead of a native browser prompt.
+  // was a bare window.prompt() for the optional reason - replaced with a proper modal
   _openRejectModal(goalId) {
     const goal = this._goals.find((g) => g.id === goalId);
     if (!goal) return;
@@ -1445,25 +1741,18 @@ class FamilyHubGoalsCard extends HTMLElement {
     try {
       await this._hass.connection.sendMessagePromise({ type: "family_hub/goals/reject", goal_id: goalId, reason });
     } catch (e) {
-      /* server already validated/permission-gated this - a stale click just no-ops */
+      // server already validated/permission-gated this - a stale click just no-ops
     }
     await this._fetchGoals();
   }
-  // The "Complete" button on an achieved goal - tucks it into the
-  // Completed accordion below the active list instead of leaving it
-  // sitting in place forever. No confirmation prompt (unlike _delete) -
-  // this isn't destructive, the goal and its reward history are untouched,
-  // it's just moving to a different section of the same list.
+  // The "Complete" button on an achieved goal - tucks it into the Completed accordion below the active list instead of leaving it sitting in
   async _archive(goalId) {
     try {
       await this._hass.connection.sendMessagePromise({ type: "family_hub/goals/archive", goal_id: goalId });
-      // Fires on "Complete" (archiving an
-      // already-approved goal) - that's the moment with its own literal
-      // "Complete" button, closest to a chore's Complete tap, not on
-      // reaching the goal's target or on approval.
+      // Fires on "Complete" (archiving an already-approved goal) - that's the moment with its own literal "Complete" button
       if (this._confettiOnCompleteEnabled()) this._fireConfetti();
     } catch (e) {
-      /* server already validated/permission-gated this - a stale click just no-ops */
+      // server already validated/permission-gated this - a stale click just no-ops
     }
     await this._fetchGoals();
   }
@@ -1472,7 +1761,6 @@ class FamilyHubGoalsCard extends HTMLElement {
     try {
       await this._hass.connection.sendMessagePromise({ type: "family_hub/goals/delete", goal_id: goalId });
     } catch (e) {
-      /* ignore */
     }
     await this._fetchGoals();
   }
@@ -1654,9 +1942,7 @@ class FamilyHubGoalsCard extends HTMLElement {
     const canLog = goal.status === GOAL_STATUS_OPEN && this._canLogProgress(goal);
     const canManage = this._canManageGoals();
     const canVerify = this._canVerify();
-    // Only an achieved (not yet archived) goal can be archived - the same
-    // "owner or manager" pool _canLogProgress already checks, since this is
-    // just as much "acting on your own goal" as logging progress on it was.
+    // Only an achieved (not yet archived) goal can be archived - the same "owner or manager" pool _canLogProgress already checks
     const canArchive = goal.status === GOAL_STATUS_APPROVED && (goal.assigned_to === this._myUserId() || canManage);
     const progressLabel = target > 1
       ? this._t("goals.progress_logged", "%current% / %target% logged", { current, target })
@@ -1664,12 +1950,6 @@ class FamilyHubGoalsCard extends HTMLElement {
     let statusBadge = "";
     if (goal.status === GOAL_STATUS_PENDING_VERIFICATION) statusBadge = `<span class="goal-badge pending">${this._t("goals.awaiting_approval", "Awaiting approval")}</span>`;
     // the achieved badge now shows the reward inline ("Achieved!
-    // +5 stars" / "Achieved! Movie night 🎬") instead of leaving the reward
-    // to the separate, much less noticeable `.goal-reward` line below -
-    // the household specifically asked to "show goal reward (stars) when a
-    // goal is complete." The plain `.goal-reward` line still renders too
-    // (goals not yet approved still want to say what they're working
-    // toward), just no longer the only place a just-approved reward shows.
     else if (goal.status === GOAL_STATUS_APPROVED || goal.status === GOAL_STATUS_ARCHIVED) {
       statusBadge = `<span class="goal-badge approved">${this._t("goals.achieved_with_reward", "Achieved! %reward%", { reward: this._rewardSummary(goal) })}</span>`;
     }
@@ -1705,14 +1985,6 @@ class FamilyHubGoalsCard extends HTMLElement {
     `;
   }
 
-  // "My Goals" - a single flat list of just the logged-in
-  // viewer's own goals, replacing the old one-column-per-household-member
-  // board (see this file's own header comment for the reasoning). Someone
-  // not logged in at all (a kiosk display with no hass.user) sees a plain
-  // prompt instead of every goal in the house.
-  // Archived goals are excluded here (see _archivedGoals below) - the
-  // active list only ever shows something still being worked toward,
-  // awaiting approval, or freshly achieved and not yet tidied away.
   _myGoals() {
     const me = this._myUserId();
     if (!me) return [];
@@ -1723,11 +1995,7 @@ class FamilyHubGoalsCard extends HTMLElement {
         return rank(a) - rank(b) || String(a.created_at).localeCompare(String(b.created_at));
       });
   }
-  // Most-recently-archived first - same "what did we just finish" framing
-  // as the chores card's own Completed accordion, no time-window cutoff
-  // here though (a goal is a deliberate one-off "Complete" tap, not
-  // something that should silently vanish on a timer the way a recurring
-  // chore's own one-off completion does).
+  // Most-recently-archived first - same "what did we just finish" framing as the chores card's own Completed accordion
   _archivedGoals() {
     const me = this._myUserId();
     if (!me) return [];
@@ -1836,13 +2104,7 @@ class FamilyHubGoalsCard extends HTMLElement {
 
 customElements.define("family-hub-goals-card", FamilyHubGoalsCard);
 
-// the card's native "Edit Card" config editor - a thin wrapper
-// around Home Assistant's own <ha-form> (every field here is a plain text/
-// select the generic form already renders fine) rather than a hand-built
-// form, needed ONLY because the new theme_override field's option list has
-// to be fetched live (theme_builder/list + hass.themes.themes) - something
-// getConfigForm's static schema object can't do since it's called with no
-// hass in scope. See FamilyHubGoalsCard.getConfigElement above.
+// the card's native "Edit Card" config editor - a thin wrapper around Home Assistant's own <ha-form>
 class FamilyHubGoalsCardEditor extends HTMLElement {
   setConfig(config) {
     this._config = config || {};
@@ -1853,14 +2115,7 @@ class FamilyHubGoalsCardEditor extends HTMLElement {
     if (!this._themeOptions) this._fetchThemeOptions();
     else this._render();
   }
-  // Duplicated (not shared/imported) from the card class's own
-  // _fetchGlobalThemes/_nativeHaThemeEntries just above - this editor is a
-  // separate custom element instance with its own independent hass/
-  // lifecycle, same "independently loaded resources duplicate small
-  // helpers" convention as everything else in this project. Only builds
-  // {value, label} pairs for the dropdown; the actual color/effects
-  // resolution for whichever id gets picked still happens in the card's
-  // own _resolveTheme once it's saved into config.
+  // Duplicated (not shared/imported) from the card class's own _fetchGlobalThemes/_nativeHaThemeEntries just above
   async _fetchThemeOptions() {
     this._themeOptions = [{ value: "", label: "Use device settings (default)" }];
     if (!this._hass) {

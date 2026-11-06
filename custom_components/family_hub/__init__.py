@@ -5,8 +5,10 @@ import asyncio
 import base64
 import calendar
 import difflib
+import contextlib
 import hashlib
 import html
+import html as html_lib
 import ipaddress
 import itertools
 import json
@@ -36,7 +38,7 @@ from homeassistant.components.calendar.const import DATA_COMPONENT
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
+from homeassistant.helpers.event import async_call_later, async_track_time_change, async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.loader import async_get_integration
 from homeassistant.util import dt as dt_util
@@ -44,9 +46,12 @@ from homeassistant.util import slugify
 
 # Chores/Rewards/Permissions - kept in their own modules (see each file's docstring) rather than folded into this already-huge file.
 from . import chore_engine
+from . import presence as presence_mod
 from . import pantry_engine
 from . import reward_engine
 from . import timer_engine
+from . import wishlist_links
+from . import companion
 from . import routine_engine
 from . import store as chores_store
 from . import chores_websocket_api as chores_ws_api
@@ -134,6 +139,7 @@ from .const import (
     ACTIVE_TIMERS_CARD_JS_URL,
     RECIPE_BOX_CARD_JS_URL,
     RIGHT_NOW_CARD_JS_URL,
+    COMPANION_CARD_JS_URL,
     SERVICE_CREATE_CHORE,
     SERVICE_COMPLETE_CHORE,
     SERVICE_APPROVE_CHORE,
@@ -144,6 +150,8 @@ from .const import (
     SERVICE_STOP_TIMER_ALARM,
     GROCERY_PUSHED_STORAGE_KEY_PREFIX,
     GROCERY_PUSHED_STORAGE_VERSION,
+    RECIPE_PLAIN_INGREDIENTS_STORAGE_KEY_PREFIX,
+    RECIPE_PLAIN_INGREDIENTS_STORAGE_VERSION,
     GROCY_CONVERSIONS_SYNC_GENERATION,
     GROCY_CONVERSIONS_SYNC_STORAGE_KEY_PREFIX,
     GROCY_CONVERSIONS_SYNC_STORAGE_VERSION,
@@ -1209,6 +1217,43 @@ async def _maybe_migrate_wishlist_claims_permission_default(
     await _backup_settings(hass, settings)
 
 
+async def _refresh_presence(hass: HomeAssistant, entry_data: dict[str, Any], sweep: bool = True) -> None:
+    """Re-read the badge calendars (at most every 15 minutes unless Settings changed) and tell the chore engine who's away.
+    With sweep, also move today's chores off anyone who turned out to be away (the poll does that itself)."""
+    presence = entry_data.get("presence")
+    if not isinstance(presence, presence_mod.Presence):
+        return
+    chore_engine.set_away_checker(presence.is_away)
+    if not presence.stale():
+        return
+    store = entry_data.get("settings_store")
+    try:
+        settings = (await store.async_load() or {}) if store is not None else {}
+        changed = await presence.refresh(hass, settings)
+    except Exception as err:  # noqa: BLE001 - who's-home must never break the poll
+        _LOGGER.debug("Family Hub: who's-home refresh failed: %s", err)
+        return
+    if changed:
+        hass.bus.async_fire(f"{DOMAIN}_presence_updated", presence.as_dict())
+    if changed and sweep and entry_data.get("chores") is not None:
+        moved = chore_engine.sweep_away(entry_data["chores"], hass)
+        if moved and entry_data.get("chores_store") is not None:
+            await entry_data["chores_store"].async_save(entry_data["chores"])
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/presence/get"})
+@websocket_api.async_response
+async def _ws_get_presence(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Who's away which days (from badges marked "home" or "away") - the Chores card greys out people who are away."""
+    entry_data = _get_family_hub_entry_data(hass)
+    presence = entry_data.get("presence") if entry_data else None
+    if not isinstance(presence, presence_mod.Presence):
+        connection.send_result(msg["id"], {"away": {}, "from": None, "to": None, "has_rules": False})
+        return
+    await _refresh_presence(hass, entry_data)
+    connection.send_result(msg["id"], presence.as_dict())
+
+
 async def _get_settings_and_profiles(hass: HomeAssistant, entry_data: dict[str, Any]) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     """Load the Settings store once and return (settings, profiles) together - every notify-resolution call site needs both"""
     store: Store | None = entry_data.get("settings_store")
@@ -2193,6 +2238,7 @@ async def _ws_set_settings(
         SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED not in new_settings
         or SETTINGS_KEY_WISHLIST_CLAIMS_PERMISSION_MIGRATED not in new_settings
         or CALENDAR_CARD_ENTITIES_KEY not in new_settings
+        or "accessibility" not in new_settings
         or "userProfiles" in new_settings
         or "people" in new_settings
     )
@@ -2202,6 +2248,19 @@ async def _ws_set_settings(
         # the card's own Settings save doesn't know about it, so keep it.
         if CALENDAR_CARD_ENTITIES_KEY not in new_settings and isinstance(existing.get(CALENDAR_CARD_ENTITIES_KEY), dict):
             new_settings[CALENDAR_CARD_ENTITIES_KEY] = existing[CALENDAR_CARD_ENTITIES_KEY]
+        # 2026.11.1.16: the household Accessibility settings - a save that doesn't know about them (the Chores card's) keeps them
+        if "accessibility" not in new_settings and isinstance(existing.get("accessibility"), dict):
+            new_settings["accessibility"] = existing["accessibility"]
+        # 2026.11.1: a person's linked GoWish / Amazon lists - a save from a card that doesn't know about them keeps them
+        _old_profiles = existing.get("userProfiles") if isinstance(existing.get("userProfiles"), dict) else {}
+        if isinstance(new_settings.get("userProfiles"), dict):
+            for _uid, _prof in new_settings["userProfiles"].items():
+                _old = _old_profiles.get(_uid)
+                if isinstance(_prof, dict) and "wishlistLinks" not in _prof and isinstance(_old, dict) and isinstance(_old.get("wishlistLinks"), list):
+                    _prof["wishlistLinks"] = list(_old["wishlistLinks"])
+                # 2026.11.1: the child's Companion settings, the same way
+                if isinstance(_prof, dict) and "companion" not in _prof and isinstance(_old, dict) and isinstance(_old.get("companion"), dict):
+                    _prof["companion"] = dict(_old["companion"])
         if SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED not in new_settings and existing.get(SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED):
             new_settings[SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED] = True
         # Root cause: the exact same class of bug this handler's own docstring already describes for SETTINGS_KEY_NOTIFY_PROFILES_MIGRATED and kiosk
@@ -2230,6 +2289,16 @@ async def _ws_set_settings(
     _migrate_people_reminders_into_profiles(new_settings)
     _migrate_people_extra_calendars_into_profiles(new_settings)
     await store.async_save(new_settings)
+    # 2026.11.1: someone's linked wish lists changed - bring them in now rather than at the next 6-hourly sync
+    if needs_existing and "wishlist_links_store" in entry_data:
+        for _uid in wishlist_links.changed_users(existing, new_settings):
+            wishlist_links.schedule_sync(hass, entry_data, _uid)
+    # 2026.11.1: Companion screens fetch their (maybe new) schedule again
+    companion.settings_changed(hass)
+    # badges may have changed what "who's home" means - read the calendars again on the next poll
+    if isinstance(entry_data.get("presence"), presence_mod.Presence):
+        entry_data["presence"].fetched_at = None
+        hass.async_create_task(_refresh_presence(hass, entry_data))
     await _backup_settings(hass, new_settings)
     await chores_ws_api.async_prune_locked_popups(entry_data, new_settings)
     try:  # someone new in the household gets their own chores list
@@ -2983,7 +3052,8 @@ def _build_entity_event_fields(raw: dict) -> dict:
     fields: dict[str, Any] = {}
     if raw.get("summary"):
         fields["summary"] = raw["summary"]
-    if raw.get("description"):
+    # 2026.11.1: an empty description is sent on purpose when an edit clears it
+    if isinstance(raw.get("description"), str):
         fields["description"] = raw["description"]
     if raw.get("location"):
         fields["location"] = raw["location"]
@@ -3267,6 +3337,13 @@ async def _ws_get_recipes(
         connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
         return
     store: Store = entry_data["recipes_store"]
+    # 2026.11.1.10: a recipe just added in Grocy shows up the next time the Recipe Box loads, not up to a poll later
+    last = entry_data.get("grocy_recipe_sync_at")
+    if last is None or (dt_util.utcnow() - last).total_seconds() > GROCY_RECIPE_SYNC_ON_OPEN_SECONDS:
+        try:
+            await asyncio.wait_for(_sync_grocy_recipes_to_recipe_box(hass, _get_family_hub_entry(hass)), timeout=8)
+        except Exception:  # noqa: BLE001 - never hold up the Recipe Box over Grocy
+            pass
     data = await store.async_load() or {}
     connection.send_result(
         msg["id"], {"recipes": data.get("recipes", []), "migrated": bool(data.get("migrated"))}
@@ -3277,6 +3354,8 @@ async def _ws_get_recipes(
     {
         vol.Required("type"): "family_hub/set_recipes",
         vol.Required("recipes"): [dict],
+        # Grocy recipe ids this card deleted from the Recipe Box on purpose (so they aren't kept below)
+        vol.Optional("removed_grocy_ids"): [vol.Any(int, str)],
     }
 )
 @websocket_api.async_response
@@ -3289,7 +3368,26 @@ async def _ws_set_recipes(
         connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
         return
     store: Store = entry_data["recipes_store"]
-    await store.async_save({"recipes": msg["recipes"], "migrated": True})
+    recipes = list(msg["recipes"])
+    # A card sends its whole list back, so a Grocy recipe the sync added since that card last loaded would be lost.
+    # Keep any recently synced one it doesn't mention (unless it removed that one on purpose).
+    try:
+        stored = await store.async_load() or {}
+        sent_ids = {str(r.get("grocyRecipeId")) for r in recipes if isinstance(r, dict) and r.get("grocyRecipeId") is not None}
+        removed = {str(x) for x in (msg.get("removed_grocy_ids") or [])}
+        cutoff = dt_util.utcnow() - timedelta(minutes=30)
+        for r in stored.get("recipes", []) or []:
+            if not isinstance(r, dict) or r.get("grocyRecipeId") is None:
+                continue
+            gid = str(r.get("grocyRecipeId"))
+            synced = dt_util.parse_datetime(str(r.get("syncedAt") or ""))
+            if gid in sent_ids or gid in removed or synced is None or synced < cutoff:
+                continue
+            recipes.append(r)
+            sent_ids.add(gid)
+    except Exception:  # noqa: BLE001 - saving what was sent is still right
+        pass
+    await store.async_save({"recipes": recipes, "migrated": True})
     connection.send_result(msg["id"], {"success": True})
 
 
@@ -3543,7 +3641,7 @@ async def _ws_get_grocy_recipes(
     connection.send_result(msg["id"], {"configured": True, "recipes": recipes})
 
 
-async def _sync_grocy_recipes_to_recipe_box(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def _sync_grocy_recipes_to_recipe_box(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """"Grocy recipes should always sync to the recipe box -
     a user should not have to 'import a recipe' using the 'Add from Grocy'
     button, it should just always be there and always work and always stay
@@ -3578,11 +3676,13 @@ async def _sync_grocy_recipes_to_recipe_box(hass: HomeAssistant, entry: ConfigEn
     """
     entry_data = _get_family_hub_entry_data(hass)
     if entry_data is None:
-        return
+        return False
     url = (entry.options.get(CONF_GROCY_URL) if entry else "") or ""
     api_key = (entry.options.get(CONF_GROCY_API_KEY) if entry else "") or ""
     if not url or not api_key:
-        return
+        return False
+    # 2026.11.1.10: remembered so opening the Recipe Box can sync right away when it's been a while (see _ws_get_recipes)
+    entry_data["grocy_recipe_sync_at"] = dt_util.utcnow()
 
     session = async_get_clientsession(hass)
     try:
@@ -3592,10 +3692,10 @@ async def _sync_grocy_recipes_to_recipe_box(hass: HomeAssistant, entry: ConfigEn
             timeout=aiohttp.ClientTimeout(total=10),
         ) as resp:
             if resp.status != 200:
-                return
+                return False
             data = await resp.json(content_type=None)
     except Exception:  # noqa: BLE001 - best-effort background sync, never raise
-        return
+        return False
 
     grocy_recipes = []
     for item in data if isinstance(data, list) else []:
@@ -3605,15 +3705,23 @@ async def _sync_grocy_recipes_to_recipe_box(hass: HomeAssistant, entry: ConfigEn
         recipe_id = item.get("id")
         if not name or recipe_id is None:
             continue
+        # Grocy keeps its own meal plan as hidden "recipes" (type mealplan-day / mealplan-week / mealplan-shadow, negative ids) - not real recipes
+        if str(item.get("type") or "normal") != "normal":
+            continue
+        try:
+            if int(recipe_id) < 0:
+                continue
+        except (TypeError, ValueError):
+            pass
         grocy_recipes.append({"id": recipe_id, "name": name, "link": f"{url}/recipe/{recipe_id}"})
     if not grocy_recipes:
-        return
+        return False
 
     store: Store = entry_data["recipes_store"]
     stored = await store.async_load() or {}
     if not stored.get("migrated"):
         # The Recipe Box store hasn't run its own one-time legacy todo.
-        return
+        return False
     recipe_list = list(stored.get("recipes", []))
     by_grocy_id = {
         r.get("grocyRecipeId"): r
@@ -3634,6 +3742,8 @@ async def _sync_grocy_recipes_to_recipe_box(hass: HomeAssistant, entry: ConfigEn
                     "grocyRecipeId": g["id"],
                     "category": "",
                     "image": "",
+                    # when the sync added it - set_recipes keeps a freshly synced recipe a card hadn't loaded yet (see _ws_set_recipes)
+                    "syncedAt": dt_util.utcnow().isoformat(),
                 }
             )
             changed = True
@@ -3643,6 +3753,10 @@ async def _sync_grocy_recipes_to_recipe_box(hass: HomeAssistant, entry: ConfigEn
             changed = True
     if changed:
         await store.async_save({"recipes": recipe_list, "migrated": True})
+    return changed
+
+
+GROCY_RECIPE_SYNC_ON_OPEN_SECONDS = 45
 
 
 def _format_grocy_ingredient_amount(pos: dict, unit: dict) -> str:
@@ -3810,6 +3924,80 @@ def _make_grocy_products_units_loader(session, url: str, api_key: str):
     return load
 
 
+def _plain_entry_data(hass: HomeAssistant) -> dict | None:
+    try:
+        entry = _get_family_hub_entry(hass)
+        entry_id = getattr(entry, "entry_id", None)
+        return hass.data.get(DOMAIN, {}).get("entries", {}).get(entry_id) if entry_id else None
+    except Exception:  # noqa: BLE001 - plain ingredients are extra; never fail a recipe call over them
+        return None
+
+
+async def _plain_ingredients_all(entry_data: dict | None) -> dict[str, list[str]]:
+    """{recipe id: [ingredient lines]} - a Grocy recipe's ingredients that aren't linked to a Grocy product (2026.11.1.9)"""
+    store = (entry_data or {}).get("recipe_plain_ingredients_store")
+    if store is None:
+        return {}
+    data = await store.async_load() or {}
+    recipes = data.get("recipes") if isinstance(data, dict) else None
+    return recipes if isinstance(recipes, dict) else {}
+
+
+def _plain_item(x: Any) -> dict | None:
+    """One unlinked ingredient as {"text", "group"} - accepts a plain string (as stored before sections) or a dict"""
+    if isinstance(x, dict):
+        text = str(x.get("text") or x.get("raw") or "").strip()
+        group = str(x.get("group") or "").strip()
+    else:
+        text, group = str(x or "").strip(), ""
+    return {"text": text, "group": group} if text else None
+
+
+def _plain_lines_from(msg: dict) -> list[dict]:
+    """The unlinked lines of a create/update: everything sent as plain, plus rows without a Grocy product"""
+    out = [_plain_item(x) for x in (msg.get("plain_ingredients") or [])]
+    out += [_plain_item({"text": ing.get("raw"), "group": ing.get("group")}) for ing in msg.get("ingredients") or [] if not ing.get("product_id")]
+    return [x for x in out if x]
+
+
+async def _plain_ingredients_set(entry_data: dict | None, recipe_id: Any, lines: list | None) -> None:
+    store = (entry_data or {}).get("recipe_plain_ingredients_store")
+    if store is None:
+        return
+    recipes = dict(await _plain_ingredients_all(entry_data))
+    # a line without a section is stored as plain text, the same as before sections existed
+    clean = [x if x["group"] else x["text"] for x in (_plain_item(y) for y in (lines or [])) if x]
+    if clean:
+        recipes[str(recipe_id)] = clean
+    else:
+        recipes.pop(str(recipe_id), None)
+    await store.async_save({"recipes": recipes})
+
+
+def _with_plain_ingredients(detail: dict | None, lines: list | None) -> dict | None:
+    """Adds the recipe's unlinked ingredients to its ingredient list, as plain lines (no amount to scale) - each one
+    after the last ingredient of its own section when it has one, so the sections stay together"""
+    if not detail or not lines:
+        return detail
+    ingredients = list(detail.get("ingredients") or [])
+    for item in (_plain_item(x) for x in lines):
+        if not item:
+            continue
+        row = {
+            "amount": "", "product": item["text"], "note": "", "group": item["group"], "amount_value": None, "unit_name": "",
+            "unit_name_plural": "", "variable_amount": "", "product_id": None, "qu_id": None,
+            "not_check_stock_fulfillment": True, "plain": True,
+        }
+        last = max((i for i, ing in enumerate(ingredients) if (ing.get("group") or "") == item["group"]), default=None)
+        if last is None:
+            ingredients.append(row)
+        else:
+            ingredients.insert(last + 1, row)
+    detail = dict(detail)
+    detail["ingredients"] = ingredients
+    return detail
+
+
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "family_hub/get_grocy_recipe_detail",
@@ -3835,7 +4023,8 @@ async def _ws_get_grocy_recipe_detail(
     if error is not None:
         connection.send_result(msg["id"], {"configured": True, "recipe": None, "error": error})
         return
-    connection.send_result(msg["id"], {"configured": True, "recipe": detail})
+    plain = (await _plain_ingredients_all(_plain_entry_data(hass))).get(str(msg["recipe_id"]))
+    connection.send_result(msg["id"], {"configured": True, "recipe": _with_plain_ingredients(detail, plain)})
 
 
 @websocket_api.websocket_command(
@@ -3874,11 +4063,12 @@ async def _ws_get_grocy_recipe_details(
 
     recipes: dict[str, dict] = {}
     errors: dict[str, str] = {}
+    plain_all = await _plain_ingredients_all(_plain_entry_data(hass))
     for rid, (detail, error) in zip(recipe_ids, results):
         if error is not None:
             errors[str(rid)] = error
         else:
-            recipes[str(rid)] = detail
+            recipes[str(rid)] = _with_plain_ingredients(detail, plain_all.get(str(rid)))
     connection.send_result(msg["id"], {"configured": True, "recipes": recipes, "errors": errors})
 
 
@@ -3901,6 +4091,7 @@ async def _ws_delete_grocy_recipe(
         return
 
     session = async_get_clientsession(hass)
+    await _plain_ingredients_set(_plain_entry_data(hass), msg["recipe_id"], None)
     try:
         await _grocy_api_delete(session, url, api_key, f"/api/objects/recipes/{msg['recipe_id']}")
     except Exception as err:  # noqa: BLE001
@@ -5146,6 +5337,335 @@ def _minutes_to_friendly_duration(total_minutes: int) -> str:
     return " ".join(parts)
 
 
+_SECTION_FOR_RE = re.compile(r"^(?:for|to make)\s+(?:the\s+)?", re.IGNORECASE)
+_SECTION_WORDS_MAX = 6
+
+
+def _clean_section_name(text: Any) -> str:
+    """ "For the Sauce:" / "**SAUCE**" / "## Sauce" -> "Sauce" (2026.11.1.10)"""
+    name = re.sub(r"<[^>]+>", " ", str(text or ""))
+    name = html_lib.unescape(name)
+    name = re.sub(r"\s+", " ", name).strip()
+    name = name.lstrip("#").strip()
+    name = re.sub(r"^(\*\*|__)(.*)\1$", r"\2", name).strip()
+    name = name.rstrip(":").strip()
+    name = _SECTION_FOR_RE.sub("", name).strip()
+    name = name.rstrip(":").strip()
+    if name and name.isupper():
+        name = name.title()
+    elif name and name[0].islower():
+        name = name[0].upper() + name[1:]
+    return name[:60]
+
+
+def _section_heading(line: str) -> str | None:
+    """The section name when a pasted line is a section heading rather than an ingredient or a step:
+    "Chicken:", "For the sauce", "## Pasta", "**Sauce**", "SAUCE". None for anything else (2026.11.1.10)."""
+    raw = line.strip()
+    if not raw or len(raw) > 60:
+        return None
+    marked = False
+    body = raw
+    if body.startswith("#"):
+        body, marked = body.lstrip("#").strip(), True
+    m = re.match(r"^(\*\*|__)(.+)\1:?$", body)
+    if m:
+        body, marked = m.group(2).strip(), True
+    if body.endswith(":"):
+        marked = True
+    if _SECTION_FOR_RE.match(body) and not re.search(r"[.!?]$", body):
+        marked = True
+    letters = re.sub(r"[^A-Za-z]", "", body)
+    if not marked and len(letters) >= 3 and body.isupper():
+        marked = True
+    if not marked:
+        return None
+    if re.search(r"\d", body) or re.search(r"[,;()]", body):
+        return None
+    if len(body.rstrip(":").split()) > _SECTION_WORDS_MAX:
+        return None
+    name = _clean_section_name(body)
+    if not name or _INGREDIENTS_HEADER_RE.match(name) or _INSTRUCTIONS_HEADER_RE.match(name):
+        return None
+    return name
+
+
+_SECTION_INGREDIENTS_RE = re.compile(r"^(?:ingredients\s+for\s+(?:the\s+)?(?P<a>.+?)|(?P<b>.+?)\s+ingredients)\s*:?$", re.IGNORECASE)
+_SECTION_INSTRUCTIONS_RE = re.compile(
+    r"^(?:(?:instructions|directions|method|steps)\s+for\s+(?:the\s+)?(?P<a>.+?)|(?P<b>.+?)\s+(?:instructions|directions|method|steps))\s*:?$",
+    re.IGNORECASE,
+)
+
+
+_BARE_HEADING_RE = re.compile(r"^[A-Z][A-Za-z'&/\- ]{1,39}$")
+_NOT_HEADING_WORDS_RE = re.compile(r"\b(?:to taste|optional|as needed|if desired|divided|plus more)\b", re.IGNORECASE)
+_QUANTITY_START_RE = re.compile(r"^\s*(?:[-*•]\s*)?(?:\d|[¼½¾⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞]|a\s|an\s|one\s|two\s|three\s|half\s)", re.IGNORECASE)
+
+
+def _bare_heading(text: str) -> bool:
+    """Could this ingredient line be a heading written without any marking ("Chicken", "Sauce", "Pasta")?"""
+    text = (text or "").strip()
+    return bool(_BARE_HEADING_RE.match(text)) and len(text.split()) <= 4 and not _NOT_HEADING_WORDS_RE.search(text)
+
+
+def _split_ingredient_headings(items: list[dict]) -> tuple[list[str], list[str]]:
+    """Takes the headings out of an ingredient list and turns them into sections (2026.11.1.10).
+    items: [{"text", "group", "bulleted" (True/False, None when unknown), "blank_before" (same)}].
+    Marked headings ("For the sauce:", "SAUCE", "**Sauce**") always count. A bare one ("Sauce") counts only when the
+    list starts with one, it's followed by a real ingredient (one with an amount, or a bullet when it has none),
+    nothing says otherwise (a blank line before it, when the text has blank lines) and there are at least two -
+    so a stray "Salt" or "Fresh basil" line between ingredients stays an ingredient."""
+    rows = []
+    marked_any = False
+    for it in items:
+        text = str(it.get("text") or "").strip()
+        if not text:
+            continue
+        name = _section_heading(text) if not it.get("bulleted") else None
+        if name:
+            marked_any = True
+        rows.append({**it, "text": text, "marked": name})
+    cand = [bool(not r["marked"] and not r.get("bulleted") and _bare_heading(r["text"])) for r in rows]
+
+    def follows_ok(i: int) -> bool:
+        if i + 1 >= len(rows) or cand[i + 1] or rows[i + 1]["marked"]:
+            return False
+        nxt = rows[i + 1]
+        return bool(_QUANTITY_START_RE.match(nxt["text"])) or (nxt.get("bulleted") is True)
+
+    first_real = next((i for i, r in enumerate(rows) if not r["marked"]), None)
+    bare_mode = marked_any or (first_real is not None and cand[first_real] and (first_real == 0 or rows[first_real - 1]["marked"]))
+    accepted: set[int] = set()
+    if bare_mode:
+        uses_blanks = any(r.get("blank_before") for r in rows)
+        for i, ok in enumerate(cand):
+            if not ok or not follows_ok(i):
+                continue
+            if uses_blanks and i > 0 and not rows[i - 1]["marked"] and not rows[i].get("blank_before"):
+                continue
+            accepted.add(i)
+        if not marked_any and len(accepted) < 2:
+            accepted = set()
+    texts: list[str] = []
+    groups: list[str] = []
+    current = None
+    for i, r in enumerate(rows):
+        if r["marked"]:
+            current = r["marked"]
+            continue
+        if i in accepted:
+            current = _clean_section_name(r["text"])
+            continue
+        texts.append(r["text"])
+        groups.append(current if current is not None else str(r.get("group") or ""))
+    return texts, groups
+
+
+def _html_text(fragment: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", fragment or "")
+    return re.sub(r"\s+", " ", html_lib.unescape(text)).strip()
+
+
+_LI_NOISE_RE = re.compile(
+    r"<(label|button|script|style)\b.*?</\1>|<input\b[^>]*>|<(span|div)\b[^>]*class=[\"'][^\"']*(?:screen-reader-text|sr-only|visually-hidden)[^\"']*[\"'][^>]*>.*?</\2>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _li_text(fragment: str) -> str:
+    """A list item's own words - without the checkbox label or screen-reader copy some recipe cards repeat it in"""
+    return _html_text(_LI_NOISE_RE.sub(" ", fragment or ""))
+
+
+def _ingredient_key(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", _li_text(text).lower())
+
+
+def _ingredient_same(li_text: str, ingredient: str) -> bool:
+    a, b = _ingredient_key(li_text), _ingredient_key(ingredient)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    # a list item often adds a note or a checkbox label around the same words
+    return len(shorter) >= 6 and shorter in longer and len(shorter) >= 0.6 * len(longer)
+
+
+_HTML_GROUP_TOKEN_RES = [
+    ("li", re.compile(r"<li\b[^>]*>(.*?)</li>", re.IGNORECASE | re.DOTALL)),
+    ("h", re.compile(r"<h[1-6]\b[^>]*>(.*?)</h[1-6]>", re.IGNORECASE | re.DOTALL)),
+    ("h", re.compile(
+        r"<(?:p|div|span|strong)\b[^>]*class=[\"'][^\"']*(?:group-name|group-title|group-header|section-title|ingredients-section)[^\"']*[\"'][^>]*>(.*?)</(?:p|div|span|strong)>",
+        re.IGNORECASE | re.DOTALL,
+    )),
+    ("h", re.compile(r"<p\b[^>]*>\s*<(?:strong|b)\b[^>]*>(.*?)</(?:strong|b)>\s*:?\s*</p>", re.IGNORECASE | re.DOTALL)),
+]
+
+
+def _html_ingredient_groups(html: str, ingredients: list[str]) -> list[str]:
+    """The section each JSON-LD ingredient sits under on the page itself ("Chicken", "Sauce", "Pasta").
+    schema.org has no ingredient sections, but the page's own list usually does (WP Recipe Maker, Tasty Recipes,
+    Mediavine Create, or plain headings): walk the page's list items and headings in order, find the run of list
+    items that are these ingredients, and note the heading before each one. [] when the page has no sections."""
+    if not html or len(ingredients) < 2:
+        return []
+    page = re.sub(r"<(script|style|noscript)\b.*?</\1>", " ", html, flags=re.IGNORECASE | re.DOTALL)
+    tokens: list[tuple[int, str, str]] = []
+    for kind, rx in _HTML_GROUP_TOKEN_RES:
+        for m in rx.finditer(page):
+            tokens.append((m.start(), kind, m.group(1)))
+    tokens.sort(key=lambda t: (t[0], 0 if t[1] == "h" else 1))
+    starts = [i for i, t in enumerate(tokens) if t[1] == "li" and _ingredient_same(t[2], ingredients[0])]
+    best: tuple[int, list[str]] | None = None  # (how many tokens the run spans, its groups) - the tightest run is the recipe's own list
+    for start in starts[:8]:
+        # the heading right above the first ingredient names its section (unless it's just "Ingredients")
+        group = ""
+        for k in range(start - 1, max(-1, start - 4), -1):
+            if tokens[k][1] == "li":
+                break
+            name = _section_heading(_html_text(tokens[k][2]) + ":") if tokens[k][1] == "h" else None
+            group = name or ""
+            break
+        groups: list[str] = []
+        j = 0
+        span = 0
+        for kind, text in ((t[1], t[2]) for t in tokens[start:]):
+            if j >= len(ingredients):
+                break
+            span += 1
+            if kind == "h":
+                name = _section_heading(_html_text(text) + ":")
+                if name:
+                    group = name
+                continue
+            if _ingredient_same(text, ingredients[j]):
+                groups.append(group)
+                j += 1
+        if j >= len(ingredients) and (best is None or span < best[0]):
+            best = (span, groups)
+    if best is None:
+        return []
+    groups = best[1]
+    # one heading over the whole list is usually just the recipe's title or "Ingredients", not a section
+    return groups if len({g for g in groups if g}) >= 2 else []
+
+
+_CARD_INGREDIENTS_RE = re.compile(
+    r"<(?:div|section|ul)\b[^>]*class=[\"'][^\"']*(?:tasty-recipes-ingredients|wprm-recipe-ingredients-container|mv-create-ingredients|"
+    r"recipe-ingredients|ingredients-list|recipe-card-ingredients|ingredients)[^\"']*[\"'][^>]*>",
+    re.IGNORECASE,
+)
+_CARD_INSTRUCTIONS_RE = re.compile(
+    r"<(?:div|section|ol|ul)\b[^>]*class=[\"'][^\"']*(?:tasty-recipes-instructions|wprm-recipe-instructions-container|mv-create-instructions|"
+    r"recipe-instructions|recipe-directions|recipe-method|instructions|directions)[^\"']*[\"'][^>]*>",
+    re.IGNORECASE,
+)
+_CARD_END_RE = re.compile(
+    r"<(?:div|section|h[1-6])\b[^>]*class=[\"'][^\"']*(?:notes|nutrition|equipment|keywords|tasty-recipes-entry-footer|wprm-recipe-notes)[^\"']*[\"']",
+    re.IGNORECASE,
+)
+
+
+def _card_tokens(region: str) -> list[tuple[str, str]]:
+    tokens: list[tuple[int, str, str]] = []
+    for kind, rx in _HTML_GROUP_TOKEN_RES:
+        for m in rx.finditer(region):
+            tokens.append((m.start(), kind, m.group(1)))
+    tokens.sort(key=lambda t: (t[0], 0 if t[1] == "h" else 1))
+    return [(k, t) for _, k, t in tokens]
+
+
+def _meta_content(html: str, prop: str) -> str:
+    m = re.search(r"<meta\b[^>]*(?:property|name)=[\"']" + re.escape(prop) + r"[\"'][^>]*content=[\"']([^\"']*)[\"']", html, re.IGNORECASE)
+    if not m:
+        m = re.search(r"<meta\b[^>]*content=[\"']([^\"']*)[\"'][^>]*(?:property|name)=[\"']" + re.escape(prop) + r"[\"']", html, re.IGNORECASE)
+    return html_lib.unescape(m.group(1)).strip() if m else ""
+
+
+def _extract_html_recipe(html: str) -> dict | None:
+    """2026.11.1.10: a recipe read from the recipe card itself, for pages without schema.org data - a recipe plugin's
+    print page (Tasty Recipes, WP Recipe Maker, Mediavine Create) or a site that never added it. Ingredients keep their
+    sections (the card's headings), instructions their section headings as "## Name" lines. None when there's no card."""
+    if not html:
+        return None
+    page = re.sub(r"<(script|style|noscript)\b.*?</\1>", " ", html, flags=re.IGNORECASE | re.DOTALL)
+    # a recipe plugin's own card first, then any list marked as ingredients
+    ing_m = None
+    for marker in ("tasty-recipes-ingredients", "wprm-recipe-ingredients-container", "mv-create-ingredients", "recipe-ingredients", ""):
+        ing_m = next((m for m in _CARD_INGREDIENTS_RE.finditer(page) if marker in m.group(0).lower()), None)
+        if ing_m:
+            break
+    if not ing_m:
+        return None
+    ins_m = _CARD_INSTRUCTIONS_RE.search(page, ing_m.end())
+    ing_end = ins_m.start() if ins_m else ing_m.end() + 60000
+    end_m = _CARD_END_RE.search(page, ing_m.end(), ing_end)
+    if end_m:
+        ing_end = end_m.start()
+    items: list[dict] = []
+    group = ""
+    for kind, text in _card_tokens(page[ing_m.start():ing_end]):
+        if kind == "h":
+            name = _section_heading(_html_text(text) + ":")
+            if name:
+                group = name
+            continue
+        line = _li_text(text)
+        if line:
+            items.append({"text": line, "group": group, "bulleted": True, "blank_before": None})
+    ingredients, groups = _split_ingredient_headings(items)
+    if not ingredients:
+        return None
+    instructions: list[str] = []
+    if ins_m:
+        ins_end_m = _CARD_END_RE.search(page, ins_m.end(), ins_m.end() + 80000)
+        ins_end = ins_end_m.start() if ins_end_m else ins_m.end() + 80000
+        region = page[ins_m.start():ins_end]
+        if re.search(r"<ol\b", region, re.IGNORECASE):
+            # the steps are the numbered list(s) - leave out share buttons, ratings and the like after it
+            region = " ".join(m.group(0) for m in re.finditer(
+                r"<h[1-6]\b[^>]*>.*?</h[1-6]>|<p\b[^>]*>\s*<(?:strong|b)\b[^>]*>.*?</(?:strong|b)>\s*:?\s*</p>|<ol\b.*?</ol>",
+                region, re.IGNORECASE | re.DOTALL,
+            ))
+        for kind, text in _card_tokens(region):
+            if kind == "h":
+                name = _section_heading(_html_text(text) + ":")
+                if name:
+                    instructions.append(f"## {name}")
+                continue
+            step = _li_text(text)
+            if step:
+                instructions.append(step)
+        while instructions and instructions[-1].startswith("## "):
+            instructions.pop()
+    title = ""
+    for rx in (
+        r"<h[1-3]\b[^>]*class=[\"'][^\"']*(?:tasty-recipes-title|wprm-recipe-name|mv-create-title|recipe-title|recipe-name)[^\"']*[\"'][^>]*>(.*?)</h[1-3]>",
+        r"<h1\b[^>]*>(.*?)</h1>",
+    ):
+        m = re.search(rx, page, re.IGNORECASE | re.DOTALL)
+        if m and _html_text(m.group(1)):
+            title = _html_text(m.group(1))
+            break
+    title = title or _meta_content(html, "og:title")
+    servings = ""
+    m = re.search(r"class=[\"'][^\"']*(?:tasty-recipes-yield|wprm-recipe-servings|mv-create-yield|recipe-yield)[^\"']*[\"'][^>]*>(.*?)</", page, re.IGNORECASE | re.DOTALL)
+    if m:
+        num = re.search(r"\d+", _html_text(m.group(1)))
+        servings = num.group(0) if num else ""
+    image = _meta_content(html, "og:image")
+    if not image:
+        m = re.search(r"<img\b[^>]*class=[\"'][^\"']*(?:tasty-recipes-image|wprm-recipe-image|mv-create-image)[^\"']*[\"'][^>]*src=[\"']([^\"']+)", page, re.IGNORECASE)
+        if not m:
+            m = re.search(r"class=[\"'][^\"']*(?:tasty-recipes-image|wprm-recipe-image)[^\"']*[\"'][^>]*>\s*<img\b[^>]*src=[\"']([^\"']+)", page, re.IGNORECASE)
+        image = m.group(1) if m else ""
+    return {
+        "name": title, "ingredients": ingredients, "ingredient_groups": groups if any(groups) else [],
+        "instructions": instructions, "servings": servings, "image": image,
+    }
+
+
 def _schema_instructions(value: Any) -> list[str]:
     """Flatten schema.org "recipeInstructions" into a plain list of step
     strings. Can be a single string (the whole method as one blob), a list
@@ -5167,6 +5687,10 @@ def _schema_instructions(value: Any) -> list[str]:
         elif isinstance(v, dict):
             item_type = str(v.get("@type") or "").lower()
             if item_type == "howtosection":
+                # 2026.11.1.10: a named section ("Sauce") becomes a "## Sauce" line - the Recipe Viewer shows it as a heading
+                section_name = _clean_section_name(_schema_text(v.get("name")))
+                if section_name:
+                    steps.append(f"## {section_name}")
                 for item in v.get("itemListElement") or []:
                     walk(item)
             else:
@@ -5310,6 +5834,28 @@ async def _ws_parse_recipe_url(
 
     recipe_data = _extract_json_ld_recipe(html)
     if not recipe_data:
+        # 2026.11.1.10: no schema.org data (a recipe plugin's print page, say) - read the recipe card itself
+        card = _extract_html_recipe(html)
+        if card:
+            connection.send_result(
+                msg["id"],
+                {
+                    "success": True,
+                    "recipe": {
+                        "name": card["name"] or "Imported Recipe",
+                        "ingredients": card["ingredients"],
+                        "ingredient_groups": card["ingredient_groups"],
+                        "instructions": card["instructions"],
+                        "servings": card["servings"],
+                        "image": card["image"],
+                        "source_url": url,
+                        "prep_time": "",
+                        "cook_time": "",
+                    },
+                },
+            )
+            return
+    if not recipe_data:
         connection.send_result(
             msg["id"],
             {
@@ -5323,6 +5869,13 @@ async def _ws_parse_recipe_url(
     if isinstance(ingredients_raw, str):
         ingredients_raw = [ingredients_raw]
     ingredients = [str(i).strip() for i in ingredients_raw if str(i).strip()]
+    # 2026.11.1.10: many sites put their section headings ("For the sauce:", "SAUCE", or just "Sauce") straight into
+    # the ingredient list - those become sections instead of ingredients. Otherwise the page's own list is checked.
+    ingredients, ingredient_groups = _split_ingredient_headings(
+        [{"text": _html_text(i), "group": "", "bulleted": None, "blank_before": None} for i in ingredients]
+    )
+    if not any(ingredient_groups):
+        ingredient_groups = _html_ingredient_groups(html, ingredients)
 
     servings_raw = recipe_data.get("recipeYield") or recipe_data.get("yield")
     if isinstance(servings_raw, list) and servings_raw:
@@ -5337,6 +5890,7 @@ async def _ws_parse_recipe_url(
                 "name": _schema_text(recipe_data.get("name")) or "Imported Recipe",
                 "ingredients": ingredients,
                 "instructions": _schema_instructions(recipe_data.get("recipeInstructions")),
+                "ingredient_groups": ingredient_groups,
                 "servings": servings,
                 "image": _schema_image(recipe_data.get("image")),
                 "source_url": url,
@@ -5358,6 +5912,10 @@ def _parse_recipe_text(text: str) -> dict:
     name = ""
     servings = ""
     ingredients: list[str] = []
+    ingredient_groups: list[str] = []
+    ingredient_items: list[dict] = []
+    blank_seen = False
+    group = ""
     instructions: list[str] = []
     section: str | None = None  # None | "ingredients" | "instructions"
     instruction_buffer: list[str] = []
@@ -5370,16 +5928,42 @@ def _parse_recipe_text(text: str) -> dict:
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
+            blank_seen = True
             # Flush on blank lines once we're past the title, whether that's inside a real "Instructions:" section or the no-header fallback below
             if section != "ingredients" and name:
                 flush_instruction()
             continue
+        blank_before, blank_seen = blank_seen, False
         if _INGREDIENTS_HEADER_RE.match(line):
             section = "ingredients"
+            group = ""
             continue
         if _INSTRUCTIONS_HEADER_RE.match(line):
             flush_instruction()
             section = "instructions"
+            continue
+        # 2026.11.1.10: sections - "Sauce Ingredients" / "Ingredients for the sauce", "Sauce Instructions", and
+        # plain headings ("Chicken:", "For the sauce", "## Pasta") inside either list
+        sec_ing = _SECTION_INGREDIENTS_RE.match(line) if name else None
+        if sec_ing and not re.search(r"\d", line) and len(line.split()) <= _SECTION_WORDS_MAX + 1:
+            section = "ingredients"
+            group = _clean_section_name(sec_ing.group("a") or sec_ing.group("b"))
+            continue
+        sec_ins = _SECTION_INSTRUCTIONS_RE.match(line) if name else None
+        if sec_ins and not re.search(r"\d", line) and len(line.split()) <= _SECTION_WORDS_MAX + 1:
+            flush_instruction()
+            section = "instructions"
+            heading = _clean_section_name(sec_ins.group("a") or sec_ins.group("b"))
+            if heading:
+                instructions.append(f"## {heading}")
+            continue
+        heading = _section_heading(line) if name else None
+        if heading:
+            if section == "ingredients":
+                group = heading
+            else:
+                flush_instruction()
+                instructions.append(f"## {heading}")
             continue
         servings_match = _SERVINGS_TEXT_RE.search(line)
         if servings_match and not servings and len(line) <= len(servings_match.group(0)) + 12:
@@ -5393,7 +5977,10 @@ def _parse_recipe_text(text: str) -> dict:
         # No "Ingredients:" header ever showed up (section still None, past the title line)
         effective_section = section or "instructions"
         if effective_section == "ingredients":
-            ingredients.append(_TEXT_LEADING_BULLET_RE.sub("", line))
+            ingredient_items.append({
+                "text": _TEXT_LEADING_BULLET_RE.sub("", line), "group": group,
+                "bulleted": bool(_TEXT_LEADING_BULLET_RE.match(raw_line)), "blank_before": blank_before,
+            })
         else:
             if _TEXT_LEADING_BULLET_RE.match(raw_line) or not instruction_buffer:
                 flush_instruction()
@@ -5403,7 +5990,14 @@ def _parse_recipe_text(text: str) -> dict:
                 instruction_buffer.append(line)
     flush_instruction()
 
-    return {"name": name, "ingredients": ingredients, "instructions": instructions, "servings": servings}
+    # bare headings ("Chicken" on a line of its own) inside the ingredients
+    ingredients, ingredient_groups = _split_ingredient_headings(ingredient_items)
+    if not any(ingredient_groups):
+        ingredient_groups = []
+    return {
+        "name": name, "ingredients": ingredients, "ingredient_groups": ingredient_groups,
+        "instructions": instructions, "servings": servings,
+    }
 
 
 @websocket_api.websocket_command(
@@ -5431,6 +6025,7 @@ async def _ws_parse_recipe_text(
                 "name": parsed["name"] or "Pasted Recipe",
                 "ingredients": parsed["ingredients"],
                 "instructions": parsed["instructions"],
+                "ingredient_groups": parsed["ingredient_groups"],
                 "servings": parsed["servings"],
                 "image": "",
                 "source_url": "",
@@ -6208,6 +6803,8 @@ def _match_grocery_reference(query: str) -> dict | None:
     {
         vol.Required("type"): "family_hub/match_recipe_ingredients",
         vol.Required("ingredients"): [str],
+        # 2026.11.1.10: the section each line is in ("Chicken", "Sauce"...), same order as ingredients; "" for none
+        vol.Optional("groups"): [str],
     }
 )
 @websocket_api.async_response
@@ -6252,11 +6849,15 @@ async def _ws_match_recipe_ingredients(
 
     # Some recipe sites' own schema.org JSON-LD embeds already-HTML-escaped (sometimes doubly so - "Salt &amp;amp
     expanded_ingredients: list[str] = []
-    for raw in msg["ingredients"]:
-        expanded_ingredients.extend(_split_combined_salt_pepper_line(_fully_unescape_html(str(raw))))
+    expanded_groups: list[str] = []
+    in_groups = list(msg.get("groups") or [])
+    for i, raw in enumerate(msg["ingredients"]):
+        parts = _split_combined_salt_pepper_line(_fully_unescape_html(str(raw)))
+        expanded_ingredients.extend(parts)
+        expanded_groups.extend([str(in_groups[i] if i < len(in_groups) else "" or "").strip()] * len(parts))
 
     matches = []
-    for raw in expanded_ingredients:
+    for raw_index, raw in enumerate(expanded_ingredients):
         parsed = _parse_ingredient_line(str(raw))
         # For example, an existing "Deli Ham" product would not be matched at all for an ingredient line like "cooked deli ham (thinly sliced)"
         cleaned_product_text = _strip_ingredient_asides(parsed["product_text"])
@@ -6408,6 +7009,7 @@ async def _ws_match_recipe_ingredients(
                 "stock_unit_name": stock_unit_name,
                 "unit_conversion_warning": unit_conversion_warning,
                 "suggested_new_product": suggested_new_product,
+                "group": expanded_groups[raw_index] if raw_index < len(expanded_groups) else "",
             }
         )
 
@@ -7189,6 +7791,8 @@ async def _ws_pantry_extras_delete(
         vol.Optional("servings", default=1): vol.Coerce(int),
         vol.Optional("image", default=""): str,
         vol.Required("ingredients"): [dict],
+        # 2026.11.1.9: ingredient lines that aren't linked to Grocy products (Manage Ingredients with Grocy turned off)
+        vol.Optional("plain_ingredients", default=[]): [vol.Any(str, dict)],
     }
 )
 @websocket_api.async_response
@@ -7355,11 +7959,24 @@ async def _ws_create_grocy_recipe(
                     "variable_amount": variable_amount,
                     "note": raw_text,
                     "not_check_stock_fulfillment": not_check_stock,
+                    # 2026.11.1.10: the recipe's sections ("Chicken", "Sauce") - Grocy shows its ingredients grouped by this
+                    "ingredient_group": str(ing.get("group") or "").strip(),
                 },
             )
             added += 1
         except Exception as err:  # noqa: BLE001 - one bad line must not abort the whole import
             skipped.append(f"{raw_text} ({err})")
+
+    # anything not linked to a Grocy product still belongs on the recipe's ingredient list - kept by Family Hub (2026.11.1.9)
+    plain_lines = _plain_lines_from(msg)
+    if plain_lines:
+        await _plain_ingredients_set(_plain_entry_data(hass), recipe_id, plain_lines)
+
+    # a recipe made here goes straight into the Recipe Box too, rather than waiting for the next sync
+    try:
+        await asyncio.wait_for(_sync_grocy_recipes_to_recipe_box(hass, _get_family_hub_entry(hass)), timeout=8)
+    except Exception:  # noqa: BLE001
+        pass
 
     result = {
         "configured": True,
@@ -7368,6 +7985,7 @@ async def _ws_create_grocy_recipe(
         "link": f"{url}/recipe/{recipe_id}",
         "added": added,
         "skipped": skipped,
+        "plain": len(plain_lines),
     }
     if picture_error:
         result["picture_error"] = (
@@ -7387,6 +8005,7 @@ async def _ws_create_grocy_recipe(
         # None (the default, via vol.Optional with no "default") means "leave the existing photo alone" - unlike creation
         vol.Optional("image"): str,
         vol.Required("ingredients"): [dict],
+        vol.Optional("plain_ingredients", default=[]): [vol.Any(str, dict)],
     }
 )
 @websocket_api.async_response
@@ -7541,11 +8160,17 @@ async def _ws_update_grocy_recipe(
                     "variable_amount": variable_amount,
                     "note": raw_text,
                     "not_check_stock_fulfillment": not_check_stock,
+                    # 2026.11.1.10: the recipe's sections ("Chicken", "Sauce") - Grocy shows its ingredients grouped by this
+                    "ingredient_group": str(ing.get("group") or "").strip(),
                 },
             )
             added += 1
         except Exception as err:  # noqa: BLE001 - one bad line must not abort the whole save
             skipped.append(f"{raw_text} ({err})")
+
+    # the edited list replaces the recipe's unlinked lines too: rows without a Grocy product, plus any sent as plain
+    plain_lines = _plain_lines_from(msg)
+    await _plain_ingredients_set(_plain_entry_data(hass), recipe_id, plain_lines)
 
     result = {
         "configured": True,
@@ -9845,6 +10470,60 @@ async def _async_register_chore_services(hass: HomeAssistant) -> None:
 # -------------------------------------------------------------------------- Dashboard resource auto-registration
 
 
+def _precompress_card_files(card_dir: str) -> int:
+    """Speed (2026.11.1): keep a gzip copy next to every card file.
+
+    Home Assistant's web server (aiohttp) sends ``x.js.gz`` instead of ``x.js`` to any browser that accepts gzip, so a
+    dashboard downloads about 0.8 MB instead of 3.1 MB of Family Hub cards. A copy is remade whenever its card file's
+    contents change (tracked by hash in ``.fh-gzip.json``, not by file times - an update unzipped over the old files can
+    leave the cards *older* than their copies), and a copy that can't be remade is removed so a stale one is never sent.
+    Returns how many copies were (re)made. Runs in the executor.
+    """
+    import gzip  # noqa: PLC0415
+
+    manifest_path = os.path.join(card_dir, ".fh-gzip.json")
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            manifest = json.load(f)
+        if not isinstance(manifest, dict):
+            manifest = {}
+    except (OSError, ValueError):
+        manifest = {}
+    made = 0
+    try:
+        names = sorted(n for n in os.listdir(card_dir) if n.endswith(".js"))
+    except OSError:
+        return 0
+    for name in names:
+        src = os.path.join(card_dir, name)
+        dst = src + ".gz"
+        try:
+            with open(src, "rb") as f:
+                data = f.read()
+            digest = hashlib.sha256(data).hexdigest()[:16]
+            if manifest.get(name) == digest and os.path.isfile(dst):
+                continue
+            tmp = dst + ".tmp"
+            with open(tmp, "wb") as f:
+                f.write(gzip.compress(data, compresslevel=9, mtime=0))
+            os.replace(tmp, dst)
+            manifest[name] = digest
+            made += 1
+        except OSError as err:
+            manifest.pop(name, None)
+            with contextlib.suppress(OSError):
+                os.remove(dst)
+            _LOGGER.debug("Family Hub: couldn't make a gzip copy of %s: %s", name, err)
+    for gz_name in [n for n in os.listdir(card_dir) if n.endswith(".js.gz")]:
+        if gz_name[:-3] not in names:
+            with contextlib.suppress(OSError):
+                os.remove(os.path.join(card_dir, gz_name))
+    with contextlib.suppress(OSError):
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f)
+    return made
+
+
 def _file_content_hash(path: str) -> str:
     """Short, stable hash of a file's bytes - used to cache-bust the card URL."""
     try:
@@ -9854,21 +10533,40 @@ def _file_content_hash(path: str) -> str:
         return "0"
 
 
+def _load_card_everywhere(hass: HomeAssistant, versioned_url: str, why: str) -> None:
+    """Fallback when the card can't be added as a dashboard resource (GitHub #22): load it on every
+    frontend page instead, so it still shows in the card picker. Same URL as the resource would use,
+    so a browser that also has it as a resource loads it only once."""
+    try:
+        from homeassistant.components.frontend import add_extra_js_url  # noqa: PLC0415
+
+        add_extra_js_url(hass, versioned_url)
+        _LOGGER.info("Family Hub: %s - loading %s on every page instead", why, versioned_url.split("?", 1)[0])
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning(
+            "Family Hub: couldn't make %s available to dashboards (%s; %s). Add it by hand under "
+            "Settings > Dashboards > (three dots) > Resources as a JavaScript module.",
+            versioned_url.split("?", 1)[0], why, err,
+        )
+
+
 def _register_dashboard_resource(hass: HomeAssistant, versioned_url: str) -> None:
-    """Best-effort: ensure the calendar card is registered as a dashboard resource."""
+    """Best-effort: ensure the card is registered as a dashboard resource (or, when that can't be done, loaded on every page)."""
     base_path = versioned_url.split("?", 1)[0]
     try:
         lovelace_data = hass.data.get("lovelace")
         if lovelace_data is None:
+            _load_card_everywhere(hass, versioned_url, "dashboards aren't loaded")
             return
         resource_collection = getattr(lovelace_data, "resources", None)
         if resource_collection is None:
+            _load_card_everywhere(hass, versioned_url, "no dashboard resources")
             return
         if not hasattr(resource_collection, "async_create_item") or not hasattr(
             resource_collection, "store"
         ):
-            # YAML-mode dashboards use a plain list-backed collection with no
-            # create method worth calling - nothing safe to do here.
+            # YAML-mode resources (lovelace: resource_mode: yaml) can't be added to from here
+            _load_card_everywhere(hass, versioned_url, "dashboard resources are set in YAML")
             return
 
         async def _ensure() -> None:
@@ -9905,10 +10603,12 @@ def _register_dashboard_resource(hass: HomeAssistant, versioned_url: str) -> Non
                 _LOGGER.debug(
                     "Family Hub: could not auto-register/update dashboard resource: %s", err
                 )
+                _load_card_everywhere(hass, versioned_url, f"couldn't add the dashboard resource ({err})")
 
         hass.async_create_task(_ensure())
     except Exception as err:  # noqa: BLE001
         _LOGGER.debug("Family Hub: dashboard resource auto-registration skipped: %s", err)
+        _load_card_everywhere(hass, versioned_url, "dashboard resource registration failed")
 
 
 # -------------------------------------------------------------------------- v1.168.66: retire the My Chores card
@@ -10031,6 +10731,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     hass.data[DOMAIN].setdefault("entries", {})
 
     websocket_api.async_register_command(hass, _ws_list_themes)
+    websocket_api.async_register_command(hass, _ws_get_presence)
     websocket_api.async_register_command(hass, _ws_save_themes)
     websocket_api.async_register_command(hass, _ws_get_notify_config)
     websocket_api.async_register_command(hass, _ws_set_notify_overrides)
@@ -10107,6 +10808,10 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     # Wish Lists - see _ws_get_wishlist_config's own docstring.
     websocket_api.async_register_command(hass, _ws_get_wishlist_config)
     websocket_api.async_register_command(hass, _ws_set_wishlist_flag)
+    # 2026.11.1: linked GoWish / Amazon wish lists - see wishlist_links.py
+    wishlist_links.register(hass)
+    # 2026.11.1: Family Hub Companion - a child's bedside screen (see companion.py)
+    companion.register(hass)
     # menu suggestions / can_edit_menu - see the design note above _encode_dish_description for which of these is genuinely backend-enforced and
     websocket_api.async_register_command(hass, _ws_get_menu_suggestions)
     websocket_api.async_register_command(hass, _ws_add_menu_suggestion)
@@ -10167,9 +10872,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     recipe_box_card_path = f"{integration_dir}/card/family-hub-recipe-box-card.js"
     # the standalone Right Now card (see family-right-now-card.js's own module docstring / const.py's RIGHT_NOW_CARD_JS_URL comment).
     right_now_card_path = f"{integration_dir}/card/family-right-now-card.js"
+    companion_card_path = f"{integration_dir}/card/family-hub-companion-card.js"
     icon_path = f"{integration_dir}/icon.png"
 
+    # 2026.11.1: gzip copies of the cards, so dashboards download a quarter as much (see _precompress_card_files)
+    try:
+        _made = await hass.async_add_executor_job(_precompress_card_files, f"{integration_dir}/card")
+        if _made:
+            _LOGGER.debug("Family Hub: made %s compressed card file(s)", _made)
+    except Exception as err:  # noqa: BLE001 - the plain files still work
+        _LOGGER.debug("Family Hub: compressing the card files failed: %s", err)
+
     static_paths = [
+        # 2026.11.1.16: the Accessibility fonts (Atkinson Hyperlegible, Lexend - SIL Open Font License), served from the
+        # integration itself so they work without the internet
+        StaticPathConfig("/family_hub_fonts", f"{integration_dir}/card/fonts", True),
         StaticPathConfig(PANEL_JS_URL, panel_path, False),
         StaticPathConfig(CARD_JS_URL, card_path, False),
         StaticPathConfig(THEME_SELECTOR_CARD_JS_URL, theme_selector_path, False),
@@ -10184,6 +10901,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         StaticPathConfig(ACTIVE_TIMERS_CARD_JS_URL, active_timers_card_path, False),
         StaticPathConfig(RECIPE_BOX_CARD_JS_URL, recipe_box_card_path, False),
         StaticPathConfig(RIGHT_NOW_CARD_JS_URL, right_now_card_path, False),
+        StaticPathConfig(COMPANION_CARD_JS_URL, companion_card_path, False),
     ]
     icon_exists = await hass.async_add_executor_job(os.path.isfile, icon_path)
     if icon_exists:
@@ -10205,6 +10923,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     active_timers_card_hash = await hass.async_add_executor_job(_file_content_hash, active_timers_card_path)
     recipe_box_card_hash = await hass.async_add_executor_job(_file_content_hash, recipe_box_card_path)
     right_now_card_hash = await hass.async_add_executor_job(_file_content_hash, right_now_card_path)
+    companion_card_hash = await hass.async_add_executor_job(_file_content_hash, companion_card_path)
     panel_url_versioned = f"{PANEL_JS_URL}?v={panel_hash}"
     card_url_versioned = f"{CARD_JS_URL}?v={card_hash}"
     theme_selector_url_versioned = f"{THEME_SELECTOR_CARD_JS_URL}?v={theme_selector_hash}"
@@ -10219,6 +10938,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     active_timers_card_url_versioned = f"{ACTIVE_TIMERS_CARD_JS_URL}?v={active_timers_card_hash}"
     recipe_box_card_url_versioned = f"{RECIPE_BOX_CARD_JS_URL}?v={recipe_box_card_hash}"
     right_now_card_url_versioned = f"{RIGHT_NOW_CARD_JS_URL}?v={right_now_card_hash}"
+    companion_card_url_versioned = f"{COMPANION_CARD_JS_URL}?v={companion_card_hash}"
     icon_url_versioned = ""
     if icon_exists:
         icon_hash = await hass.async_add_executor_job(_file_content_hash, icon_path)
@@ -10254,6 +10974,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _register_dashboard_resource(hass, active_timers_card_url_versioned)
     _register_dashboard_resource(hass, recipe_box_card_url_versioned)
     _register_dashboard_resource(hass, right_now_card_url_versioned)
+    _register_dashboard_resource(hass, companion_card_url_versioned)
     _schedule_my_chores_migration(hass)
     _schedule_ensure_family_reminders_list(hass, entry)
 
@@ -10416,11 +11137,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await event_checklists_store.async_save(event_checklists)
         await _maybe_send_daily_digest(hass, entry, digest_store, digest_state, settings_store)
         await _sync_grocy_recipes_to_recipe_box(hass, entry)
-        penalized = chore_engine.sweep_overdue_chores(chores, rewards, hass)
+        poll_presence_data = hass.data.get(DOMAIN, {}).get("entries", {}).get(entry.entry_id)
+        if poll_presence_data is not None:
+            await _refresh_presence(hass, poll_presence_data, sweep=False)
         recurred = chore_engine.sweep_due_recurrences(chores, hass)
+        # who's home: a chore whose person is away today goes to the next person who's home, the Chore Bin, or is skipped
+        away_changed = chore_engine.sweep_away(chores, hass)
+        penalized = chore_engine.sweep_overdue_chores(chores, rewards, hass)
         _chore_settings, chore_profiles = await _get_settings_and_profiles(hass, {"settings_store": settings_store})
         reminded = await _poll_chore_due_reminders(hass, entry, chores, chore_profiles)
-        if penalized or recurred or reminded:
+        if penalized or recurred or reminded or away_changed:
             await chores_store_obj.async_save(chores)
             await chores_store.backup_chores(hass, chores)
             poll_entry_data = hass.data.get(DOMAIN, {}).get("entries", {}).get(entry.entry_id)
@@ -10492,6 +11218,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     cancel_alarm_phone_action = hass.bus.async_listen("mobile_app_notification_action", _on_mobile_action)
 
     hass.data[DOMAIN]["entries"][entry.entry_id] = {
+        "presence": presence_mod.Presence(),
         "cancel": cancel,
         "cancel_timer_sweep": cancel_timer_sweep,
         "cancel_timer_finished": cancel_timer_finished,
@@ -10525,6 +11252,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "timers_store": timers_store,
         "timers": timers_state,
         "grocery_pushed_store": grocery_pushed_store,
+        "recipe_plain_ingredients_store": Store(
+            hass, RECIPE_PLAIN_INGREDIENTS_STORAGE_VERSION, f"{RECIPE_PLAIN_INGREDIENTS_STORAGE_KEY_PREFIX}_{entry.entry_id}"
+        ),
         "chores_store": chores_store_obj,
         "chores": chores,
         "rewards_store": rewards_store_obj,
@@ -10543,7 +11273,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "privacy_mode": privacy_mode,
         "settings_history_store": settings_history_store_obj,
         "cancel_settings_history": cancel_settings_history,
+        # 2026.11.1: linked GoWish / Amazon wish lists (what was added, and each link's last result)
+        "wishlist_links_store": wishlist_links.store_for(hass, entry.entry_id),
     }
+
+    _wl_entry_data = hass.data[DOMAIN]["entries"][entry.entry_id]
+
+    async def _sync_linked_wishlists(_now=None) -> None:
+        try:
+            await wishlist_links.async_sync(hass, _wl_entry_data)
+        except Exception as err:  # noqa: BLE001 - a sync failure must never kill the schedule
+            _LOGGER.warning("Family Hub: linked wish list sync failed: %s", err)
+
+    _wl_entry_data["cancel_wishlist_links"] = async_track_time_interval(
+        hass, _sync_linked_wishlists, timedelta(hours=wishlist_links.wi.SYNC_EVERY_HOURS)
+    )
+    _wl_entry_data["cancel_wishlist_links_first"] = async_call_later(hass, 120, _sync_linked_wishlists)
+
+    # 2026.11.1: Family Hub Companion - each child's part of the day, their room light, and messages (see companion.py)
+    _companion = companion.Companion(hass, _wl_entry_data, companion.store_for(hass, entry.entry_id))
+    await _companion.async_load()
+    _wl_entry_data["companion"] = _companion
+    _wl_entry_data["cancel_companion_tick"] = async_track_time_change(hass, _companion.tick, second=5)
 
     # v1.168.74: every stored timer fires on its exact second again after a
     # restart (the sweep is only the backstop).
@@ -10628,7 +11379,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry_data["cancel_settings_history"]()
     # the two native timer.* bus listeners need their own
     # unsubscribes, or they keep firing against a torn-down entry.
-    for key in ("cancel_timer_finished", "cancel_timer_cancelled", "cancel_alarm_phone_action"):
+    for key in ("cancel_timer_finished", "cancel_timer_cancelled", "cancel_alarm_phone_action", "cancel_wishlist_links", "cancel_wishlist_links_first", "cancel_companion_tick"):
         if entry_data and entry_data.get(key):
             entry_data[key]()
     # v1.168.74: per-timer exact-second schedules

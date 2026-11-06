@@ -298,3 +298,69 @@ ask:
       required: false
       selector:
         text:
+companion_message:
+  name: Send a Companion message
+  description: >-
+    Show a message on a child's Family Hub Companion screen. It's read out
+    loud and stays up until they tap Got it, which fires
+    family_hub_companion_event with type message_ack.
+  fields:
+    person:
+      name: Person
+      description: The child - their Home Assistant user ID, person entity or name.
+      required: true
+      example: Emma
+      selector:
+        text:
+    message:
+      name: Message
+      description: What to say (up to 280 characters).
+      required: true
+      example: Dinner in 5 minutes!
+      selector:
+        text:
+    from:
+      name: From
+      description: Who it's from, shown under the message.
+      required: false
+      example: Mom
+      selector:
+        text:
+companion_mode:
+  name: Set Companion mode
+  description: >-
+    Put a child's Companion screen (and their room light) into a part of the
+    day for a while, like bedtime early, or back to auto.
+  fields:
+    person:
+      name: Person
+      description: The child - their Home Assistant user ID, person entity or name.
+      required: true
+      example: Emma
+      selector:
+        text:
+    mode:
+      name: Mode
+      description: auto goes back to their schedule.
+      required: true
+      default: auto
+      selector:
+        select:
+          options:
+            - auto
+            - sleep
+            - wake
+            - morning
+            - day
+            - afternoon
+            - bedtime
+    minutes:
+      name: For how long
+      description: Minutes before it goes back to their schedule.
+      required: false
+      default: 60
+      selector:
+        number:
+          min: 1
+          max: 1440
+          unit_of_measurement: min

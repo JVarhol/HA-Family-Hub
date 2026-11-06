@@ -30,6 +30,9 @@ from .const import (
     CHORE_KEY_STAR_REQUEST,
     CHORE_KEY_IMPORTANT,
     CHORE_KEY_SHOW_ON_CALENDAR,
+    CHORE_KEY_ROTATION_EVERY_DAYS,
+    CHORE_KEY_ROTATION_START,
+    CHORE_KEY_ROTATION_START_INDEX,
     CHORE_KEY_RECUR_DUE_OFFSET_MINUTES,
     CHORE_KEY_RECUR_INTERVAL_UNIT,
     CHORE_KEY_RECUR_MONTH_NTH,
@@ -806,6 +809,11 @@ async def ws_chores_schedule(hass: HomeAssistant, connection: websocket_api.Acti
         vol.Optional(CHORE_KEY_ALARM_AUDIENCE): vol.Any(str, None),
         vol.Optional(CHORE_KEY_IMPORTANT): bool,
         vol.Optional(CHORE_KEY_SHOW_ON_CALENDAR): bool,
+        vol.Optional(CHORE_KEY_ROTATION_EVERY_DAYS): vol.Any(int, None),
+        vol.Optional(CHORE_KEY_ROTATION_START): vol.Any(str, None),
+        vol.Optional(CHORE_KEY_ROTATION_START_INDEX): vol.Any(int, None),
+        # 2026.11.1.7: "next" / "bin" / "skip" when the person is away (see presence.py)
+        vol.Optional("away_mode"): vol.Any(str, None),
     }
 )
 @websocket_api.async_response
@@ -887,6 +895,11 @@ async def ws_create_chore(hass: HomeAssistant, connection: websocket_api.ActiveC
         # see ws_create_chore's identical field.
         vol.Optional(CHORE_KEY_IMPORTANT): bool,
         vol.Optional(CHORE_KEY_SHOW_ON_CALENDAR): bool,
+        vol.Optional(CHORE_KEY_ROTATION_EVERY_DAYS): vol.Any(int, None),
+        vol.Optional(CHORE_KEY_ROTATION_START): vol.Any(str, None),
+        vol.Optional(CHORE_KEY_ROTATION_START_INDEX): vol.Any(int, None),
+        # 2026.11.1.7: "next" / "bin" / "skip" when the person is away (see presence.py)
+        vol.Optional("away_mode"): vol.Any(str, None),
     }
 )
 @websocket_api.async_response
@@ -987,16 +1000,20 @@ async def ws_assign_chore(hass: HomeAssistant, connection: websocket_api.ActiveC
     connection.send_result(msg["id"], {"chore": chore})
 
 
-@websocket_api.websocket_command({vol.Required("type"): "family_hub/chores/claim", vol.Required("chore_id"): str})
+@websocket_api.websocket_command(
+    {vol.Required("type"): "family_hub/chores/claim", vol.Required("chore_id"): str, vol.Optional("elevation_token"): str}
+)
 @websocket_api.async_response
 async def ws_claim_chore(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
     """Self-serve claim from the Chore Bin - no permission gate, this is
     the whole point of first_come_first_served/an open chore_bin chore.
-    Still requires a logged-in HA user (there is no "claim as guest")."""
+    Still requires a logged-in HA user (there is no "claim as guest").
+    On a shared kiosk the claim goes to whoever signed in with their Kiosk PIN
+    (elevation_token), like Done/Approve/Reject - not to the tablet's own login (GitHub #30)."""
     entry_data = _entry_data_or_error(hass, connection, msg["id"])
     if entry_data is None:
         return
-    user_id = _actor_id(connection)
+    user_id, _is_admin_unused = await _effective_actor(hass, connection, entry_data, msg)
     if not user_id:
         connection.send_error(msg["id"], "no_user", "Not logged in.")
         return
@@ -1419,6 +1436,7 @@ async def ws_redeem_reward(hass: HomeAssistant, connection: websocket_api.Active
         connection.send_error(msg["id"], err.code, str(err))
         return
     await _save_rewards(hass, entry_data)
+    reward_engine.fire_reward_event(hass, entry_data["rewards"], "redeemed", redemption, actor=actor_id)
     await _notify_reward_claimed(hass, entry_data, target_user_id, redemption)
     connection.send_result(msg["id"], {"redemption": redemption, "balance": reward_engine.get_balance(entry_data["rewards"], target_user_id)})
 
@@ -1528,6 +1546,7 @@ async def ws_reverse_redemption(hass: HomeAssistant, connection: websocket_api.A
         connection.send_error(msg["id"], err.code, str(err))
         return
     await _save_rewards(hass, entry_data)
+    reward_engine.fire_reward_event(hass, entry_data["rewards"], "reversed", redemption, actor=_actor_id(connection))
     connection.send_result(msg["id"], {"redemption": redemption})
 
 
@@ -1554,6 +1573,7 @@ async def ws_mark_fulfilled(hass: HomeAssistant, connection: websocket_api.Activ
         connection.send_error(msg["id"], err.code, str(err))
         return
     await _save_rewards(hass, entry_data)
+    reward_engine.fire_reward_event(hass, entry_data["rewards"], "fulfilled", redemption, actor=_actor_id(connection))
     connection.send_result(msg["id"], {"redemption": redemption})
 
 
@@ -1584,6 +1604,7 @@ async def ws_use_bank(hass: HomeAssistant, connection: websocket_api.ActiveConne
         connection.send_error(msg["id"], err.code, str(err))
         return
     await _save_rewards(hass, entry_data)
+    reward_engine.fire_reward_event(hass, entry_data["rewards"], "bank_used", usage, actor=actor_id)
     connection.send_result(msg["id"], {"usage": usage, "bank": reward_engine.get_bank(entry_data["rewards"], target_user_id, msg["item_id"])})
 
 
@@ -1605,6 +1626,7 @@ async def ws_mark_bank_usage_fulfilled(hass: HomeAssistant, connection: websocke
         connection.send_error(msg["id"], err.code, str(err))
         return
     await _save_rewards(hass, entry_data)
+    reward_engine.fire_reward_event(hass, entry_data["rewards"], "bank_usage_fulfilled", usage, actor=_actor_id(connection))
     connection.send_result(msg["id"], {"usage": usage})
 
 
@@ -3087,6 +3109,7 @@ async def ws_start_reward_timer(hass: HomeAssistant, connection: websocket_api.A
     timer_sensor.create_timer_sensor(hass, entry_data, timer, await _user_display_name(hass, target_user_id))
     await _save_rewards(hass, entry_data)
     await _save_timers(hass, entry_data)
+    reward_engine.fire_reward_event(hass, entry_data["rewards"], "redeemed", redemption, actor=actor_id)
     await _notify_reward_claimed(hass, entry_data, target_user_id, redemption)
     connection.send_result(
         msg["id"],

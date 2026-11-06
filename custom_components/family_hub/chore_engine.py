@@ -31,6 +31,16 @@ from .const import (
     CHORE_KEY_GROUP_ID,
     CHORE_KEY_IMPORTANT,
     CHORE_KEY_SHOW_ON_CALENDAR,
+    CHORE_KEY_ROTATION_EVERY_DAYS,
+    CHORE_KEY_ROTATION_START,
+    CHORE_KEY_ROTATION_START_INDEX,
+    CHORE_KEY_AWAY_MODE,
+    CHORE_AWAY_NEXT,
+    CHORE_AWAY_BIN,
+    CHORE_AWAY_SKIP,
+    CHORE_AWAY_MODES,
+    CHORE_KEY_AWAY_COVER_FOR,
+    CHORE_KEY_AWAY_SKIPPED_AT,
     CHORE_KEY_IN_PROGRESS,
     CHORE_KEY_NO_APPROVAL_REQUIRED,
     CHORE_KEY_OVERDUE_PENALTY_APPLIED,
@@ -328,6 +338,12 @@ def default_chore(**overrides: Any) -> dict[str, Any]:
         CHORE_KEY_QUANTITY_REMAINING: None,
         CHORE_KEY_IMPORTANT: False,
         CHORE_KEY_SHOW_ON_CALENDAR: False,
+        CHORE_KEY_ROTATION_EVERY_DAYS: 0,
+        CHORE_KEY_ROTATION_START: None,
+        CHORE_KEY_ROTATION_START_INDEX: 0,
+        CHORE_KEY_AWAY_MODE: None,
+        CHORE_KEY_AWAY_COVER_FOR: None,
+        CHORE_KEY_AWAY_SKIPPED_AT: None,
         CHORE_KEY_IN_PROGRESS: False,
         CHORE_KEY_GROUP_ID: None,
         CHORE_KEY_STAR_REQUEST: False,
@@ -360,6 +376,162 @@ def _fire_chore_event(
         _LOGGER.warning("Family Hub: error firing %s: %s", CHORE_EVENT_TYPE, err)
 
 
+def _normalize_rotation_every_days(value: Any) -> int:
+    try:
+        n = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(n, 366))
+
+
+def _normalize_rotation_start(value: Any) -> Optional[str]:
+    """YYYY-MM-DD (the local day the first person's turn starts), or None"""
+    if not value:
+        return None
+    s = str(value)[:10]
+    try:
+        return date.fromisoformat(s).isoformat()
+    except ValueError:
+        return None
+
+
+def _local_date(when: Optional[datetime]) -> date:
+    when = when or dt_util.utcnow()
+    try:
+        return dt_util.as_local(when).date()
+    except Exception:  # noqa: BLE001 - a naive datetime in a test
+        return when.date()
+
+
+def _block_rotation_assignee(chore: dict[str, Any], when: Optional[datetime]) -> Optional[tuple[int, str]]:
+    """(index, user) whose turn it is on `when` for a chore that rotates in blocks of days (GitHub #27), else None"""
+    every = _normalize_rotation_every_days(chore.get(CHORE_KEY_ROTATION_EVERY_DAYS))
+    group = chore.get("rotation_group") or []
+    if chore.get("assignment_mode") != CHORE_ASSIGNMENT_MODE_AUTO_ROTATION or not every or not group:
+        return None
+    start = _normalize_rotation_start(chore.get(CHORE_KEY_ROTATION_START))
+    start_day = date.fromisoformat(start) if start else _local_date(None)
+    blocks = (_local_date(when) - start_day).days // every  # floor, so days before the start count backwards too
+    idx = (int(chore.get(CHORE_KEY_ROTATION_START_INDEX) or 0) + blocks) % len(group)
+    return idx, group[idx]
+
+
+def rotation_turn_ends(chore: dict[str, Any], when: Optional[datetime] = None) -> Optional[str]:
+    """The last day (YYYY-MM-DD) of the current person's block, for "Emma's turn until Nov 14" - None if it doesn't rotate in blocks"""
+    every = _normalize_rotation_every_days(chore.get(CHORE_KEY_ROTATION_EVERY_DAYS))
+    if not every or _block_rotation_assignee(chore, when) is None:
+        return None
+    start = _normalize_rotation_start(chore.get(CHORE_KEY_ROTATION_START))
+    start_day = date.fromisoformat(start) if start else _local_date(None)
+    blocks = (_local_date(when) - start_day).days // every
+    return (start_day + timedelta(days=(blocks + 1) * every - 1)).isoformat()
+
+
+# ------------------------------------------------------------------ who's home (presence.py)
+# __init__.py hands in presence.Presence.is_away once the badge calendars are read; until then nobody is away.
+_AWAY_CHECK: Optional[Callable[[str, Optional[datetime]], bool]] = None
+
+
+def set_away_checker(fn: Optional[Callable[[str, Optional[datetime]], bool]]) -> None:
+    global _AWAY_CHECK
+    _AWAY_CHECK = fn
+
+
+def _is_away(user_id: Optional[str], when: Optional[datetime]) -> bool:
+    if not _AWAY_CHECK or not user_id or user_id == CHORE_BIN_SENTINEL:
+        return False
+    try:
+        return bool(_AWAY_CHECK(user_id, when))
+    except Exception:  # noqa: BLE001 - a presence hiccup must never stop a chore
+        return False
+
+
+def _normalize_away_mode(value: Any) -> Optional[str]:
+    return value if value in CHORE_AWAY_MODES else None
+
+
+def away_mode(chore: dict[str, Any]) -> Optional[str]:
+    """What this chore does when its person is away. Unset: a rotation goes to the next person who's home, a chore
+    for one person is skipped that day. Chore Bin and first-come chores aren't anyone's, so being away doesn't matter."""
+    mode = chore.get("assignment_mode")
+    if mode not in (CHORE_ASSIGNMENT_MODE_AUTO_ROTATION, CHORE_ASSIGNMENT_MODE_DIRECT):
+        return None
+    chosen = _normalize_away_mode(chore.get(CHORE_KEY_AWAY_MODE))
+    if chosen == CHORE_AWAY_NEXT and mode == CHORE_ASSIGNMENT_MODE_DIRECT:
+        return CHORE_AWAY_BIN  # nobody to pass it on to
+    return chosen or (CHORE_AWAY_NEXT if mode == CHORE_ASSIGNMENT_MODE_AUTO_ROTATION else CHORE_AWAY_SKIP)
+
+
+def _away_outcome(chore: dict[str, Any], assignee: Optional[str], when: Optional[datetime]) -> tuple[str, Optional[str]]:
+    """("keep", assignee) when they're home; otherwise ("move", the next home person or the Chore Bin) or ("skip", None)"""
+    if not _is_away(assignee, when):
+        return "keep", assignee
+    mode = away_mode(chore)
+    if mode is None:
+        return "keep", assignee
+    if mode == CHORE_AWAY_SKIP:
+        return "skip", None
+    if mode == CHORE_AWAY_NEXT:
+        group = chore.get("rotation_group") or []
+        if assignee in group:
+            i = group.index(assignee)
+            for step in range(1, len(group)):
+                other = group[(i + step) % len(group)]
+                if not _is_away(other, when):
+                    return "move", other
+    return "move", CHORE_BIN_SENTINEL
+
+
+def apply_away(chore: dict[str, Any], now: Optional[datetime] = None) -> Optional[str]:
+    """For an open occurrence: if its person is away on its day, pass it on (or skip it, for a repeating chore).
+    Returns "moved", "skipped" or None. Leaves anything someone has started, finished or that's waiting alone."""
+    if chore.get("status") != CHORE_STATUS_OPEN or chore.get(CHORE_KEY_IN_PROGRESS) or chore.get(CHORE_KEY_STAR_REQUEST):
+        return None
+    assignee = chore.get("assigned_to")
+    if not assignee or assignee == CHORE_BIN_SENTINEL:
+        return None
+    now = now or dt_util.utcnow()
+    due = _parse_dt(chore.get("due_date"))
+    when = due or now
+    if _local_date(when) > _local_date(now):
+        return None  # a day still to come is decided on the day
+    outcome, target = _away_outcome(chore, assignee, when)
+    if outcome == "keep":
+        return None
+    if outcome == "skip":
+        if not chore.get("recur_type"):
+            return None  # a one-off chore stays theirs for when they're back (and isn't penalized while they're away)
+        chore[CHORE_KEY_AWAY_COVER_FOR] = assignee
+        chore[CHORE_KEY_AWAY_SKIPPED_AT] = _now_iso()
+        chore["status"] = CHORE_STATUS_APPROVED
+        chore[CHORE_KEY_APPROVED_BY] = None
+        chore[CHORE_KEY_APPROVED_AT] = None
+        next_due = _compute_next_recur_due(chore, max(now, when))
+        chore[CHORE_KEY_RECUR_NEXT_DUE] = next_due.isoformat() if next_due else None
+        chore[CHORE_KEY_UPDATED_AT] = _now_iso()
+        return "skipped"
+    chore[CHORE_KEY_AWAY_COVER_FOR] = assignee
+    chore["assigned_to"] = target
+    chore[CHORE_KEY_UPDATED_AT] = _now_iso()
+    return "moved"
+
+
+def sweep_away(chores: dict[str, dict[str, Any]], hass: HomeAssistant, now: Optional[datetime] = None) -> list[dict[str, Any]]:
+    """Poll-tick sweep: open chores whose person is away today get passed on or skipped (see apply_away)"""
+    if not _AWAY_CHECK:
+        return []
+    changed = []
+    for chore in list(chores.values()):
+        if not isinstance(chore, dict):
+            continue
+        previous = chore.get("status")
+        result = apply_away(chore, now)
+        if result:
+            _fire_chore_event(hass, chore, previous_status=previous, extra={"event": "away_" + result, "away": chore.get(CHORE_KEY_AWAY_COVER_FOR)})
+            changed.append(chore)
+    return changed
+
+
 def _resolve_initial_assignment(chore: dict[str, Any]) -> None:
     """Mutates chore["assigned_to"] in place based on assignment_mode, at
     creation time only (see reset_recurring_chore for the same resolution
@@ -370,7 +542,11 @@ def _resolve_initial_assignment(chore: dict[str, Any]) -> None:
     elif mode == CHORE_ASSIGNMENT_MODE_AUTO_ROTATION:
         group = chore.get("rotation_group") or []
         pointer = chore.get("rotation_pointer") or 0
-        if group:
+        block = _block_rotation_assignee(chore, _parse_dt(chore.get("due_date")))
+        if block is not None:
+            # turns in blocks of days: whoever's block this occurrence's due day falls in
+            chore["rotation_pointer"], chore["assigned_to"] = block
+        elif group:
             pointer = pointer % len(group)
             chore["rotation_pointer"] = pointer
             chore["assigned_to"] = group[pointer]
@@ -451,12 +627,18 @@ def create_chore(
             CHORE_KEY_ALARM_AUDIENCE: alarm_audience,
             CHORE_KEY_IMPORTANT: bool(payload.get(CHORE_KEY_IMPORTANT)),
             CHORE_KEY_SHOW_ON_CALENDAR: bool(payload.get(CHORE_KEY_SHOW_ON_CALENDAR)),
+            CHORE_KEY_ROTATION_EVERY_DAYS: _normalize_rotation_every_days(payload.get(CHORE_KEY_ROTATION_EVERY_DAYS)),
+            CHORE_KEY_ROTATION_START: _normalize_rotation_start(payload.get(CHORE_KEY_ROTATION_START)),
+            CHORE_KEY_ROTATION_START_INDEX: int(payload.get("rotation_pointer") or 0),
+            CHORE_KEY_AWAY_MODE: _normalize_away_mode(payload.get(CHORE_KEY_AWAY_MODE)),
             # set by chores_websocket_api's multi-assignee fan-out (ws_create_chore, when the request names more than one assignee)
             CHORE_KEY_GROUP_ID: payload.get(CHORE_KEY_GROUP_ID) or None,
         },
     )
     if mode == CHORE_ASSIGNMENT_MODE_DIRECT and not chore.get("assigned_to"):
         raise ChoreError("missing_assignee", "A direct chore needs someone assigned to it.")
+    if chore[CHORE_KEY_ROTATION_EVERY_DAYS] and not chore[CHORE_KEY_ROTATION_START]:
+        chore[CHORE_KEY_ROTATION_START] = _local_date(_parse_dt(chore.get("due_date"))).isoformat()
     _resolve_initial_assignment(chore)
 
     chores[chore["id"]] = chore
@@ -616,10 +798,13 @@ def _apply_approval(chore: dict[str, Any], rewards: dict[str, Any], approver: Op
         add_stars(rewards, assignee, star_value, reason=f"Chore approved: {chore.get('title')}", source="chore_approved")
         disbursed = star_value
 
-    if chore.get("assignment_mode") == CHORE_ASSIGNMENT_MODE_AUTO_ROTATION:
+    covered = bool(chore.get(CHORE_KEY_AWAY_COVER_FOR))
+    if chore.get("assignment_mode") == CHORE_ASSIGNMENT_MODE_AUTO_ROTATION and not covered and not _normalize_rotation_every_days(chore.get(CHORE_KEY_ROTATION_EVERY_DAYS)):
+        # (someone covering for a person who's away doesn't move the turn on: it's still theirs when they're back)
         group = chore.get("rotation_group") or []
         if group:
             chore["rotation_pointer"] = (int(chore.get("rotation_pointer") or 0) + 1) % len(group)
+    # (turns in blocks of days don't move on per completion - the next occurrence's due day decides, see _resolve_initial_assignment)
 
     return disbursed
 
@@ -761,6 +946,8 @@ def reset_recurring_chore(chores: dict[str, dict[str, Any]], hass: HomeAssistant
     chore[CHORE_KEY_REMINDERS_FIRED] = []
     # No longer "waiting" once it's active again - recur_next_due only ever describes an approved chore sitting idle
     chore[CHORE_KEY_RECUR_NEXT_DUE] = None
+    chore[CHORE_KEY_AWAY_COVER_FOR] = None
+    chore[CHORE_KEY_AWAY_SKIPPED_AT] = None
     # Every occurrence of a recurring chore (schedule-based via sweep_due_ recurrences, or sensor-triggered via its own auto_create_trigger
     now = dt_util.utcnow()
     offset_minutes = int(chore.get(CHORE_KEY_RECUR_DUE_OFFSET_MINUTES) or 0)
@@ -768,6 +955,9 @@ def reset_recurring_chore(chores: dict[str, dict[str, Any]], hass: HomeAssistant
     chore[CHORE_KEY_UPDATED_AT] = _now_iso()
     _resolve_initial_assignment(chore)
     _fire_chore_event(hass, chore, previous_status=previous, extra={"event": "recurred"})
+    away = apply_away(chore, now)
+    if away:
+        _fire_chore_event(hass, chore, previous_status=CHORE_STATUS_OPEN, extra={"event": "away_" + away, "away": chore.get(CHORE_KEY_AWAY_COVER_FOR)})
     return chore
 
 
@@ -805,6 +995,9 @@ def sweep_overdue_chores(
         if due is None or due >= now:
             continue
         penalty = int(chore.get("overdue_penalty") or 0)
+        # being away (or covering for someone who is) never costs stars
+        if chore.get(CHORE_KEY_AWAY_COVER_FOR) or _is_away(chore.get("assigned_to"), due):
+            penalty = 0
         chore[CHORE_KEY_OVERDUE_PENALTY_APPLIED] = True
         chore[CHORE_KEY_UPDATED_AT] = _now_iso()
         assignee = chore.get("assigned_to")
@@ -881,6 +1074,9 @@ _EDITABLE_FIELDS = (
     CHORE_KEY_ALARM_AUDIENCE,
     CHORE_KEY_IMPORTANT,
     CHORE_KEY_SHOW_ON_CALENDAR,
+    CHORE_KEY_ROTATION_EVERY_DAYS,
+    CHORE_KEY_ROTATION_START,
+    CHORE_KEY_ROTATION_START_INDEX,
 )
 
 
@@ -957,6 +1153,27 @@ def update_chore(
         chore[CHORE_KEY_IMPORTANT] = bool(fields[CHORE_KEY_IMPORTANT])
     if CHORE_KEY_SHOW_ON_CALENDAR in fields:
         chore[CHORE_KEY_SHOW_ON_CALENDAR] = bool(fields[CHORE_KEY_SHOW_ON_CALENDAR])
+    if CHORE_KEY_AWAY_MODE in fields:
+        chore[CHORE_KEY_AWAY_MODE] = _normalize_away_mode(fields[CHORE_KEY_AWAY_MODE])
+    rotation_changed = False
+    if CHORE_KEY_ROTATION_EVERY_DAYS in fields:
+        chore[CHORE_KEY_ROTATION_EVERY_DAYS] = _normalize_rotation_every_days(fields[CHORE_KEY_ROTATION_EVERY_DAYS])
+        rotation_changed = True
+    if CHORE_KEY_ROTATION_START in fields:
+        chore[CHORE_KEY_ROTATION_START] = _normalize_rotation_start(fields[CHORE_KEY_ROTATION_START])
+        rotation_changed = True
+    if CHORE_KEY_ROTATION_START_INDEX in fields:
+        group = chore.get("rotation_group") or []
+        chore[CHORE_KEY_ROTATION_START_INDEX] = (int(fields[CHORE_KEY_ROTATION_START_INDEX] or 0) % len(group)) if group else 0
+        rotation_changed = True
+    if rotation_changed or "rotation_group" in fields:
+        if chore.get(CHORE_KEY_ROTATION_EVERY_DAYS) and not chore.get(CHORE_KEY_ROTATION_START):
+            chore[CHORE_KEY_ROTATION_START] = _local_date(_parse_dt(chore.get("due_date"))).isoformat()
+        # an open occurrence follows the new turns right away (a done one picks them up when it comes round again)
+        if chore["status"] == CHORE_STATUS_OPEN and chore.get("assignment_mode") == CHORE_ASSIGNMENT_MODE_AUTO_ROTATION:
+            block = _block_rotation_assignee(chore, _parse_dt(chore.get("due_date")))
+            if block is not None:
+                chore["rotation_pointer"], chore["assigned_to"] = block
     chore[CHORE_KEY_UPDATED_AT] = _now_iso()
     return chore
 
@@ -978,8 +1195,12 @@ def delete_chore(chores: dict[str, dict[str, Any]], chore_id: str) -> None:
 SCHEDULE_MAX_PER_CHORE = 120
 
 
-def _occurrence_assignee(chore: dict[str, Any], steps_ahead: int) -> Optional[str]:
-    """who a chore lands on `steps_ahead` recurrences from now (auto-rotation moves along its group each time)"""
+def _occurrence_assignee(chore: dict[str, Any], steps_ahead: int, when: Optional[datetime] = None) -> Optional[str]:
+    """who a chore lands on `steps_ahead` recurrences from now (auto-rotation moves along its group each time, or by
+    blocks of days when it rotates that way - then the occurrence's own day decides)"""
+    block = _block_rotation_assignee(chore, when) if when is not None else None
+    if block is not None:
+        return block[1]
     mode = chore.get("assignment_mode")
     if mode in (CHORE_ASSIGNMENT_MODE_CHORE_BIN, CHORE_ASSIGNMENT_MODE_FIRST_COME_FIRST_SERVED):
         return CHORE_BIN_SENTINEL
@@ -1007,7 +1228,19 @@ def project_schedule(
 
     def add(chore: dict[str, Any], when: datetime, status: str, projected: bool, assignee: Optional[str]) -> None:
         if start <= when < end:
+            away_for = None
+            if projected:
+                outcome, target = _away_outcome(chore, assignee, when)
+                if outcome != "keep":
+                    away_for = assignee
+                    if outcome == "skip":
+                        status = "away"
+                    else:
+                        assignee = target
+            elif chore.get(CHORE_KEY_AWAY_COVER_FOR):
+                away_for = chore.get(CHORE_KEY_AWAY_COVER_FOR)
             items.append({
+                "away_for": away_for,
                 "chore_id": chore.get("id"),
                 "title": chore.get("title") or "",
                 "assigned_to": assignee,
@@ -1032,12 +1265,15 @@ def project_schedule(
         steps = 0
         if status == CHORE_STATUS_APPROVED:
             approved = _parse_dt(chore.get(CHORE_KEY_APPROVED_AT))
+            skipped = _parse_dt(chore.get(CHORE_KEY_AWAY_SKIPPED_AT))
             if approved:
                 add(chore, approved, "done", False, chore.get("assigned_to"))
+            elif skipped and due:
+                add(chore, due, "away", False, chore.get(CHORE_KEY_AWAY_COVER_FOR))
             nxt = _parse_dt(chore.get(CHORE_KEY_RECUR_NEXT_DUE))
             if recurring and nxt:
                 # rotation already moved on when it was approved
-                add(chore, nxt + offset, "upcoming", True, _occurrence_assignee(chore, 0))
+                add(chore, nxt + offset, "upcoming", True, _occurrence_assignee(chore, 0, nxt + offset))
                 anchor, steps = nxt, 1
         else:
             if due is None:
@@ -1060,7 +1296,7 @@ def project_schedule(
             when = nxt + offset
             if when >= end:
                 break
-            add(chore, when, "upcoming", True, _occurrence_assignee(chore, steps))
+            add(chore, when, "upcoming", True, _occurrence_assignee(chore, steps, when))
             anchor = nxt
             steps += 1
     items.sort(key=lambda x: x["due"])
