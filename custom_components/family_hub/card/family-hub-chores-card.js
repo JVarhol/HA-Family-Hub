@@ -6221,7 +6221,8 @@ class FamilyHubChoresCard extends HTMLElement {
       .kid-mini.grown { font-weight: 400; }
       .kid-mini-none { font-size: 14px; color: var(--fc-text-secondary); }
       .kid-claim-btn { border: none; background: #f0a030; color: #fff; border-radius: 999px; padding: 8px 14px; font: inherit; font-size: 14px; font-weight: 800; cursor: pointer; white-space: nowrap; }
-      .kid-claim-for { display: flex; gap: 4px; }
+      .kid-grab .kid-mini { flex-wrap: wrap; }
+      .kid-claim-for { display: flex; flex-wrap: wrap; flex-basis: 100%; gap: 4px; }
       .kid-claim-pick { border: none; background: none; padding: 0; cursor: pointer; }
       .kid-claim-av, .kid-dot { width: 32px; height: 32px; min-width: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 800; font-size: 14px; background-size: cover; background-position: center; }
       .kid-claim-av { width: 38px; height: 38px; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.2); }
