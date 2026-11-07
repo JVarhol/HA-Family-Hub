@@ -37,8 +37,8 @@ Open Settings → General → Screen Saver → **Widgets on the screensaver**. *
 | **Next up** | The next 1 to 3 events from everyone's calendars (or the ones you list), with each person's picture, and "Now" for one that's on. Hidden in Discreet Mode. |
 | **Entity** | Any entity: its icon, name and state. Switches, lights, fans, covers and scripts can be set to **tap to toggle**, which works without waking the screen. |
 | **Camera** | A camera in a rounded picture-in-picture tile. Give it an **Only show when** entity (a doorbell, a motion sensor or an event entity) and it only appears when that goes off, for as long as you choose. |
-| **Text** | A line of your own text. |
-| **Custom card** | Any Lovelace card, written as JSON, for anything else. |
+| **Text** | A line of your own text. It can use a Home Assistant template, like `{{ states('sensor.outdoor_temperature') }}°`, which stays up to date. |
+| **Custom card** | Any Lovelace card, written as JSON, for anything else. Cards that Home Assistant 2026.11 changed (Markdown, Button, Gauge, Light, Picture) work here too. |
 
 ### Where widgets go
 
@@ -64,7 +64,7 @@ The editor shows a live preview. **This screen** uses the shape of the screen yo
 - **Move widgets slightly every few minutes**: shifts everything by a few pixels now and then, so nothing burns into the screen. On by default.
 - **Night mode**: between two times, dims the screen to the brightness you choose, and can turn the clock red.
 
-Old layouts move over automatically: each widget lands in the spot nearest where it was, a "Digits only" clock becomes a Clock, a Weather card becomes Weather, Markdown becomes Text, and any other card stays a Custom card. **Hide widgets on this device** still hides chosen widgets on just the screen you're on. The calendar card and the standalone [Screen Saver card](/docs/cards/screen-saver) draw the widgets the same way.
+Old layouts move over automatically: each widget lands in the spot nearest where it was, a "Digits only" clock becomes a Clock, a Weather card becomes Weather, plain Markdown becomes Text, and Markdown with a template or card_mod styling, like any other card, stays a Custom card. **Hide widgets on this device** still hides chosen widgets on just the screen you're on. The calendar card and the standalone [Screen Saver card](/docs/cards/screen-saver) draw the widgets the same way.
 
 ![Clock & weather with two entities on a square frame](/img/screenshots/screensaver-square.webp)
 

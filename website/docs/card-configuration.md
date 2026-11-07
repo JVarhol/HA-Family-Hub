@@ -31,7 +31,7 @@ Settings for the whole household live behind the **⚙️** on the **Family Hub 
 | Option | Cards | Default | Description |
 |---|---|---|---|
 | `title` | all | the card's name | Card title. Left at its default, it's translated into each person's Home Assistant language. |
-| `theme_override` | all except the calendar and Theme Selector | device theme | Pin this one card to a theme, whatever the device or household uses. In the visual editor: **Theme** → "Use device settings (default)" or any theme. |
+| `theme_override` | all except the calendar and Theme Selector | device theme | Pin this one card to a theme, whatever the device or household uses. In the visual editor: **Theme** → "Use device settings (default)" or any theme. Companion also has `companion`, its own warm colours. |
 | `fab_position` | Calendar, Chores, Rewards, Goals, To-Do Lists | `dashboard` | Where the card's **+** button sits. See below. |
 
 ### The + button position

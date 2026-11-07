@@ -71,7 +71,8 @@ redraws every minute and the edit pencils stay.
 From 100% to 200%. It makes everything on the cards bigger at once, buttons
 included. Long words wrap with a hyphen where they can. On a wide week with all
 seven days, 150% and up gets tight; the Day or Agenda view suits big text
-best.
+best. [Companion](/docs/cards/companion#colours-e-ink-and-accessibility) is already large
+print, so it grows by up to 25% on a landscape screen and 40% on a phone or portrait tablet.
 
 <img src="/HA-Family-Hub/img/screenshots/a11y-calendar-text-150.webp" alt="The week at 150% text size" />
 

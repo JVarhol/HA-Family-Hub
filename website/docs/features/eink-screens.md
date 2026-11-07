@@ -85,6 +85,8 @@ outlines and no motion. Each person keeps the same pattern or ink on every
 card as on the calendar, on their name pills, dots, columns and Right Now
 tiles. Today's event happening now is shown in reverse, like on the
 calendar. **My Pantry** and the **Recipe Box** get the same plain e-ink look.
+**Companion** goes black on white on every screen, night included, and skips its
+screensaver.
 
 The **Timers** card and the **Screen Saver** card are left as they are: a
 countdown changing every second makes an e-ink screen flash constantly, and

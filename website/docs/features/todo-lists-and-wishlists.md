@@ -74,6 +74,33 @@ as they like, from either site.
 - Remove a link and its wishes go from their list, except the claimed ones.
 - Wishes added by hand are never touched.
 
+#### Each linked list is its own section
+
+A linked list can be a hundred wishes or more, so on the card each one folds up
+into its own section under the wishes added by hand: **▸ 🎁 Christmas 112**.
+Tap it to open or close it. The column's count still includes everything.
+
+<img src="/HA-Family-Hub/img/screenshots/wishlist-sections.webp" alt="A wish list with two wishes added by hand, then folded-up sections: Christmas (112) and Birthday ideas (14)" width="640" />
+
+Give each link a **Name** in the profile (like "Christmas" or "Lego"). With no
+name, the section uses the list's own title from GoWish or Amazon, or
+"GoWish list" / "Amazon list". Renaming doesn't need a sync.
+
+### Full screen
+
+**Double-tap a list's name** (or tap the **⤢** next to it) and the list fills the
+screen, with its wishes in a grid. Everything works there: claiming, ticking off,
+editing, and the **+** button, which adds to that list. Close it with **✕**, a tap
+outside, or Back. This works for any list, not just wish lists.
+
+![A wish list full screen: its wishes in a grid, with the Christmas section open](/img/screenshots/wishlist-full-screen.webp)
+
+### Hiding prices
+
+Turn on **Hide prices on wish lists** in the To-Do Lists card's settings
+(`hide_prices: true`) and wish lists on that card show no prices. The prices are
+kept, so turning it off brings them back. The kid view never shows prices.
+
 ### Claiming
 
 - **Claim** on an item marks it as yours ("I'll get this one"). Everyone allowed to see claims then sees **Claimed by Dad**, and the button is greyed out for them.
