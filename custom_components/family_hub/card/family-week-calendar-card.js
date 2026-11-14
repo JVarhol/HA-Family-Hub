@@ -9358,6 +9358,10 @@ scrollLocked: false,
 // 2026.11.1.16: Accessibility (household; each device can choose its own - see _a11yDeviceKeys)
 accessibility: { colorVision: "off", highContrast: "off", textScale: "100", font: "theme", motion: "device", bigButtons: "off" },
 preventDuplicateEvents: false,
+// When on, an event that's the exact same name at the same time on several people's calendars is
+// shown as ONE event rendered as a multi-person collage (all their colors), instead of a single
+// pill in the first person's column. Requires/works together with preventDuplicateEvents.
+mergeSharedEvents: false,
 eventCategories: [],
 bottomPadding: 0,
 theme: this._defaultTheme(),
@@ -10020,6 +10024,9 @@ const showNowMarker = typeof parsed.showNowMarker === "boolean" ? parsed.showNow
 const smallScreenMode = typeof parsed.smallScreenMode === "boolean" ? parsed.smallScreenMode : defaults.smallScreenMode;
 const scrollLocked = typeof parsed.scrollLocked === "boolean" ? parsed.scrollLocked : defaults.scrollLocked;
 const preventDuplicateEvents = typeof parsed.preventDuplicateEvents === "boolean" ? parsed.preventDuplicateEvents : defaults.preventDuplicateEvents;
+// Merging a shared event into a multi-person collage is meaningless unless duplicates are collapsed to one event first,
+// so honour it only when preventDuplicateEvents is also on (keeps the two settings from diverging).
+const mergeSharedEvents = typeof parsed.mergeSharedEvents === "boolean" && preventDuplicateEvents ? parsed.mergeSharedEvents : false;
 const eventCategories = this._normalizeEventCategories(parsed.eventCategories);
 const parsedBottomPadding = typeof parsed.bottomPadding === "number" ? parsed.bottomPadding : parseInt(parsed.bottomPadding, 10);
 const bottomPadding = Number.isFinite(parsedBottomPadding) ? Math.max(0, Math.min(2000, Math.round(parsedBottomPadding))) : defaults.bottomPadding;
@@ -10185,6 +10192,7 @@ smallScreenMode,
 scrollLocked,
 accessibility: window.__familyHubEink ? window.__familyHubEink.a11yClean(parsed.accessibility || {}) : defaults.accessibility,
 preventDuplicateEvents,
+mergeSharedEvents,
 eventCategories,
 bottomPadding,
 theme,
@@ -12586,6 +12594,29 @@ newHolidayEvents[row.entity] = [];
 );
 if (fetchId !== this._eventsFetchSeq) return;
 this._holidayEvents = newHolidayEvents;
+// Pre-dedup index of which calendars carry each event (same title + same start time). Dedup below removes the
+// event from every calendar but the first, so this index is the only way to still know every person who shares
+// the event. _eventPeopleEntities consults it (when mergeSharedEvents is on) to render a shared event as one
+// multi-person collage instead of a single-person pill. Built from the raw newEvents before the filter mutates them.
+this._sharedEventIndex = new Map();
+{
+for (const person of people) {
+const list = newEvents[person.entity];
+if (!Array.isArray(list)) continue;
+for (const ev of list) {
+const title = (ev.summary || "").trim().toLowerCase();
+if (!title) continue;
+const st = ev.start && (ev.start.dateTime || ev.start.date);
+if (!st) continue;
+const t = new Date(st).getTime();
+if (!Number.isFinite(t)) continue;
+const startTs = Math.floor(t / 1000);
+const k = title + "::" + startTs;
+if (!this._sharedEventIndex.has(k)) this._sharedEventIndex.set(k, new Set());
+this._sharedEventIndex.get(k).add(person.entity);
+}
+}
+}
 if (this._getSettings().preventDuplicateEvents === true) {
 const seen = new Set();
 for (const person of people) {
@@ -14373,6 +14404,14 @@ ${FAMILY_HUB_SHARED_STYLE_BLOCK}
 <button type="button" class="size-btn prevent-duplicate-events-btn" data-value="on" data-i18n="common.on">On</button>
 </div>
 <div class="remind-hint" data-i18n="settings.prevent_duplicate_events_hint">Shows an event once when it's on more than one calendar - the same invite, or the exact same name at the same time - in the first person's column. Off by default. Give separate events different names ("Sam Soccer", "Taylor Soccer") so both show.</div>
+</div>
+<div class="field admin-only-setting">
+<label data-i18n="settings.merge_shared_events_label">Merge shared events into one</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn merge-shared-events-btn" data-value="off" data-i18n="common.off">Off</button>
+<button type="button" class="size-btn merge-shared-events-btn" data-value="on" data-i18n="common.on">On</button>
+</div>
+<div class="remind-hint" data-i18n="settings.merge_shared_events_hint">With “Prevent duplicate events” on, an event that's the exact same name at the same time on several people's calendars is shown once as a single event rendered as a multi-person collage (everyone's colors) instead of only in the first person's column. Off by default.</div>
 </div>
 <div class="field">
 <label data-i18n="settings.name_pills_label">Name pills — this device only</label>
@@ -16542,6 +16581,12 @@ const turningOn = btn.dataset.value === "on" && !btn.classList.contains("active"
 root.querySelectorAll(".prevent-duplicate-events-btn").forEach((b) => b.classList.remove("active"));
 btn.classList.add("active");
 if (turningOn) this._showDuplicateMergeInfo();
+});
+});
+root.querySelectorAll(".merge-shared-events-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".merge-shared-events-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
 });
 });
 root.querySelectorAll(".name-pills-btn").forEach((btn) => {
@@ -19177,6 +19222,9 @@ btn.classList.toggle("active", btn.dataset.value === (settings.greyOutPastEvents
 root.querySelectorAll(".prevent-duplicate-events-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.preventDuplicateEvents === true ? "on" : "off"));
 });
+root.querySelectorAll(".merge-shared-events-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (settings.mergeSharedEvents === true ? "on" : "off"));
+});
 this._settingsCategoriesDraft = (settings.eventCategories || []).map((c) => Object.assign({}, c));
 this._renderSettingsCategories();
 this._initA11ySettings(root);
@@ -20085,6 +20133,8 @@ const activeNowBtn = root.querySelector(".now-marker-btn.active");
 const showNowMarker = activeNowBtn ? activeNowBtn.dataset.value === "on" : true;
 const activePreventDuplicateEventsBtn = root.querySelector(".prevent-duplicate-events-btn.active");
 const preventDuplicateEvents = activePreventDuplicateEventsBtn ? activePreventDuplicateEventsBtn.dataset.value === "on" : false;
+const activeMergeSharedEventsBtn = root.querySelector(".merge-shared-events-btn.active");
+const mergeSharedEvents = activeMergeSharedEventsBtn ? activeMergeSharedEventsBtn.dataset.value === "on" : false;
 // this device only - see _getSmallScreenMode's own comment for why this is no longer part of settingsObj/family_hub/set_settings below
 const activeTopBarStyleBtn = root.querySelector(".top-bar-style-btn.active");
 const smallScreenMode = activeTopBarStyleBtn ? activeTopBarStyleBtn.dataset.value === "minimal" : false;
@@ -20372,6 +20422,7 @@ greyOutPastEvents,
 showPersonPictures,
 showNowMarker,
 preventDuplicateEvents,
+mergeSharedEvents,
 eventCategories: this._normalizeEventCategories(this._settingsCategoriesDraft || this._getSettings().eventCategories),
 // smallScreenMode deliberately NOT included here any more - see _getSmallScreenMode's own comment.
 scrollLocked,
@@ -20760,10 +20811,47 @@ const extra = (this._eventPeopleOverrides && this._eventPeopleOverrides[key]) ||
 const tagged = this._parseEventHashtags(`${summary || ""} ${description || ""}`).entities;
 const known = new Set((people || this._getPeople()).map((p) => p.entity));
 const entities = [calendarEntity];
-[...extra, ...tagged].forEach((e) => {
+[...extra, ...tagged, ...this._autoPeopleForEvent(calendarEntity, start, summary, known)].forEach((e) => {
 if (known.has(e) && !entities.includes(e)) entities.push(e);
 });
 return entities;
+}
+// When mergeSharedEvents is on and the SAME event (same title + same start time) exists on more than one person's
+// calendar, return the OTHER calendars that carry it. Lets a shared "Family Dinner" show as one multi-person event
+// (a collage of everyone's colors) instead of a single pill in the first calendar's column - without any manual
+// override. Off by default; requires preventDuplicateEvents (enforced in the settings parse). Reads the pre-dedup
+// _sharedEventIndex built in _fetchEvents, falling back to a scan of this._events if it's not there yet.
+_autoPeopleForEvent(calendarEntity, start, summary, known) {
+if (this._getSettings().mergeSharedEvents !== true) return [];
+const title = (summary || "").trim().toLowerCase();
+if (!title) return [];
+let startTs;
+if (start instanceof Date) startTs = Math.floor(start.getTime() / 1000);
+else if (typeof start === "number") startTs = Math.floor(start / 1000);
+else return [];
+const knownSet = known || new Set(this._getPeople().map((p) => p.entity));
+const out = [];
+const set = this._sharedEventIndex && this._sharedEventIndex.get(title + "::" + startTs);
+if (set) {
+set.forEach((ent) => {
+if (ent !== calendarEntity && knownSet.has(ent) && !out.includes(ent)) out.push(ent);
+});
+return out;
+}
+// Fallback: the index isn't populated yet - scan each person's fetched events directly.
+for (const person of this._getPeople()) {
+const ent = person.entity;
+if (!ent || ent === calendarEntity) continue;
+const evs = (this._events && this._events[ent]) || [];
+for (const ev of evs) {
+if ((ev.summary || "").trim().toLowerCase() !== title) continue;
+const st = ev.start && (ev.start.dateTime || ev.start.date);
+if (!st) continue;
+const t = new Date(st).getTime();
+if (Number.isFinite(t) && Math.floor(t / 1000) === startTs) { out.push(ent); break; }
+}
+}
+return out;
 }
 // Hashtags: #Emma (a person: their name in Settings > Users, or a calendar's name) shows the event on
 // their calendar too; #Sports (a category's name) gives it that category. Case and spaces don't
