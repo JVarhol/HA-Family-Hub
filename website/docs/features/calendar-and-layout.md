@@ -171,7 +171,7 @@ How it works:
 ![A custody calendar with an "M" badge that means Emma and Leo are home, and a "D" badge that means away](/img/screenshots/settings-badge-presence.webp)
 
 Chores and routines use this: see
-[When someone's away](/docs/features/chores-rewards-goals-routines#when-someones-away).
+[When someone's away](/docs/features/chores-rewards-goals-routines#chores).
 
 An example: the kids' custody schedule is a calendar where every day has an
 all-day event, "At Mom's" or "At Dad's". Give that calendar a badge "M" with
@@ -215,9 +215,76 @@ name: 🎃 Halloween, 🎄 Christmas, 🦃 Thanksgiving, 🎉 for anything else.
 
 Tap a banner to see the holiday's details.
 
+### No school / no work days
+
+In a holiday's details, **Day off** marks it as **Regular day**, **🏫 No
+school**, **💼 No work** or **🏖️ No school or work** (2026.11.2+). It sticks to
+that holiday by name, every year ("(observed)" and the year don't matter).
+Anyone who can edit calendar events can set it. No school is for the children
+(Child accounts), no work for everyone else.
+
+![A holiday's Day off choice](/img/screenshots/days-off-popup.webp)
+
+How it shows:
+
+- **The banner** says so: the tag under the name in the week view, just the
+  icon in the month view.
+
+  ![Banners tagged No school and No school or work](/img/screenshots/days-off-week.webp)
+
+- **The Right Now bar and card**: each child's tile shows **🏫 No school**,
+  each grown-up's **💼 No work** (or "... tomorrow" the day before).
+
+  ![Right Now tiles on a no-school day](/img/screenshots/days-off-right-now.webp)
+
+- **The Today card**: a **No school today** / **No work tomorrow** chip next to
+  the date.
+- **Companion** wakes a child at their weekend time on a no-school day, and uses
+  their weekend bedtime the night before.
+- **Home Assistant**: `binary_sensor.family_hub_no_school_today`,
+  `_no_school_tomorrow`, `_no_work_today` and `_no_work_tomorrow`, with the
+  holiday's name in `holidays`. Use them to skip a school-morning alarm, say.
+
 Calendars with "holiday" in their name are treated this way automatically.
 Someone's own calendar is never treated as a holiday calendar. A holiday
 calendar set to **Countdown** still feeds the countdown banner.
+
+### Your own holidays and breaks
+
+Spring break, summer break, a teacher workday, a work holiday or a vacation
+usually isn't on any holiday calendar. Add them yourself (2026.11.2.8+):
+**+ → Calendar Entry** and pick your Holidays calendar (or **🏖️ Holidays &
+breaks** if no calendar is set to Holidays). The form changes to fit: a name,
+from and to, the day off and who's off. Family Hub keeps them itself, since
+holiday calendars are usually read-only, and they take that calendar's colour.
+**Settings → General → Holidays & breaks** lists them all to change or
+remove, and tapping one's banner opens that list too.
+
+![Adding a break on the Holidays calendar](/img/screenshots/add-event-holiday.webp)
+
+![Holidays & breaks](/img/screenshots/family-breaks-editor.webp)
+
+Each one has:
+
+- **A name and dates** (from, to; one day is fine). The icon comes from the
+  name: 🌷 spring, ☀️ summer, ❄️ winter, 🍂 fall, 🍎 teacher workday,
+  💼 work, ✈️ vacation, ⛺ camp, 🏖️ anything else.
+- **Day off**: **Just show it** (a banner and nothing else), **🏫 No school**,
+  **💼 No work** or **🏖️ No school or work**, which work like a holiday
+  marked the same way (above).
+- **Who's off**: **Everyone** (the children for no school, the grown-ups for no
+  work) or **Only some people**, for a child whose school has a different
+  break or one grown-up's day off. Then only the people you tick get it: the
+  banner names them, their Right Now tile says **No school** / **No work**, and
+  only those children's Companion sleeps in. The household
+  `binary_sensor.family_hub_no_school_*` / `_no_work_*` stay off for
+  them and list them in their `people` attribute instead.
+
+![Fall break for everyone, a teacher workday for Leo and a work holiday for Dad](/img/screenshots/family-breaks-week.webp)
+
+They show in every view, on the Today card next to the date, and need
+permission to edit events to change. Ones that ended over a year ago are
+tidied away.
 
 ## Birthdays and special days
 
@@ -230,11 +297,21 @@ Each calendar in Settings → General → Calendars has a type picker (2026.11.1
 | 📅 **Events** | Ordinary events (the default). |
 | 🎉 **Holidays** | Banners, as above. |
 | 🎂 **Birthdays** | Banners with a cake, e.g. "🎂 Grandma's birthday (70)". |
-| 💍 **Special days** | Banners for anniversaries and celebrations, e.g. "💍 Mom & Dad (10 years)". |
+| 💍 **Special days** | Banners for anniversaries and celebrations, e.g. "💍 Mom & Dad (10 years)". Birthdays can go here too: a title with "birthday" (or `born 1956` in its notes) gets a 🎂 and an age, so one calendar can hold both. |
 
 Point a Birthdays or Special days calendar at any calendar that holds
 those dates: a shared Google "Birthdays" calendar, a local calendar of
 family anniversaries, a "Celebrations" calendar.
+
+**Adding one** (2026.11.2.8+): **+ → Calendar Entry** and pick the Birthdays or
+Special days calendar. The form asks only what it needs: whose birthday (or
+what it is), the date, and the year they were born (or it started). On a Special days calendar, **What is it?** picks **🎂 Birthday** or **💍 Special day**. It's saved
+on that calendar as an all-day event every year, with `born 1956` /
+`since 2016` in its notes for the age or years. The calendar has to accept new
+events (a Local Calendar does; Google's own Birthdays calendar doesn't, so it
+isn't offered).
+
+![Adding a birthday](/img/screenshots/add-event-birthday.webp)
 
 - **Ages and years**: put the year in the event's notes, like `born 1956`,
   `married 2016` or `since 2001`. Birthdays then show the age
@@ -271,6 +348,12 @@ family anniversaries, a "Celebrations" calendar.
 
 ![An event's pop-up: calendar, when, Also for, category, Remind me, checklist and Use as meal](/img/screenshots/event-info.webp)
 
+- **Directions**: an event's location is a link in its pop-up. Tap it to
+  open the address in a maps app (pick which in
+  [Settings → Event locations open in](/docs/settings-modal#event-locations-open-in)).
+
+  ![An event's pop-up with its location as a link](/img/screenshots/event-location.webp)
+
 - **Edit pencil**: events on a calendar that Home Assistant can edit (for
   example the built-in **Local Calendar**) show a small ✎ pencil. Tap it to
   open the event with its edit form already open: title, date, times,
@@ -298,6 +381,22 @@ family anniversaries, a "Celebrations" calendar.
 
 <img src="/HA-Family-Hub/img/screenshots/duplicate-picker.webp" alt="The Duplicate to… window with Tomorrow and Next week shortcuts, a date, and start and end times" width="380" />
 
+- **Move an event to another calendar** (2026.11.2+): open **Edit event**,
+  then tap the calendar it's on (at the top of the details, or **Calendar**
+  in the form). **Move to which calendar?** lists this card's other
+  calendars; one that can't take new events (like a holidays feed) is
+  greyed out. The calendar's name changes to show where it's going, and
+  **Save** moves it there, with any other changes you made in the form.
+  - It's added to the new calendar first, then removed from the old one,
+    so if something goes wrong part-way it's on both, never lost. Family Hub
+    tells you if that happens.
+  - A repeating event asks **This event** or **This and following events**.
+    A series set to repeat a fixed number of times moves one event at a time.
+  - It needs permission to edit events, and only shows when the event's
+    calendar lets events be removed from Home Assistant.
+
+<img src="/HA-Family-Hub/img/screenshots/move-calendar-picker.webp" alt="Move to which calendar? with Mom (it's here now), Dad, Emma, and Holidays greyed out: can't add events" width="380" />
+
 - **Repeating events**: the New Event form has a **Repeat** section
   (daily, weekly on chosen days, monthly or yearly, every N, with an
   optional end date). It only appears for calendars that can store
@@ -324,10 +423,28 @@ family anniversaries, a "Celebrations" calendar.
 - **Chores** can show on the calendar too, on their due date, if the chore
   has **Show on the calendar** ticked. See
   [Chores on the calendar](/docs/features/chores-rewards-goals-routines#chores).
-- **Moving events**: in **✏️ Edit** mode (the button in the top bar for rearranging meals),
-  events can be dragged to another day as well as meals, on calendars that
+- **Edit mode**: the **✏️ Edit** button in the top bar (Week, Meals, Month
+  and Split views) lets you change things in place, on calendars that
   allow editing and for people with the **Edit/move calendar events**
-  permission.
+  permission:
+  - **Drag** an event, a reminder or a chore shown on the calendar to
+    another day. In Month, drag the pill to another date.
+  - **Change the time**: on the timeline, drag an event up or down (it
+    snaps to 15 minutes, and shows the new time as you go).
+  - **Change how long it is**: drag the handle along its bottom edge.
+  - **⧉ Duplicate** and **✕ Delete** buttons sit on each item's corner
+    (Delete asks for a second tap). In Month, tap the pill and use its
+    pop-up instead.
+  - Repeating events and repeating reminders can't be dragged; open them
+    to change them.
+
+  ![Edit mode: the strip above the calendar, meals with ✕, and Duplicate and Delete on each event](/img/screenshots/edit-mode.webp)
+- **Coming back to the app**: switching away from the Home Assistant app and
+  back makes Home Assistant rebuild the dashboard. Family Hub keeps whatever
+  pop-up you had open (an event, Settings, Add event with what you'd typed),
+  and the calendar stays on the week or month you were looking at. On an
+  iPhone, where the app reloads the whole page after a while, the pop-ups you
+  had open come back within 15 minutes.
 
 ## The Right Now bar
 

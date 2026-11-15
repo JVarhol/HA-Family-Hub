@@ -10,18 +10,31 @@ pencil when editing the dashboard), or add `kid_view: true` to the card's
 YAML. Each card switches on its own, so the kids' tablet can use kid views
 while the parents' phones keep the normal cards.
 
-## Who counts as a kid
+The setting decides: a card is either the kid view or the normal card, and
+there's no switching back and forth on screen. For a screen grown-ups use too,
+put a normal card on another dashboard (or another view).
 
-People with the **Child** account option (calendar Settings → Users → their profile) get
-the big kid layout. If nobody is marked, everyone on the card gets it.
+## The same settings as the normal card
 
-## Grown-ups button
+A kid view follows the card's own settings, the same as the normal card:
 
-Every kid view has a **🔒 Grown-ups** button at the top. It switches that
-screen back to the normal card, for editing, approving and managing. After
-10 minutes without a tap it goes back to the kid view on its own, or tap
-**🧒 Kid view** to go back straight away. Permissions don't change in the kid
-view: a child can still only do what they could do on the normal card.
+- **People on this card** picks who shows. With nobody picked, the Chores and
+  Rewards kid views show the people with the **Child** account option
+  (calendar Settings → Users → their profile), or everyone if nobody is marked.
+- **The name pills** at the top narrow it down, the same way as on the normal
+  card. On Rewards, a pill picks whose star jar is shown.
+- **Grown-ups get rewards too.** On Rewards, a grown-up who's signed in (or
+  logged in with their PIN on a shared screen) also gets a pill and a jar of
+  their own, so they can get rewards for themselves. A shared kiosk login never
+  does.
+- **🔒 Login** is there for a shared screen, so a child can log in with their PIN.
+- **The + button** follows the same rules as on the normal card.
+- On Rewards, grown-ups who are allowed see **Manage stars** and **Manage
+  catalog**. Manage catalog opens the full card while you're managing, and
+  **Done managing** goes back to the kid view.
+
+Permissions don't change in the kid view: a child can still only do what they
+could do on the normal card.
 
 ## Chores
 
@@ -37,13 +50,26 @@ view: a child can still only do what they could do on the normal card.
   shows **Checking…** until a grown-up approves it (they can approve straight
   from the tile with 👍).
 - Timed chores get a ▶ button that starts the timer.
+- **Goals** (2026.11.2.11+): when the household shows goals on the Chores card
+  (**Show goals in Chores**), each child's goals sit under their jobs with a
+  progress bar and a big **+1** (or **I did it!**). One waiting to be checked
+  shows ⏳ (a grown-up gets ✓ and ↩ to approve or send it back); one that's
+  done gets 🎉.
+
+  ![Goals under the jobs on the Chores kid view, with +1 and I did it!](/img/screenshots/kid-goals.webp)
 - **The reward they're saving for** sits at the bottom of the column: the one
   they hearted on the Rewards card, or else the cheapest one they can't get
   yet.
 - **Up for grabs** is the Chore Bin. **Mine!** asks which child is taking it.
   A child can take one for themselves; a grown-up can give it to anyone.
-- **Grown-ups** is a small list of everyone else's chores, so the kids can see
-  the parents have jobs too.
+- **Grown-ups** is a small list of everyone else's chores, each with whose it
+  is, so the kids can see the parents have jobs too. To give grown-ups a big
+  column of their own instead (tiles, stars, streak, this week, the reward
+  they're saving for), turn on **Kid-friendly view: show grown-ups like kids**
+  in the card's settings (`kid_view_grownups: true`). They're then in the
+  **Mine!** picker too, and in the one-at-a-time layout.
+- **"2 waiting to be checked"** tells a grown-up something needs approving;
+  approve it with 👍 on the tile.
 - Morning, afternoon and night routines show under the chores.
 - **This week** is a row of 7 days under the progress bar. Days gone by show
   the stars they earned that day, today shows "1 of 3", and days ahead show how
@@ -64,14 +90,19 @@ opens on whoever is signed in, if they're one of the kids.
 
 ![The kid view of the Rewards card: Leo's star jar, what he's saving for, and a picture shop of rewards](/img/screenshots/kid-rewards.webp)
 
-- **Pick a child** at the top. The card opens on whoever is signed in (or
-  logged in with their PIN).
+- **Pick a child** with the name pills at the top. The card opens on whoever is
+  signed in (or logged in with their PIN), grown-ups included.
 - **The star jar**: their picture, name and stars to spend.
-- **What can I get?** shows every reward as a picture tile. **Get it!** when
+- **What can I get?** shows every reward that child can get as a picture tile
+  (one set up for someone else only doesn't show). **Get it!** when
   they have enough, or "**6 more ⭐**" with a bar when they don't. **Get it!**
-  asks **Yes, get it!** before spending, so a bump doesn't spend their stars.
+  asks first, so a bump doesn't spend their stars: **Use now** or **📦 Save it**
+  for an everyday reward (2026.11.2+), **Yes, get it!** for the rest.
+- **Saved for later**: a reward they saved shows "📦 2 saved" with **Use one**.
 - **Tap a heart** to pick what they're saving for. It shows in the jar, and in
   their Chores column. Hearts are saved on that screen.
+- **Goals** (2026.11.2.11+): with **Show goals in Rewards** on, the child's goals
+  sit under the jar, the same way as on the Chores kid view.
 - **Waiting for a grown-up** lists rewards that need a grown-up to happen,
   like a trip for ice cream.
 - **Leo got** shows the last few rewards they've had.
@@ -95,13 +126,17 @@ stay as they are.
 - **🎂 Birthday in 12 days!** shows when there's a countdown with their name
   and "birthday" in it (a custom countdown item in Settings → General → Countdown).
 - **Add a wish** opens the add pop-up with their list already picked.
+- Linked GoWish and Amazon lists fold up into their own sections, so a long
+  list doesn't bury the wishes they added themselves.
+- **Double-tap the list's name** (or tap ⤢) to see it full screen.
 
 ## YAML
 
 ```yaml
 type: custom:family-hub-chores-card
 kid_view: true
-layout: single   # optional: one child at a time
+layout: single           # optional: one child at a time
+kid_view_grownups: true  # optional: grown-ups get a column like the kids
 ```
 
 ```yaml

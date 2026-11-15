@@ -78,6 +78,11 @@ Tap an empty meal block (or the pencil on a planned one) to open the editor:
 - **♻️ Leftovers**: also show this meal on any other days you pick (they
   don't need to be in a row), for a big pot of chili that covers Tuesday
   and Thursday.
+- **🗑️ Remove <block> from <day>** (2026.11.2+): on an extra block, one added
+  with **+ → Meal Block** for a day or a weekday (not the everyday Breakfast,
+  Lunch and Dinner), this takes it off just that day. Tap it twice to be sure.
+  It stays on the other days it's added to, and adding it for that day again
+  with **Meal Block** brings it back.
 - **📅 Move to another week**: pick a date and **Move** sends the meal
   there, in the same slot.
 - **🍲 Additional recipes**: sides, sauces or desserts that go with it,
@@ -91,9 +96,17 @@ Tap an empty meal block (or the pencil on a planned one) to open the editor:
 suggestion, and someone who can edit the menu puts it on the menu or
 dismisses it. You can always take back your own suggestion.
 
-**Rearranging**: the **✏️ Edit** button in the top bar turns on drag and
-drop. Drag meals between days and slots (and, with the right permission,
-calendar events between days). Tap it again when you're done.
+**Rearranging**: the **✏️ Edit** button in the top bar turns on edit mode
+in Week, Meals, Month and Split views. A strip above the calendar says what
+you can do. Tap **✅ Done** when you're finished.
+
+- **Move a meal**: drag it to another day or slot (in Month too).
+- **Copy a meal**: hold it for a moment before dragging (or Alt/Ctrl-drag
+  with a mouse). The original stays where it was.
+- **Remove a meal**: the **✕** on its corner.
+- **Copy last week's meals**: the button in the strip fills this week's
+  empty slots with what you had a week earlier. Meals you've already
+  planned are left alone.
 
 Without Grocy, a Loved Dish or a day's meal is filled in through the dish/
 day editor's own fields: name, description, a recipe link (with an Open

@@ -21,7 +21,8 @@ const FeatureList = [
       <>
         Assignable, rotating, or first-come chores with a star economy, a
         redeemable rewards catalog, one-off goals, and Morning/Afternoon/Night
-        routine checklists &mdash; gated by per-person permissions.
+        routine checklists &mdash; gated by per-person permissions, with
+        kid-friendly views and a Companion screen for each child.
       </>
     ),
   },

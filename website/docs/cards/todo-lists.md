@@ -27,6 +27,7 @@ fab_position: dashboard  # or "card"
 | `entities` | `[]` | **Lists to show**, as columns. Easier to manage from the **+** button → **List(s)** tab, which saves for this card on every screen. |
 | `include_grocy_shopping_lists` | `false` | **Also show Grocy shopping list(s)**. Which Grocy lists is picked in the **+** button → **List(s)** tab. |
 | `kid_view` | `false` | **Kid-friendly wish lists**: wish lists show as big pictures with hearts, and no prices or claims. See [Kid-Friendly Views](/docs/features/kid-friendly-views). |
+| `hide_prices` | `false` | **Hide prices on wish lists**: no prices on this card's wish lists. See [Hiding prices](/docs/features/todo-lists-and-wishlists#hiding-prices). |
 | `fab_position` | `dashboard` | **+ button position**. See [All Cards](/docs/card-configuration#the--button-position). |
 | `theme_override` | device theme | Pin this card to one theme. |
 
