@@ -25,7 +25,11 @@ function legacyKind(cfg) {
   const t = cfg && cfg.type;
   if (t === "clock") return { kind: "clock", config: { style: "digits", seconds: !!cfg.show_seconds, date: false, format: cfg.time_format === "12" || cfg.time_format === "24" ? cfg.time_format : "auto" }, color: cfg.fh_style === "digits" && !cfg.fh_adaptive_color ? "light" : "auto" };
   if ((t === "weather-forecast" || t === "weather") && cfg.entity) return { kind: "weather", config: { entity: cfg.entity, show: "hilo" } };
-  if (t === "markdown") return { kind: "text", config: { text: String(cfg.content || "").replace(/[#*_`>]/g, "").trim() } };
+  if (t === "markdown") {
+    const content = String(cfg.content || "");
+    if (/\{\{|\{%/.test(content) || cfg.card_mod || cfg.style) return { kind: "card", config: { card: cfg } };
+    return { kind: "text", config: { text: content.replace(/[#*`>]/g, "").trim() } };
+  }
   return { kind: "card", config: { card: cfg } };
 }
 function anchorFromBox(w) {
@@ -282,6 +286,7 @@ class Layer {
     this.el.querySelectorAll(".fh-ss-zone").forEach((z) => { this.zones[z.dataset.zone] = z; });
     this.items = {};
     this.ctx = {};
+    this.el.addEventListener("context-request", (e) => this._forwardContext(e));
     this._measure = () => {
       const r = this.el.getBoundingClientRect();
       const u = Math.max(2, Math.min(r.width || 0, r.height || 0) / 100) || 10;
@@ -291,6 +296,18 @@ class Layer {
     if (window.ResizeObserver) { this._ro = new ResizeObserver(this._measure); this._ro.observe(this.el); }
     else window.addEventListener("resize", this._measure);
     this._measure();
+  }
+  _forwardContext(e) {
+    const host = this.ctx.contextHost || this.opts.contextHost;
+    if (!host || !host.isConnected || e.__fhForwarded) return;
+    e.stopPropagation();
+    const fwd = new Event("context-request", { bubbles: true, composed: true });
+    fwd.context = e.context;
+    fwd.callback = e.callback;
+    fwd.subscribe = e.subscribe;
+    fwd.contextTarget = e.contextTarget || (e.composedPath && e.composedPath()[0]) || e.target;
+    fwd.__fhForwarded = true;
+    host.dispatchEvent(fwd);
   }
   update(ctx) {
     this.ctx = Object.assign({}, this.ctx, ctx);
@@ -355,6 +372,7 @@ class Layer {
       item.state.timer = setInterval(() => this._refreshCamera(item, false), 3000);
     } else if (w.kind === "text") {
       el.innerHTML = `<div class="fh-ss-text"></div>`;
+      this._subscribeTemplate(item);
     } else if (w.kind === "card") {
       el.innerHTML = `<div class="fh-ss-card${w.transparent ? " transparent" : ""}"></div>`;
       this._mountCard(item);
@@ -386,7 +404,10 @@ class Layer {
       item.extraClass = c.tap && TOGGLE_DOMAINS.includes(domain) && !this.opts.preview ? " tappable" : "";
       el.className = `fh-ss-w fh-ss-k-${w.kind}${item.extraClass}`;
     } else if (w.kind === "camera") this._refreshCamera(item, true);
-    else if (w.kind === "text") el.querySelector(".fh-ss-text").textContent = c.text || "";
+    else if (w.kind === "text") {
+      if (!item.state.template) el.querySelector(".fh-ss-text").textContent = c.text || "";
+      else if (!item.state.unsub) this._subscribeTemplate(item);
+    }
     else if (w.kind === "card") { const card = el.querySelector(".fh-ss-card > *"); if (card) card.hass = hass; }
   }
   _tickClock(item) {
@@ -559,6 +580,17 @@ class Layer {
     const url = `${pic}${sep}fhts=${Date.now()}`;
     img.src = typeof hass.hassUrl === "function" ? hass.hassUrl(url) : url;
     item.state.loaded = true;
+  }
+  _subscribeTemplate(item) {
+    const text = String(item.w.config.text || "");
+    item.state.template = /\{\{|\{%/.test(text);
+    const hass = this.ctx.hass;
+    if (!item.state.template || item.state.unsub || !hass || !hass.connection || typeof hass.connection.subscribeMessage !== "function") return;
+    const box = item.el.querySelector(".fh-ss-text");
+    item.state.unsub = hass.connection.subscribeMessage((msg) => {
+      if (msg && msg.result !== undefined) { box.textContent = String(msg.result); this.fit(); }
+    }, { type: "render_template", template: text });
+    item.state.unsub.catch(() => { box.textContent = text; });
   }
   async _mountCard(item) {
     const host = item.el.querySelector(".fh-ss-card");
@@ -869,7 +901,7 @@ class Editor {
     const bgUrl = this.opts.backgroundUrl ? this.opts.backgroundUrl() : "";
     frame.innerHTML = bgUrl ? `<img class="bg" alt="" src="${esc(bgUrl)}">` : `<div class="bg"></div>`;
     if (this.layer) this.layer.destroy();
-    this.layer = new Layer(frame, { preview: true });
+    this.layer = new Layer(frame, { preview: true, contextHost: this.opts.contextHost });
     const bgImg = frame.querySelector("img.bg");
     this.layer.update({ hass: this.hass, widgets: this.widgets, options: this.options, settings: this.opts.settings ? this.opts.settings() : {}, t: this.t, getBackground: () => (bgImg && bgImg.naturalWidth ? bgImg : null) });
     this.layer.show();
@@ -2039,6 +2071,7 @@ class FamilyScreensaverCard extends HTMLElement {
     this._ssLayer.update({
       hass: this._hass,
       getHass: () => this._hass,
+      contextHost: this,
       widgets: this._getSettings().screenSaverWidgets || [],
       hiddenIds: this._getScreenSaverHiddenWidgetIds(),
       options: this._getSettings().screenSaver,

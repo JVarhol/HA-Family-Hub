@@ -25,9 +25,9 @@ function HomepageHeader() {
         </Heading>
         <p className="hero__subtitle">{siteConfig.tagline}</p>
         <p className={styles.heroBlurb}>
-          A 12-card dashboard ecosystem for Home Assistant &mdash; calendar,
-          meal planning, chores, rewards, goals, routines, and a live
-          who&rsquo;s-home view, in 10 themes and 8 languages &mdash; built to
+          A 13-card dashboard ecosystem for Home Assistant &mdash; calendar,
+          meal planning, chores, rewards, goals, routines, a live
+          who&rsquo;s-home view and a kids&rsquo; own Companion screen, in 10 themes and 8 languages &mdash; built to
           compete with commercial family-hub tablets while running entirely
           on infrastructure you already own.
         </p>

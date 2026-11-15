@@ -67,6 +67,7 @@ from .const import (
     GOAL_REWARD_TYPE_STARS,
     GOAL_REWARD_TYPES,
     GOAL_STATUS_APPROVED,
+    GOAL_STATUS_ARCHIVED,
     GOAL_STATUS_OPEN,
     GOAL_STATUS_PENDING_VERIFICATION,
 )
@@ -323,6 +324,27 @@ def reject_goal(
     goal["reject_reason"] = reason or None
     goal["updated_at"] = goal["rejected_at"]
     _fire_goal_event(hass, goal, previous_status=previous, actor=rejecter, extra={"event": "rejected", "reason": goal["reject_reason"]})
+    return goal
+
+
+def archive_goal(
+    goals: dict[str, dict[str, Any]],
+    hass: HomeAssistant,
+    goal_id: str,
+    actor: Optional[str],
+) -> dict[str, Any]:
+    """Approved -> Archived: the "Complete" button on an achieved goal tucks it into Completed. Nothing is paid or taken
+    back (approve_goal already paid it), and there's no un-archive. Issue #40: this went missing in 1.111.0 while the
+    goals/archive command still called it."""
+    goal = _get_goal(goals, goal_id)
+    if goal["status"] != GOAL_STATUS_APPROVED:
+        raise GoalError("not_approved", "Only an achieved goal can be completed.")
+    previous = goal["status"]
+    goal["status"] = GOAL_STATUS_ARCHIVED
+    goal["archived_by"] = actor
+    goal["archived_at"] = _now_iso()
+    goal["updated_at"] = goal["archived_at"]
+    _fire_goal_event(hass, goal, previous_status=previous, actor=actor, extra={"event": "archived"})
     return goal
 
 

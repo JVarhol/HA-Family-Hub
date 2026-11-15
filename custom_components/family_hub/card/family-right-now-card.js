@@ -111,6 +111,46 @@ localStorage.setItem("familyHubA11yHouseholdLocal", next);
 }
 refreshAll();
 }
+// 2026.11.2.11: "Card background: See-through" (household settings.seeThroughBackground): the cards leave their own
+// background empty so the dashboard's (an animated background, a wallpaper) shows through; never in e-ink/high contrast,
+// nor while a card shows a photo of its own (the calendar's full-screen holiday photo sets fh-own-bg)
+function seeThrough() {
+try {
+return localStorage.getItem("familyHubSeeThroughLocal") === "1";
+} catch (e) {
+return false;
+}
+}
+function setSeeThrough(on) {
+const next = on ? "1" : "";
+let before = "";
+try {
+before = localStorage.getItem("familyHubSeeThroughLocal") || "";
+} catch (e) {
+}
+if (before === next) return;
+try {
+localStorage.setItem("familyHubSeeThroughLocal", next);
+} catch (e) {
+}
+refreshAll();
+}
+const SEE_THROUGH_CSS = `
+:host([fh-see-through]:not([fh-own-bg])) ha-card { background-color: transparent !important; background-image: none !important; box-shadow: none !important; }
+:host([fh-see-through]:not([fh-own-bg])) ha-card::before { display: none !important; }
+`;
+function applySeeThrough(host) {
+const on = seeThrough() && mode() === "off";
+if (on) host.setAttribute("fh-see-through", "");
+else host.removeAttribute("fh-see-through");
+const root = host.shadowRoot;
+if (on && root && !root.querySelector("style[data-fh-see-through]")) {
+const s = document.createElement("style");
+s.setAttribute("data-fh-see-through", "");
+s.textContent = SEE_THROUGH_CSS;
+root.appendChild(s);
+}
+}
 // every card loads the household settings itself; this reads the Accessibility part of them, at most every 5 minutes
 let householdFetch = null, householdAt = 0;
 function loadHousehold(hass) {
@@ -118,7 +158,10 @@ if (!hass || !hass.connection || householdFetch || Date.now() - householdAt < 5 
 householdFetch = hass.connection.sendMessagePromise({ type: "family_hub/get_settings" })
 .then((r) => {
 const s = r && r.settings;
-if (s && typeof s === "object") setHousehold(s.accessibility || {});
+if (s && typeof s === "object") {
+setHousehold(s.accessibility || {});
+setSeeThrough(s.seeThroughBackground === true);
+}
 })
 .catch(() => {})
 .then(() => {
@@ -409,6 +452,7 @@ if (!st) return;
 // the calendar loads the household settings itself (and hands the Accessibility part over with setHousehold)
 if (!st.opts.a11yOnly) loadHousehold(host._hass || host.hass);
 const v = applyA11y(host);
+applySeeThrough(host);
 const root = host.shadowRoot;
 if (st.opts.a11yOnly) {
 // the calendar draws its own e-ink and colour vision; this just gives it the shared accessibility attributes
@@ -471,7 +515,7 @@ attached.delete(host);
 }
 const refreshAll = () => attached.forEach((st, host) => apply(host));
 window.addEventListener("family-hub-eink-changed", refreshAll);
-window.addEventListener("storage", (e) => { if (!e.key || /^familyHub(Eink|A11y)/.test(e.key)) refreshAll(); });
+window.addEventListener("storage", (e) => { if (!e.key || /^familyHub(Eink|A11y|SeeThrough)/.test(e.key)) refreshAll(); });
 try {
 if (window.matchMedia) {
 const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -480,9 +524,271 @@ if (mq && mq.addEventListener) mq.addEventListener("change", refreshAll);
 } catch (e) {
 }
 window.__familyHubEink = {
-mode, deviceMode, tappable, background, cvFor, a11y, a11yClean, setHousehold, ensureFonts, A11Y_KEYS: A11Y, SHAPES, SHAPE_NAMES,
-attach: (host, opts) => attach(host, opts, 0), detach, refreshAll, BASE_CSS, A11Y_CSS,
+mode, deviceMode, tappable, background, cvFor, a11y, a11yClean, setHousehold, seeThrough, setSeeThrough, ensureFonts, A11Y_KEYS: A11Y, SHAPES, SHAPE_NAMES,
+attach: (host, opts) => {
+if (window.__familyHubKeepAlive) window.__familyHubKeepAlive.connected(host);
+attach(host, opts, 0);
+},
+detach: (host) => {
+detach(host);
+if (window.__familyHubKeepAlive) window.__familyHubKeepAlive.disconnected(host);
+},
+refreshAll, BASE_CSS, A11Y_CSS,
 };
+})();
+// 2026.11.2: keep an open pop-up open when you switch away from Home Assistant and come back. When the app comes back
+// and reconnects, Home Assistant reloads the dashboard and builds every card again, so a card that had a pop-up open
+// lost it. Now: when the page is hidden, each card notes whether it has a pop-up open; if Home Assistant then replaces
+// that card (within a minute of coming back), the new copy steps aside for the old one, pop-up and all, and passes
+// Home Assistant's updates on to it.
+(function () {
+if (window.__familyHubKeepAlive) return;
+const live = new Set();
+const parked = [];
+let visibleAt = 0;
+const WINDOW_MS = 60000;
+const ADOPT_MS = 20000;
+const keyOf = (host) => {
+if (host.__fhKeepKey === undefined) {
+let cfg = "";
+try { cfg = JSON.stringify(host._config || null); } catch (e) { cfg = ""; }
+host.__fhKeepKey = host.tagName + "|" + cfg;
+}
+return host.__fhKeepKey;
+};
+// a pop-up: something fixed on screen, showing, and covering a good part of it
+function modalOpen(host) {
+const root = host.shadowRoot;
+if (!root) return false;
+const min = (window.innerWidth || 0) * (window.innerHeight || 0) * 0.2;
+const els = root.querySelectorAll('[class*="modal"],[class*="overlay"],[class*="dialog"],[class*="sheet"],[class*="popup"],[class*="picker"],[class*="viewer"]');
+for (let i = 0; i < els.length; i++) {
+const cs = getComputedStyle(els[i]);
+if (cs.position !== "fixed" || cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) < 0.05) continue;
+const r = els[i].getBoundingClientRect();
+if (r.width * r.height >= min && min > 0) return true;
+}
+return false;
+}
+document.addEventListener("visibilitychange", () => {
+if (document.visibilityState === "hidden") {
+live.forEach((host) => {
+try { host.__fhKeepModal = modalOpen(host); } catch (e) { host.__fhKeepModal = false; }
+});
+} else {
+visibleAt = Date.now();
+}
+});
+const recent = () => document.visibilityState === "hidden" || Date.now() - visibleAt < WINDOW_MS;
+function disconnected(host) {
+live.delete(host);
+if (host.__fhKeepModal && recent()) parked.push({ host, key: keyOf(host), at: Date.now() });
+}
+let connected = function (host) {
+live.add(host);
+keyOf(host);
+// after this card's own connectedCallback has run
+setTimeout(() => {
+const now = Date.now();
+for (let i = parked.length - 1; i >= 0; i--) {
+if (now - parked[i].at > ADOPT_MS || parked[i].host.isConnected) parked.splice(i, 1);
+}
+if (!host.isConnected || host.__fhAdopted) return;
+const idx = parked.findIndex((p) => p.key === keyOf(host) && p.host !== host);
+if (idx < 0) return;
+const old = parked.splice(idx, 1)[0].host;
+old.__fhKeepModal = false;
+const latest = host._hass || host.hass;
+try { host.replaceWith(old); } catch (e) { return; }
+host.__fhAdopted = old;
+// the card is back as it was, so nothing needs putting back from what was saved
+try { localStorage.removeItem("familyHubResume:" + keyOf(old)); } catch (e) {}
+// Home Assistant keeps talking to the card it made; pass it all on
+Object.defineProperty(host, "hass", { configurable: true, get() { return old.hass; }, set(v) { old.hass = v; } });
+host.setConfig = (c) => old.setConfig(c);
+if (latest) old.hass = latest;
+}, 0);
+}
+// --- after a full page reload (the iPhone app reloads the whole page after a while away) -------------------------
+// Each card's pop-up openers are watched: what was opened, with what. When the page is hidden with a pop-up open, that
+// list and what's typed in each open pop-up are saved on this device; when the same card loads again within 15
+// minutes, the pop-ups are opened again, in order, and the typing put back.
+const RESUME_MS = 15 * 60000;
+const ready = {
+calendar: (c) => !!c._settingsCache,
+users: (c) => Array.isArray(c._notifyProfileUsersCache),
+};
+// per card: the pop-up openers to watch, what each needs before it can open again, and how to save/find its argument
+const OPENERS = {
+"FAMILY-WEEK-CALENDAR-CARD": {
+__view: { ready: (c) => !!(c._settingsCache && c._viewMode) },
+_openSettings: { ready: ready.calendar },
+_setSettingsTab: { ready: ready.calendar, follows: true },
+_openNotifyProfileModal: { ready: ready.users },
+_openAddEvent: { ready: ready.calendar },
+_openQuickAdd: { ready: ready.calendar },
+_openEventInfo: {
+save: (c, id) => { const d = (c._eventDetails || {})[id]; return d ? { uid: d.uid || "", start: d.start ? new Date(d.start).getTime() : 0, cal: d.calendarEntity || "", title: d.summary || "" } : null; },
+find: (c, w) => {
+const all = c._eventDetails || {};
+return Object.keys(all).find((id) => { const d = all[id]; return d && (d.calendarEntity || "") === w.cal && (d.start ? new Date(d.start).getTime() : 0) === w.start && ((w.uid && d.uid === w.uid) || (!w.uid && d.summary === w.title)); });
+},
+},
+_openEventInfoForEdit: { alias: "_openEventInfo" },
+},
+"FAMILY-HUB-CHORES-CARD": { _openCreateModal: {}, _openEditModal: {}, _openChoreDetailModal: {}, _openRoutineManageModal: {} },
+"FAMILY-HUB-REWARDS-CARD": {
+_openCreateRewardModal: {
+save: (c, item) => (item && item.id ? { id: item.id } : null),
+find: (c, w) => (c._catalog || []).find((it) => it.id === w.id),
+optional: true,
+},
+_openGiftStarsModal: {}, _openManageStarsModal: {}, _openStarHistoryModal: {},
+},
+"FAMILY-HUB-TODO-CARD": { _openCreateModal: {}, _openItemDetailModal: {} },
+};
+const openOverlays = (host) => {
+const root = host.shadowRoot;
+if (!root) return [];
+const out = [];
+const min = (window.innerWidth || 0) * (window.innerHeight || 0) * 0.2;
+root.querySelectorAll('[class*="modal"],[class*="overlay"],[class*="dialog"],[class*="sheet"],[class*="popup"],[class*="picker"],[class*="viewer"]').forEach((el) => {
+const cs = getComputedStyle(el);
+if (cs.position !== "fixed" || cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) < 0.05) return;
+const r = el.getBoundingClientRect();
+if (min > 0 && r.width * r.height >= min) out.push(el);
+});
+return out;
+};
+const FIELD = "input:not([type=file]):not([type=password]):not([type=hidden]):not([type=button]):not([type=submit]),textarea,select";
+const sig = (el) => el.tagName + ":" + (el.type || "") + ":" + (el.className || "");
+const readFields = (ov) => Array.prototype.map.call(ov.querySelectorAll(FIELD), (el) => [sig(el), el.type === "checkbox" || el.type === "radio" ? !!el.checked : el.value]);
+function writeFields(ov, saved) {
+if (!ov || !Array.isArray(saved)) return;
+const els = ov.querySelectorAll(FIELD);
+const touched = [];
+saved.forEach((f, i) => {
+const el = els[i];
+if (!el || sig(el) !== f[0]) return;
+if (el.type === "checkbox" || el.type === "radio") { if (el.checked !== !!f[1]) { el.checked = !!f[1]; touched.push([el, "change"]); } }
+else if (el.value !== f[1]) { el.value = f[1]; touched.push([el, el.tagName === "SELECT" ? "change" : "input"]); }
+});
+touched.forEach((t) => { try { t[0].dispatchEvent(new Event(t[1], { bubbles: true })); } catch (e) {} });
+}
+const resumeKey = (host) => "familyHubResume:" + keyOf(host);
+function track(host) {
+const table = OPENERS[host.tagName];
+if (!table || host.__fhTracked) return;
+host.__fhTracked = true;
+host.__fhCalls = [];
+Object.keys(table).forEach((name) => {
+if (name === "__view") return;
+const orig = host[name];
+if (typeof orig !== "function") return;
+const spec = table[name];
+const fn = spec.alias || name;
+const fspec = table[fn] || spec;
+host[name] = function () {
+const args = Array.prototype.slice.call(arguments);
+const outer = !host.__fhInOpener;
+// (pop-ups opened again after a reload are watched too, so leaving again keeps them)
+if (outer) {
+const before = openOverlays(host);
+if (!before.length && !fspec.follows) host.__fhCalls = [];
+let saved = args;
+if (fspec.save) { const w = fspec.save(host, args[0]); saved = w ? [{ __w: w }].concat(args.slice(1)) : (fspec.optional ? [] : null); }
+if (saved) {
+const call = { fn, args: saved, ov: null, edit: name === "_openEventInfoForEdit" };
+host.__fhCalls.push(call);
+// some open after loading something, so look a few times
+[0, 300, 1200].forEach((ms) => setTimeout(() => { if (!call.ov) call.ov = openOverlays(host).find((o) => before.indexOf(o) < 0) || null; }, ms));
+}
+}
+host.__fhInOpener = true;
+try { return orig.apply(this, arguments); } finally { if (outer) host.__fhInOpener = false; }
+};
+});
+}
+function snapshot(host) {
+const calls = host.__fhCalls || [];
+const open = openOverlays(host);
+// where the card was (the calendar's week, say), pop-up or not
+let view = null;
+try { view = typeof host._fhViewState === "function" ? host._fhViewState() : null; } catch (e) { view = null; }
+if ((!open.length || !calls.length) && !view) { try { localStorage.removeItem(resumeKey(host)); } catch (e) {} return; }
+let parentOpen = false;
+const keep = [];
+(open.length ? calls : []).forEach((c) => {
+const isOpen = c.ov ? open.indexOf(c.ov) >= 0 : parentOpen;
+if (c.ov) parentOpen = isOpen;
+if (isOpen) keep.push({ fn: c.fn, args: c.args, edit: c.edit, fields: c.ov ? readFields(c.ov) : null });
+});
+try {
+if (keep.length || view) localStorage.setItem(resumeKey(host), JSON.stringify({ at: Date.now(), calls: keep, view }));
+else localStorage.removeItem(resumeKey(host));
+} catch (e) {}
+}
+const waitFor = (test, ms) => new Promise((resolve) => {
+const end = Date.now() + ms;
+const tick = () => { let v = null; try { v = test(); } catch (e) { v = null; } if (v) resolve(v); else if (Date.now() > end) resolve(null); else setTimeout(tick, 200); };
+tick();
+});
+async function resume(host) {
+let saved = null;
+try { saved = JSON.parse(localStorage.getItem(resumeKey(host)) || "null"); localStorage.removeItem(resumeKey(host)); } catch (e) { saved = null; }
+if (!saved || !Array.isArray(saved.calls) || Date.now() - (saved.at || 0) > RESUME_MS) return;
+const table = OPENERS[host.tagName] || {};
+host.__fhReplaying = true;
+try {
+if (saved.view && typeof host._fhRestoreViewState === "function") {
+const vready = (table.__view || {}).ready;
+if (await waitFor(() => host._hass && (!vready || vready(host)), 10000)) {
+try { host._fhRestoreViewState(saved.view); } catch (e) {}
+}
+}
+for (const c of saved.calls) {
+const spec = table[c.fn] || {};
+if (!host.isConnected) return;
+if (!(await waitFor(() => host._hass && (!spec.ready || spec.ready(host)), 10000))) return;
+let args = c.args || [];
+if (args[0] && args[0].__w && spec.find) {
+const found = await waitFor(() => spec.find(host, args[0].__w), 10000);
+if (!found) return;
+args = [found].concat(args.slice(1));
+}
+const before = openOverlays(host);
+const name = c.edit && typeof host._openEventInfoForEdit === "function" ? "_openEventInfoForEdit" : c.fn;
+try { await host[name].apply(host, args); } catch (e) { return; }
+if (c.fields) {
+const ov = await waitFor(() => openOverlays(host).find((o) => before.indexOf(o) < 0), 3000);
+await new Promise((r) => setTimeout(r, 150));
+writeFields(ov, c.fields);
+}
+}
+} finally {
+host.__fhReplaying = false;
+}
+}
+const snapAll = () => live.forEach((host) => { try { snapshot(host); } catch (e) {} });
+document.addEventListener("visibilitychange", () => {
+if (document.visibilityState === "hidden") { snapAll(); return; }
+// back without a reload or a rebuild: what was saved isn't needed (a card loading later shouldn't jump back to it)
+setTimeout(() => {
+if (document.visibilityState !== "visible") return;
+live.forEach((host) => { try { localStorage.removeItem(resumeKey(host)); } catch (e) {} });
+}, WINDOW_MS);
+});
+window.addEventListener("pagehide", snapAll);
+const _connected = connected;
+connected = function (host) {
+_connected(host);
+track(host);
+if (!host.__fhResumeChecked) {
+host.__fhResumeChecked = true;
+setTimeout(() => { if (host.isConnected && !host.__fhAdopted) resume(host); }, 300);
+}
+};
+window.__familyHubKeepAlive = { connected: (h) => connected(h), disconnected, modalOpen, parked, snapshot, resume, track };
 })();
 // FH-EINK END
 // Holiday themes, shared by every Family Hub card: a holiday background can switch the theme
@@ -693,6 +999,17 @@ class FamilyRightNowCard extends HTMLElement {
       { name: "show_weather", selector: { boolean: {} } },
       { name: "calendar_dashboard_path", selector: { text: {} } },
       { name: "calendar_button_label", selector: { text: {} } },
+      {
+        name: "look_ahead_days",
+        selector: { select: { mode: "dropdown", options: [
+          { value: "", label: "Household setting (default)" },
+          { value: "1", label: "Today only" },
+          { value: "2", label: "Today and tomorrow" },
+          { value: "3", label: "3 days" },
+          { value: "7", label: "7 days" },
+          { value: "14", label: "14 days" },
+        ] } },
+      },
     ];
   }
   static _computeLabel(schema) {
@@ -705,6 +1022,7 @@ class FamilyRightNowCard extends HTMLElement {
       calendar_dashboard_path: "Calendar dashboard path",
       calendar_button_label: "Calendar button label",
       theme_override: "Theme",
+      look_ahead_days: "Next looks ahead",
     };
     return labels[schema.name] || undefined;
   }
@@ -718,6 +1036,9 @@ class FamilyRightNowCard extends HTMLElement {
     if (schema.name === "calendar_dashboard_path") {
       return "Optional. Set a relative path (e.g. /lovelace-family/0) to offer a 'Go to Calendar' button from this card's ⋮ menu.";
     }
+    if (schema.name === "look_ahead_days") {
+      return "How far ahead each person's Next line looks. Household setting follows calendar Settings > Calendar top bar style > Right Now looks ahead (today and tomorrow unless changed).";
+    }
     if (schema.name === "theme_override") {
       return "Pin this one card to a specific theme, or leave on \"Use device settings\" to follow the household's own Global Theme.";
     }
@@ -726,6 +1047,7 @@ class FamilyRightNowCard extends HTMLElement {
   static getConfigElement() {
     return document.createElement("family-right-now-card-editor");
   }
+  static LOOK_AHEAD_DAYS = [1, 2, 3, 7, 14];
   // Fixed internal settings store - not a config field (see _configSchema's own comment above).
   static FIXED_SETTINGS_ENTITY = "todo.family_calendar_settings";
   setConfig(config) {
@@ -742,6 +1064,9 @@ class FamilyRightNowCard extends HTMLElement {
       calendar_dashboard_path: (config.calendar_dashboard_path || "").toString().trim(),
       calendar_button_label: (config.calendar_button_label || "").toString().trim(),
       theme_override: typeof config.theme_override === "string" ? config.theme_override : "",
+      // 2026.11.2: how many days "Next" looks ahead (today counts as one); unset = the household's setting (calendar
+      // Settings > Calendar top bar style > Right Now looks ahead), which is 2 (today and tomorrow) unless changed
+      look_ahead_days: FamilyRightNowCard.LOOK_AHEAD_DAYS.includes(Number(config.look_ahead_days)) ? Number(config.look_ahead_days) : 0,
       embedded: config.embedded === true,
       // (Right Now bar pass): when embedded, the Family Week Calendar card now TELLS this card how big to be and what shape it is
       embedded_size: ["small", "medium", "large"].includes(config.embedded_size) ? config.embedded_size : "",
@@ -771,7 +1096,8 @@ class FamilyRightNowCard extends HTMLElement {
     const peopleSig = JSON.stringify(this._config.people_override ? this._config.people_override.map((p) => [p.entity, p.extraEntities]) : this._config.people_entities);
     const peopleChanged = this._peopleSig !== undefined && this._peopleSig !== peopleSig;
     this._peopleSig = peopleSig;
-    if (peopleChanged && this._hass && this._settingsCache) this._fetchEvents();
+    const aheadChanged = !!this._fetchedLookAhead && this._fetchedLookAhead !== this._lookAheadDays();
+    if ((peopleChanged || aheadChanged) && this._hass && this._settingsCache) this._fetchEvents();
     this._render();
   }
   // see embedded_size/embedded_layout in setConfig.
@@ -1059,7 +1385,8 @@ class FamilyRightNowCard extends HTMLElement {
     const discreetModeEnabled = typeof parsed.discreetModeEnabled === "boolean" ? parsed.discreetModeEnabled : defaults.discreetModeEnabled;
     const memberUserIds = Array.isArray(parsed.memberUserIds) ? parsed.memberUserIds.filter((u) => typeof u === "string" && u) : [];
     const showPersonPictures = parsed.showPersonPictures !== false;
-    return { people, userProfiles, memberUserIds, theme: { colors, fonts }, useGlobalTheme, globalThemeId, discreetModeEnabled, showPersonPictures };
+    const rightNowLookAheadDays = FamilyRightNowCard.LOOK_AHEAD_DAYS.includes(Number(parsed.rightNowLookAheadDays)) ? Number(parsed.rightNowLookAheadDays) : 2;
+    return { people, userProfiles, memberUserIds, theme: { colors, fonts }, useGlobalTheme, globalThemeId, discreetModeEnabled, showPersonPictures, rightNowLookAheadDays };
   }
   // Only ever needs primaryCalendar (to find which profile "owns" a calendar row) and presenceEntity
   _normalizeUserProfiles(raw) {
@@ -1073,6 +1400,7 @@ class FamilyRightNowCard extends HTMLElement {
         extraCalendars: Array.isArray(p.extraCalendars) ? p.extraCalendars.filter((e) => typeof e === "string" && e.trim()).map((e) => e.trim()) : [],
         color: typeof p.color === "string" && /^#[0-9a-fA-F]{6}$/.test(p.color) ? p.color : "",
         presenceEntity: typeof p.presenceEntity === "string" ? p.presenceEntity.trim() : "",
+        isChildAccount: !!p.isChildAccount,
         extraSensors: Array.isArray(p.extraSensors)
           ? p.extraSensors.map((e) => (typeof e === "string" ? e.trim() : "")).filter(Boolean)
           : [],
@@ -1167,6 +1495,36 @@ class FamilyRightNowCard extends HTMLElement {
     }
   }
   // {calendarEntity -> presenceEntity}, built the same way the full card's own _primaryCalendarColorByEntity derives a per-entity map from
+  // 2026.11.2: is this person's calendar a child's (for No school vs No work)
+  _isChildCalendar(entity) {
+    const profiles = this._getSettings().userProfiles || {};
+    return Object.keys(profiles).some((uid) => profiles[uid] && profiles[uid].primaryCalendar === entity && profiles[uid].isChildAccount);
+  }
+  // "No school" for a child / "No work" for a grown-up, today (or "... tomorrow"), from Family Hub's day-off entities
+  _dayOffPillHtml(entity) {
+    const states = (this._hass && this._hass.states) || {};
+    const kind = this._isChildCalendar(entity) ? "school" : "work";
+    // 2026.11.2.8: a break only some people have is in the sensors' `people` attribute (user id -> names), not their state
+    const profiles = this._getSettings().userProfiles || {};
+    const uid = Object.keys(profiles).find((u) => profiles[u] && profiles[u].primaryCalendar === entity);
+    const on = (when) => {
+      const st = states[`binary_sensor.family_hub_no_${kind}_${when}`];
+      if (!st) return null;
+      if (st.state === "on") return st;
+      const mine = uid && st.attributes && st.attributes.people && st.attributes.people[uid];
+      return Array.isArray(mine) && mine.length ? { attributes: { holidays: mine } } : null;
+    };
+    const today = on("today");
+    const tomorrow = today ? null : on("tomorrow");
+    const st = today || tomorrow;
+    if (!st) return "";
+    const names = (st.attributes && st.attributes.holidays) || [];
+    const label = kind === "school"
+      ? (today ? this._t("right_now.no_school", "No school") : this._t("right_now.no_school_tomorrow", "No school tomorrow"))
+      : (today ? this._t("right_now.no_work", "No work") : this._t("right_now.no_work_tomorrow", "No work tomorrow"));
+    const title = String(names.join(", ")).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+    return `<span class="sensor-pill dayoff-pill${today ? "" : " tomorrow"}" title="${title}">${kind === "school" ? "\u{1F3EB}" : "\u{1F4BC}"} ${label}</span>`;
+  }
   _presenceByCalendarEntity() {
     const settings = this._getSettings();
     const map = {};
@@ -1481,6 +1839,7 @@ class FamilyRightNowCard extends HTMLElement {
       const liveSettings = live && live.settings && typeof live.settings === "object" ? live.settings : null;
       if (liveSettings && Object.keys(liveSettings).length) {
         this._settingsCache = this._normalizeSettings(liveSettings);
+        if (this._fetchedLookAhead && this._fetchedLookAhead !== this._lookAheadDays()) this._fetchEvents();
         if (!(this._config && Array.isArray(this._config.people_override))) this._fetchUserNames();
         this._applyThemeVars();
         this._render();
@@ -1510,6 +1869,7 @@ class FamilyRightNowCard extends HTMLElement {
         }
       }
       this._settingsCache = this._normalizeSettings(parsed);
+      if (this._fetchedLookAhead && this._fetchedLookAhead !== this._lookAheadDays()) this._fetchEvents();
     } catch (e) {
       if (!this._settingsCache) this._settingsCache = this._defaultSettings();
     }
@@ -1563,14 +1923,23 @@ class FamilyRightNowCard extends HTMLElement {
       this._eventPeopleOverrides = {};
     }
   }
-  // Fetches a 2-day window (today through the start of the day after tomorrow) per person
+  // how many days "Next" looks ahead, today included: this card's own setting, else the household's (default 2 = today
+  // and tomorrow, as it always was)
+  _lookAheadDays() {
+    const own = this._config && this._config.look_ahead_days;
+    if (own) return own;
+    const shared = Number(this._getSettings().rightNowLookAheadDays);
+    return FamilyRightNowCard.LOOK_AHEAD_DAYS.includes(shared) ? shared : 2;
+  }
+  // Fetches today through the end of the look-ahead window per person
   async _fetchEvents() {
     if (!this._hass) return;
     await this._fetchEventPeopleOverrides();
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
     const windowEnd = new Date(todayStart);
-    windowEnd.setDate(windowEnd.getDate() + 2);
+    windowEnd.setDate(windowEnd.getDate() + this._lookAheadDays());
+    this._fetchedLookAhead = this._lookAheadDays();
     const people = this._getPeople();
     const knownEntities = new Set(people.map((p) => p.entity));
     const byEntity = {};
@@ -1717,6 +2086,23 @@ class FamilyRightNowCard extends HTMLElement {
   }
   _fmtTime(d) {
     return this._fmtTimeOfDay(d);
+  }
+  // "" for today, "Tomorrow", a weekday within the week, else a short date - so a "Next" days away says when
+  _nextDayLabel(d, now) {
+    if (!d) return "";
+    const a = new Date(now || new Date());
+    a.setHours(0, 0, 0, 0);
+    const b = new Date(d);
+    b.setHours(0, 0, 0, 0);
+    const days = Math.round((b - a) / 86400000);
+    if (days <= 0) return "";
+    if (days === 1) return this._t("right_now.tomorrow", "Tomorrow");
+    try {
+      if (days < 7) return b.toLocaleDateString(this._uiLocale(), { weekday: "short" });
+      return b.toLocaleDateString(this._uiLocale(), { weekday: "short", month: "short", day: "numeric" });
+    } catch (e) {
+      return b.toDateString();
+    }
   }
   // The card editor's Title, unless it's empty or still the stock "Right
   // Now" (getStubConfig/setConfig default) - those follow the HA language.
@@ -1944,6 +2330,8 @@ ha-card.embedded {
 .presence-pill.away { background: color-mix(in srgb, var(--fc-text) 9%, transparent); color: var(--fc-text); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fc-text) 22%, transparent); }
 .sensor-pill { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 800; padding: 2px 8px; border-radius: 10px; background: color-mix(in srgb, var(--fc-text) 9%, transparent); color: var(--fc-text); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fc-text) 22%, transparent); }
 .sensor-pill { font-size: 11px; }
+.sensor-pill.dayoff-pill { background: #f3e2b3; color: #4a3800; box-shadow: none; cursor: default; }
+.sensor-pill.dayoff-pill.tomorrow { background: transparent; color: var(--fc-text); box-shadow: inset 0 0 0 1px #d9bf7e; }
 .sensor-pill.battery-pill.low-battery { background: #c0514a; color: #fff; box-shadow: none; }
 .presence-pill, .sensor-pill { cursor: pointer; -webkit-tap-highlight-color: transparent; }
 .presence-pill:active, .sensor-pill:active { opacity: 0.7; }
@@ -2222,7 +2610,9 @@ ha-card.embedded {
     let nextHtml;
     if (next) {
       const nextTitle = this._discreetText(`${next.badgePrefix ? next.badgePrefix + " " : ""}${next.summary}${this._ageSuffix(next)}`);
-      nextHtml = `<div class="next-label">${this._t("right_now.next", "Next:")} ${nextTitle} <span class="next-time">${next.allDay ? this._t("right_now.all_day", "All day") : this._fmtTime(next.start)}</span></div>`;
+      const nextDay = this._nextDayLabel(next.start, now);
+      const nextWhen = next.allDay ? this._t("right_now.all_day", "All day") : this._fmtTime(next.start);
+      nextHtml = `<div class="next-label">${this._t("right_now.next", "Next:")} ${nextTitle} <span class="next-time">${nextDay ? nextDay + " " : ""}${nextWhen}</span></div>`;
     } else {
       nextHtml = `<div class="next-label next-empty">${this._t("right_now.no_upcoming", "No upcoming events")}</div>`;
     }
@@ -2232,6 +2622,7 @@ ha-card.embedded {
     ${this._avatarHtml(person, initial, textColor, presenceEntity)}
     <div class="person-name">${displayName}</div>
     ${presenceHtml}
+    ${this._dayOffPillHtml(person.entity)}
     ${sensorsHtml}
   </div>
   ${currentHtml}

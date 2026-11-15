@@ -111,6 +111,46 @@ localStorage.setItem("familyHubA11yHouseholdLocal", next);
 }
 refreshAll();
 }
+// 2026.11.2.11: "Card background: See-through" (household settings.seeThroughBackground): the cards leave their own
+// background empty so the dashboard's (an animated background, a wallpaper) shows through; never in e-ink/high contrast,
+// nor while a card shows a photo of its own (the calendar's full-screen holiday photo sets fh-own-bg)
+function seeThrough() {
+try {
+return localStorage.getItem("familyHubSeeThroughLocal") === "1";
+} catch (e) {
+return false;
+}
+}
+function setSeeThrough(on) {
+const next = on ? "1" : "";
+let before = "";
+try {
+before = localStorage.getItem("familyHubSeeThroughLocal") || "";
+} catch (e) {
+}
+if (before === next) return;
+try {
+localStorage.setItem("familyHubSeeThroughLocal", next);
+} catch (e) {
+}
+refreshAll();
+}
+const SEE_THROUGH_CSS = `
+:host([fh-see-through]:not([fh-own-bg])) ha-card { background-color: transparent !important; background-image: none !important; box-shadow: none !important; }
+:host([fh-see-through]:not([fh-own-bg])) ha-card::before { display: none !important; }
+`;
+function applySeeThrough(host) {
+const on = seeThrough() && mode() === "off";
+if (on) host.setAttribute("fh-see-through", "");
+else host.removeAttribute("fh-see-through");
+const root = host.shadowRoot;
+if (on && root && !root.querySelector("style[data-fh-see-through]")) {
+const s = document.createElement("style");
+s.setAttribute("data-fh-see-through", "");
+s.textContent = SEE_THROUGH_CSS;
+root.appendChild(s);
+}
+}
 // every card loads the household settings itself; this reads the Accessibility part of them, at most every 5 minutes
 let householdFetch = null, householdAt = 0;
 function loadHousehold(hass) {
@@ -118,7 +158,10 @@ if (!hass || !hass.connection || householdFetch || Date.now() - householdAt < 5 
 householdFetch = hass.connection.sendMessagePromise({ type: "family_hub/get_settings" })
 .then((r) => {
 const s = r && r.settings;
-if (s && typeof s === "object") setHousehold(s.accessibility || {});
+if (s && typeof s === "object") {
+setHousehold(s.accessibility || {});
+setSeeThrough(s.seeThroughBackground === true);
+}
 })
 .catch(() => {})
 .then(() => {
@@ -409,6 +452,7 @@ if (!st) return;
 // the calendar loads the household settings itself (and hands the Accessibility part over with setHousehold)
 if (!st.opts.a11yOnly) loadHousehold(host._hass || host.hass);
 const v = applyA11y(host);
+applySeeThrough(host);
 const root = host.shadowRoot;
 if (st.opts.a11yOnly) {
 // the calendar draws its own e-ink and colour vision; this just gives it the shared accessibility attributes
@@ -471,7 +515,7 @@ attached.delete(host);
 }
 const refreshAll = () => attached.forEach((st, host) => apply(host));
 window.addEventListener("family-hub-eink-changed", refreshAll);
-window.addEventListener("storage", (e) => { if (!e.key || /^familyHub(Eink|A11y)/.test(e.key)) refreshAll(); });
+window.addEventListener("storage", (e) => { if (!e.key || /^familyHub(Eink|A11y|SeeThrough)/.test(e.key)) refreshAll(); });
 try {
 if (window.matchMedia) {
 const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -480,9 +524,271 @@ if (mq && mq.addEventListener) mq.addEventListener("change", refreshAll);
 } catch (e) {
 }
 window.__familyHubEink = {
-mode, deviceMode, tappable, background, cvFor, a11y, a11yClean, setHousehold, ensureFonts, A11Y_KEYS: A11Y, SHAPES, SHAPE_NAMES,
-attach: (host, opts) => attach(host, opts, 0), detach, refreshAll, BASE_CSS, A11Y_CSS,
+mode, deviceMode, tappable, background, cvFor, a11y, a11yClean, setHousehold, seeThrough, setSeeThrough, ensureFonts, A11Y_KEYS: A11Y, SHAPES, SHAPE_NAMES,
+attach: (host, opts) => {
+if (window.__familyHubKeepAlive) window.__familyHubKeepAlive.connected(host);
+attach(host, opts, 0);
+},
+detach: (host) => {
+detach(host);
+if (window.__familyHubKeepAlive) window.__familyHubKeepAlive.disconnected(host);
+},
+refreshAll, BASE_CSS, A11Y_CSS,
 };
+})();
+// 2026.11.2: keep an open pop-up open when you switch away from Home Assistant and come back. When the app comes back
+// and reconnects, Home Assistant reloads the dashboard and builds every card again, so a card that had a pop-up open
+// lost it. Now: when the page is hidden, each card notes whether it has a pop-up open; if Home Assistant then replaces
+// that card (within a minute of coming back), the new copy steps aside for the old one, pop-up and all, and passes
+// Home Assistant's updates on to it.
+(function () {
+if (window.__familyHubKeepAlive) return;
+const live = new Set();
+const parked = [];
+let visibleAt = 0;
+const WINDOW_MS = 60000;
+const ADOPT_MS = 20000;
+const keyOf = (host) => {
+if (host.__fhKeepKey === undefined) {
+let cfg = "";
+try { cfg = JSON.stringify(host._config || null); } catch (e) { cfg = ""; }
+host.__fhKeepKey = host.tagName + "|" + cfg;
+}
+return host.__fhKeepKey;
+};
+// a pop-up: something fixed on screen, showing, and covering a good part of it
+function modalOpen(host) {
+const root = host.shadowRoot;
+if (!root) return false;
+const min = (window.innerWidth || 0) * (window.innerHeight || 0) * 0.2;
+const els = root.querySelectorAll('[class*="modal"],[class*="overlay"],[class*="dialog"],[class*="sheet"],[class*="popup"],[class*="picker"],[class*="viewer"]');
+for (let i = 0; i < els.length; i++) {
+const cs = getComputedStyle(els[i]);
+if (cs.position !== "fixed" || cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) < 0.05) continue;
+const r = els[i].getBoundingClientRect();
+if (r.width * r.height >= min && min > 0) return true;
+}
+return false;
+}
+document.addEventListener("visibilitychange", () => {
+if (document.visibilityState === "hidden") {
+live.forEach((host) => {
+try { host.__fhKeepModal = modalOpen(host); } catch (e) { host.__fhKeepModal = false; }
+});
+} else {
+visibleAt = Date.now();
+}
+});
+const recent = () => document.visibilityState === "hidden" || Date.now() - visibleAt < WINDOW_MS;
+function disconnected(host) {
+live.delete(host);
+if (host.__fhKeepModal && recent()) parked.push({ host, key: keyOf(host), at: Date.now() });
+}
+let connected = function (host) {
+live.add(host);
+keyOf(host);
+// after this card's own connectedCallback has run
+setTimeout(() => {
+const now = Date.now();
+for (let i = parked.length - 1; i >= 0; i--) {
+if (now - parked[i].at > ADOPT_MS || parked[i].host.isConnected) parked.splice(i, 1);
+}
+if (!host.isConnected || host.__fhAdopted) return;
+const idx = parked.findIndex((p) => p.key === keyOf(host) && p.host !== host);
+if (idx < 0) return;
+const old = parked.splice(idx, 1)[0].host;
+old.__fhKeepModal = false;
+const latest = host._hass || host.hass;
+try { host.replaceWith(old); } catch (e) { return; }
+host.__fhAdopted = old;
+// the card is back as it was, so nothing needs putting back from what was saved
+try { localStorage.removeItem("familyHubResume:" + keyOf(old)); } catch (e) {}
+// Home Assistant keeps talking to the card it made; pass it all on
+Object.defineProperty(host, "hass", { configurable: true, get() { return old.hass; }, set(v) { old.hass = v; } });
+host.setConfig = (c) => old.setConfig(c);
+if (latest) old.hass = latest;
+}, 0);
+}
+// --- after a full page reload (the iPhone app reloads the whole page after a while away) -------------------------
+// Each card's pop-up openers are watched: what was opened, with what. When the page is hidden with a pop-up open, that
+// list and what's typed in each open pop-up are saved on this device; when the same card loads again within 15
+// minutes, the pop-ups are opened again, in order, and the typing put back.
+const RESUME_MS = 15 * 60000;
+const ready = {
+calendar: (c) => !!c._settingsCache,
+users: (c) => Array.isArray(c._notifyProfileUsersCache),
+};
+// per card: the pop-up openers to watch, what each needs before it can open again, and how to save/find its argument
+const OPENERS = {
+"FAMILY-WEEK-CALENDAR-CARD": {
+__view: { ready: (c) => !!(c._settingsCache && c._viewMode) },
+_openSettings: { ready: ready.calendar },
+_setSettingsTab: { ready: ready.calendar, follows: true },
+_openNotifyProfileModal: { ready: ready.users },
+_openAddEvent: { ready: ready.calendar },
+_openQuickAdd: { ready: ready.calendar },
+_openEventInfo: {
+save: (c, id) => { const d = (c._eventDetails || {})[id]; return d ? { uid: d.uid || "", start: d.start ? new Date(d.start).getTime() : 0, cal: d.calendarEntity || "", title: d.summary || "" } : null; },
+find: (c, w) => {
+const all = c._eventDetails || {};
+return Object.keys(all).find((id) => { const d = all[id]; return d && (d.calendarEntity || "") === w.cal && (d.start ? new Date(d.start).getTime() : 0) === w.start && ((w.uid && d.uid === w.uid) || (!w.uid && d.summary === w.title)); });
+},
+},
+_openEventInfoForEdit: { alias: "_openEventInfo" },
+},
+"FAMILY-HUB-CHORES-CARD": { _openCreateModal: {}, _openEditModal: {}, _openChoreDetailModal: {}, _openRoutineManageModal: {} },
+"FAMILY-HUB-REWARDS-CARD": {
+_openCreateRewardModal: {
+save: (c, item) => (item && item.id ? { id: item.id } : null),
+find: (c, w) => (c._catalog || []).find((it) => it.id === w.id),
+optional: true,
+},
+_openGiftStarsModal: {}, _openManageStarsModal: {}, _openStarHistoryModal: {},
+},
+"FAMILY-HUB-TODO-CARD": { _openCreateModal: {}, _openItemDetailModal: {} },
+};
+const openOverlays = (host) => {
+const root = host.shadowRoot;
+if (!root) return [];
+const out = [];
+const min = (window.innerWidth || 0) * (window.innerHeight || 0) * 0.2;
+root.querySelectorAll('[class*="modal"],[class*="overlay"],[class*="dialog"],[class*="sheet"],[class*="popup"],[class*="picker"],[class*="viewer"]').forEach((el) => {
+const cs = getComputedStyle(el);
+if (cs.position !== "fixed" || cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) < 0.05) return;
+const r = el.getBoundingClientRect();
+if (min > 0 && r.width * r.height >= min) out.push(el);
+});
+return out;
+};
+const FIELD = "input:not([type=file]):not([type=password]):not([type=hidden]):not([type=button]):not([type=submit]),textarea,select";
+const sig = (el) => el.tagName + ":" + (el.type || "") + ":" + (el.className || "");
+const readFields = (ov) => Array.prototype.map.call(ov.querySelectorAll(FIELD), (el) => [sig(el), el.type === "checkbox" || el.type === "radio" ? !!el.checked : el.value]);
+function writeFields(ov, saved) {
+if (!ov || !Array.isArray(saved)) return;
+const els = ov.querySelectorAll(FIELD);
+const touched = [];
+saved.forEach((f, i) => {
+const el = els[i];
+if (!el || sig(el) !== f[0]) return;
+if (el.type === "checkbox" || el.type === "radio") { if (el.checked !== !!f[1]) { el.checked = !!f[1]; touched.push([el, "change"]); } }
+else if (el.value !== f[1]) { el.value = f[1]; touched.push([el, el.tagName === "SELECT" ? "change" : "input"]); }
+});
+touched.forEach((t) => { try { t[0].dispatchEvent(new Event(t[1], { bubbles: true })); } catch (e) {} });
+}
+const resumeKey = (host) => "familyHubResume:" + keyOf(host);
+function track(host) {
+const table = OPENERS[host.tagName];
+if (!table || host.__fhTracked) return;
+host.__fhTracked = true;
+host.__fhCalls = [];
+Object.keys(table).forEach((name) => {
+if (name === "__view") return;
+const orig = host[name];
+if (typeof orig !== "function") return;
+const spec = table[name];
+const fn = spec.alias || name;
+const fspec = table[fn] || spec;
+host[name] = function () {
+const args = Array.prototype.slice.call(arguments);
+const outer = !host.__fhInOpener;
+// (pop-ups opened again after a reload are watched too, so leaving again keeps them)
+if (outer) {
+const before = openOverlays(host);
+if (!before.length && !fspec.follows) host.__fhCalls = [];
+let saved = args;
+if (fspec.save) { const w = fspec.save(host, args[0]); saved = w ? [{ __w: w }].concat(args.slice(1)) : (fspec.optional ? [] : null); }
+if (saved) {
+const call = { fn, args: saved, ov: null, edit: name === "_openEventInfoForEdit" };
+host.__fhCalls.push(call);
+// some open after loading something, so look a few times
+[0, 300, 1200].forEach((ms) => setTimeout(() => { if (!call.ov) call.ov = openOverlays(host).find((o) => before.indexOf(o) < 0) || null; }, ms));
+}
+}
+host.__fhInOpener = true;
+try { return orig.apply(this, arguments); } finally { if (outer) host.__fhInOpener = false; }
+};
+});
+}
+function snapshot(host) {
+const calls = host.__fhCalls || [];
+const open = openOverlays(host);
+// where the card was (the calendar's week, say), pop-up or not
+let view = null;
+try { view = typeof host._fhViewState === "function" ? host._fhViewState() : null; } catch (e) { view = null; }
+if ((!open.length || !calls.length) && !view) { try { localStorage.removeItem(resumeKey(host)); } catch (e) {} return; }
+let parentOpen = false;
+const keep = [];
+(open.length ? calls : []).forEach((c) => {
+const isOpen = c.ov ? open.indexOf(c.ov) >= 0 : parentOpen;
+if (c.ov) parentOpen = isOpen;
+if (isOpen) keep.push({ fn: c.fn, args: c.args, edit: c.edit, fields: c.ov ? readFields(c.ov) : null });
+});
+try {
+if (keep.length || view) localStorage.setItem(resumeKey(host), JSON.stringify({ at: Date.now(), calls: keep, view }));
+else localStorage.removeItem(resumeKey(host));
+} catch (e) {}
+}
+const waitFor = (test, ms) => new Promise((resolve) => {
+const end = Date.now() + ms;
+const tick = () => { let v = null; try { v = test(); } catch (e) { v = null; } if (v) resolve(v); else if (Date.now() > end) resolve(null); else setTimeout(tick, 200); };
+tick();
+});
+async function resume(host) {
+let saved = null;
+try { saved = JSON.parse(localStorage.getItem(resumeKey(host)) || "null"); localStorage.removeItem(resumeKey(host)); } catch (e) { saved = null; }
+if (!saved || !Array.isArray(saved.calls) || Date.now() - (saved.at || 0) > RESUME_MS) return;
+const table = OPENERS[host.tagName] || {};
+host.__fhReplaying = true;
+try {
+if (saved.view && typeof host._fhRestoreViewState === "function") {
+const vready = (table.__view || {}).ready;
+if (await waitFor(() => host._hass && (!vready || vready(host)), 10000)) {
+try { host._fhRestoreViewState(saved.view); } catch (e) {}
+}
+}
+for (const c of saved.calls) {
+const spec = table[c.fn] || {};
+if (!host.isConnected) return;
+if (!(await waitFor(() => host._hass && (!spec.ready || spec.ready(host)), 10000))) return;
+let args = c.args || [];
+if (args[0] && args[0].__w && spec.find) {
+const found = await waitFor(() => spec.find(host, args[0].__w), 10000);
+if (!found) return;
+args = [found].concat(args.slice(1));
+}
+const before = openOverlays(host);
+const name = c.edit && typeof host._openEventInfoForEdit === "function" ? "_openEventInfoForEdit" : c.fn;
+try { await host[name].apply(host, args); } catch (e) { return; }
+if (c.fields) {
+const ov = await waitFor(() => openOverlays(host).find((o) => before.indexOf(o) < 0), 3000);
+await new Promise((r) => setTimeout(r, 150));
+writeFields(ov, c.fields);
+}
+}
+} finally {
+host.__fhReplaying = false;
+}
+}
+const snapAll = () => live.forEach((host) => { try { snapshot(host); } catch (e) {} });
+document.addEventListener("visibilitychange", () => {
+if (document.visibilityState === "hidden") { snapAll(); return; }
+// back without a reload or a rebuild: what was saved isn't needed (a card loading later shouldn't jump back to it)
+setTimeout(() => {
+if (document.visibilityState !== "visible") return;
+live.forEach((host) => { try { localStorage.removeItem(resumeKey(host)); } catch (e) {} });
+}, WINDOW_MS);
+});
+window.addEventListener("pagehide", snapAll);
+const _connected = connected;
+connected = function (host) {
+_connected(host);
+track(host);
+if (!host.__fhResumeChecked) {
+host.__fhResumeChecked = true;
+setTimeout(() => { if (host.isConnected && !host.__fhAdopted) resume(host); }, 300);
+}
+};
+window.__familyHubKeepAlive = { connected: (h) => connected(h), disconnected, modalOpen, parked, snapshot, resume, track };
 })();
 // FH-EINK END
 // FH-MODAL-SCROLL START - source: tools/modal_scroll_guard.js, copied into each card by tools/sync_modal_scroll_guard.py
@@ -1569,8 +1875,10 @@ class FamilyHubChoresCard extends HTMLElement {
       show_stars: !(config && config.show_stars === false),
       // "Ask for stars" tab in the + button's New pop-up: request stars for something that isn't on the chart
       allow_star_requests: !(config && config.allow_star_requests === false),
-      // 2026.11.1: big picture tiles per child instead of the board (Grown-ups switches back for a while)
+      // 2026.11.1: big picture tiles per child instead of the board (the card setting decides; no switching on screen)
       kid_view: !!(config && config.kid_view),
+      // 2026.11.2: in the kid view, grown-ups get a big column like the children instead of the small Grown-ups list
+      kid_view_grownups: !!(config && config.kid_view_grownups),
     };
     this._registerFabCoordinator();
     if (this._settingsCache === undefined) this._settingsCache = null;
@@ -2671,7 +2979,6 @@ class FamilyHubChoresCard extends HTMLElement {
             <button class="schedule-view-toggle-btn" title="Show the chore schedule" data-i18n-title="chores.schedule_toggle_show">&#128197;</button>
             <button class="compact-view-toggle-btn" title="Switch to compact view" data-i18n-title="chores.compact_view_show">&#9776;</button>
             <button class="rewards-toggle-btn" title="Show/hide the Rewards column" data-i18n-title="chores.rewards_toggle_title" hidden>&#11088;</button>
-            <button class="kid-mode-btn" hidden></button>
             <button class="kiosk-login-btn" title="Log in as a specific household member on this kiosk display" data-i18n-title="chores.kiosk_login_title" hidden>&#128274; <span data-i18n="chores.login">Login</span></button>
           </div>
         </div>
@@ -2712,8 +3019,6 @@ class FamilyHubChoresCard extends HTMLElement {
       if (this._kidViewActive() && this._onKidBoardClick(e)) return;
       this._onBoardClick(e);
     });
-    root.querySelector(".kid-mode-btn").addEventListener("click", () => this._setKidGrownups(this._kidViewActive()));
-    root.querySelector("ha-card").addEventListener("pointerdown", () => this._kidTouch(), { passive: true });
     root.querySelector(".board").addEventListener("pointerdown", (e) => this._kidOnPointerDown(e), { passive: true });
     root.querySelector(".board").addEventListener("pointerup", (e) => this._kidOnPointerUp(e), { passive: true });
     // kiosk PIN login - see _onKioskLoginBtnClick's own
@@ -3564,7 +3869,8 @@ class FamilyHubChoresCard extends HTMLElement {
   }
   _rewardsCatalogItemHtml(item) {
     const myBalance = this._balances[this._myUserId()] || 0;
-    const affordable = myBalance >= (item.cost_stars || 0);
+    const forMe = !(item.for_users || []).length || item.for_users.includes(this._myUserId());
+    const affordable = myBalance >= (item.cost_stars || 0) && forMe;
     return `
       <div class="rewards-catalog-item" data-id="${item.id}"${this._rewardsCatalogAccentStyle(item)}>
         <span class="rewards-catalog-icon">${item.icon || "&#127873;"}</span>
@@ -3580,8 +3886,11 @@ class FamilyHubChoresCard extends HTMLElement {
     const balances = memberUsers.length
       ? memberUsers.map((u) => this._rewardsBalanceRowHtml(u)).join("")
       : `<div class="chore-col-empty">${this._t("chores.no_one_added_yet", "No one's been added to Family Hub yet")}</div>`;
-    const catalog = this._catalog.length
-      ? this._catalog.map((it) => this._rewardsCatalogItemHtml(it)).join("")
+    // a reward for certain people only shows to them
+    const me = this._myUserId();
+    const mine = this._catalog.filter((it) => !(it.for_users || []).length || it.for_users.includes(me) || this._isAdmin());
+    const catalog = mine.length
+      ? mine.map((it) => this._rewardsCatalogItemHtml(it)).join("")
       : `<div class="chore-col-empty">${this._t("chores.no_rewards_yet", "No rewards in the catalog yet")}</div>`;
     return `
       <div class="chore-column rewards-column" data-col-id="rewards">
@@ -3781,6 +4090,8 @@ class FamilyHubChoresCard extends HTMLElement {
       // Reuses the exact same choresConfettiOnComplete setting/_fireConfetti machinery chore completion already uses
       if (this._confettiOnCompleteEnabled()) this._fireConfetti();
     } catch (e) {
+      // issue #40: say why instead of doing nothing (Home Assistant shows it at the bottom of the screen)
+      this.dispatchEvent(new CustomEvent("hass-notification", { detail: { message: (e && e.message) || this._t("goals.complete_failed", "Couldn't complete that goal - try again.") }, bubbles: true, composed: true }));
     }
     await this._fetchGoals();
   }
@@ -4021,32 +4332,27 @@ class FamilyHubChoresCard extends HTMLElement {
   }
 
   // -- Kid-friendly view (2026.11.1) -------------------------------------------
-  // kid_view: true in the card config draws big picture tiles per child instead of the board. 🔒 Grown-ups flips this
-  // device back to the normal board for 10 minutes (any tap on the card keeps it there), then it returns to the kid view.
+  // kid_view: true in the card config draws big picture tiles per child instead of the board; the setting alone decides.
   _kidViewActive() {
     if (!this._config || !this._config.kid_view) return false;
-    if (this._kidGrownupsUntil && Date.now() < this._kidGrownupsUntil) return false;
-    this._kidGrownupsUntil = 0;
     return true;
-  }
-  _setKidGrownups(on) {
-    clearTimeout(this._kidGrownupsTimer);
-    this._kidGrownupsUntil = on ? Date.now() + 10 * 60 * 1000 : 0;
-    if (on) this._kidGrownupsTimer = setTimeout(() => { this._kidGrownupsUntil = 0; this._render(); }, 10 * 60 * 1000);
-    this._kidClaimOpen = null;
-    this._render();
-  }
-  _kidTouch() {
-    if (!this._kidGrownupsUntil) return;
-    this._kidGrownupsUntil = Date.now() + 10 * 60 * 1000;
-    clearTimeout(this._kidGrownupsTimer);
-    this._kidGrownupsTimer = setTimeout(() => { this._kidGrownupsUntil = 0; this._render(); }, 10 * 60 * 1000);
   }
   // a picture for a chore from the words in its name; ✨ when nothing matches
   _kidChoreEmoji(title) {
     const t = ` ${String(title || "").toLowerCase()} `;
     for (const [re, emoji] of FH_KID_CHORE_EMOJI) if (re.test(t)) return emoji;
     return "✨";
+  }
+  // #38: "Today's Jobs" leaves out chores due on a later day (they show on that day in the week strip); no due date or overdue = today
+  _kidDueByToday(chore) {
+    const due = chore && chore.due_date;
+    if (!due) return true;
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(due));
+    const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(due);
+    if (Number.isNaN(d.getTime())) return true;
+    const end = new Date();
+    end.setHours(23, 59, 59, 999);
+    return d.getTime() <= end.getTime();
   }
   _kidIsToday(iso) {
     if (!iso) return false;
@@ -4058,7 +4364,8 @@ class FamilyHubChoresCard extends HTMLElement {
   // the reward a kid is saving for: the one they pinned on the Rewards card (this device), else the cheapest one they can't get yet,
   // else the dearest one they already can
   _kidGoal(uid) {
-    const items = (this._catalog || []).filter((it) => it && Number(it.cost_stars) > 0);
+    // only rewards this child can get (2026.11.2: a reward can be for certain people only)
+    const items = (this._catalog || []).filter((it) => it && Number(it.cost_stars) > 0 && (!(it.for_users || []).length || it.for_users.includes(uid)));
     if (!items.length) return null;
     const bal = Number(this._balances[uid]) || 0;
     let pinned = "";
@@ -4108,11 +4415,38 @@ class FamilyHubChoresCard extends HTMLElement {
         ${stamp}${btn}
       </div>`;
   }
+  // 2026.11.2.11: the person's Goals (from the Goals card) in the kid view, when the household shows goals on this card
+  _kidGoalsHtml(uid, color) {
+    const goals = (this._goals || []).filter((g) => g.assigned_to === uid && g.status !== GOAL_STATUS_ARCHIVED);
+    if (!goals.length) return "";
+    const rank = (g) => (g.status === GOAL_STATUS_OPEN ? 0 : g.status === GOAL_STATUS_PENDING_VERIFICATION ? 1 : 2);
+    const rows = goals.slice().sort((a, b) => rank(a) - rank(b) || String(a.created_at).localeCompare(String(b.created_at))).map((g) => {
+      const target = Math.max(1, Number(g.target_count) || 1);
+      const current = Math.min(target, Number(g.current_count) || 0);
+      const label = g.status === GOAL_STATUS_APPROVED ? this._t("chores.kid_goal_done", "You did it!")
+        : g.status === GOAL_STATUS_PENDING_VERIFICATION ? this._t("chores.kid_goal_waiting", "Waiting for a grown-up")
+        : target > 1 ? this._t("chores.kid_n_of_m", "%n% of %m% done", { n: String(current), m: String(target) })
+        : this._t("chores.kid_goal_not_yet", "Not done yet");
+      let act = "";
+      if (g.status === GOAL_STATUS_OPEN && this._canLogGoalProgress(g)) {
+        act = `<button type="button" class="goal-log-btn kid-task-btn" data-id="${this._escAttr(g.id)}">${this._esc(target > 1 ? this._t("chores.kid_goal_plus_one", "+1") : this._t("chores.kid_goal_did_it", "I did it!"))}</button>`;
+      } else if (g.status === GOAL_STATUS_PENDING_VERIFICATION) {
+        act = this._canVerify()
+          ? `<button type="button" class="goal-approve-btn kid-task-btn" data-id="${this._escAttr(g.id)}">&#10003;</button><button type="button" class="goal-reject-btn kid-task-btn ghost" data-id="${this._escAttr(g.id)}">&#8617;</button>`
+          : `<span class="kid-task-wait">&#9203;</span>`;
+      } else if (g.status === GOAL_STATUS_APPROVED) {
+        act = `<span class="kid-task-yay">&#127881;</span>`;
+      }
+      const pct = Math.round((current / target) * 100);
+      return `<div class="kid-task status-${g.status}"><span class="kid-task-ico">&#127942;</span><span class="kid-task-txt"><b>${this._esc(g.title)}</b><span>${this._esc(label)}</span>${target > 1 ? `<span class="kid-bar"><i style="width:${pct}%;background:${color}"></i></span>` : ""}</span><span class="kid-task-act">${act}</span></div>`;
+    }).join("");
+    return `<div class="kid-tasks"><h3>&#127942; ${this._esc(this._t("chores.kid_goals", "Goals"))}</h3>${rows}</div>`;
+  }
   _kidColumnHtml(col) {
     const uid = col.id;
     const color = col.color || this._userColor(uid);
     const mine = this._chores.filter((c) => c.assigned_to === uid);
-    const open = this._sortChoresForColumn(mine.filter((c) => c.status === "open" && !this._isWaitingToRecur(c)));
+    const open = this._sortChoresForColumn(mine.filter((c) => c.status === "open" && !this._isWaitingToRecur(c) && this._kidDueByToday(c)));
     const waiting = mine.filter((c) => c.status === "pending_verification");
     const doneToday = mine.filter((c) => c.status === "approved" && this._kidIsToday(c.approved_at))
       .sort((a, b) => new Date(a.approved_at).getTime() - new Date(b.approved_at).getTime());
@@ -4159,17 +4493,14 @@ class FamilyHubChoresCard extends HTMLElement {
         ${this._kidWeekHtml(uid, { total, finished })}
         ${otherDay || `<div class="kid-tiles">${tiles || `<div class="kid-empty">&#127774; ${this._esc(this._t("chores.kid_free_day", "Nothing to do. Enjoy your day!"))}</div>`}</div>
         ${routines ? `<div class="kid-routines">${routines}</div>` : ""}`}
+        ${!away && this._goalsInChoresEnabled() ? this._kidGoalsHtml(uid, color) : ""}
         ${goalHtml}
       </div>`;
   }
   _kidBoardHtml(columns) {
-    const profiles = (this._settingsCache && this._settingsCache.userProfiles) || {};
-    const people = columns.filter((c) => c.id !== CHORE_BIN_SENTINEL);
-    const flagged = people.filter((c) => profiles[c.id] && profiles[c.id].isChildAccount);
-    const kids = flagged.length ? flagged : people;
-    const grownups = flagged.length ? people.filter((c) => !flagged.includes(c)) : [];
+    const { kids, grownups } = this._kidSplit(columns.filter((c) => c.id !== CHORE_BIN_SENTINEL));
     const binOpen = columns.some((c) => c.id === CHORE_BIN_SENTINEL)
-      ? this._chores.filter((c) => c.assigned_to === CHORE_BIN_SENTINEL && c.status === "open") : [];
+      ? this._chores.filter((c) => c.assigned_to === CHORE_BIN_SENTINEL && c.status === "open" && this._kidDueByToday(c)) : [];
     const showStars = this._config.show_stars !== false;
     let grabHtml = "";
     if (binOpen.length) {
@@ -4178,21 +4509,21 @@ class FamilyHubChoresCard extends HTMLElement {
         const action = picking
           ? `<span class="kid-claim-for">${kids.map((k) => `<button class="kid-claim-pick" data-id="${c.id}" data-uid="${this._escAttr(k.id)}" title="${this._escAttr(k.name)}">${this._kidAvatarHtml(k.id, "kid-claim-av")}</button>`).join("")}</span>`
           : `<button class="kid-claim-btn" data-id="${c.id}">${this._esc(this._t("chores.kid_mine", "Mine!"))}</button>`;
-        return `<div class="kid-mini"><span class="kid-ico sm">${this._kidChoreEmoji(c.title)}</span><span class="kid-mini-t">${this._esc(c.title)}</span>${showStars && c.star_value ? `<span class="kid-rw">&#11088; ${Number(c.star_value) || 0}</span>` : ""}${action}</div>`;
+        return `<div class="kid-mini${picking ? " picking" : ""}"><span class="kid-ico sm">${this._kidChoreEmoji(c.title)}</span><span class="kid-mini-t">${this._esc(c.title)}</span>${showStars && c.star_value ? `<span class="kid-rw">&#11088; ${Number(c.star_value) || 0}</span>` : ""}${action}</div>`;
       }).join("")}</div>`;
     }
     let grownHtml = "";
     if (grownups.length) {
       const items = [];
       grownups.forEach((g) => {
-        this._sortChoresForColumn(this._chores.filter((c) => c.assigned_to === g.id && c.status === "open" && !this._isWaitingToRecur(c)))
-          .forEach((c) => items.push(`<div class="kid-mini grown">${this._kidAvatarHtml(g.id, "kid-dot")}<span class="kid-mini-t">${this._esc(c.title)}</span><button class="chore-done-btn kid-mini-check" data-id="${c.id}" title="${this._escAttr(this._t("chores.done", "Done"))}">&#10003;</button></div>`));
+        this._sortChoresForColumn(this._chores.filter((c) => c.assigned_to === g.id && c.status === "open" && !this._isWaitingToRecur(c) && this._kidDueByToday(c)))
+          .forEach((c) => items.push(`<div class="kid-mini grown">${this._kidAvatarHtml(g.id, "kid-dot")}<span class="kid-mini-t"><span class="kid-mini-who">${this._esc(g.name)}</span>${this._esc(c.title)}</span><button class="chore-done-btn kid-mini-check" data-id="${c.id}" title="${this._escAttr(this._t("chores.done", "Done"))}">&#10003;</button></div>`));
       });
       grownHtml = `<div class="kid-box kid-grown"><h3>&#128075; ${this._esc(this._t("chores.kid_grownups", "Grown-ups"))}</h3>${items.length ? items.slice(0, 8).join("") : `<div class="kid-mini-none">${this._esc(this._t("chores.kid_grownups_done", "All done for today"))}</div>`}</div>`;
     }
     const pendingCount = this._canVerify() ? this._chores.filter((c) => c.status === "pending_verification").length : 0;
     const note = pendingCount
-      ? `<button class="kid-pending-note">&#128064; ${this._esc(this._t("chores.kid_pending_note", "%n% waiting to be checked", { n: String(pendingCount) }))}</button>` : "";
+      ? `<div class="kid-pending-note">&#128064; ${this._esc(this._t("chores.kid_pending_note", "%n% waiting to be checked", { n: String(pendingCount) }))}</div>` : "";
     const side = grabHtml || grownHtml || note ? `<div class="kid-side">${grabHtml}${grownHtml}${note}</div>` : "";
     if (this._config.layout === "single" && kids.length > 1) {
       const selId = this._kidSingleId(kids);
@@ -4239,10 +4570,7 @@ class FamilyHubChoresCard extends HTMLElement {
     const claim = e.target.closest(".kid-claim-btn");
     if (claim) {
       e.stopPropagation();
-      const profiles = (this._settingsCache && this._settingsCache.userProfiles) || {};
-      const people = this._columns().filter((c) => c.id !== CHORE_BIN_SENTINEL);
-      const flagged = people.filter((c) => profiles[c.id] && profiles[c.id].isChildAccount);
-      const kids = flagged.length ? flagged : people;
+      const kids = this._kidKids();
       if (kids.length === 1) { this._kidClaimFor(claim.dataset.id, kids[0].id); return true; }
       this._kidClaimOpen = claim.dataset.id;
       this._render();
@@ -4254,20 +4582,10 @@ class FamilyHubChoresCard extends HTMLElement {
       this._kidClaimFor(pick.dataset.id, pick.dataset.uid);
       return true;
     }
-    if (e.target.closest(".kid-pending-note")) {
-      this._setKidGrownups(true);
-      return true;
-    }
     return false;
   }
   _updateKidHeader(kidOn) {
     const root = this._root;
-    const btn = root.querySelector(".kid-mode-btn");
-    if (btn) {
-      btn.hidden = !(this._config && this._config.kid_view);
-      btn.innerHTML = kidOn ? `&#128274; ${this._esc(this._t("chores.kid_grownups", "Grown-ups"))}` : `&#129490; ${this._esc(this._t("chores.kid_view_btn", "Kid view"))}`;
-      btn.title = kidOn ? this._t("chores.kid_grownups_title", "Show the full chore board (goes back to the kid view after 10 minutes)") : this._t("chores.kid_view_title", "Back to the kid view");
-    }
     root.querySelector("ha-card").classList.toggle("kid-mode", kidOn);
     ["schedule-view-toggle-btn", "compact-view-toggle-btn", "rewards-toggle-btn"].forEach((cls) => {
       const b = root.querySelector(`.${cls}`);
@@ -4304,7 +4622,7 @@ class FamilyHubChoresCard extends HTMLElement {
   }
   _kidEarnedOn(uid, dayKey) {
     const led = (this._kidLedger && this._kidLedger[uid]) || [];
-    return led.filter((e) => e && Number(e.delta) > 0 && ["chore_approved", "routine_approved", "goal_achieved"].includes(e.source)
+    return led.filter((e) => e && Number(e.delta) > 0 && ["chore_approved", "routine_approved", "goal_achieved", "timer_finished"].includes(e.source)
       && e.at && this._schedDayKey(new Date(e.at)) === dayKey);
   }
   _kidPlannedOn(uid, dayKey) {
@@ -4381,11 +4699,24 @@ class FamilyHubChoresCard extends HTMLElement {
     this._kidSingleSel = ids[(i + dir + ids.length) % ids.length];
     this._render();
   }
+  // the kid view shows the same people as the board: the card's People setting, then the name pills
+  _kidColumns(drawPills) {
+    const all = this._limitToConfiguredPeople(this._columns(), (col) => col.id);
+    const openCount = (colId) => this._chores.filter((c) => c.assigned_to === colId && !this._isWaitingToRecur(c) && c.status !== "approved").length;
+    if (drawPills) this._renderPersonPills(all.map((col) => ({ id: col.id, name: col.name, color: col.color, count: openCount(col.id) })));
+    const shown = this._activePersonFilter(all.map((col) => col.id));
+    return shown.length ? all.filter((col) => shown.includes(col.id)) : all;
+  }
   _kidKids() {
+    return this._kidSplit(this._kidColumns(false).filter((c) => c.id !== CHORE_BIN_SENTINEL)).kids;
+  }
+  // who gets a big column (kids) and who goes in the small Grown-ups list: Child accounts get columns; with
+  // kid_view_grownups (or nobody marked as a child) everyone does
+  _kidSplit(people) {
     const profiles = (this._settingsCache && this._settingsCache.userProfiles) || {};
-    const people = this._limitToConfiguredPeople(this._columns(), (col) => col.id).filter((c) => c.id !== CHORE_BIN_SENTINEL);
     const flagged = people.filter((c) => profiles[c.id] && profiles[c.id].isChildAccount);
-    return flagged.length ? flagged : people;
+    if (!flagged.length || (this._config && this._config.kid_view_grownups)) return { kids: people, grownups: [] };
+    return { kids: flagged, grownups: people.filter((c) => !flagged.includes(c)) };
   }
   _kidOnPointerDown(e) {
     if (!this._kidViewActive() || this._config.layout !== "single" || e.pointerType === "mouse" && e.button !== 0) return;
@@ -4409,8 +4740,7 @@ class FamilyHubChoresCard extends HTMLElement {
     let day = "";
     try { day = new Date().toLocaleDateString(this._uiLocale(), { weekday: "long" }); } catch (e) { day = ""; }
     root.querySelector(".title").innerHTML = `${this._esc(custom)}${day ? ` <span class="kid-weekday">&middot; ${this._esc(day)}</span>` : ""}`;
-    this._renderPersonPills([]);
-    const columns = this._limitToConfiguredPeople(this._columns(), (col) => col.id);
+    const columns = this._kidColumns(true);
     const justMe = !columns.length && this._isJustMeCard();
     board.classList.remove("compact-view", "schedule-view", "single-column");
     board.classList.add("kid-board-host");
@@ -6138,8 +6468,7 @@ class FamilyHubChoresCard extends HTMLElement {
       @media (max-width: 520px) { .sched-chip, .sched-more { display: none; } .sched-count { display: inline-block; } .sched-cell { min-height: 44px; } }
       .board { flex: 1; display: flex; gap: 10px; overflow-x: auto; overflow-y: hidden; }
       /* 2026.11.1 kid-friendly view (kid_view) */
-      .kid-mode-btn { border: 1px solid var(--fc-border); border-radius: 999px; padding: 6px 14px; font: inherit; font-size: 13px; font-weight: 700; background: var(--fc-card); color: var(--fc-text); cursor: pointer; }
-      .kid-mode-btn[hidden], .kid-hide { display: none !important; }
+      .kid-hide { display: none !important; }
       ha-card.kid-mode .title { font-size: 24px; }
       .kid-weekday { font-weight: 400; font-size: 0.7em; color: var(--fc-text-secondary); }
       .board.kid-board-host { display: block; overflow-x: hidden; overflow-y: auto; }
@@ -6206,6 +6535,23 @@ class FamilyHubChoresCard extends HTMLElement {
       .kid-stamp.is-waiting { background: #f0a030; }
       .kid-empty { text-align: center; padding: 22px 8px; font-size: 18px; font-weight: 700; color: var(--fc-text-secondary); }
       .kid-routines { background: color-mix(in srgb, var(--fc-card) 70%, transparent); border-radius: 18px; padding: 6px; }
+      /* 2026.11.2.11: Goals in the kid view */
+      .kid-tasks { width: 100%; box-sizing: border-box; background: var(--fc-card); border-radius: 18px; padding: 10px 14px; text-align: left; display: flex; flex-direction: column; gap: 8px; }
+      .kid-tasks h3 { margin: 0; font-size: 15px; font-weight: 800; }
+      .kid-task { display: flex; align-items: center; gap: 10px; }
+      .kid-task-ico { font-size: 26px; line-height: 1; flex: 0 0 auto; }
+      .kid-task-txt { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+      .kid-task-txt b { font-size: 16px; overflow-wrap: anywhere; }
+      .kid-task-txt > span { font-size: 13px; color: var(--fc-text-secondary); }
+      .kid-task.status-approved .kid-task-txt b { text-decoration: line-through; opacity: 0.7; }
+      .kid-task-act { flex: 0 0 auto; display: flex; gap: 6px; align-items: center; }
+      .kid-task-btn { border: none; border-radius: 999px; padding: 10px 16px; min-height: 44px; font-size: 16px; font-weight: 800; cursor: pointer; background: var(--kid-c, var(--fc-accent)); color: #fff; font-family: inherit; }
+      .kid-task-btn.ghost { background: var(--fc-surface-alt); color: var(--fc-text); }
+      .kid-task-yay, .kid-task-wait { font-size: 24px; }
+      .kid-task-txt .kid-bar { flex: none; display: block; height: 8px; border-radius: 999px; background: var(--fc-surface-alt, rgba(0,0,0,0.08)); overflow: hidden; }
+      .kid-task-txt .kid-bar i { display: block; height: 100%; border-radius: 999px; }
+      :host([eink]) .kid-tasks { background: #fff !important; border: 3px solid #000; }
+      :host([eink]) .kid-task-btn { background: #000 !important; color: #fff !important; }
       .kid-goal { margin-top: auto; display: flex; align-items: center; gap: 12px; background: var(--fc-card); border-radius: 18px; padding: 10px 14px; }
       .kid-goal-ico { font-size: 32px; line-height: 1; }
       .kid-goal-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
@@ -6217,16 +6563,22 @@ class FamilyHubChoresCard extends HTMLElement {
       .kid-box h3 { margin: 0; font-size: 17px; font-weight: 800; }
       .kid-grab { border: 3px dashed #f0b85c; background: color-mix(in srgb, #f0b85c 10%, var(--fc-card)); }
       .kid-mini { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 700; line-height: 1.2; }
-      .kid-mini-t { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+      /* issue #34: the name never shrinks to nothing (a long one wraps instead) */
+      .kid-mini-t { flex: 1; min-width: 5em; overflow-wrap: anywhere; }
       .kid-mini.grown { font-weight: 400; }
+      .kid-mini-who { display: block; font-size: 12px; font-weight: 800; color: var(--fc-text-secondary); }
       .kid-mini-none { font-size: 14px; color: var(--fc-text-secondary); }
       .kid-claim-btn { border: none; background: #f0a030; color: #fff; border-radius: 999px; padding: 8px 14px; font: inherit; font-size: 14px; font-weight: 800; cursor: pointer; white-space: nowrap; }
-      .kid-claim-for { display: flex; gap: 4px; }
+      /* issue #34: tapping Mine! puts the kids' pictures on their own line under the chore, wrapping as needed, so they
+         all stay inside the box and the chore name keeps its room */
+      .kid-mini.picking { flex-wrap: wrap; }
+      .kid-claim-for { display: flex; flex-wrap: wrap; gap: 6px; }
+      .kid-mini.picking .kid-claim-for { flex: 1 0 100%; justify-content: flex-end; }
       .kid-claim-pick { border: none; background: none; padding: 0; cursor: pointer; }
       .kid-claim-av, .kid-dot { width: 32px; height: 32px; min-width: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 800; font-size: 14px; background-size: cover; background-position: center; }
       .kid-claim-av { width: 38px; height: 38px; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.2); }
       .kid-mini-check { width: 32px; height: 32px; min-width: 32px; border-radius: 50%; border: 3px solid var(--fc-border); background: none; color: var(--fc-text-secondary); font: inherit; font-weight: 800; cursor: pointer; padding: 0; }
-      .kid-pending-note { border: none; background: none; font: inherit; font-size: 13px; color: var(--fc-text-secondary); text-decoration: underline; cursor: pointer; }
+      .kid-pending-note { font-size: 13px; color: var(--fc-text-secondary); }
       :host([eink]) .kid-col, :host([eink]) .kid-box { background: #fff !important; border: 3px solid #000; }
       :host([eink]) .kid-check { border-color: #000; color: #000; }
       :host([eink]) .kid-check.is-done, :host([eink]) .kid-stamp, :host([eink]) .kid-bar i { background: #000 !important; color: #fff; }
@@ -6709,6 +7061,7 @@ class FamilyHubChoresCardEditor extends HTMLElement {
         ] } },
       },
       { name: "kid_view", selector: { boolean: {} } },
+      { name: "kid_view_grownups", selector: { boolean: {} } },
       { name: "show_stars", selector: { boolean: {} } },
       { name: "allow_star_requests", selector: { boolean: {} } },
       {
@@ -6739,6 +7092,7 @@ class FamilyHubChoresCardEditor extends HTMLElement {
       s.name === "show_waiting_to_recur" ? "Show Waiting to Recur" :
       s.name === "layout" ? "Layout" :
       s.name === "kid_view" ? "Kid-friendly view" :
+      s.name === "kid_view_grownups" ? "Kid-friendly view: show grown-ups like kids" :
       s.name === "show_stars" ? "Show star balance next to names" :
       s.name === "allow_star_requests" ? "Show \"Ask for stars\"" : undefined
     );
@@ -6746,7 +7100,9 @@ class FamilyHubChoresCardEditor extends HTMLElement {
       s.name === "people"
         ? "Only these people get a spot (and a name pill) on this card. \"Just me\" means whoever is signed in (on a kiosk, whoever logged in with their PIN). Leave everything unchecked to show everyone."
         : s.name === "kid_view"
-        ? "Big picture tiles for each child, with their stars, streak and the reward they're saving for. People marked as a Child account get a column, everyone else goes in a small Grown-ups list. Tap Grown-ups on the card for the full board."
+        ? "Big picture tiles for each child, with their stars, streak and the reward they're saving for. People marked as a Child account get a column, everyone else goes in a small Grown-ups list. Turn this off for the full board."
+        : s.name === "kid_view_grownups"
+        ? "In the kid-friendly view, grown-ups get a big column of their own (tiles, stars, streak) like the children, instead of the small Grown-ups list."
         : s.name === "layout"
         ? "One column at a time suits phones and small tablets: swipe left or right (or tap the arrows) to move between people."
         : s.name === "theme_override"

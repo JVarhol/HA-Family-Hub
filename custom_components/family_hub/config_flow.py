@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import timedelta
 from pathlib import Path
@@ -25,6 +26,8 @@ from . import (
     updater,
 )
 from homeassistant.util import dt as dt_util
+_LOGGER = logging.getLogger(__name__)
+
 from .const import (
     CONF_CALENDARS,
     CONF_DAILY_DIGEST_ENABLED,
@@ -920,9 +923,39 @@ class FamilyHubOptionsFlow(config_entries.OptionsFlow):
                     description_placeholders={"error": f"Unexpected error: {err}"},
                 )
 
-            return self.async_abort(
-                reason="update_installed",
-                description_placeholders={"version": str(result.get("version", "unknown"))},
-            )
+            # 2026.11.2: the new code only loads after a restart - offer it right here
+            self._installed_version = str(result.get("version", "unknown"))
+            return await self.async_step_update_done()
 
         return self.async_show_form(step_id="update", data_schema=_UPDATE_SCHEMA)
+
+    async def async_step_update_done(self, user_input: dict[str, Any] | None = None):
+        """Home Assistant only shows a menu whose step_id is a real step of this flow (it raised UnknownStep without it)."""
+        return self.async_show_menu(
+            step_id="update_done",
+            menu_options=["update_restart_now", "update_restart_later"],
+            description_placeholders={"version": getattr(self, "_installed_version", "unknown")},
+        )
+
+    async def async_step_update_restart_now(self, user_input: dict[str, Any] | None = None):
+        """Restart Home Assistant a moment after this window closes, so the answer reaches the browser first.
+        Home Assistant's own restart checks the configuration first and won't restart into a broken one."""
+        from homeassistant.helpers.event import async_call_later
+
+        async def _restart(_now) -> None:
+            try:
+                await self.hass.services.async_call("homeassistant", "restart", blocking=False)
+            except Exception as err:  # noqa: BLE001 - they can still restart from Settings > System
+                _LOGGER.warning("Family Hub: couldn't restart Home Assistant after the update: %s", err)
+
+        async_call_later(self.hass, 2, _restart)
+        return self.async_abort(
+            reason="update_restarting",
+            description_placeholders={"version": getattr(self, "_installed_version", "unknown")},
+        )
+
+    async def async_step_update_restart_later(self, user_input: dict[str, Any] | None = None):
+        return self.async_abort(
+            reason="update_installed",
+            description_placeholders={"version": getattr(self, "_installed_version", "unknown")},
+        )

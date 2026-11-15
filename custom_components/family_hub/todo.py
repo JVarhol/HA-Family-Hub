@@ -11,6 +11,8 @@ person), ticking one off completes the chore, renaming renames it, deleting dele
 """
 from __future__ import annotations
 
+from . import people as people_mod
+
 import logging
 from typing import Any, Optional
 
@@ -74,7 +76,7 @@ def _person_ids_needing_lists(entry_data: dict[str, Any], settings: Optional[dic
 
 async def _display_names(hass: HomeAssistant) -> dict[str, str]:
     try:
-        users = await hass.auth.async_get_users()
+        users = await people_mod.async_get_users(hass)
     except Exception:  # noqa: BLE001 - a missing name never blocks the lists
         return {}
     return {u.id: (u.name or u.id) for u in users if not getattr(u, "system_generated", False)}

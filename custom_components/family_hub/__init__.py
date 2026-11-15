@@ -51,6 +51,8 @@ from . import pantry_engine
 from . import reward_engine
 from . import timer_engine
 from . import wishlist_links
+from . import people as people_mod
+from . import days_off as days_off_mod
 from . import companion
 from . import routine_engine
 from . import store as chores_store
@@ -878,6 +880,15 @@ def _get_user_profiles(settings: dict[str, Any] | None) -> dict[str, dict[str, A
             "wishlistEntity": wishlist_entity.strip() if isinstance(wishlist_entity, str) else "",
             "badges": _normalize_badges(badges_raw),
         }
+    # 2026.11.2: someone without a Home Assistant login has no phone of their own - their notifications go to the
+    # account that added them (an admin), unless they've been given phones of their own
+    notify_from = str(settings.get(people_mod.NOTIFY_FROM_KEY) or "")
+    admin_targets = (profiles.get(notify_from) or {}).get("notifyTargets") or []
+    for _lp in people_mod.normalize(settings.get(people_mod.SETTINGS_KEY)):
+        prof = profiles.get(_lp["id"])
+        if prof is not None and not prof.get("notifyTargets") and admin_targets:
+            prof["notifyTargets"] = list(admin_targets)
+            prof["notifyVia"] = notify_from
     return profiles
 
 
@@ -944,7 +955,7 @@ def _effective_badges_by_entity(settings: dict[str, Any] | None) -> dict[str, li
 async def _user_display_names(hass: HomeAssistant) -> dict[str, str]:
     """{user_id: name} for every real (non-system-generated) Home Assistant user - used to give a profile-only individual reminders list (v1.131.0+"""
     try:
-        users = await hass.auth.async_get_users()
+        users = await people_mod.async_get_users(hass)
     except Exception:  # noqa: BLE001 - never block a poll tick over a display name
         return {}
     return {u.id: (u.name or u.id) for u in users if not getattr(u, "system_generated", False)}
@@ -1239,6 +1250,91 @@ async def _refresh_presence(hass: HomeAssistant, entry_data: dict[str, Any], swe
         moved = chore_engine.sweep_away(entry_data["chores"], hass)
         if moved and entry_data.get("chores_store") is not None:
             await entry_data["chores_store"].async_save(entry_data["chores"])
+
+
+async def _refresh_days_off(hass: HomeAssistant, entry_data: dict[str, Any], force: bool = False) -> None:
+    """Re-read the calendars that have no school / no work holidays (at most every 15 minutes unless forced)."""
+    days = entry_data.get("days_off")
+    if not isinstance(days, days_off_mod.DaysOff):
+        return
+    companion.set_days_off_checker(days.is_off)
+    if not force and not days.stale():
+        return
+    store = entry_data.get("settings_store")
+    try:
+        settings = (await store.async_load() or {}) if store is not None else {}
+        changed = await days.refresh(hass, settings)
+    except Exception as err:  # noqa: BLE001 - days off must never break the poll
+        _LOGGER.debug("Family Hub: days off refresh failed: %s", err)
+        return
+    if changed:
+        hass.bus.async_fire(f"{DOMAIN}_days_off_updated", days.as_dict())
+        companion.settings_changed(hass)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/days_off/set",
+        vol.Required("calendar"): str,
+        vol.Required("name"): str,
+        vol.Optional("off"): vol.Any(None, "", "school", "work", "both"),
+    }
+)
+@websocket_api.async_response
+async def _ws_set_day_off(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Mark a holiday (by name, on its calendar) as no school, no work or both, every year - or a regular day again."""
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    if not chores_ws_api._has_permission(entry_data, connection, PERMISSION_EDIT_EVENT):
+        connection.send_error(msg["id"], "forbidden", "You don't have permission to change calendar events.")
+        return
+    cal = msg["calendar"].strip()
+    if not cal.startswith("calendar.") or not days_off_mod.norm_name(msg["name"]):
+        connection.send_error(msg["id"], "invalid_format", "That isn't a holiday on a calendar.")
+        return
+    store: Store = entry_data["settings_store"]
+    settings = dict(await store.async_load() or {})
+    rules = days_off_mod.set_rule(settings.get(days_off_mod.SETTINGS_KEY) or [], cal, msg["name"], msg.get("off") or None)
+    settings[days_off_mod.SETTINGS_KEY] = rules
+    await store.async_save(settings)
+    await _refresh_days_off(hass, entry_data, force=True)
+    connection.send_result(msg["id"], {"days_off": rules})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "family_hub/days_off/set_breaks", vol.Required("breaks"): list}
+)
+@websocket_api.async_response
+async def _ws_set_family_breaks(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """The family's own holidays and breaks (spring break, a work holiday, a vacation), replaced as a whole."""
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    if not chores_ws_api._has_permission(entry_data, connection, PERMISSION_EDIT_EVENT):
+        connection.send_error(msg["id"], "forbidden", "You don't have permission to change calendar events.")
+        return
+    store: Store = entry_data["settings_store"]
+    settings = dict(await store.async_load() or {})
+    breaks = days_off_mod.normalize_breaks(msg["breaks"])
+    settings[days_off_mod.BREAKS_KEY] = breaks
+    await store.async_save(settings)
+    await _refresh_days_off(hass, entry_data, force=True)
+    connection.send_result(msg["id"], {"breaks": breaks})
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/days_off/get"})
+@websocket_api.async_response
+async def _ws_get_days_off(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    entry_data = _get_family_hub_entry_data(hass)
+    days = entry_data.get("days_off") if entry_data else None
+    if not isinstance(days, days_off_mod.DaysOff):
+        connection.send_result(msg["id"], {"days": {}, "rules": []})
+        return
+    await _refresh_days_off(hass, entry_data)
+    connection.send_result(msg["id"], days.as_dict())
 
 
 @websocket_api.websocket_command({vol.Required("type"): "family_hub/presence/get"})
@@ -2085,7 +2181,8 @@ def _holiday_theme_schedule(settings: Any, today: date) -> list[dict[str, str]]:
         theme_id = entry.get("themeId")
         if not isinstance(theme_id, str) or not theme_id.strip():
             continue
-        scope = entry.get("expandScope") if entry.get("expandFullDay") else "day"
+        # how long it lasts (2026.11.2.10: its own setting; before, only a full-screen photo had a week or month)
+        scope = entry.get("span") if entry.get("span") in ("day", "week", "month") else (entry.get("expandScope") if entry.get("expandFullDay") else "day")
         for year in (today.year - 1, today.year, today.year + 1):
             if entry.get("source") == "custom":
                 # a custom entry can have several dates (e.g. everyone's birthday); older ones have one at the top level
@@ -2258,6 +2355,8 @@ async def _ws_set_settings(
                 _old = _old_profiles.get(_uid)
                 if isinstance(_prof, dict) and "wishlistLinks" not in _prof and isinstance(_old, dict) and isinstance(_old.get("wishlistLinks"), list):
                     _prof["wishlistLinks"] = list(_old["wishlistLinks"])
+                if isinstance(_prof, dict) and "wishlistLinkNames" not in _prof and isinstance(_old, dict) and isinstance(_old.get("wishlistLinkNames"), dict):
+                    _prof["wishlistLinkNames"] = dict(_old["wishlistLinkNames"])
                 # 2026.11.1: the child's Companion settings, the same way
                 if isinstance(_prof, dict) and "companion" not in _prof and isinstance(_old, dict) and isinstance(_old.get("companion"), dict):
                     _prof["companion"] = dict(_old["companion"])
@@ -2288,6 +2387,30 @@ async def _ws_set_settings(
     # also self-heal on every save, not just on load (see _migrate_people_reminders_into_profiles's own docstring) - covers a stale
     _migrate_people_reminders_into_profiles(new_settings)
     _migrate_people_extra_calendars_into_profiles(new_settings)
+    # 2026.11.2: Family Hub-only people (no Home Assistant login) are only ever changed by family_hub/people/*; a save
+    # from any card keeps the stored list, and they stay household members
+    _stored_for_people = await store.async_load() or {}
+    _locals = people_mod.normalize(_stored_for_people.get(people_mod.SETTINGS_KEY))
+    if _locals or people_mod.SETTINGS_KEY in _stored_for_people:
+        new_settings[people_mod.SETTINGS_KEY] = _locals
+    else:
+        new_settings.pop(people_mod.SETTINGS_KEY, None)
+    # 2026.11.2: no school / no work days are only changed by family_hub/days_off/set
+    if days_off_mod.SETTINGS_KEY in _stored_for_people:
+        new_settings[days_off_mod.SETTINGS_KEY] = days_off_mod.normalize(_stored_for_people.get(days_off_mod.SETTINGS_KEY))
+    else:
+        new_settings.pop(days_off_mod.SETTINGS_KEY, None)
+    # 2026.11.2.8: so are the family's own holidays and breaks (family_hub/days_off/set_breaks)
+    if days_off_mod.BREAKS_KEY in _stored_for_people:
+        new_settings[days_off_mod.BREAKS_KEY] = days_off_mod.normalize_breaks(_stored_for_people.get(days_off_mod.BREAKS_KEY))
+    else:
+        new_settings.pop(days_off_mod.BREAKS_KEY, None)
+    if _stored_for_people.get(people_mod.NOTIFY_FROM_KEY):
+        new_settings[people_mod.NOTIFY_FROM_KEY] = _stored_for_people[people_mod.NOTIFY_FROM_KEY]
+    if _locals and isinstance(new_settings.get("memberUserIds"), list):
+        for _lp in _locals:
+            if _lp["id"] not in new_settings["memberUserIds"]:
+                new_settings["memberUserIds"].append(_lp["id"])
     await store.async_save(new_settings)
     # 2026.11.1: someone's linked wish lists changed - bring them in now rather than at the next 6-hourly sync
     if needs_existing and "wishlist_links_store" in entry_data:
@@ -3233,6 +3356,80 @@ async def _ws_update_calendar_event(
     connection.send_result(msg["id"], {"updated": True})
 
 
+# -------------------------------------------------------------------------- _ws_move_calendar_event (2026.11.2)
+# Moving an event to another calendar: Home Assistant has no "move", so the event is added to the new calendar first
+# and only then removed from the old one - if the second step fails the event is on both, never on neither.
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "family_hub/calendar/move_event",
+        vol.Required("from_entity_id"): str,
+        vol.Required("to_entity_id"): str,
+        vol.Required("uid"): str,
+        # a repeating event: just this one (recurrence_id), or this and the following ones (+ THISANDFUTURE); the
+        # copy's own rrule rides in `event` when the series moves
+        vol.Optional("recurrence_id"): vol.Any(str, None),
+        vol.Optional("recurrence_range"): vol.Any(str, None),
+        vol.Required("event"): dict,
+    }
+)
+@websocket_api.async_response
+async def _ws_move_calendar_event(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Move an event (with any edits made in the same form) from one calendar to another."""
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    if not chores_ws_api._has_permission(entry_data, connection, PERMISSION_EDIT_EVENT):
+        connection.send_error(msg["id"], "forbidden", "You don't have permission to edit calendar events - ask someone who does.")
+        return
+    from_id, to_id = msg["from_entity_id"], msg["to_entity_id"]
+    if from_id == to_id:
+        connection.send_error(msg["id"], "invalid_format", "It's already on that calendar.")
+        return
+    raw_event_fields = msg.get("event") or {}
+    if not raw_event_fields.get("summary"):
+        connection.send_error(msg["id"], "invalid_format", "An event needs a title.")
+        return
+    component = hass.data[DATA_COMPONENT]
+    source = component.get_entity(from_id)
+    target = component.get_entity(to_id)
+    if source is None or target is None:
+        connection.send_error(msg["id"], "not_found", "That calendar isn't available right now.")
+        return
+    if not target.supported_features or not (target.supported_features & CalendarEntityFeature.CREATE_EVENT):
+        connection.send_error(msg["id"], "not_supported", "That calendar doesn't support adding events.")
+        return
+    if not source.supported_features or not (source.supported_features & CalendarEntityFeature.DELETE_EVENT):
+        connection.send_error(msg["id"], "not_supported", "Events can't be removed from this calendar, so they can't be moved off it.")
+        return
+    try:
+        event_fields = _build_entity_event_fields(raw_event_fields)
+        if "dtstart" not in event_fields:
+            connection.send_error(msg["id"], "invalid_format", "An event needs a start and an end.")
+            return
+        await target.async_create_event(**event_fields)
+    except Exception as err:  # noqa: BLE001 - surfaced to the caller as-is; nothing has changed yet
+        _LOGGER.warning("Family Hub: failed to move a calendar event to %s: %s", to_id, err)
+        connection.send_error(msg["id"], "unknown_error", f"Could not move this event: {err}")
+        return
+    try:
+        await source.async_delete_event(
+            msg["uid"], recurrence_id=msg.get("recurrence_id"), recurrence_range=msg.get("recurrence_range")
+        )
+    except Exception as err:  # noqa: BLE001 - the copy is already on the new calendar; say so plainly
+        _LOGGER.warning("Family Hub: moved an event to %s but couldn't remove it from %s: %s", to_id, from_id, err)
+        connection.send_error(
+            msg["id"], "partly_moved",
+            f"It's on the new calendar now, but it couldn't be removed from the old one ({err}). Delete it there.",
+        )
+        return
+    connection.send_result(msg["id"], {"moved": True})
+
+
 # -------------------------------------------------------------------------- _ws_create_calendar_event - ONLY used for a recurring event
 
 
@@ -3280,17 +3477,183 @@ async def _ws_create_calendar_event(
 async def _ws_list_users(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
 ) -> None:
-    """Return the Home Assistant user accounts someone can actually log in as, for the Settings > Screen Saver per-user toggle"""
-    users = await hass.auth.async_get_users()
+    """Return the Home Assistant user accounts someone can actually log in as, for the Settings > Screen Saver per-user toggle
+
+    2026.11.2: and the household's Family Hub-only people (no Home Assistant login), marked local: true."""
+    users = await people_mod.async_get_users(hass)
     result = sorted(
         (
-            {"id": u.id, "name": u.name or u.id}
+            dict({"id": u.id, "name": u.name or u.id}, **({"local": True} if getattr(u, "local", False) else {}))
             for u in users
             if not getattr(u, "system_generated", False)
         ),
         key=lambda u: u["name"].lower(),
     )
     connection.send_result(msg["id"], {"users": result})
+
+
+# -------------------------------------------------------------------------- Family Hub-only people (2026.11.2)
+
+
+def _people_admin_or_error(connection: websocket_api.ActiveConnection, msg: dict) -> bool:
+    if connection.user is not None and connection.user.is_admin:
+        return True
+    connection.send_error(msg["id"], "forbidden", "Only a Home Assistant admin can add or change people.")
+    return False
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "family_hub/people/add_local", vol.Required("name"): str, vol.Optional("child"): bool}
+)
+@websocket_api.async_response
+async def _ws_people_add_local(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Add someone without a Home Assistant login. They become a household member with PIN login turned on (that's how
+    they act on a shared screen), and a Child account if `child`."""
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    if not _people_admin_or_error(connection, msg):
+        return
+    name = people_mod.clean_name(msg["name"])
+    if not name:
+        connection.send_error(msg["id"], "invalid_format", "They need a name.")
+        return
+    store: Store = entry_data["settings_store"]
+    settings = dict(await store.async_load() or {})
+    current = people_mod.normalize(settings.get(people_mod.SETTINGS_KEY))
+    if len(current) >= people_mod.MAX_LOCAL_PEOPLE:
+        connection.send_error(msg["id"], "too_many", "That's as many people without a login as Family Hub can hold.")
+        return
+    person = {"id": people_mod.new_id(), "name": name}
+    settings[people_mod.SETTINGS_KEY] = current + [person]
+    # their notifications go to this admin's phone (see _get_user_profiles); the first admin to add someone stays it
+    if not settings.get(people_mod.NOTIFY_FROM_KEY) and connection.user is not None:
+        settings[people_mod.NOTIFY_FROM_KEY] = connection.user.id
+    members = list(settings.get("memberUserIds") or [])
+    members.append(person["id"])
+    settings["memberUserIds"] = members
+    kiosk = list(settings.get("kioskLoginEnabledUserIds") or [])
+    kiosk.append(person["id"])
+    settings["kioskLoginEnabledUserIds"] = kiosk
+    profiles = dict(settings.get("userProfiles") or {})
+    profiles[person["id"]] = dict(profiles.get(person["id"]) or {}, isChildAccount=bool(msg.get("child")))
+    settings["userProfiles"] = profiles
+    await store.async_save(settings)
+    connection.send_result(msg["id"], {"person": person, "settings": settings})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "family_hub/people/rename_local", vol.Required("user_id"): str, vol.Required("name"): str}
+)
+@websocket_api.async_response
+async def _ws_people_rename_local(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    if not _people_admin_or_error(connection, msg):
+        return
+    name = people_mod.clean_name(msg["name"])
+    if not name:
+        connection.send_error(msg["id"], "invalid_format", "They need a name.")
+        return
+    store: Store = entry_data["settings_store"]
+    settings = dict(await store.async_load() or {})
+    current = people_mod.normalize(settings.get(people_mod.SETTINGS_KEY))
+    if not any(p["id"] == msg["user_id"] for p in current):
+        connection.send_error(msg["id"], "not_found", "There's nobody like that without a login.")
+        return
+    settings[people_mod.SETTINGS_KEY] = [dict(p, name=name) if p["id"] == msg["user_id"] else p for p in current]
+    await store.async_save(settings)
+    connection.send_result(msg["id"], {"person": {"id": msg["user_id"], "name": name}})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "family_hub/people/move_to_login", vol.Required("user_id"): str, vol.Required("to_user_id"): str}
+)
+@websocket_api.async_response
+async def _ws_people_move_to_login(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Someone added without a Home Assistant login now has one: everything Family Hub has for them (profile, PIN,
+    chores, stars, rewards, routines, goals, timers, Companion, permissions) moves to that login, and they stop being
+    a Family Hub-only person. The login must be a real (not system) Home Assistant user who isn't in Family Hub yet."""
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    if not _people_admin_or_error(connection, msg):
+        return
+    old, new = msg["user_id"], msg["to_user_id"]
+    store: Store = entry_data["settings_store"]
+    settings = dict(await store.async_load() or {})
+    current = people_mod.normalize(settings.get(people_mod.SETTINGS_KEY))
+    person = next((p for p in current if p["id"] == old), None)
+    if person is None:
+        connection.send_error(msg["id"], "not_found", "There's nobody like that without a login.")
+        return
+    ha_user = None if people_mod.is_local(new) else await hass.auth.async_get_user(new)
+    if ha_user is None or getattr(ha_user, "system_generated", False):
+        connection.send_error(msg["id"], "not_found", "That Home Assistant login wasn't found.")
+        return
+    if new in (settings.get("memberUserIds") or []):
+        connection.send_error(msg["id"], "already_member", "That login is already in Family Hub - remove them from Family Hub first, or pick another login.")
+        return
+    companion_obj = entry_data.get("companion")
+    extra = [companion_obj.store] if companion_obj is not None and getattr(companion_obj, "store", None) is not None else []
+    await people_mod.async_move_to_user(hass, entry_data, old, new, extra_stores=extra)
+    # settings: everything already says `new`; they're just not Family Hub-only any more
+    settings = dict(await store.async_load() or {})
+    settings[people_mod.SETTINGS_KEY] = [p for p in people_mod.normalize(settings.get(people_mod.SETTINGS_KEY)) if p["id"] not in (old, new)]
+    members = [u for u in (settings.get("memberUserIds") or []) if u != old]
+    if new not in members:
+        members.append(new)
+    settings["memberUserIds"] = members
+    profiles = dict(settings.get("userProfiles") or {})
+    profile = dict(profiles.get(new) or {})
+    # their own phones from now on, when Home Assistant can tell which are theirs
+    if not profile.get("notifyTargets"):
+        try:
+            detected = await _detect_user_notify_targets(hass, new)
+        except Exception:  # noqa: BLE001 - they can still pick their phones in their profile
+            detected = []
+        if detected:
+            profile["notifyTargets"] = detected
+    profiles[new] = profile
+    settings["userProfiles"] = profiles
+    await store.async_save(settings)
+    connection.send_result(msg["id"], {"user_id": new, "name": ha_user.name or person["name"], "notify_targets": profile.get("notifyTargets") or []})
+
+
+@websocket_api.websocket_command({vol.Required("type"): "family_hub/people/remove_local", vol.Required("user_id"): str})
+@websocket_api.async_response
+async def _ws_people_remove_local(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Take a Family Hub-only person out of the household (their PIN, profile and membership; their history of chores
+    and stars stays, like anyone removed from Family Hub)."""
+    entry_data = _get_family_hub_entry_data(hass)
+    if entry_data is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    if not _people_admin_or_error(connection, msg):
+        return
+    uid = msg["user_id"]
+    store: Store = entry_data["settings_store"]
+    settings = dict(await store.async_load() or {})
+    current = people_mod.normalize(settings.get(people_mod.SETTINGS_KEY))
+    if not any(p["id"] == uid for p in current):
+        connection.send_error(msg["id"], "not_found", "There's nobody like that without a login.")
+        return
+    settings[people_mod.SETTINGS_KEY] = [p for p in current if p["id"] != uid]
+    settings["memberUserIds"] = [u for u in (settings.get("memberUserIds") or []) if u != uid]
+    settings["kioskLoginEnabledUserIds"] = [u for u in (settings.get("kioskLoginEnabledUserIds") or []) if u != uid]
+    profiles = dict(settings.get("userProfiles") or {})
+    profiles.pop(uid, None)
+    settings["userProfiles"] = profiles
+    await store.async_save(settings)
+    try:
+        await chores_ws_api.async_set_pin(hass, entry_data, uid, None)
+    except Exception as err:  # noqa: BLE001 - the person is gone either way; a stale PIN can't log in as nobody
+        _LOGGER.debug("Family Hub: couldn't clear a removed person's PIN: %s", err)
+    connection.send_result(msg["id"], {"removed": uid})
 
 
 @websocket_api.websocket_command({vol.Required("type"): "family_hub/detect_notify_target"})
@@ -9542,7 +9905,7 @@ async def _build_daily_digest_sections(
             own_label = "Me"
             if user_id:
                 try:
-                    ha_user = await hass.auth.async_get_user(user_id)
+                    ha_user = await people_mod.async_get_user(hass, user_id)
                 except Exception:  # noqa: BLE001 - a display-name lookup must never break the digest
                     ha_user = None
                 if ha_user is not None and getattr(ha_user, "name", None):
@@ -10407,7 +10770,7 @@ async def _async_register_chore_services(hass: HomeAssistant) -> None:
         if not text:
             return ""
         try:
-            users = await hass.auth.async_get_users()
+            users = await people_mod.async_get_users(hass)
         except Exception:  # noqa: BLE001
             users = []
         for u in users:
@@ -10732,6 +11095,9 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
     websocket_api.async_register_command(hass, _ws_list_themes)
     websocket_api.async_register_command(hass, _ws_get_presence)
+    websocket_api.async_register_command(hass, _ws_set_day_off)
+    websocket_api.async_register_command(hass, _ws_set_family_breaks)
+    websocket_api.async_register_command(hass, _ws_get_days_off)
     websocket_api.async_register_command(hass, _ws_save_themes)
     websocket_api.async_register_command(hass, _ws_get_notify_config)
     websocket_api.async_register_command(hass, _ws_set_notify_overrides)
@@ -10835,7 +11201,12 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         _LOGGER.debug("Family Hub: could not schedule the Quick Add Assist sentences: %s", err)
     websocket_api.async_register_command(hass, _ws_delete_calendar_event)
     websocket_api.async_register_command(hass, _ws_update_calendar_event)
+    websocket_api.async_register_command(hass, _ws_move_calendar_event)
     websocket_api.async_register_command(hass, _ws_list_users)
+    websocket_api.async_register_command(hass, _ws_people_add_local)
+    websocket_api.async_register_command(hass, _ws_people_rename_local)
+    websocket_api.async_register_command(hass, _ws_people_remove_local)
+    websocket_api.async_register_command(hass, _ws_people_move_to_login)
     websocket_api.async_register_command(hass, _ws_detect_notify_target)
     websocket_api.async_register_command(hass, _ws_get_recipes)
     websocket_api.async_register_command(hass, _ws_set_recipes)
@@ -11140,6 +11511,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         poll_presence_data = hass.data.get(DOMAIN, {}).get("entries", {}).get(entry.entry_id)
         if poll_presence_data is not None:
             await _refresh_presence(hass, poll_presence_data, sweep=False)
+            await _refresh_days_off(hass, poll_presence_data)
         recurred = chore_engine.sweep_due_recurrences(chores, hass)
         # who's home: a chore whose person is away today goes to the next person who's home, the Chore Bin, or is skipped
         away_changed = chore_engine.sweep_away(chores, hass)
@@ -11219,6 +11591,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data[DOMAIN]["entries"][entry.entry_id] = {
         "presence": presence_mod.Presence(),
+        "days_off": days_off_mod.DaysOff(),
         "cancel": cancel,
         "cancel_timer_sweep": cancel_timer_sweep,
         "cancel_timer_finished": cancel_timer_finished,
@@ -11321,7 +11694,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     hass.data[DOMAIN]["entries"][entry.entry_id]["cancel_chore_sensor_listener"] = cancel_chore_sensor_listener
     await _async_register_chore_services(hass)
-    await hass.config_entries.async_forward_entry_setups(entry, ["todo", "sensor", "button", "select", "number", "text", "switch"])
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
@@ -11362,9 +11735,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+PLATFORMS = ["todo", "sensor", "button", "select", "number", "text", "switch", "binary_sensor"]
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Cancel polling and remove the sidebar panel + any native themes we registered."""
-    await hass.config_entries.async_unload_platforms(entry, ["todo", "sensor", "button"])
+    # every platform set up above (it used to unload only three, so reloading Family Hub left select/number/text/switch
+    # behind and Home Assistant logged "has already been setup!" for them)
+    await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     entry_data = hass.data.get(DOMAIN, {}).get("entries", {}).pop(entry.entry_id, None)
     if entry_data and entry_data.get("cancel"):

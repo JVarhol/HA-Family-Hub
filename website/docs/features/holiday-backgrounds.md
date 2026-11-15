@@ -5,11 +5,14 @@ sidebar_position: 11
 
 Show a photo on a holiday or special day, from Settings → General → **Holiday Backgrounds**. Each holiday has an on/off switch; turning one on shows its options:
 
-- **Photo**: the picture to show.
-- **Show the photo**: **Behind its day** (a soft background behind just that day's own cell: a Week view day column, a Month view cell, or a Planner day), or **Full screen** for that day, that week or that month.
-- **Theme** (v1.168.88+): optionally switch every Family Hub card to one of your themes while the holiday is showing, then back afterwards. It follows the same dates as the photo: the day, or the whole week or month when the photo is set to fill the screen for it. A holiday can change the theme without a photo, too. A card that has its own theme set in its card editor keeps it.
+- **Lasts** (2026.11.2.10+): **Its day**, **Its week** (Sunday to Saturday around the date) or **Its month** (the whole month). The photo and the theme stay on for all of it. A custom entry set to a month only needs the month ("Fall" in October, say).
+- **Photos**: up to 5 (2026.11.2.10+). With more than one, a different one shows each day: picked at random, the same on every screen, and every photo is used before any of them repeats.
+- **Show the photo**: **Behind each day** (a soft background behind each of its days' own cells: a Week view day column, a Month view cell, or a Planner day) or **Full screen**.
+- **Theme** (v1.168.88+): optionally switch every Family Hub card to one of your themes while the holiday is showing, then back afterwards, for as long as it **Lasts**. A holiday can change the theme without a photo, too. A card that has its own theme set in its card editor keeps it.
 
 ![A holiday photo behind Friday's day column, with that day's meals and events on top of it](/img/screenshots/holiday-background.webp)
+
+![A custom "Fall" entry lasting the whole of October, with three photos](/img/screenshots/holiday-bg-settings.webp)
 
 ## Built-in holidays
 
@@ -22,7 +25,7 @@ Use **+ Add custom date** for anything the built-in list doesn't cover: a birthd
 - **Recurring**: the same month/day every year, like the built-ins, or
 - **A specific one-time year**: shows only for that exact date once, never recurring.
 
-Every entry (built-in or custom) can independently be set to show behind its day or fill the screen for its day, week or month, and can have its own theme.
+Every entry (built-in or custom) can last its day, its week or its month, show its photos behind each day or full screen, and have its own theme.
 
 ## When more than one holiday wants the screen
 
@@ -34,7 +37,7 @@ It's possible for two enabled, full-screen holidays to both want the card on the
 
 A day-scope background only ever takes over on its exact real-world date, even while browsing a Month view that spans the whole month around it, so simply looking at a month a holiday falls in doesn't accidentally trigger its full-screen takeover early.
 
-If two holidays with a theme overlap, the theme follows the same rule: the shorter one wins (a day beats a week, a week beats a month).
+If two holidays with a theme overlap, the theme follows the same rule: the shorter one wins (a day beats a week, a week beats a month). Photos behind the days work the same way: a day's own holiday shows on that day, and the month's photo on the rest.
 
 ## Readability over the photo
 

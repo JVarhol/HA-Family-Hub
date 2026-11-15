@@ -4,7 +4,7 @@ from __future__ import annotations
 import calendar
 import logging
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 from homeassistant.core import HomeAssistant
@@ -238,6 +238,20 @@ def _normalize_reminder_minutes(value: Any) -> list[int]:
         if n > 0:
             minutes.append(n)
     return sorted(set(minutes))
+
+
+def _keep_due_time(chore: dict[str, Any], nxt: Optional[datetime]) -> Optional[datetime]:
+    """The next occurrence keeps the current one's time of day (a chore due at 7pm stays due at 7pm, however early
+    or late it was done), so it can open at the start of its day without its due time drifting."""
+    due = _parse_dt(chore.get("due_date"))
+    if nxt is None or due is None:
+        return nxt
+    base = due - timedelta(minutes=int(chore.get(CHORE_KEY_RECUR_DUE_OFFSET_MINUTES) or 0))
+    try:
+        lb, ln = dt_util.as_local(base), dt_util.as_local(nxt)
+        return ln.replace(hour=lb.hour, minute=lb.minute, second=lb.second, microsecond=0).astimezone(timezone.utc)
+    except Exception:  # noqa: BLE001 - a naive datetime in a test
+        return nxt
 
 
 def _compute_next_recur_due(chore: dict[str, Any], from_dt: datetime) -> Optional[datetime]:
@@ -506,7 +520,7 @@ def apply_away(chore: dict[str, Any], now: Optional[datetime] = None) -> Optiona
         chore["status"] = CHORE_STATUS_APPROVED
         chore[CHORE_KEY_APPROVED_BY] = None
         chore[CHORE_KEY_APPROVED_AT] = None
-        next_due = _compute_next_recur_due(chore, max(now, when))
+        next_due = _keep_due_time(chore, _compute_next_recur_due(chore, max(now, when)))
         chore[CHORE_KEY_RECUR_NEXT_DUE] = next_due.isoformat() if next_due else None
         chore[CHORE_KEY_UPDATED_AT] = _now_iso()
         return "skipped"
@@ -786,7 +800,7 @@ def _apply_approval(chore: dict[str, Any], rewards: dict[str, Any], approver: Op
     chore[CHORE_KEY_REJECT_REASON] = None
 
     if chore.get("recur_type"):
-        next_due = _compute_next_recur_due(chore, dt_util.utcnow())
+        next_due = _keep_due_time(chore, _compute_next_recur_due(chore, dt_util.utcnow()))
         chore[CHORE_KEY_RECUR_NEXT_DUE] = next_due.isoformat() if next_due else None
     else:
         chore[CHORE_KEY_RECUR_NEXT_DUE] = None
@@ -920,7 +934,9 @@ def reject_chore(
     return chore
 
 
-def reset_recurring_chore(chores: dict[str, dict[str, Any]], hass: HomeAssistant, chore_id: str) -> Optional[dict[str, Any]]:
+def reset_recurring_chore(
+    chores: dict[str, dict[str, Any]], hass: HomeAssistant, chore_id: str, now: Optional[datetime] = None, scheduled_open: bool = False
+) -> Optional[dict[str, Any]]:
     """Called when a chore's own auto_create_trigger fires again (see the sensor-trigger listener in __init__.py)"""
     chore = _get_chore(chores, chore_id)
     if chore["status"] != CHORE_STATUS_APPROVED:
@@ -945,13 +961,17 @@ def reset_recurring_chore(chores: dict[str, dict[str, Any]], hass: HomeAssistant
     # A fresh occurrence deserves a fresh shot at its own reminder_minutes
     chore[CHORE_KEY_REMINDERS_FIRED] = []
     # No longer "waiting" once it's active again - recur_next_due only ever describes an approved chore sitting idle
+    scheduled = _parse_dt(chore.get(CHORE_KEY_RECUR_NEXT_DUE)) if scheduled_open else None
     chore[CHORE_KEY_RECUR_NEXT_DUE] = None
     chore[CHORE_KEY_AWAY_COVER_FOR] = None
     chore[CHORE_KEY_AWAY_SKIPPED_AT] = None
     # Every occurrence of a recurring chore (schedule-based via sweep_due_ recurrences, or sensor-triggered via its own auto_create_trigger
-    now = dt_util.utcnow()
+    now = now or dt_util.utcnow()
     offset_minutes = int(chore.get(CHORE_KEY_RECUR_DUE_OFFSET_MINUTES) or 0)
-    chore["due_date"] = (now + timedelta(minutes=offset_minutes)).isoformat()
+    # A scheduled repeat opens at the start of its due day (sweep_due_recurrences) and keeps its due time; one that
+    # opens late (Home Assistant was off) or from a sensor trigger is due offset_minutes from now, as before.
+    due_at = scheduled + timedelta(minutes=offset_minutes) if scheduled else None
+    chore["due_date"] = (due_at if due_at and due_at > now else now + timedelta(minutes=offset_minutes)).isoformat()
     chore[CHORE_KEY_UPDATED_AT] = _now_iso()
     _resolve_initial_assignment(chore)
     _fire_chore_event(hass, chore, previous_status=previous, extra={"event": "recurred"})
@@ -972,9 +992,13 @@ def sweep_due_recurrences(
         if chore is None or chore["status"] != CHORE_STATUS_APPROVED:
             continue
         due = _parse_dt(chore.get(CHORE_KEY_RECUR_NEXT_DUE))
-        if due is None or due > now:
+        # available all of its due day: it opens as that day begins, not at its due time
+        if due is None:
             continue
-        result = reset_recurring_chore(chores, hass, chore_id)
+        due_at = due + timedelta(minutes=int(chore.get(CHORE_KEY_RECUR_DUE_OFFSET_MINUTES) or 0))
+        if due > now and _local_date(due_at) > _local_date(now):
+            continue
+        result = reset_recurring_chore(chores, hass, chore_id, now=now, scheduled_open=True)
         if result is not None:
             recurred.append(result)
     return recurred

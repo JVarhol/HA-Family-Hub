@@ -197,20 +197,34 @@ Scroll down for **Up for grabs** and **Ask for stars**:
 
 ### Rewards
 
-Every reward as a big tile, with their stars at the top.
+Every reward they can get as a big tile, with their stars at the top. A reward set up for someone else only (**Who
+can get it** on the reward) doesn't show here.
 
 ![Rewards: 12 stars, Screen time with 90 min saved and Use 30 min, Ice cream Get it!, Pick dinner 3 more stars](/img/screenshots/companion-rewards.webp)
 
-- **Get it!** shows when they have enough stars. One tap turns it into **Yes, get it!**, and a second tap gets it, so
-  a bump doesn't spend their stars:
+- **Get it!** shows when they have enough stars. The first tap doesn't spend anything: for an everyday reward it asks
+  **Use now** or **📦 Save it**, so a bump never spends their stars. (A reward with a timer, or a one-time reward, asks
+  **Yes, get it!** instead.)
 
-  <img src="/HA-Family-Hub/img/screenshots/companion-rewards-sure.webp" alt="Ice cream showing Yes, get it! after the first tap" width="560" />
+  <img src="/HA-Family-Hub/img/screenshots/companion-rewards-save.webp" alt="Ice cream showing Use now and Save it after the first tap" width="560" />
+
+- **Save it** keeps the reward to use later. The stars are spent now, and the tile shows how many they've saved
+  ("📦 2 saved") with **Use one** (it asks **Yes, use it!** first). Saving up three ice creams for the weekend works.
+  A reward a grown-up hands over waits for them when it's used, not when it's saved.
+
+  <img src="/HA-Family-Hub/img/screenshots/companion-rewards-saved.webp" alt="Ice cream with 2 saved and Use one, next to Screen time with 90 min saved" width="560" />
 
 - Without enough stars, the tile shows how many more they need, with a bar.
 - **Tap a heart** to pick what they're saving for. The day screen, and the Chores and Rewards cards, show the same goal.
 - Rewards that stack up, like screen time or allowance, show how much is saved ("90 min saved") with **Use 30 min**.
 - Rewards with a timer start it, and ones a grown-up hands over show as waiting.
 - **You got** at the bottom shows the last few rewards they've had.
+- **💡 Ask for a new reward** at the bottom lets them ask for something that isn't on the list ("Sleepover at
+  Grandma's"). It goes to the [Rewards card](/docs/cards/rewards)'s **Suggested rewards**, where a grown-up sets how
+  many stars it is and approves it (or doesn't). Until then it shows under **You asked for**. Turn **Ask for a new
+  reward** off in their settings if you'd rather they didn't.
+
+  <img src="/HA-Family-Hub/img/screenshots/companion-rewards-ask.webp" alt="You asked for: Trip to the zoo, You got, and the ask box with Sleepover at Grandma's and Send" width="560" />
 
 ### Wish list
 
@@ -354,6 +368,7 @@ Everything is in **⚙️ Settings → Users → their profile → Companion scr
 |---|---|
 | **My day, Jobs, Rewards, Wish list, Timers, Room buttons** | Which screens they have in the bar. Turning **Jobs** or **Rewards** off also takes the next job or the stars off the day screen. |
 | **Jobs has an Ask for stars button** | On by default. |
+| **Rewards has an Ask for a new reward button** | On by default. |
 
 ### Timers they can start
 
@@ -406,7 +421,7 @@ The card itself only says whose screen it is and how it looks. Everything about 
 |---|---|
 | **Child** (`person`) | Whose Companion this is: pick them, or **Whoever is signed in** (`me`). |
 | **Physical button** (`button_entity`) | A button by the bed. See [A physical button](#a-physical-button). |
-| **Height** (`height`) | `100vh` fills the screen (use a Panel view), or a size like `480px`. |
+| **Height** (`height`) | `100vh` (the default) fills the space left on the screen below the dashboard's header, so the bar along the bottom is always in view, even on a phone. Or a fixed size like `480px`. |
 | **Show seconds** (`clock_seconds`) | Seconds on the big clock. |
 | **Theme** (`theme_override`) | Colours for the day screens. See [Colours](#colours-e-ink-and-accessibility). |
 
@@ -585,6 +600,10 @@ already. Each routine shows only in its part of the day (morning, after school, 
 
 **The screensaver never comes on.** It only shows during the day (not at night or during a routine), not on an e-ink
 screen, and only if the household screensaver (or their own video or camera) has something to show.
+
+**The bottom of the card is cut off, or the page scrolls.** Leave **Height** on `100vh`: Companion then measures the
+space below the dashboard's header and fits in it, and fits again when a tablet is turned or a phone's address bar
+comes and goes. A fixed height like `480px` is used exactly, even when the screen is smaller.
 
 **The times are wrong.** Companion uses Home Assistant's time zone. Weekend times are used on Saturday and Sunday
 mornings, and Friday and Saturday nights.

@@ -83,6 +83,10 @@ Today's events dim one by one as they end; any earlier day dims entirely, since 
 
 On by default (2026.11.1.2+). Uses each person's Home Assistant profile picture instead of their initial, on every card. Off, or in Discreet Mode, the initials come back.
 
+### Event locations open in
+
+An event's location is a link: tap it in the event pop-up (or the Today card's event details) to open it in a maps app for directions. Pick **Apple Maps on Apple devices, Google Maps on others** (the default), **Google Maps**, **Apple Maps**, **Waze**, or **Don't link them**. A location that's a web address, like a video call link, opens as itself. It's for the whole household.
+
 ### Show the Now marker
 
 On by default (2026.11.1.2+). Events happening right now get a "Now ·" label and a bar showing how far through they are.
@@ -97,7 +101,7 @@ Show or hide the row of names with counts above the calendar (and the Reminders 
 
 - **Minimal** hides the top bar (Settings, the view switch, Edit, the week and More) to save space on a small device. Settings moves into the **+** button's menu instead, alongside Calendar Entry, Reminder, Meal Suggestion, Meal Block and Recipe.
 - **Hidden** hides the bar completely; Settings still moves into the **+** button's menu so you can always get back.
-- **Right Now** shows a live clock/weather/who's-home strip. Pick its **placement** (Top, Left or Right; always a top strip on a phone), its **size** for Top (Small, Medium or Large), whether it shows the **clock & date** and **weather**, and **who's shown** on it. See [The Right Now bar](/docs/features/calendar-and-layout#the-right-now-bar).
+- **Right Now** shows a live clock/weather/who's-home strip. Pick its **placement** (Top, Left or Right; always a top strip on a phone), its **size** for Top (Small, Medium or Large), whether it shows the **clock & date** and **weather**, **how far ahead** each person's **Next** line looks (today only, today and tomorrow (the default), 3, 7 or 14 days; this one is for the whole household, and Right Now cards follow it unless they set their own), and **who's shown** on it. See [The Right Now bar](/docs/features/calendar-and-layout#the-right-now-bar).
 
  This is saved to this device/browser only, like the other "this device only" fields above, unless the card's own **Static layout** config option (set from its Edit Card screen) is turned on, in which case it becomes shared household-wide instead.
 
@@ -171,6 +175,9 @@ Shows a full-screen video or live camera feed after the dashboard sits idle, bui
 ### Theme
 
 - **Use global theme (Theme Builder)**: on by default: pick any of the 10 built-in themes, your own from the [Theme Builder](/docs/features/theming-and-more), or an installed Home Assistant theme. Turn it off to set **This device's theme** independently; every other Family Hub card on that device (Chores, Rewards, Goals, My Pantry) picks it up too, with no other device affected. Takes effect immediately, no Save needed.
+- **Card background** (2026.11.2.11+): **The theme's** (the default) or **See-through**, for the whole household. See-through leaves every Family Hub card's own background empty, so the dashboard's background shows behind them: an animated background from [lovelace-animated-background](https://github.com/rbogdanov/lovelace-animated-background), or a wallpaper set in your Home Assistant theme. The day columns and other panels keep the theme's colours (lower **Card transparency** in Theme Builder to see more of the background through them), and the week title turns white with a shadow so it reads over it. A full-screen holiday photo still takes over on its days, and e-ink screens and High contrast stay plain.
+
+  ![The calendar with Card background: See-through over a colourful dashboard background](/img/screenshots/see-through.webp)
 - **Theme colors**: Background, Card background, Border, Text, Secondary text, Accent, Text on accent, Accent 2, Accent 3, Surface (alt), Surface 2.
 - **Theme font sizes (px)**: Day name, Day number, Weather temp, Event text, Chip text, Header title, Countdown text, Block heading, Block meal text.
 - **Reset theme to default**: discards all color/font overrides above.
@@ -185,7 +192,7 @@ See [Privacy Mode](/docs/features/privacy-mode) for the full picture: what gets 
 
 ### Holiday Backgrounds
 
-Show a photo on a holiday or special day, normally just behind that day's own column, or check **Expand to full screen** (per-entry) to take over the whole card for that day, week, or month. If two enabled holidays would both want the screen on the same day, the more specific one wins (a day beats a week, a week beats a month); if it's still a tie, whichever date is closest to today wins. Turn on any of the built-in holidays, or use **+ Add custom date** for your own. See [Holiday Backgrounds](/docs/features/holiday-backgrounds) for the full picture: recurring vs. one-time custom dates, the full tiebreaker rules, and automatic text-contrast.
+Show a photo (up to 5, a different one each day) and optionally a theme on a holiday or special day, for its day, its week or its month, behind each day's own column or full screen. If two enabled holidays would both want the screen on the same day, the more specific one wins (a day beats a week, a week beats a month); if it's still a tie, whichever date is closest to today wins. Turn on any of the built-in holidays, or use **+ Add custom date** for your own. See [Holiday Backgrounds](/docs/features/holiday-backgrounds) for the full picture: recurring vs. one-time custom dates, the full tiebreaker rules, and automatic text-contrast.
 
 ### More menu (admin only)
 
@@ -229,6 +236,41 @@ Optional. When set, tapping a reminder, event, or Daily Digest push notification
 ### Add a person (admin only)
 
 Add a Home Assistant login to make them part of Family Hub. Only people added here show up on the member list, on each admin's per-person Permissions accordion, and on the Chores board. Adding them also auto-creates two personal to-do lists for them right away, with no extra step: their own **Reminders** list and their own **Wish List** (see **Their reminders list** / **Their wish list** below, and [To-Do Lists & Wish Lists](/docs/features/todo-lists-and-wishlists) for what the wish list auto-flag means). This is deliberately not optional, by household request.
+
+### Add someone without a Home Assistant login (admin only)
+
+For someone who won't have their own Home Assistant login, like a young child who only uses the family tablet. We recommend a login instead whenever you can: it's free, it can still be a Child account, and it gives them notifications on their own phone and their own sign-in on their own device.
+
+1. Tap **+ Add someone without a Home Assistant login** under **Add a person**.
+
+   ![The Users tab with someone who has no Home Assistant login](/img/screenshots/settings-local-users.webp)
+
+2. A pop-up recommends making a Home Assistant login (Home Assistant → **Settings → People → Add person**, turn on **Allow login**, then **Add a person** here). **Cancel - I'll make a login** stops here; **Continue anyway** carries on.
+
+   ![The pop-up recommending a Home Assistant login](/img/screenshots/settings-local-warn.webp)
+
+3. Type their name, leave **This is a child** ticked for a Child account (or untick it), and tap **Add them**.
+
+   ![Who are you adding?](/img/screenshots/settings-local-name.webp)
+
+4. Their profile opens. Tap **Set / change PIN** under PIN login and give them a PIN: that's how they sign in on a shared screen (PIN login is already on for them).
+
+What's different for them:
+- **Signing in:** only with their PIN on a shared screen (the kiosk's PIN-login picker). They're never an admin, and their permissions work like anyone else's.
+- **Notifications** (reminders, chores, rewards, timer alarms, the Daily Digest) go to the phones of the admin who added them. If you give them notify devices of their own in their profile, those are used instead.
+- **Anything Home Assistant-specific** comes from that admin's account, since they have no Home Assistant user of their own. They don't appear on the Screen Saver's per-login list.
+- Their row says **No Home Assistant login**, with **Give them a login** and **Rename** buttons. **✕** asks first, then removes them from Family Hub for good, along with their profile and PIN; their past chores and stars stay in the history. (Removing someone who has a login only takes them off the list, and re-adding them brings everything back.)
+
+#### Giving them a Home Assistant login later
+
+When they're ready for a login of their own, nothing has to be set up again:
+
+1. In Home Assistant, go to **Settings → People → Add person**, turn on **Allow login**, and save. Don't add the new login to Family Hub with **Add a person**.
+2. Back in **Settings → Users**, tap **Give them a login** on their row, pick the new login, and tap **Move them**.
+
+   ![Give Leo a Home Assistant login](/img/screenshots/settings-local-move.webp)
+
+Everything Family Hub has for them moves to the login: their profile, PIN, chores, stars and star history, rewards and saved rewards, routines, goals, timers, permissions and Companion. Their notifications go to their own phone from then on (Family Hub finds it if their Home Assistant person has the Companion app; otherwise pick it in their profile). Only a login that isn't in Family Hub yet can be picked.
 
 ### Member profiles
 

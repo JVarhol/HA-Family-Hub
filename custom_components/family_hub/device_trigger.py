@@ -1,6 +1,8 @@
 """Device automation triggers for Family Hub Routines."""
 from __future__ import annotations
 
+from . import people as people_mod
+
 from typing import Any
 
 import voluptuous as vol
@@ -73,7 +75,7 @@ async def async_get_trigger_capabilities(hass: HomeAssistant, config: ConfigType
     Both default to "any" (left blank) when omitted, matching how
     _fire_routine_event's payload always carries user_id/category but a
     household may want an automation that fires for ANY of them."""
-    users = await hass.auth.async_get_users()
+    users = await people_mod.async_get_users(hass)
     user_choices = {user.id: user.name or user.id for user in users if not user.system_generated}
     return {
         "extra_fields": vol.Schema(

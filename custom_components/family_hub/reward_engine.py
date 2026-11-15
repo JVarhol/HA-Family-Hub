@@ -65,6 +65,8 @@ LEDGER_SOURCE_MANUAL_ADJUSTMENT = "manual_adjustment"
 # (): the two halves of a peer-to-peer star gift (see gift_stars below) - always appear in pairs
 LEDGER_SOURCE_GIFT_SENT = "gift_sent"
 LEDGER_SOURCE_GIFT_RECEIVED = "gift_received"
+# a Companion timer a grown-up gave stars to ("20 minutes of reading: 2 stars"), paid when it runs all the way out
+LEDGER_SOURCE_TIMER_FINISHED = "timer_finished"
 
 
 def add_stars(
@@ -167,6 +169,19 @@ def _normalize_hex_color(value: Any) -> str:
     return ""
 
 
+def _for_users(value: Any) -> list[str]:
+    """2026.11.2: who a reward is for - Home Assistant user ids; empty means everyone."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    return list(dict.fromkeys(str(u).strip() for u in value if isinstance(u, str) and u.strip()))[:50]
+
+
+def available_to(item: dict[str, Any], user_id: Optional[str]) -> bool:
+    """Whether this person can get this reward (a reward with no one picked is for everyone)."""
+    who = item.get("for_users") or []
+    return not who or (user_id in who)
+
+
 def add_catalog_item(
     rewards: dict[str, Any],
     title: str,
@@ -181,6 +196,7 @@ def add_catalog_item(
     stack_unit_label: str = "",
     timer_minutes: Any = None,
     alarm_audience: Any = None,
+    for_users: Any = None,
 ) -> dict[str, Any]:
     """adds four optional fields on top of the original title/cost/ icon/color"""
     title = str(title or "").strip()
@@ -213,6 +229,8 @@ def add_catalog_item(
         REWARD_KEY_TIMER_MINUTES: timer_engine.normalize_timer_minutes(timer_minutes),
         # who/what rings when this reward's timer alarms - same field/tiers/default as a chore's own CHORE_KEY_ALARM_AUDIENCE
         REWARD_KEY_ALARM_AUDIENCE: timer_engine.normalize_alarm_audience(alarm_audience),
+        # only these people can get it (empty = everyone)
+        "for_users": _for_users(for_users),
     }
     rewards.setdefault("catalog", []).append(item)
     return item
@@ -261,6 +279,8 @@ def update_catalog_item(rewards: dict[str, Any], item_id: str, **fields: Any) ->
         item["stack_unit_amount"] = stack_unit_amount
     if "stack_unit_label" in fields:
         item["stack_unit_label"] = str(fields["stack_unit_label"] or "").strip()
+    if "for_users" in fields:
+        item["for_users"] = _for_users(fields["for_users"])
     return item
 
 
@@ -304,6 +324,10 @@ def fire_reward_event(hass: Any, rewards: dict[str, Any], event: str, record: di
         payload["redemption_id"] = record.get("id")
     if record.get("bank_delta") is not None:
         payload["amount"] = record.get("bank_delta")
+    if record.get("saved"):
+        # saved for later (Companion's "Save it"): the status says it's theirs to use, not waiting for a grown-up
+        payload["saved"] = True
+        payload["status"] = "saved"
     if record.get("unit_label") is not None or record.get("bank_balance_after") is not None:
         payload["unit_label"] = record.get("unit_label") or ""
         payload["bank_balance"] = record.get("bank_balance_after")
@@ -319,8 +343,13 @@ def fire_reward_event(hass: Any, rewards: dict[str, Any], event: str, record: di
     return payload
 
 
-def redeem_item(rewards: dict[str, Any], user_id: str, item_id: str) -> dict[str, Any]:
-    """Self-serve claim: deduct cost_stars from user_id's balance right now (raising if the balance doesn't cover it, regardless of redeem_mode"""
+def redeem_item(rewards: dict[str, Any], user_id: str, item_id: str, *, save: bool = False) -> dict[str, Any]:
+    """Self-serve claim: deduct cost_stars from user_id's balance right now (raising if the balance doesn't cover it, regardless of redeem_mode
+
+    save=True (2026.11.2, a child's "Save it" on Companion): an everyday (instant) reward goes into their bank for that
+    reward, one at a time, to use later - exactly the way a "Stacks up" reward's bank works, so use_bank spends it, its
+    requires_fulfillment gates the USE (not the getting), and reverse_redemption takes it back out of the bank. Rewards
+    with a timer (they start the timer) and one-time rewards (they disappear) can't be saved."""
     catalog = rewards.setdefault("catalog", [])
     item = next((it for it in catalog if it.get("id") == item_id), None)
     if item is None:
@@ -332,10 +361,15 @@ def redeem_item(rewards: dict[str, Any], user_id: str, item_id: str) -> dict[str
             "insufficient_balance",
             f"Not enough stars - this costs {cost}, and the balance is {balance}.",
         )
+    if not available_to(item, user_id):
+        raise RewardError("not_for_you", f"\"{item.get('title')}\" is only for someone else.")
     mode = item.get("redeem_mode") or REWARD_REDEEM_MODE_INSTANT
+    if save and (mode != REWARD_REDEEM_MODE_INSTANT or (item.get(REWARD_KEY_TIMER_MINUTES) or 0)):
+        raise RewardError("cant_save", "This reward can't be saved for later.")
     add_stars(rewards, user_id, -cost, reason=f"Redeemed: {item.get('title')}", source=LEDGER_SOURCE_REDEEMED)
     now = dt_util.utcnow().isoformat()
-    requires_fulfillment = bool(item.get("requires_fulfillment")) and mode != REWARD_REDEEM_MODE_BANKED
+    # a saved one is handed over when it's used, not now
+    requires_fulfillment = bool(item.get("requires_fulfillment")) and mode != REWARD_REDEEM_MODE_BANKED and not save
     redemption = {
         "id": new_redemption_id(),
         "user_id": user_id,
@@ -354,6 +388,11 @@ def redeem_item(rewards: dict[str, Any], user_id: str, item_id: str) -> dict[str
         redemption["bank_delta"] = amount
         redemption["unit_label"] = item.get("stack_unit_label") or ""
         redemption["bank_balance_after"] = _adjust_bank(rewards, user_id, item_id, amount)
+    elif save:
+        redemption["saved"] = True
+        redemption["bank_delta"] = 1.0
+        redemption["unit_label"] = ""
+        redemption["bank_balance_after"] = _adjust_bank(rewards, user_id, item_id, 1.0)
     rewards.setdefault("redemptions", []).append(redemption)
     if mode == REWARD_REDEEM_MODE_ONE_TIME:
         delete_catalog_item(rewards, item_id)

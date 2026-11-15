@@ -10,6 +10,8 @@ and fires ``family_hub_companion_event`` for automations. Screens ask for their 
 """
 from __future__ import annotations
 
+from . import people as people_mod
+
 import logging
 import re
 import uuid
@@ -39,6 +41,20 @@ NIGHT_SCREENS = ("dim", "off")
 WAKE_LIGHTS = ("green", "bright", "sunrise")
 WAKE_ACTION_DOMAINS = ("scene", "script", "automation")
 MAX_MESSAGES = 20
+# the screens a grown-up can turn on or off for each child (the clock is always there)
+SCREENS = ("myday", "jobs", "rewards", "wishes", "timers", "room")
+SCREEN_DEFAULTS = {"myday": True, "jobs": True, "rewards": True, "wishes": True, "timers": False, "room": False}
+ROOM_DOMAINS = ("light", "switch", "fan", "input_boolean", "media_player", "cover", "scene", "script")
+# things they can see but not change: their room temperature, humidity, a door, the weather
+INFO_DOMAINS = ("sensor", "binary_sensor", "climate", "weather")
+MAX_TIMERS = 12
+# the lengths a child can pick for a timer of their own
+CUSTOM_TIMER_MAX = 120
+DEFAULT_TIMERS = [
+    {"title": "Reading", "minutes": 20, "icon": "\U0001F4DA"},
+    {"title": "Practice", "minutes": 15, "icon": "\U0001F3B9"},
+    {"title": "Tidy up", "minutes": 10, "icon": "\U0001F9F8"},
+]
 EVENT_KINDS = ("step_done", "routine_done", "comfort", "message_ack", "alarm_stopped", "sound_on", "sound_off")
 
 DEFAULTS: dict[str, Any] = {
@@ -62,7 +78,13 @@ DEFAULTS: dict[str, Any] = {
     "wakeLights": [],
     "wakeAction": "",
     "comfortNotify": [],
+    "screensaver": False,
+    "screensaverIdle": 5,              # minutes without a tap before it starts
+    "screensaverSource": "household",  # household = the Family Hub screensaver's own video or camera
+    "screensaverVideoUrl": "",
+    "screensaverCamera": "",
 }
+SCREENSAVER_SOURCES = ("household", "video", "camera")
 
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
@@ -77,6 +99,21 @@ def _int(value: Any, lo: int, hi: int, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(lo, min(hi, n))
+
+
+def _timers(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return [dict(t) for t in DEFAULT_TIMERS]
+    out = []
+    for t in raw:
+        if not isinstance(t, dict):
+            continue
+        title = str(t.get("title") or "").strip()[:30]
+        if not title:
+            continue
+        icon = str(t.get("icon") or "").strip()[:8] or "\u23F1\uFE0F"
+        out.append({"title": title, "minutes": _int(t.get("minutes"), 1, 180, 10), "icon": icon, "stars": _int(t.get("stars"), 0, 20, 0)})
+    return out[:MAX_TIMERS]
 
 
 def normalize(raw: Any) -> dict[str, Any]:
@@ -112,6 +149,22 @@ def normalize(raw: Any) -> dict[str, Any]:
         "wakeLights": list(dict.fromkeys(e.strip() for e in (r.get("wakeLights") or []) if isinstance(e, str) and e.strip().startswith("light.") and e.strip() != main))[:6],
         "wakeAction": action if action.split(".")[0] in WAKE_ACTION_DOMAINS and "." in action else "",
         "comfortNotify": [u for u in (r.get("comfortNotify") or []) if isinstance(u, str) and u][:10],
+        # 2026.11.2: what's on this child's screen, chosen by their grown-ups
+        "screens": {k: (r.get("screens") or {}).get(k, SCREEN_DEFAULTS[k]) is not False if isinstance(r.get("screens"), dict) else SCREEN_DEFAULTS[k] for k in SCREENS},
+        "timers": _timers(r.get("timers")),
+        # Jobs has an "Ask for stars" button (for something that isn't on the chart; a grown-up approves it)
+        "askStars": r.get("askStars") is not False,
+        # Rewards has an "Ask for a new reward" button (a grown-up sets its stars and approves it, like any suggestion)
+        "askRewards": r.get("askRewards") is not False,
+        "roomButtons": list(dict.fromkeys(e.strip() for e in (r.get("roomButtons") or []) if isinstance(e, str) and e.strip().split(".")[0] in ROOM_DOMAINS and "." in e))[:6],
+        "infoSensors": list(dict.fromkeys(e.strip() for e in (r.get("infoSensors") or []) if isinstance(e, str) and e.strip().split(".")[0] in INFO_DOMAINS and "." in e))[:4],
+        "customTimer": r.get("customTimer") is not False,
+        # the same screensaver as the rest of Family Hub (a video or a live camera), when nobody has touched the screen
+        "screensaver": r.get("screensaver") is True,
+        "screensaverIdle": _int(r.get("screensaverIdle"), 1, 60, DEFAULTS["screensaverIdle"]),
+        "screensaverSource": r.get("screensaverSource") if r.get("screensaverSource") in SCREENSAVER_SOURCES else "household",
+        "screensaverVideoUrl": r.get("screensaverVideoUrl").strip()[:500] if isinstance(r.get("screensaverVideoUrl"), str) else "",
+        "screensaverCamera": r.get("screensaverCamera").strip() if isinstance(r.get("screensaverCamera"), str) and r.get("screensaverCamera").strip().startswith("camera.") else "",
     }
 
 
@@ -120,13 +173,32 @@ def _minutes(hhmm: str) -> int:
     return int(h) * 60 + int(m)
 
 
+# 2026.11.2: is a day a no-school day (days_off.DaysOff.is_off, set by __init__); a no-school day gets weekend times
+_days_off_checker = None
+
+
+def set_days_off_checker(fn) -> None:
+    global _days_off_checker
+    _days_off_checker = fn
+
+
+def _no_school(day: Any, uid: Optional[str] = None) -> bool:
+    if _days_off_checker is None:
+        return False
+    try:
+        return bool(_days_off_checker(day.date() if isinstance(day, datetime) else day, "school", uid))
+    except Exception:  # noqa: BLE001 - a lookup problem is never a reason to change a child's wake-up
+        return False
+
+
 def wake_time(cfg: dict[str, Any], day: datetime) -> str:
-    return cfg["wakeWeekend"] if day.weekday() >= 5 else cfg["wake"]
+    # weekends, and days with no school (a holiday marked No school)
+    return cfg["wakeWeekend"] if day.weekday() >= 5 or _no_school(day, cfg.get("_uid")) else cfg["wake"]
 
 
 def bedtime(cfg: dict[str, Any], day: datetime) -> str:
-    # Friday and Saturday nights are the weekend ones
-    return cfg["bedtimeWeekend"] if day.weekday() in (4, 5) else cfg["bedtime"]
+    # Friday and Saturday nights are the weekend ones, and the night before a day with no school
+    return cfg["bedtimeWeekend"] if day.weekday() in (4, 5) or _no_school(day + timedelta(days=1), cfg.get("_uid")) else cfg["bedtime"]
 
 
 def mode_for(cfg: dict[str, Any], now: datetime) -> str:
@@ -186,7 +258,9 @@ class Companion:
         return (await store.async_load() or {}) if store else {}
 
     async def config_for(self, uid: str) -> dict[str, Any]:
-        return normalize((_profiles(await self.settings()).get(uid) or {}).get("companion"))
+        cfg = normalize((_profiles(await self.settings()).get(uid) or {}).get("companion"))
+        cfg["_uid"] = uid  # whose days off count (a break only some children have)
+        return cfg
 
     def override_for(self, uid: str, now: Optional[datetime] = None) -> Optional[dict[str, Any]]:
         o = self.data["overrides"].get(uid)
@@ -326,6 +400,7 @@ class Companion:
             if not isinstance(profile.get("companion"), dict):
                 continue
             cfg = normalize(profile.get("companion"))
+            cfg["_uid"] = uid
             mode = self.mode_now(uid, cfg, now)
             old = self.last_mode.get(uid)
             if old != mode:
@@ -371,7 +446,7 @@ async def _user_id_for(hass: HomeAssistant, value: Any) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    users = await hass.auth.async_get_users()
+    users = await people_mod.async_get_users(hass)
     if any(u.id == text for u in users):
         return text
     if text.startswith("person."):
@@ -473,8 +548,57 @@ async def ws_set_mode(hass: HomeAssistant, connection: Any, msg: dict[str, Any])
     connection.send_result(msg["id"], await comp.state(msg["user_id"]))
 
 
+@websocket_api.websocket_command(
+    {vol.Required("type"): "family_hub/companion/start_timer", vol.Required("user_id"): str, vol.Optional("index"): int, vol.Optional("minutes"): int, vol.Optional("client_id"): str}
+)
+@websocket_api.async_response
+async def ws_start_timer(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
+    """Start one of the timers a grown-up set up for this child. The length and the stars come from their settings,
+    never from the screen, so finishing one pays exactly what the grown-ups chose (stopping it early pays nothing)."""
+    comp = get(hass)
+    if comp is None:
+        connection.send_error(msg["id"], "not_found", "Family Hub is not set up")
+        return
+    uid = msg["user_id"]
+    cfg = await comp.config_for(uid)
+    timers = cfg.get("timers") or []
+    if "index" in msg:
+        index = msg["index"]
+        if index < 0 or index >= len(timers):
+            connection.send_error(msg["id"], "not_found", "That timer isn't set up any more.")
+            return
+        t = timers[index]
+    elif "minutes" in msg:
+        # a timer of their own: any length up to two hours, and never any stars (so it can't be used to earn them)
+        if not cfg.get("customTimer", True):
+            connection.send_error(msg["id"], "forbidden", "Timers of their own are turned off.")
+            return
+        minutes = msg["minutes"]
+        if minutes < 1 or minutes > CUSTOM_TIMER_MAX:
+            connection.send_error(msg["id"], "invalid_format", f"A timer can be 1 to {CUSTOM_TIMER_MAX} minutes.")
+            return
+        t = {"title": "Timer", "minutes": minutes, "icon": "\u23F1\uFE0F", "stars": 0}
+    else:
+        connection.send_error(msg["id"], "invalid_format", "Pick a timer or a length.")
+        return
+    from . import chores_websocket_api as cwa  # noqa: PLC0415 - imported here; it imports half of Family Hub
+    from .timer_engine import TimerError  # noqa: PLC0415
+    try:
+        timer = await cwa.async_start_standalone_timer(
+            hass, comp.entry_data, minutes=t["minutes"], label=((t.get("icon") or "") + " " + t["title"]).strip(),
+            user_id=uid, actor_id=connection.user.id if connection.user else None, client_id=msg.get("client_id"), source="companion",
+        )
+    except TimerError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    if t.get("stars"):
+        timer["companion_stars"] = int(t["stars"])
+        await cwa._save_timers(hass, comp.entry_data)  # noqa: SLF001
+    connection.send_result(msg["id"], {"timer": timer})
+
+
 def register(hass: HomeAssistant) -> None:
-    for cmd in (ws_state, ws_subscribe, ws_event, ws_send, ws_set_mode):
+    for cmd in (ws_state, ws_subscribe, ws_event, ws_send, ws_set_mode, ws_start_timer):
         websocket_api.async_register_command(hass, cmd)
 
     async def _svc_message(call: ServiceCall) -> None:

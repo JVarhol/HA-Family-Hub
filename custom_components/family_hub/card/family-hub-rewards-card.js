@@ -111,6 +111,46 @@ localStorage.setItem("familyHubA11yHouseholdLocal", next);
 }
 refreshAll();
 }
+// 2026.11.2.11: "Card background: See-through" (household settings.seeThroughBackground): the cards leave their own
+// background empty so the dashboard's (an animated background, a wallpaper) shows through; never in e-ink/high contrast,
+// nor while a card shows a photo of its own (the calendar's full-screen holiday photo sets fh-own-bg)
+function seeThrough() {
+try {
+return localStorage.getItem("familyHubSeeThroughLocal") === "1";
+} catch (e) {
+return false;
+}
+}
+function setSeeThrough(on) {
+const next = on ? "1" : "";
+let before = "";
+try {
+before = localStorage.getItem("familyHubSeeThroughLocal") || "";
+} catch (e) {
+}
+if (before === next) return;
+try {
+localStorage.setItem("familyHubSeeThroughLocal", next);
+} catch (e) {
+}
+refreshAll();
+}
+const SEE_THROUGH_CSS = `
+:host([fh-see-through]:not([fh-own-bg])) ha-card { background-color: transparent !important; background-image: none !important; box-shadow: none !important; }
+:host([fh-see-through]:not([fh-own-bg])) ha-card::before { display: none !important; }
+`;
+function applySeeThrough(host) {
+const on = seeThrough() && mode() === "off";
+if (on) host.setAttribute("fh-see-through", "");
+else host.removeAttribute("fh-see-through");
+const root = host.shadowRoot;
+if (on && root && !root.querySelector("style[data-fh-see-through]")) {
+const s = document.createElement("style");
+s.setAttribute("data-fh-see-through", "");
+s.textContent = SEE_THROUGH_CSS;
+root.appendChild(s);
+}
+}
 // every card loads the household settings itself; this reads the Accessibility part of them, at most every 5 minutes
 let householdFetch = null, householdAt = 0;
 function loadHousehold(hass) {
@@ -118,7 +158,10 @@ if (!hass || !hass.connection || householdFetch || Date.now() - householdAt < 5 
 householdFetch = hass.connection.sendMessagePromise({ type: "family_hub/get_settings" })
 .then((r) => {
 const s = r && r.settings;
-if (s && typeof s === "object") setHousehold(s.accessibility || {});
+if (s && typeof s === "object") {
+setHousehold(s.accessibility || {});
+setSeeThrough(s.seeThroughBackground === true);
+}
 })
 .catch(() => {})
 .then(() => {
@@ -409,6 +452,7 @@ if (!st) return;
 // the calendar loads the household settings itself (and hands the Accessibility part over with setHousehold)
 if (!st.opts.a11yOnly) loadHousehold(host._hass || host.hass);
 const v = applyA11y(host);
+applySeeThrough(host);
 const root = host.shadowRoot;
 if (st.opts.a11yOnly) {
 // the calendar draws its own e-ink and colour vision; this just gives it the shared accessibility attributes
@@ -471,7 +515,7 @@ attached.delete(host);
 }
 const refreshAll = () => attached.forEach((st, host) => apply(host));
 window.addEventListener("family-hub-eink-changed", refreshAll);
-window.addEventListener("storage", (e) => { if (!e.key || /^familyHub(Eink|A11y)/.test(e.key)) refreshAll(); });
+window.addEventListener("storage", (e) => { if (!e.key || /^familyHub(Eink|A11y|SeeThrough)/.test(e.key)) refreshAll(); });
 try {
 if (window.matchMedia) {
 const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -480,9 +524,271 @@ if (mq && mq.addEventListener) mq.addEventListener("change", refreshAll);
 } catch (e) {
 }
 window.__familyHubEink = {
-mode, deviceMode, tappable, background, cvFor, a11y, a11yClean, setHousehold, ensureFonts, A11Y_KEYS: A11Y, SHAPES, SHAPE_NAMES,
-attach: (host, opts) => attach(host, opts, 0), detach, refreshAll, BASE_CSS, A11Y_CSS,
+mode, deviceMode, tappable, background, cvFor, a11y, a11yClean, setHousehold, seeThrough, setSeeThrough, ensureFonts, A11Y_KEYS: A11Y, SHAPES, SHAPE_NAMES,
+attach: (host, opts) => {
+if (window.__familyHubKeepAlive) window.__familyHubKeepAlive.connected(host);
+attach(host, opts, 0);
+},
+detach: (host) => {
+detach(host);
+if (window.__familyHubKeepAlive) window.__familyHubKeepAlive.disconnected(host);
+},
+refreshAll, BASE_CSS, A11Y_CSS,
 };
+})();
+// 2026.11.2: keep an open pop-up open when you switch away from Home Assistant and come back. When the app comes back
+// and reconnects, Home Assistant reloads the dashboard and builds every card again, so a card that had a pop-up open
+// lost it. Now: when the page is hidden, each card notes whether it has a pop-up open; if Home Assistant then replaces
+// that card (within a minute of coming back), the new copy steps aside for the old one, pop-up and all, and passes
+// Home Assistant's updates on to it.
+(function () {
+if (window.__familyHubKeepAlive) return;
+const live = new Set();
+const parked = [];
+let visibleAt = 0;
+const WINDOW_MS = 60000;
+const ADOPT_MS = 20000;
+const keyOf = (host) => {
+if (host.__fhKeepKey === undefined) {
+let cfg = "";
+try { cfg = JSON.stringify(host._config || null); } catch (e) { cfg = ""; }
+host.__fhKeepKey = host.tagName + "|" + cfg;
+}
+return host.__fhKeepKey;
+};
+// a pop-up: something fixed on screen, showing, and covering a good part of it
+function modalOpen(host) {
+const root = host.shadowRoot;
+if (!root) return false;
+const min = (window.innerWidth || 0) * (window.innerHeight || 0) * 0.2;
+const els = root.querySelectorAll('[class*="modal"],[class*="overlay"],[class*="dialog"],[class*="sheet"],[class*="popup"],[class*="picker"],[class*="viewer"]');
+for (let i = 0; i < els.length; i++) {
+const cs = getComputedStyle(els[i]);
+if (cs.position !== "fixed" || cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) < 0.05) continue;
+const r = els[i].getBoundingClientRect();
+if (r.width * r.height >= min && min > 0) return true;
+}
+return false;
+}
+document.addEventListener("visibilitychange", () => {
+if (document.visibilityState === "hidden") {
+live.forEach((host) => {
+try { host.__fhKeepModal = modalOpen(host); } catch (e) { host.__fhKeepModal = false; }
+});
+} else {
+visibleAt = Date.now();
+}
+});
+const recent = () => document.visibilityState === "hidden" || Date.now() - visibleAt < WINDOW_MS;
+function disconnected(host) {
+live.delete(host);
+if (host.__fhKeepModal && recent()) parked.push({ host, key: keyOf(host), at: Date.now() });
+}
+let connected = function (host) {
+live.add(host);
+keyOf(host);
+// after this card's own connectedCallback has run
+setTimeout(() => {
+const now = Date.now();
+for (let i = parked.length - 1; i >= 0; i--) {
+if (now - parked[i].at > ADOPT_MS || parked[i].host.isConnected) parked.splice(i, 1);
+}
+if (!host.isConnected || host.__fhAdopted) return;
+const idx = parked.findIndex((p) => p.key === keyOf(host) && p.host !== host);
+if (idx < 0) return;
+const old = parked.splice(idx, 1)[0].host;
+old.__fhKeepModal = false;
+const latest = host._hass || host.hass;
+try { host.replaceWith(old); } catch (e) { return; }
+host.__fhAdopted = old;
+// the card is back as it was, so nothing needs putting back from what was saved
+try { localStorage.removeItem("familyHubResume:" + keyOf(old)); } catch (e) {}
+// Home Assistant keeps talking to the card it made; pass it all on
+Object.defineProperty(host, "hass", { configurable: true, get() { return old.hass; }, set(v) { old.hass = v; } });
+host.setConfig = (c) => old.setConfig(c);
+if (latest) old.hass = latest;
+}, 0);
+}
+// --- after a full page reload (the iPhone app reloads the whole page after a while away) -------------------------
+// Each card's pop-up openers are watched: what was opened, with what. When the page is hidden with a pop-up open, that
+// list and what's typed in each open pop-up are saved on this device; when the same card loads again within 15
+// minutes, the pop-ups are opened again, in order, and the typing put back.
+const RESUME_MS = 15 * 60000;
+const ready = {
+calendar: (c) => !!c._settingsCache,
+users: (c) => Array.isArray(c._notifyProfileUsersCache),
+};
+// per card: the pop-up openers to watch, what each needs before it can open again, and how to save/find its argument
+const OPENERS = {
+"FAMILY-WEEK-CALENDAR-CARD": {
+__view: { ready: (c) => !!(c._settingsCache && c._viewMode) },
+_openSettings: { ready: ready.calendar },
+_setSettingsTab: { ready: ready.calendar, follows: true },
+_openNotifyProfileModal: { ready: ready.users },
+_openAddEvent: { ready: ready.calendar },
+_openQuickAdd: { ready: ready.calendar },
+_openEventInfo: {
+save: (c, id) => { const d = (c._eventDetails || {})[id]; return d ? { uid: d.uid || "", start: d.start ? new Date(d.start).getTime() : 0, cal: d.calendarEntity || "", title: d.summary || "" } : null; },
+find: (c, w) => {
+const all = c._eventDetails || {};
+return Object.keys(all).find((id) => { const d = all[id]; return d && (d.calendarEntity || "") === w.cal && (d.start ? new Date(d.start).getTime() : 0) === w.start && ((w.uid && d.uid === w.uid) || (!w.uid && d.summary === w.title)); });
+},
+},
+_openEventInfoForEdit: { alias: "_openEventInfo" },
+},
+"FAMILY-HUB-CHORES-CARD": { _openCreateModal: {}, _openEditModal: {}, _openChoreDetailModal: {}, _openRoutineManageModal: {} },
+"FAMILY-HUB-REWARDS-CARD": {
+_openCreateRewardModal: {
+save: (c, item) => (item && item.id ? { id: item.id } : null),
+find: (c, w) => (c._catalog || []).find((it) => it.id === w.id),
+optional: true,
+},
+_openGiftStarsModal: {}, _openManageStarsModal: {}, _openStarHistoryModal: {},
+},
+"FAMILY-HUB-TODO-CARD": { _openCreateModal: {}, _openItemDetailModal: {} },
+};
+const openOverlays = (host) => {
+const root = host.shadowRoot;
+if (!root) return [];
+const out = [];
+const min = (window.innerWidth || 0) * (window.innerHeight || 0) * 0.2;
+root.querySelectorAll('[class*="modal"],[class*="overlay"],[class*="dialog"],[class*="sheet"],[class*="popup"],[class*="picker"],[class*="viewer"]').forEach((el) => {
+const cs = getComputedStyle(el);
+if (cs.position !== "fixed" || cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) < 0.05) return;
+const r = el.getBoundingClientRect();
+if (min > 0 && r.width * r.height >= min) out.push(el);
+});
+return out;
+};
+const FIELD = "input:not([type=file]):not([type=password]):not([type=hidden]):not([type=button]):not([type=submit]),textarea,select";
+const sig = (el) => el.tagName + ":" + (el.type || "") + ":" + (el.className || "");
+const readFields = (ov) => Array.prototype.map.call(ov.querySelectorAll(FIELD), (el) => [sig(el), el.type === "checkbox" || el.type === "radio" ? !!el.checked : el.value]);
+function writeFields(ov, saved) {
+if (!ov || !Array.isArray(saved)) return;
+const els = ov.querySelectorAll(FIELD);
+const touched = [];
+saved.forEach((f, i) => {
+const el = els[i];
+if (!el || sig(el) !== f[0]) return;
+if (el.type === "checkbox" || el.type === "radio") { if (el.checked !== !!f[1]) { el.checked = !!f[1]; touched.push([el, "change"]); } }
+else if (el.value !== f[1]) { el.value = f[1]; touched.push([el, el.tagName === "SELECT" ? "change" : "input"]); }
+});
+touched.forEach((t) => { try { t[0].dispatchEvent(new Event(t[1], { bubbles: true })); } catch (e) {} });
+}
+const resumeKey = (host) => "familyHubResume:" + keyOf(host);
+function track(host) {
+const table = OPENERS[host.tagName];
+if (!table || host.__fhTracked) return;
+host.__fhTracked = true;
+host.__fhCalls = [];
+Object.keys(table).forEach((name) => {
+if (name === "__view") return;
+const orig = host[name];
+if (typeof orig !== "function") return;
+const spec = table[name];
+const fn = spec.alias || name;
+const fspec = table[fn] || spec;
+host[name] = function () {
+const args = Array.prototype.slice.call(arguments);
+const outer = !host.__fhInOpener;
+// (pop-ups opened again after a reload are watched too, so leaving again keeps them)
+if (outer) {
+const before = openOverlays(host);
+if (!before.length && !fspec.follows) host.__fhCalls = [];
+let saved = args;
+if (fspec.save) { const w = fspec.save(host, args[0]); saved = w ? [{ __w: w }].concat(args.slice(1)) : (fspec.optional ? [] : null); }
+if (saved) {
+const call = { fn, args: saved, ov: null, edit: name === "_openEventInfoForEdit" };
+host.__fhCalls.push(call);
+// some open after loading something, so look a few times
+[0, 300, 1200].forEach((ms) => setTimeout(() => { if (!call.ov) call.ov = openOverlays(host).find((o) => before.indexOf(o) < 0) || null; }, ms));
+}
+}
+host.__fhInOpener = true;
+try { return orig.apply(this, arguments); } finally { if (outer) host.__fhInOpener = false; }
+};
+});
+}
+function snapshot(host) {
+const calls = host.__fhCalls || [];
+const open = openOverlays(host);
+// where the card was (the calendar's week, say), pop-up or not
+let view = null;
+try { view = typeof host._fhViewState === "function" ? host._fhViewState() : null; } catch (e) { view = null; }
+if ((!open.length || !calls.length) && !view) { try { localStorage.removeItem(resumeKey(host)); } catch (e) {} return; }
+let parentOpen = false;
+const keep = [];
+(open.length ? calls : []).forEach((c) => {
+const isOpen = c.ov ? open.indexOf(c.ov) >= 0 : parentOpen;
+if (c.ov) parentOpen = isOpen;
+if (isOpen) keep.push({ fn: c.fn, args: c.args, edit: c.edit, fields: c.ov ? readFields(c.ov) : null });
+});
+try {
+if (keep.length || view) localStorage.setItem(resumeKey(host), JSON.stringify({ at: Date.now(), calls: keep, view }));
+else localStorage.removeItem(resumeKey(host));
+} catch (e) {}
+}
+const waitFor = (test, ms) => new Promise((resolve) => {
+const end = Date.now() + ms;
+const tick = () => { let v = null; try { v = test(); } catch (e) { v = null; } if (v) resolve(v); else if (Date.now() > end) resolve(null); else setTimeout(tick, 200); };
+tick();
+});
+async function resume(host) {
+let saved = null;
+try { saved = JSON.parse(localStorage.getItem(resumeKey(host)) || "null"); localStorage.removeItem(resumeKey(host)); } catch (e) { saved = null; }
+if (!saved || !Array.isArray(saved.calls) || Date.now() - (saved.at || 0) > RESUME_MS) return;
+const table = OPENERS[host.tagName] || {};
+host.__fhReplaying = true;
+try {
+if (saved.view && typeof host._fhRestoreViewState === "function") {
+const vready = (table.__view || {}).ready;
+if (await waitFor(() => host._hass && (!vready || vready(host)), 10000)) {
+try { host._fhRestoreViewState(saved.view); } catch (e) {}
+}
+}
+for (const c of saved.calls) {
+const spec = table[c.fn] || {};
+if (!host.isConnected) return;
+if (!(await waitFor(() => host._hass && (!spec.ready || spec.ready(host)), 10000))) return;
+let args = c.args || [];
+if (args[0] && args[0].__w && spec.find) {
+const found = await waitFor(() => spec.find(host, args[0].__w), 10000);
+if (!found) return;
+args = [found].concat(args.slice(1));
+}
+const before = openOverlays(host);
+const name = c.edit && typeof host._openEventInfoForEdit === "function" ? "_openEventInfoForEdit" : c.fn;
+try { await host[name].apply(host, args); } catch (e) { return; }
+if (c.fields) {
+const ov = await waitFor(() => openOverlays(host).find((o) => before.indexOf(o) < 0), 3000);
+await new Promise((r) => setTimeout(r, 150));
+writeFields(ov, c.fields);
+}
+}
+} finally {
+host.__fhReplaying = false;
+}
+}
+const snapAll = () => live.forEach((host) => { try { snapshot(host); } catch (e) {} });
+document.addEventListener("visibilitychange", () => {
+if (document.visibilityState === "hidden") { snapAll(); return; }
+// back without a reload or a rebuild: what was saved isn't needed (a card loading later shouldn't jump back to it)
+setTimeout(() => {
+if (document.visibilityState !== "visible") return;
+live.forEach((host) => { try { localStorage.removeItem(resumeKey(host)); } catch (e) {} });
+}, WINDOW_MS);
+});
+window.addEventListener("pagehide", snapAll);
+const _connected = connected;
+connected = function (host) {
+_connected(host);
+track(host);
+if (!host.__fhResumeChecked) {
+host.__fhResumeChecked = true;
+setTimeout(() => { if (host.isConnected && !host.__fhAdopted) resume(host); }, 300);
+}
+};
+window.__familyHubKeepAlive = { connected: (h) => connected(h), disconnected, modalOpen, parked, snapshot, resume, track };
 })();
 // FH-EINK END
 // FH-MODAL-SCROLL START - source: tools/modal_scroll_guard.js, copied into each card by tools/sync_modal_scroll_guard.py
@@ -1505,7 +1811,7 @@ class FamilyHubRewardsCard extends HTMLElement {
       theme_override: (config && typeof config.theme_override === "string") ? config.theme_override : "",
       // which people this card shows at all (Home Assistant user ids, picked in the card editor's "People on this card" list).
       people: Array.isArray(config && config.people) ? config.people.filter((id) => typeof id === "string" && id) : [],
-      // 2026.11.1: a star jar and picture shop for one child at a time (Grown-ups switches back for a while)
+      // 2026.11.1: a star jar and picture shop for one child at a time (the card setting decides; no switching on screen)
       kid_view: !!(config && config.kid_view),
     };
     this._registerFabCoordinator();
@@ -2144,6 +2450,8 @@ class FamilyHubRewardsCard extends HTMLElement {
       // own _archiveGoal - see that method's comment.
       if (this._confettiOnCompleteEnabled()) this._fireConfetti();
     } catch (e) {
+      // issue #40: say why instead of doing nothing (Home Assistant shows it at the bottom of the screen)
+      this.dispatchEvent(new CustomEvent("hass-notification", { detail: { message: (e && e.message) || this._t("goals.complete_failed", "Couldn't complete that goal - try again.") }, bubbles: true, composed: true }));
     }
     await this._fetchGoals();
   }
@@ -2553,10 +2861,12 @@ class FamilyHubRewardsCard extends HTMLElement {
     return this._personFilterIds().filter((id) => known.has(id));
   }
   _togglePersonFilter(id) {
-    const list = this._personFilterIds().slice();
+    let list = this._personFilterIds().slice();
     const at = list.indexOf(id);
-    if (at === -1) list.push(id);
+    if (this._kidViewActive()) list = list.length === 1 && at === 0 ? [] : [id];
+    else if (at === -1) list.push(id);
     else list.splice(at, 1);
+    this._kidConfirm = null;
     this._personFilter = list;
     try {
       localStorage.setItem(this._personFilterStorageKey(), JSON.stringify(list));
@@ -2607,6 +2917,23 @@ class FamilyHubRewardsCard extends HTMLElement {
     });
   }
 
+  // the people a reward is for, from the Who can get it pills (empty = everyone)
+  _rewardForUsers(box) {
+    return Array.from(box.querySelectorAll(".m-for-pill.on[data-uid]")).map((b) => b.dataset.uid).filter(Boolean);
+  }
+  _setRewardForUsers(box, ids) {
+    box.querySelectorAll(".m-for-pill").forEach((b) => b.classList.toggle("on", b.dataset.uid ? ids.includes(b.dataset.uid) : !ids.length));
+  }
+  // 2026.11.2: a reward picked for certain people only
+  _rewardFor(item, uid) {
+    const who = (item && item.for_users) || [];
+    return !who.length || who.includes(uid);
+  }
+  _rewardForLabel(item) {
+    const who = (item && item.for_users) || [];
+    if (!who.length) return "";
+    return this._t("rewards.catalog.only_for", "Only %names%", { names: who.map((id) => this._userName(id)).join(", ") });
+  }
   _memberUsers() {
     return this._users.filter((u) => this._isChoresIncluded(u.id));
   }
@@ -2791,12 +3118,11 @@ class FamilyHubRewardsCard extends HTMLElement {
           <div class="actions">
             <button class="manage-stars-btn" data-i18n-title="rewards.header.manage_stars_title" title="Manually add or subtract stars, with a reason - for bonuses, corrections, etc. outside chores/rewards/goals" hidden><span data-i18n="rewards.header.manage_stars_btn">&#11088; Manage stars</span></button>
             <button data-fh-t="text.manage_catalog" class="manage-btn" hidden>${__fhT("text.manage_catalog", "Manage catalog", null, "h")}</button>
-            <button class="kid-mode-btn" hidden></button>
             <button data-fh-t="text.login" data-fh-title="text.log_in_as_a_specific_household_member" class="kiosk-login-btn" title="${__fhT("text.log_in_as_a_specific_household_member", "Log in as a specific household member on this kiosk display", null, "h")}" hidden>${__fhT("text.login", "🔒 Login", null, "h")}</button>
           </div>
         </div>
-        <div class="kid-view"></div>
         <div class="person-pills" hidden></div>
+        <div class="kid-view"></div>
         <div class="balances"></div>
         <div class="section-title" data-i18n="rewards.sections.catalog">Reward catalog</div>
         <div class="catalog"></div>
@@ -2857,11 +3183,6 @@ class FamilyHubRewardsCard extends HTMLElement {
       if (this._kidViewActive() && this._onKidClick(e)) return;
       this._onClick(e);
     });
-    root.querySelector(".kid-mode-btn").addEventListener("click", (e) => {
-      e.stopPropagation();
-      this._setKidGrownups(this._kidViewActive());
-    });
-    root.querySelector("ha-card").addEventListener("pointerdown", () => this._kidTouch(), { passive: true });
   }
 
   _onClick(e) {
@@ -2979,7 +3300,8 @@ class FamilyHubRewardsCard extends HTMLElement {
       await this._hass.connection.sendMessagePromise(this._kioskMsg({ type: "family_hub/rewards/redeem", item_id: itemId }));
       await this._fetchRewardsState();
     } catch (e) {
-      if (statusEl) statusEl.textContent = this._t("rewards.catalog.not_enough_stars", "Not enough stars yet.");
+      // a reward for someone else says so (2026.11.2); anything else is the usual not-enough-stars
+      if (statusEl) statusEl.textContent = e && e.code === "not_for_you" ? this._t("rewards.catalog.not_for_you", "This one is for someone else.") : this._t("rewards.catalog.not_enough_stars", "Not enough stars yet.");
     }
   }
   async _deleteItem(itemId) {
@@ -3050,6 +3372,13 @@ class FamilyHubRewardsCard extends HTMLElement {
         <label>${this._t("rewards.modal.stack_amount_label", "Adds this much per redemption")}</label>
           <span class="m-stack-row"><input type="number" class="m-stack-amount" min="0" step="any" value="1"><input type="text" class="m-stack-label" placeholder="${this._t("rewards.modal.stack_label_placeholder", "hours, $, etc.")}"></span>
       </div>
+      <div class="field m-for-field"><label>${this._t("rewards.modal.for_users_label", "Who can get it")}</label>
+        <div class="m-for-pills">
+          <button type="button" class="m-for-pill m-for-everyone" data-uid="">${this._t("rewards.modal.for_everyone", "Everyone")}</button>
+          ${this._memberUsers().map((u) => `<button type="button" class="m-for-pill" data-uid="${this._escAttr(u.id)}" style="--pill-c:${this._userColor(u.id)}">${this._esc(u.name)}</button>`).join("")}
+        </div>
+        <div class="m-hint m-for-hint">${this._t("rewards.modal.for_users_hint", "Tap the people it's for. Only they see it on their own screens and can get it.")}</div>
+      </div>
       <label class="m-checkbox-label"><input type="checkbox" class="m-requires-fulfillment"> ${this._t("rewards.modal.requires_fulfillment_label", "Needs a parent to mark it done before it counts (e.g. cash allowance)")}</label>
       `
           : ""
@@ -3093,6 +3422,13 @@ class FamilyHubRewardsCard extends HTMLElement {
       <div class="form-error"></div>
     `;
     box.querySelector(".reward-modal-close").addEventListener("click", () => overlay.classList.remove("open"));
+    // Who can get it: Everyone, or the people tapped (tapping Everyone clears them)
+    box.querySelectorAll(".m-for-pill").forEach((pill) => pill.addEventListener("click", () => {
+      const cur = this._rewardForUsers(box);
+      const uid = pill.dataset.uid;
+      this._setRewardForUsers(box, !uid ? [] : cur.includes(uid) ? cur.filter((x) => x !== uid) : cur.concat([uid]));
+    }));
+    if (box.querySelector(".m-for-pill")) this._setRewardForUsers(box, []);
     if (showGoalTab) {
       this._wireGoalRewardFields(box);
       this._wireModalTabs(box, () => {
@@ -3134,6 +3470,7 @@ class FamilyHubRewardsCard extends HTMLElement {
         box.querySelector(".m-stack-amount").value = existingItem.stack_unit_amount != null ? existingItem.stack_unit_amount : 1;
         box.querySelector(".m-stack-label").value = existingItem.stack_unit_label || "";
         box.querySelector(".m-requires-fulfillment").checked = !!existingItem.requires_fulfillment;
+        this._setRewardForUsers(box, existingItem.for_users || []);
       }
       const iconToggle = box.querySelector(".m-icon-toggle");
       iconToggle.dataset.icon = existingItem.icon || "";
@@ -3299,6 +3636,7 @@ class FamilyHubRewardsCard extends HTMLElement {
           // "who hears this alarm" 3-way tier - see const.py's
           // REWARD_KEY_ALARM_AUDIENCE.
           alarm_audience: box.querySelector(".m-alarm-audience").value,
+          for_users: this._rewardForUsers(box),
         };
         if (redeemMode === "banked") {
           payload.stack_unit_amount = parseFloat(box.querySelector(".m-stack-amount").value) || 1;
@@ -3319,6 +3657,7 @@ class FamilyHubRewardsCard extends HTMLElement {
           timer_minutes: timerMinutes,
           // same field as the edit form - see its own comment.
           alarm_audience: box.querySelector(".m-alarm-audience").value,
+          for_users: this._rewardForUsers(box),
         };
         if (redeemMode === "banked") {
           payload.stack_unit_amount = parseFloat(box.querySelector(".m-stack-amount").value) || 1;
@@ -3511,6 +3850,16 @@ class FamilyHubRewardsCard extends HTMLElement {
   // spend part of a banked reward - see const.py's REWARD_REDEEM_MODES docstring.
   async _useBank(itemId) {
     const current = this._banks[this._myUserId()] && this._banks[this._myUserId()][itemId];
+    const it = this._catalog.find((c) => c.id === itemId);
+    if (it && it.redeem_mode !== "banked") {
+      try {
+        await this._hass.connection.sendMessagePromise({ type: "family_hub/rewards/use_bank", item_id: itemId, amount: 1 });
+        await this._fetchRewardsState();
+      } catch (e) {
+        // nothing saved any more: the refresh shows it
+      }
+      return;
+    }
     const raw = window.prompt(this._t("rewards.bank.use_prompt", "How much to use now?"), current != null ? String(current) : "1");
     if (raw === null) return;
     const amount = parseFloat(raw);
@@ -3644,7 +3993,11 @@ class FamilyHubRewardsCard extends HTMLElement {
   }
   _catalogItemHtml(item) {
     const myBalance = this._balances[this._myUserId()] || 0;
-    const affordable = myBalance >= (item.cost_stars || 0);
+    // 2026.11.2: a reward for certain people only - they can claim it; everyone else just sees who it's for
+    const forMe = this._rewardFor(item, this._myUserId());
+    const forLabel = this._rewardForLabel(item);
+    const forBadge = forLabel ? `<div class="catalog-for-badge">&#128100; ${this._esc(forLabel)}</div>` : "";
+    const affordable = myBalance >= (item.cost_stars || 0) && forMe;
     const mode = item.redeem_mode || "instant";
     // purely cosmetic "what this is really worth" label (e.g. "$20" or "2 hrs")
     const valueNote = item.value_note ? `<div class="catalog-value-note">${this._esc(item.value_note)}</div>` : "";
@@ -3653,12 +4006,13 @@ class FamilyHubRewardsCard extends HTMLElement {
       : mode === "banked" ? `<div class="catalog-mode-badge">${this._t("rewards.catalog.mode_banked", "Stacks up")}</div>`
       : "";
     // A banked item shows the CURRENT VIEWER's own bank for it (not everyone's
-    const myBank = mode === "banked" ? (this._banks[this._myUserId()] && this._banks[this._myUserId()][item.id]) || 0 : 0;
+    const myBank = (this._banks[this._myUserId()] && this._banks[this._myUserId()][item.id]) || 0;
+    // 2026.11.2: an everyday reward can be saved for later (Companion's or the kid view's "Save it"), one at a time
     const bankDisplay =
       mode === "banked"
         ? `<div class="catalog-bank">${this._t("rewards.catalog.banked_amount", "Banked: %amount% %unit%", { amount: myBank, unit: this._esc(item.stack_unit_label || "") })}</div>`
-        : "";
-    const useBankBtn = mode === "banked" && myBank > 0 ? `<button class="catalog-use-bank-btn" data-id="${item.id}">${this._t("rewards.catalog.use_btn", "Use")}</button>` : "";
+        : myBank > 0 ? `<div class="catalog-bank">&#128230; ${this._t("rewards.catalog.saved_count", "%n% saved", { n: myBank })}</div>` : "";
+    const useBankBtn = myBank > 0 ? `<button class="catalog-use-bank-btn" data-id="${item.id}">${this._t("rewards.catalog.use_btn", "Use")}</button>` : "";
     // timed rewards ("2 hours of gaming").
     const timerMinutes = Number(item.timer_minutes) || 0;
     const timerBadge = timerMinutes > 0 ? `<div class="catalog-timer-badge" title="${this._t("rewards.catalog.timer_badge_title", "Starts a %len% countdown when you use it", { len: this._formatTimerLength(timerMinutes) })}">&#9201; ${this._formatTimerLength(timerMinutes)}</div>` : "";
@@ -3678,6 +4032,7 @@ class FamilyHubRewardsCard extends HTMLElement {
         <div class="catalog-title">${this._esc(item.title)}</div>
         <div class="catalog-cost">&#11088; ${item.cost_stars}</div>
         ${valueNote}
+        ${forBadge}
         ${modeBadge}
         ${timerBadge}
         ${bankDisplay}
@@ -3745,35 +4100,30 @@ class FamilyHubRewardsCard extends HTMLElement {
     `;
   }
   // -- Kid-friendly view (2026.11.1) -------------------------------------------
-  // kid_view: true draws a star jar and a picture shop for one child at a time. Grown-ups flips this device back to the
-  // normal card for 10 minutes (any tap on the card keeps it there).
+  // kid_view: true draws a star jar and a picture shop for one child at a time; the setting alone decides (Manage catalog
+  // shows the full card while it's open).
   _kidViewActive() {
-    if (!this._config || !this._config.kid_view) return false;
-    if (this._kidGrownupsUntil && Date.now() < this._kidGrownupsUntil) return false;
-    this._kidGrownupsUntil = 0;
+    if (!this._config || !this._config.kid_view || this._manageOpen) return false;
     return true;
-  }
-  _setKidGrownups(on) {
-    clearTimeout(this._kidGrownupsTimer);
-    this._kidGrownupsUntil = on ? Date.now() + 10 * 60 * 1000 : 0;
-    if (on) this._kidGrownupsTimer = setTimeout(() => { this._kidGrownupsUntil = 0; this._render(); }, 10 * 60 * 1000);
-    this._kidConfirm = null;
-    this._render();
-  }
-  _kidTouch() {
-    if (!this._kidGrownupsUntil) return;
-    this._kidGrownupsUntil = Date.now() + 10 * 60 * 1000;
-    clearTimeout(this._kidGrownupsTimer);
-    this._kidGrownupsTimer = setTimeout(() => { this._kidGrownupsUntil = 0; this._render(); }, 10 * 60 * 1000);
   }
   _kidPeople() {
     const members = this._limitToConfiguredPeople(this._memberUsers(), (u) => u.id);
+    if (Array.isArray(this._config.people) && this._config.people.length) return members;
     const profiles = (this._settingsCache && this._settingsCache.userProfiles) || {};
     const kids = members.filter((u) => profiles[u.id] && profiles[u.id].isChildAccount);
-    return kids.length ? kids : members;
+    if (!kids.length) return members;
+    // 2026.11.2: a grown-up signed in (or logged in with their PIN) still gets their own jar here, to get rewards for
+    // themselves - never a shared kiosk login
+    const me = this._myUserId();
+    const mine = members.find((u) => u.id === me);
+    if (mine && !kids.includes(mine) && !(profiles[me] && profiles[me].isKioskAccount)) kids.push(mine);
+    return kids;
   }
   _kidSelected(kids) {
     const ids = kids.map((k) => k.id);
+    // a tapped name pill picks whose jar this is (the same pills, and the same saved choice, as the full card)
+    const picked = this._activePersonFilter(ids)[0];
+    if (picked) return picked;
     const me = this._myUserId();
     if (this._kidSel && ids.includes(this._kidSel) && this._kidSelBy === me) return this._kidSel;
     // whoever is signed in (or logged in with their PIN) sees their own jar first
@@ -3834,6 +4184,7 @@ class FamilyHubRewardsCard extends HTMLElement {
     let action;
     if (running) action = `<span class="kid-get is-running">&#9201; <span data-timer-uid="${myTimer.uid}">${this._formatTimerRemaining(this._timerRemainingSeconds(myTimer))}</span></span>`;
     else if (left) action = `<span class="kid-need">${this._esc(this._t("rewards.kid.n_more", "%n% more ⭐", { n: String(left) }))}<span class="kid-bar"><i style="width:${cost ? Math.min(100, Math.round((bal / cost) * 100)) : 0}%"></i></span></span>`;
+    else if (this._kidConfirm === item.id && this._kidCanSave(item)) action = `<span class="kid-two"><button class="kid-get is-sure" data-id="${item.id}" data-uid="${this._escAttr(uid)}" data-go="1">${this._esc(this._t("rewards.kid.use_now", "Use now"))}</button><button class="kid-get is-save" data-id="${item.id}" data-uid="${this._escAttr(uid)}" data-go="save">&#128230; ${this._esc(this._t("rewards.kid.save_it", "Save it"))}</button></span>`;
     else if (this._kidConfirm === item.id) action = `<button class="kid-get is-sure" data-id="${item.id}" data-uid="${this._escAttr(uid)}" data-go="1">${this._esc(this._t("rewards.kid.sure", "Yes, get it!"))}</button>`;
     else action = `<button class="kid-get" data-id="${item.id}" data-uid="${this._escAttr(uid)}"${blocked ? " disabled" : ""}>${this._esc(this._t("rewards.kid.get_it", "Get it!"))}</button>`;
     return `
@@ -3842,8 +4193,36 @@ class FamilyHubRewardsCard extends HTMLElement {
         <span class="kid-pic" style="background:color-mix(in srgb, ${item.color || color} 22%, #fff)">${item.icon ? this._esc(item.icon) : "&#127873;"}</span>
         <b>${this._esc(item.title)}</b>
         <span class="kid-cost">&#11088; ${cost}${timerMinutes ? ` <small>&#9201; ${this._esc(this._formatTimerLength(timerMinutes))}</small>` : ""}</span>
+        ${this._kidSavedHtml(item, uid)}
         ${action}
       </div>`;
+  }
+  // 2026.11.2.11: the person's Goals (from the Goals card) in the kid view, when the household shows goals on this card
+  _kidGoalsHtml(uid, color) {
+    const goals = (this._goals || []).filter((g) => g.assigned_to === uid && g.status !== GOAL_STATUS_ARCHIVED);
+    if (!goals.length) return "";
+    const rank = (g) => (g.status === GOAL_STATUS_OPEN ? 0 : g.status === GOAL_STATUS_PENDING_VERIFICATION ? 1 : 2);
+    const rows = goals.slice().sort((a, b) => rank(a) - rank(b) || String(a.created_at).localeCompare(String(b.created_at))).map((g) => {
+      const target = Math.max(1, Number(g.target_count) || 1);
+      const current = Math.min(target, Number(g.current_count) || 0);
+      const label = g.status === GOAL_STATUS_APPROVED ? this._t("chores.kid_goal_done", "You did it!")
+        : g.status === GOAL_STATUS_PENDING_VERIFICATION ? this._t("chores.kid_goal_waiting", "Waiting for a grown-up")
+        : target > 1 ? this._t("chores.kid_n_of_m", "%n% of %m% done", { n: String(current), m: String(target) })
+        : this._t("chores.kid_goal_not_yet", "Not done yet");
+      let act = "";
+      if (g.status === GOAL_STATUS_OPEN && this._canLogGoalProgress(g)) {
+        act = `<button type="button" class="goal-log-btn kid-task-btn" data-id="${this._escAttr(g.id)}">${this._esc(target > 1 ? this._t("chores.kid_goal_plus_one", "+1") : this._t("chores.kid_goal_did_it", "I did it!"))}</button>`;
+      } else if (g.status === GOAL_STATUS_PENDING_VERIFICATION) {
+        act = this._canVerify()
+          ? `<button type="button" class="goal-approve-btn kid-task-btn" data-id="${this._escAttr(g.id)}">&#10003;</button><button type="button" class="goal-reject-btn kid-task-btn ghost" data-id="${this._escAttr(g.id)}">&#8617;</button>`
+          : `<span class="kid-task-wait">&#9203;</span>`;
+      } else if (g.status === GOAL_STATUS_APPROVED) {
+        act = `<span class="kid-task-yay">&#127881;</span>`;
+      }
+      const pct = Math.round((current / target) * 100);
+      return `<div class="kid-task status-${g.status}"><span class="kid-task-ico">&#127942;</span><span class="kid-task-txt"><b>${this._esc(g.title)}</b><span>${this._esc(label)}</span>${target > 1 ? `<span class="kid-bar"><i style="width:${pct}%;background:${color}"></i></span>` : ""}</span><span class="kid-task-act">${act}</span></div>`;
+    }).join("");
+    return `<div class="kid-tasks"><h3>&#127942; ${this._esc(this._t("chores.kid_goals", "Goals"))}</h3>${rows}</div>`;
   }
   _kidViewHtml() {
     const kids = this._kidPeople();
@@ -3855,7 +4234,7 @@ class FamilyHubRewardsCard extends HTMLElement {
     const uid = this._kidSelected(kids);
     const color = this._userColor(uid);
     const bal = Number(this._balances[uid]) || 0;
-    const items = (this._catalog || []).slice().sort((a, b) => (Number(a.cost_stars) || 0) - (Number(b.cost_stars) || 0));
+    const items = (this._catalog || []).filter((it) => this._rewardFor(it, uid)).sort((a, b) => (Number(a.cost_stars) || 0) - (Number(b.cost_stars) || 0));
     const pinned = this._kidGoalId(uid);
     const goal = items.find((it) => it.id === pinned) || items.find((it) => (Number(it.cost_stars) || 0) > bal) || null;
     let goalHtml = "";
@@ -3885,20 +4264,17 @@ class FamilyHubRewardsCard extends HTMLElement {
         const it = this._catalog.find((c) => c.id === r.item_id);
         return `<span class="kid-trophy">${it && it.icon ? this._esc(it.icon) : "&#127873;"} ${this._esc(r.title)} <span>&middot; ${this._esc(this._kidWhen(r.redeemed_at))}</span></span>`;
       }).join("")}</div>` : "";
-    const switcher = kids.length > 1
-      ? `<div class="kid-switch">${kids.map((k) => `<button class="kid-pick${k.id === uid ? " on" : ""}" data-uid="${this._escAttr(k.id)}" style="--kid-c:${this._userColor(k.id)}">${this._kidAvatarHtml(k.id, "kid-pick-av")}<span>${this._esc(k.name)}</span><span class="kid-pick-bal">&#11088; ${Number(this._balances[k.id]) || 0}</span></button>`).join("")}</div>`
-      : "";
     const shop = items.length
       ? `<div class="kid-shop">${items.map((it) => this._kidShopTileHtml(it, uid, bal, pinned, color)).join("")}</div>`
       : `<div class="empty">${this._t("rewards.empty.no_catalog", "No rewards in the catalog yet.")}</div>`;
     return `
-      ${switcher}
       <div class="kid-body" style="--kid-c:${color}">
         <div class="kid-jar">
           ${this._kidAvatarHtml(uid, "kid-big")}
           <div class="kid-nm">${this._esc(this._userName(uid))}</div>
           <div class="kid-count">&#11088; ${bal}<small>${this._esc(this._t("rewards.kid.to_spend", "stars to spend"))}</small></div>
           ${goalHtml}
+          ${this._goalsInRewardsEnabled() ? this._kidGoalsHtml(uid, color) : ""}
           ${waitHtml}
         </div>
         <div class="kid-right">
@@ -3908,7 +4284,43 @@ class FamilyHubRewardsCard extends HTMLElement {
         </div>
       </div>`;
   }
-  async _kidGet(itemId, uid) {
+  // an everyday reward without a timer can be kept for later (2026.11.2)
+  _kidCanSave(item) {
+    return (!item.redeem_mode || item.redeem_mode === "instant") && !(Number(item.timer_minutes) > 0);
+  }
+  // how many they saved of an everyday reward (or banked of a "Stacks up" one), with Use one
+  _kidSavedHtml(item, uid) {
+    const n = Number((this._banks[uid] || {})[item.id]) || 0;
+    if (!(n > 0)) return "";
+    const label = item.redeem_mode === "banked"
+      ? this._t("rewards.catalog.banked_amount", "Banked: %amount% %unit%", { amount: n, unit: this._esc(item.stack_unit_label || "") })
+      : `&#128230; ${this._t("rewards.catalog.saved_count", "%n% saved", { n })}`;
+    return `<span class="kid-saved">${label}</span><button class="kid-use" data-id="${item.id}" data-uid="${this._escAttr(uid)}">${this._esc(this._t("rewards.kid.use_one", "Use one"))}</button>`;
+  }
+  async _kidUse(itemId, uid) {
+    const item = this._catalog.find((it) => it.id === itemId);
+    if (!item) return;
+    const me = this._myUserId();
+    if (uid !== me && !this._hasPermission("can_override_rewards")) {
+      this._kidToast(this._t("rewards.kid.login_first", "Log in as %name% with your PIN to get this.", { name: this._userName(uid) }));
+      if (this._kioskLoginUsers && this._kioskLoginUsers.length) this._openKioskLoginModal();
+      return;
+    }
+    const have = Number((this._banks[uid] || {})[itemId]) || 0;
+    const amount = item.redeem_mode === "banked" ? Math.min(Number(item.stack_unit_amount) || 1, have) : 1;
+    try {
+      const msg = { type: "family_hub/rewards/use_bank", item_id: itemId, amount };
+      if (uid !== me) msg.user_id = uid;
+      await this._hass.connection.sendMessagePromise(this._kioskMsg(msg));
+      this._kidToast(item.requires_fulfillment
+        ? this._t("rewards.kid.asked", "🎉 Got it! A grown-up will help with %title%.", { title: item.title })
+        : this._t("rewards.kid.enjoy", "🎉 Enjoy %title%!", { title: item.title }));
+    } catch (e) {
+      this._kidToast((e && e.message) || "");
+    }
+    await this._fetchRewardsState();
+  }
+  async _kidGet(itemId, uid, save) {
     this._kidConfirm = null;
     const item = this._catalog.find((it) => it.id === itemId);
     if (!item) return;
@@ -3927,8 +4339,11 @@ class FamilyHubRewardsCard extends HTMLElement {
     try {
       const msg = { type: "family_hub/rewards/redeem", item_id: itemId };
       if (uid !== me) msg.user_id = uid;
+      if (save) msg.save = true;
       await this._hass.connection.sendMessagePromise(this._kioskMsg(msg));
-      this._kidToast(item.requires_fulfillment
+      this._kidToast(save
+        ? this._t("rewards.kid.saved", "📦 Saved! Use it whenever you like.")
+        : item.requires_fulfillment
         ? this._t("rewards.kid.asked", "🎉 Got it! A grown-up will help with %title%.", { title: item.title })
         : this._t("rewards.kid.enjoy", "🎉 Enjoy %title%!", { title: item.title }));
     } catch (e) {
@@ -3937,22 +4352,20 @@ class FamilyHubRewardsCard extends HTMLElement {
     await this._fetchRewardsState();
   }
   _onKidClick(e) {
-    const pick = e.target.closest(".kid-pick");
-    if (pick) {
-      this._kidSel = pick.dataset.uid;
-      this._kidSelBy = this._myUserId();
-      this._kidConfirm = null;
-      this._render();
-      return true;
-    }
     const heart = e.target.closest(".kid-heart");
     if (heart) {
       this._kidSetGoal(heart.dataset.uid, heart.dataset.id);
       return true;
     }
+    const use = e.target.closest(".kid-use");
+    if (use && use.dataset.id) {
+      this._kidUse(use.dataset.id, use.dataset.uid);
+      return true;
+    }
     const get = e.target.closest(".kid-get");
     if (get && !get.disabled && get.dataset.id) {
       if (get.dataset.go === "1") this._kidGet(get.dataset.id, get.dataset.uid);
+      else if (get.dataset.go === "save") this._kidGet(get.dataset.id, get.dataset.uid, true);
       else {
         // two taps, so a bump doesn't spend the stars: the first turns the button into "Yes, get it!" for a few seconds
         this._kidConfirm = get.dataset.id;
@@ -3962,22 +4375,30 @@ class FamilyHubRewardsCard extends HTMLElement {
       }
       return true;
     }
+    // a goal's buttons are handled like on the normal view
+    if (e.target.closest(".goal-log-btn, .goal-approve-btn, .goal-reject-btn, .goal-complete-btn")) return false;
     return !!e.target.closest(".kid-view");
   }
   _renderKidChrome(kidOn) {
     const root = this._root;
-    const btn = root.querySelector(".kid-mode-btn");
-    if (btn) {
-      btn.hidden = !(this._config && this._config.kid_view);
-      btn.innerHTML = kidOn ? `&#128274; ${this._esc(this._t("rewards.kid.grownups", "Grown-ups"))}` : `&#129490; ${this._esc(this._t("rewards.kid.kid_view", "Kid view"))}`;
-      btn.title = kidOn ? this._t("rewards.kid.grownups_title", "Show the full Rewards card (goes back to the kid view after 10 minutes)") : this._t("rewards.kid.kid_view_title", "Back to the kid view");
-    }
     root.querySelector("ha-card").classList.toggle("kid-mode", kidOn);
     const view = root.querySelector(".kid-view");
     if (!kidOn) {
       if (view) view.innerHTML = "";
       return;
     }
+    // the same header buttons, for the same people, as the full card
+    root.querySelector(".manage-btn").hidden = !this._isAdmin();
+    root.querySelector(".manage-btn").textContent = this._t("rewards.header.manage_catalog_btn", "Manage catalog");
+    root.querySelector(".manage-stars-btn").hidden = !this._hasPermission("can_override_rewards");
+    const kids = this._kidPeople();
+    this._renderPersonPills(kids.map((u) => ({ id: u.id, name: u.name, color: this._userColor(u.id), count: `\u2B50${this._balances[u.id] || 0}` })));
+    const picked = this._kidSelected(kids);
+    root.querySelectorAll(".person-pill").forEach((b) => {
+      const on = b.dataset.personId === picked;
+      b.classList.toggle("active-filter", on);
+      b.classList.toggle("dimmed", !on);
+    });
     root.querySelector(".title").innerHTML = `&#127942; ${this._esc(this._config.title && this._config.title !== "Rewards" ? this._config.title : this._t("rewards.kid.title", "Rewards"))}`;
     view.innerHTML = this._kidViewHtml();
   }
@@ -4011,8 +4432,9 @@ class FamilyHubRewardsCard extends HTMLElement {
       ? `<div class="empty just-me-empty">${this._esc(this._t("rewards.empty.just_me", "This card shows whoever is signed in. Sign in (or log in with your PIN) as someone in the household to see your stars."))}</div>`
       : `<div class="empty">${this._t("rewards.empty.no_members", "No one's been added to Family Hub yet - add people under Settings on the calendar dashboard.")}</div>`;
 
-    this._root.querySelector(".catalog").innerHTML = this._catalog.length
-      ? this._catalog.map((it) => this._catalogItemHtml(it)).join("")
+    const shownCatalog = this._catalog.filter((it) => this._rewardFor(it, this._myUserId()) || this._isAdmin() || this._hasPermission("can_override_rewards") || this._canAddRewardsDirectly());
+    this._root.querySelector(".catalog").innerHTML = shownCatalog.length
+      ? shownCatalog.map((it) => this._catalogItemHtml(it)).join("")
       : `<div class="empty">${this._t("rewards.empty.no_catalog", "No rewards in the catalog yet.")}</div>`;
 
     // an embedded Goals section, only ever shown when the household's own goalsShowInRewards Settings toggle is on
@@ -4051,18 +4473,10 @@ class FamilyHubRewardsCard extends HTMLElement {
   _css() {
     return `
       /* 2026.11.1 kid-friendly view (kid_view) */
-      .kid-mode-btn { border: 1px solid var(--fc-border); border-radius: 999px; padding: 6px 14px; font: inherit; font-size: 13px; font-weight: 700; background: var(--fc-card); color: var(--fc-text); cursor: pointer; }
-      .kid-mode-btn[hidden] { display: none !important; }
       .kid-view { display: none; }
       ha-card.kid-mode .kid-view { display: flex; flex-direction: column; gap: 14px; flex: 1; min-height: 0; overflow-y: auto; }
-      ha-card.kid-mode > :not(.header):not(.kid-view) { display: none !important; }
-      ha-card.kid-mode .manage-btn, ha-card.kid-mode .manage-stars-btn { display: none !important; }
+      ha-card.kid-mode > :not(.header):not(.kid-view):not(.person-pills) { display: none !important; }
       ha-card.kid-mode .title { font-size: 24px; }
-      .kid-switch { display: flex; flex-wrap: wrap; gap: 8px; }
-      .kid-pick { display: flex; align-items: center; gap: 8px; border: 3px solid transparent; border-radius: 999px; padding: 4px 14px 4px 4px; background: var(--fc-card); color: var(--fc-text); font: inherit; font-size: 16px; font-weight: 800; cursor: pointer; }
-      .kid-pick.on { border-color: var(--kid-c); background: color-mix(in srgb, var(--kid-c) 25%, var(--fc-card)); }
-      .kid-pick-bal { font-weight: 700; color: var(--fc-text-secondary); }
-      .kid-pick-av { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 800; background-size: cover; background-position: center; }
       .has-pic { color: transparent !important; }
       .kid-body { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
       .kid-jar { flex: 0 1 300px; min-width: 240px; border-radius: 24px; padding: 18px 16px; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center;
@@ -4071,6 +4485,23 @@ class FamilyHubRewardsCard extends HTMLElement {
       .kid-nm { font-size: 26px; font-weight: 800; }
       .kid-count { font-size: 44px; font-weight: 800; line-height: 1; }
       .kid-count small { display: block; font-size: 14px; font-weight: 700; color: var(--fc-text-secondary); margin-top: 4px; }
+      /* 2026.11.2.11: Goals in the kid view */
+      .kid-tasks { width: 100%; box-sizing: border-box; background: var(--fc-card); border-radius: 18px; padding: 10px 14px; text-align: left; display: flex; flex-direction: column; gap: 8px; }
+      .kid-tasks h3 { margin: 0; font-size: 15px; font-weight: 800; }
+      .kid-task { display: flex; align-items: center; gap: 10px; }
+      .kid-task-ico { font-size: 26px; line-height: 1; flex: 0 0 auto; }
+      .kid-task-txt { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+      .kid-task-txt b { font-size: 16px; overflow-wrap: anywhere; }
+      .kid-task-txt > span { font-size: 13px; color: var(--fc-text-secondary); }
+      .kid-task.status-approved .kid-task-txt b { text-decoration: line-through; opacity: 0.7; }
+      .kid-task-act { flex: 0 0 auto; display: flex; gap: 6px; align-items: center; }
+      .kid-task-btn { border: none; border-radius: 999px; padding: 10px 16px; min-height: 44px; font-size: 16px; font-weight: 800; cursor: pointer; background: var(--kid-c, var(--fc-accent)); color: #fff; font-family: inherit; }
+      .kid-task-btn.ghost { background: var(--fc-surface-alt); color: var(--fc-text); }
+      .kid-task-yay, .kid-task-wait { font-size: 24px; }
+      .kid-task-txt .kid-bar { flex: none; display: block; height: 8px; border-radius: 999px; background: var(--fc-surface-alt, rgba(0,0,0,0.08)); overflow: hidden; }
+      .kid-task-txt .kid-bar i { display: block; height: 100%; border-radius: 999px; }
+      :host([eink]) .kid-tasks { background: #fff !important; border: 3px solid #000; }
+      :host([eink]) .kid-task-btn { background: #000 !important; color: #fff !important; }
       .kid-goalbox, .kid-wait { width: 100%; box-sizing: border-box; background: var(--fc-card); border-radius: 18px; padding: 12px 14px; text-align: left; }
       .kid-goalbox h3, .kid-wait h3, .kid-shelf h3 { margin: 0 0 8px; font-size: 15px; font-weight: 800; }
       .kid-goalrow { display: flex; align-items: center; gap: 12px; }
@@ -4094,7 +4525,17 @@ class FamilyHubRewardsCard extends HTMLElement {
       .kid-cost { font-size: 14px; font-weight: 800; color: #8a6100; }
       .kid-cost small { font-weight: 700; color: var(--fc-text-secondary); }
       .kid-heart { position: absolute; top: 6px; right: 6px; border: none; background: none; font-size: 20px; line-height: 1; cursor: pointer; padding: 4px; }
+      .catalog-for-badge { font-size: 11px; font-weight: 700; color: var(--fc-text-secondary); margin-top: 2px; }
+      .m-for-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+      .m-for-pill { border: 1.5px solid var(--fc-border); border-radius: 999px; padding: 5px 12px; background: var(--fc-card); color: var(--fc-text); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
+      .m-for-pill.on { background: var(--pill-c, var(--fc-accent)); border-color: var(--pill-c, var(--fc-accent)); color: #fff; }
+      .m-for-everyone.on { background: var(--fc-accent); border-color: var(--fc-accent); color: var(--fc-accent-text); }
       .kid-get { margin-top: auto; border: none; border-radius: 999px; padding: 9px 18px; background: #4caf50; color: #fff; font: inherit; font-size: 15px; font-weight: 800; cursor: pointer; }
+      .kid-two { margin-top: auto; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+      .kid-two .kid-get { margin-top: 0; padding: 8px 12px; font-size: 14px; }
+      .kid-get.is-save { background: #7b61c9; }
+      .kid-saved { font-size: 13px; font-weight: 700; margin-top: 2px; }
+      .kid-use { margin-top: 4px; border: none; border-radius: 999px; padding: 6px 14px; background: #3b82c4; color: #fff; font: inherit; font-size: 13px; font-weight: 800; cursor: pointer; }
       .kid-get.is-sure { background: #f0a030; }
       .kid-get.is-running { background: var(--fc-surface-alt); color: var(--fc-text); }
       .kid-get[disabled] { opacity: 0.45; cursor: default; }
@@ -4497,7 +4938,7 @@ class FamilyHubRewardsCardEditor extends HTMLElement {
       s.name === "people"
         ? "Only these people get a spot (and a name pill) on this card. \"Just me\" means whoever is signed in (on a kiosk, whoever logged in with their PIN). Leave everything unchecked to show everyone."
         : s.name === "kid_view"
-        ? "A star jar and a picture shop for one child at a time, with a heart to pick what they're saving for. People marked as a Child account are listed (everyone, if nobody is). Tap Grown-ups on the card for the full view."
+        ? "A star jar and a picture shop for one child at a time, with a heart to pick what they're saving for. People marked as a Child account are listed (everyone, if nobody is). Turn this off for the full view."
         : s.name === "theme_override"
         ? "Pin this one card to a specific theme, or leave on \"Use device settings\" to follow whatever this device/household normally shows."
         : undefined

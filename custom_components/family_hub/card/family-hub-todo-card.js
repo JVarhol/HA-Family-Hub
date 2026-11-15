@@ -111,6 +111,46 @@ localStorage.setItem("familyHubA11yHouseholdLocal", next);
 }
 refreshAll();
 }
+// 2026.11.2.11: "Card background: See-through" (household settings.seeThroughBackground): the cards leave their own
+// background empty so the dashboard's (an animated background, a wallpaper) shows through; never in e-ink/high contrast,
+// nor while a card shows a photo of its own (the calendar's full-screen holiday photo sets fh-own-bg)
+function seeThrough() {
+try {
+return localStorage.getItem("familyHubSeeThroughLocal") === "1";
+} catch (e) {
+return false;
+}
+}
+function setSeeThrough(on) {
+const next = on ? "1" : "";
+let before = "";
+try {
+before = localStorage.getItem("familyHubSeeThroughLocal") || "";
+} catch (e) {
+}
+if (before === next) return;
+try {
+localStorage.setItem("familyHubSeeThroughLocal", next);
+} catch (e) {
+}
+refreshAll();
+}
+const SEE_THROUGH_CSS = `
+:host([fh-see-through]:not([fh-own-bg])) ha-card { background-color: transparent !important; background-image: none !important; box-shadow: none !important; }
+:host([fh-see-through]:not([fh-own-bg])) ha-card::before { display: none !important; }
+`;
+function applySeeThrough(host) {
+const on = seeThrough() && mode() === "off";
+if (on) host.setAttribute("fh-see-through", "");
+else host.removeAttribute("fh-see-through");
+const root = host.shadowRoot;
+if (on && root && !root.querySelector("style[data-fh-see-through]")) {
+const s = document.createElement("style");
+s.setAttribute("data-fh-see-through", "");
+s.textContent = SEE_THROUGH_CSS;
+root.appendChild(s);
+}
+}
 // every card loads the household settings itself; this reads the Accessibility part of them, at most every 5 minutes
 let householdFetch = null, householdAt = 0;
 function loadHousehold(hass) {
@@ -118,7 +158,10 @@ if (!hass || !hass.connection || householdFetch || Date.now() - householdAt < 5 
 householdFetch = hass.connection.sendMessagePromise({ type: "family_hub/get_settings" })
 .then((r) => {
 const s = r && r.settings;
-if (s && typeof s === "object") setHousehold(s.accessibility || {});
+if (s && typeof s === "object") {
+setHousehold(s.accessibility || {});
+setSeeThrough(s.seeThroughBackground === true);
+}
 })
 .catch(() => {})
 .then(() => {
@@ -409,6 +452,7 @@ if (!st) return;
 // the calendar loads the household settings itself (and hands the Accessibility part over with setHousehold)
 if (!st.opts.a11yOnly) loadHousehold(host._hass || host.hass);
 const v = applyA11y(host);
+applySeeThrough(host);
 const root = host.shadowRoot;
 if (st.opts.a11yOnly) {
 // the calendar draws its own e-ink and colour vision; this just gives it the shared accessibility attributes
@@ -471,7 +515,7 @@ attached.delete(host);
 }
 const refreshAll = () => attached.forEach((st, host) => apply(host));
 window.addEventListener("family-hub-eink-changed", refreshAll);
-window.addEventListener("storage", (e) => { if (!e.key || /^familyHub(Eink|A11y)/.test(e.key)) refreshAll(); });
+window.addEventListener("storage", (e) => { if (!e.key || /^familyHub(Eink|A11y|SeeThrough)/.test(e.key)) refreshAll(); });
 try {
 if (window.matchMedia) {
 const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -480,9 +524,271 @@ if (mq && mq.addEventListener) mq.addEventListener("change", refreshAll);
 } catch (e) {
 }
 window.__familyHubEink = {
-mode, deviceMode, tappable, background, cvFor, a11y, a11yClean, setHousehold, ensureFonts, A11Y_KEYS: A11Y, SHAPES, SHAPE_NAMES,
-attach: (host, opts) => attach(host, opts, 0), detach, refreshAll, BASE_CSS, A11Y_CSS,
+mode, deviceMode, tappable, background, cvFor, a11y, a11yClean, setHousehold, seeThrough, setSeeThrough, ensureFonts, A11Y_KEYS: A11Y, SHAPES, SHAPE_NAMES,
+attach: (host, opts) => {
+if (window.__familyHubKeepAlive) window.__familyHubKeepAlive.connected(host);
+attach(host, opts, 0);
+},
+detach: (host) => {
+detach(host);
+if (window.__familyHubKeepAlive) window.__familyHubKeepAlive.disconnected(host);
+},
+refreshAll, BASE_CSS, A11Y_CSS,
 };
+})();
+// 2026.11.2: keep an open pop-up open when you switch away from Home Assistant and come back. When the app comes back
+// and reconnects, Home Assistant reloads the dashboard and builds every card again, so a card that had a pop-up open
+// lost it. Now: when the page is hidden, each card notes whether it has a pop-up open; if Home Assistant then replaces
+// that card (within a minute of coming back), the new copy steps aside for the old one, pop-up and all, and passes
+// Home Assistant's updates on to it.
+(function () {
+if (window.__familyHubKeepAlive) return;
+const live = new Set();
+const parked = [];
+let visibleAt = 0;
+const WINDOW_MS = 60000;
+const ADOPT_MS = 20000;
+const keyOf = (host) => {
+if (host.__fhKeepKey === undefined) {
+let cfg = "";
+try { cfg = JSON.stringify(host._config || null); } catch (e) { cfg = ""; }
+host.__fhKeepKey = host.tagName + "|" + cfg;
+}
+return host.__fhKeepKey;
+};
+// a pop-up: something fixed on screen, showing, and covering a good part of it
+function modalOpen(host) {
+const root = host.shadowRoot;
+if (!root) return false;
+const min = (window.innerWidth || 0) * (window.innerHeight || 0) * 0.2;
+const els = root.querySelectorAll('[class*="modal"],[class*="overlay"],[class*="dialog"],[class*="sheet"],[class*="popup"],[class*="picker"],[class*="viewer"]');
+for (let i = 0; i < els.length; i++) {
+const cs = getComputedStyle(els[i]);
+if (cs.position !== "fixed" || cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) < 0.05) continue;
+const r = els[i].getBoundingClientRect();
+if (r.width * r.height >= min && min > 0) return true;
+}
+return false;
+}
+document.addEventListener("visibilitychange", () => {
+if (document.visibilityState === "hidden") {
+live.forEach((host) => {
+try { host.__fhKeepModal = modalOpen(host); } catch (e) { host.__fhKeepModal = false; }
+});
+} else {
+visibleAt = Date.now();
+}
+});
+const recent = () => document.visibilityState === "hidden" || Date.now() - visibleAt < WINDOW_MS;
+function disconnected(host) {
+live.delete(host);
+if (host.__fhKeepModal && recent()) parked.push({ host, key: keyOf(host), at: Date.now() });
+}
+let connected = function (host) {
+live.add(host);
+keyOf(host);
+// after this card's own connectedCallback has run
+setTimeout(() => {
+const now = Date.now();
+for (let i = parked.length - 1; i >= 0; i--) {
+if (now - parked[i].at > ADOPT_MS || parked[i].host.isConnected) parked.splice(i, 1);
+}
+if (!host.isConnected || host.__fhAdopted) return;
+const idx = parked.findIndex((p) => p.key === keyOf(host) && p.host !== host);
+if (idx < 0) return;
+const old = parked.splice(idx, 1)[0].host;
+old.__fhKeepModal = false;
+const latest = host._hass || host.hass;
+try { host.replaceWith(old); } catch (e) { return; }
+host.__fhAdopted = old;
+// the card is back as it was, so nothing needs putting back from what was saved
+try { localStorage.removeItem("familyHubResume:" + keyOf(old)); } catch (e) {}
+// Home Assistant keeps talking to the card it made; pass it all on
+Object.defineProperty(host, "hass", { configurable: true, get() { return old.hass; }, set(v) { old.hass = v; } });
+host.setConfig = (c) => old.setConfig(c);
+if (latest) old.hass = latest;
+}, 0);
+}
+// --- after a full page reload (the iPhone app reloads the whole page after a while away) -------------------------
+// Each card's pop-up openers are watched: what was opened, with what. When the page is hidden with a pop-up open, that
+// list and what's typed in each open pop-up are saved on this device; when the same card loads again within 15
+// minutes, the pop-ups are opened again, in order, and the typing put back.
+const RESUME_MS = 15 * 60000;
+const ready = {
+calendar: (c) => !!c._settingsCache,
+users: (c) => Array.isArray(c._notifyProfileUsersCache),
+};
+// per card: the pop-up openers to watch, what each needs before it can open again, and how to save/find its argument
+const OPENERS = {
+"FAMILY-WEEK-CALENDAR-CARD": {
+__view: { ready: (c) => !!(c._settingsCache && c._viewMode) },
+_openSettings: { ready: ready.calendar },
+_setSettingsTab: { ready: ready.calendar, follows: true },
+_openNotifyProfileModal: { ready: ready.users },
+_openAddEvent: { ready: ready.calendar },
+_openQuickAdd: { ready: ready.calendar },
+_openEventInfo: {
+save: (c, id) => { const d = (c._eventDetails || {})[id]; return d ? { uid: d.uid || "", start: d.start ? new Date(d.start).getTime() : 0, cal: d.calendarEntity || "", title: d.summary || "" } : null; },
+find: (c, w) => {
+const all = c._eventDetails || {};
+return Object.keys(all).find((id) => { const d = all[id]; return d && (d.calendarEntity || "") === w.cal && (d.start ? new Date(d.start).getTime() : 0) === w.start && ((w.uid && d.uid === w.uid) || (!w.uid && d.summary === w.title)); });
+},
+},
+_openEventInfoForEdit: { alias: "_openEventInfo" },
+},
+"FAMILY-HUB-CHORES-CARD": { _openCreateModal: {}, _openEditModal: {}, _openChoreDetailModal: {}, _openRoutineManageModal: {} },
+"FAMILY-HUB-REWARDS-CARD": {
+_openCreateRewardModal: {
+save: (c, item) => (item && item.id ? { id: item.id } : null),
+find: (c, w) => (c._catalog || []).find((it) => it.id === w.id),
+optional: true,
+},
+_openGiftStarsModal: {}, _openManageStarsModal: {}, _openStarHistoryModal: {},
+},
+"FAMILY-HUB-TODO-CARD": { _openCreateModal: {}, _openItemDetailModal: {} },
+};
+const openOverlays = (host) => {
+const root = host.shadowRoot;
+if (!root) return [];
+const out = [];
+const min = (window.innerWidth || 0) * (window.innerHeight || 0) * 0.2;
+root.querySelectorAll('[class*="modal"],[class*="overlay"],[class*="dialog"],[class*="sheet"],[class*="popup"],[class*="picker"],[class*="viewer"]').forEach((el) => {
+const cs = getComputedStyle(el);
+if (cs.position !== "fixed" || cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) < 0.05) return;
+const r = el.getBoundingClientRect();
+if (min > 0 && r.width * r.height >= min) out.push(el);
+});
+return out;
+};
+const FIELD = "input:not([type=file]):not([type=password]):not([type=hidden]):not([type=button]):not([type=submit]),textarea,select";
+const sig = (el) => el.tagName + ":" + (el.type || "") + ":" + (el.className || "");
+const readFields = (ov) => Array.prototype.map.call(ov.querySelectorAll(FIELD), (el) => [sig(el), el.type === "checkbox" || el.type === "radio" ? !!el.checked : el.value]);
+function writeFields(ov, saved) {
+if (!ov || !Array.isArray(saved)) return;
+const els = ov.querySelectorAll(FIELD);
+const touched = [];
+saved.forEach((f, i) => {
+const el = els[i];
+if (!el || sig(el) !== f[0]) return;
+if (el.type === "checkbox" || el.type === "radio") { if (el.checked !== !!f[1]) { el.checked = !!f[1]; touched.push([el, "change"]); } }
+else if (el.value !== f[1]) { el.value = f[1]; touched.push([el, el.tagName === "SELECT" ? "change" : "input"]); }
+});
+touched.forEach((t) => { try { t[0].dispatchEvent(new Event(t[1], { bubbles: true })); } catch (e) {} });
+}
+const resumeKey = (host) => "familyHubResume:" + keyOf(host);
+function track(host) {
+const table = OPENERS[host.tagName];
+if (!table || host.__fhTracked) return;
+host.__fhTracked = true;
+host.__fhCalls = [];
+Object.keys(table).forEach((name) => {
+if (name === "__view") return;
+const orig = host[name];
+if (typeof orig !== "function") return;
+const spec = table[name];
+const fn = spec.alias || name;
+const fspec = table[fn] || spec;
+host[name] = function () {
+const args = Array.prototype.slice.call(arguments);
+const outer = !host.__fhInOpener;
+// (pop-ups opened again after a reload are watched too, so leaving again keeps them)
+if (outer) {
+const before = openOverlays(host);
+if (!before.length && !fspec.follows) host.__fhCalls = [];
+let saved = args;
+if (fspec.save) { const w = fspec.save(host, args[0]); saved = w ? [{ __w: w }].concat(args.slice(1)) : (fspec.optional ? [] : null); }
+if (saved) {
+const call = { fn, args: saved, ov: null, edit: name === "_openEventInfoForEdit" };
+host.__fhCalls.push(call);
+// some open after loading something, so look a few times
+[0, 300, 1200].forEach((ms) => setTimeout(() => { if (!call.ov) call.ov = openOverlays(host).find((o) => before.indexOf(o) < 0) || null; }, ms));
+}
+}
+host.__fhInOpener = true;
+try { return orig.apply(this, arguments); } finally { if (outer) host.__fhInOpener = false; }
+};
+});
+}
+function snapshot(host) {
+const calls = host.__fhCalls || [];
+const open = openOverlays(host);
+// where the card was (the calendar's week, say), pop-up or not
+let view = null;
+try { view = typeof host._fhViewState === "function" ? host._fhViewState() : null; } catch (e) { view = null; }
+if ((!open.length || !calls.length) && !view) { try { localStorage.removeItem(resumeKey(host)); } catch (e) {} return; }
+let parentOpen = false;
+const keep = [];
+(open.length ? calls : []).forEach((c) => {
+const isOpen = c.ov ? open.indexOf(c.ov) >= 0 : parentOpen;
+if (c.ov) parentOpen = isOpen;
+if (isOpen) keep.push({ fn: c.fn, args: c.args, edit: c.edit, fields: c.ov ? readFields(c.ov) : null });
+});
+try {
+if (keep.length || view) localStorage.setItem(resumeKey(host), JSON.stringify({ at: Date.now(), calls: keep, view }));
+else localStorage.removeItem(resumeKey(host));
+} catch (e) {}
+}
+const waitFor = (test, ms) => new Promise((resolve) => {
+const end = Date.now() + ms;
+const tick = () => { let v = null; try { v = test(); } catch (e) { v = null; } if (v) resolve(v); else if (Date.now() > end) resolve(null); else setTimeout(tick, 200); };
+tick();
+});
+async function resume(host) {
+let saved = null;
+try { saved = JSON.parse(localStorage.getItem(resumeKey(host)) || "null"); localStorage.removeItem(resumeKey(host)); } catch (e) { saved = null; }
+if (!saved || !Array.isArray(saved.calls) || Date.now() - (saved.at || 0) > RESUME_MS) return;
+const table = OPENERS[host.tagName] || {};
+host.__fhReplaying = true;
+try {
+if (saved.view && typeof host._fhRestoreViewState === "function") {
+const vready = (table.__view || {}).ready;
+if (await waitFor(() => host._hass && (!vready || vready(host)), 10000)) {
+try { host._fhRestoreViewState(saved.view); } catch (e) {}
+}
+}
+for (const c of saved.calls) {
+const spec = table[c.fn] || {};
+if (!host.isConnected) return;
+if (!(await waitFor(() => host._hass && (!spec.ready || spec.ready(host)), 10000))) return;
+let args = c.args || [];
+if (args[0] && args[0].__w && spec.find) {
+const found = await waitFor(() => spec.find(host, args[0].__w), 10000);
+if (!found) return;
+args = [found].concat(args.slice(1));
+}
+const before = openOverlays(host);
+const name = c.edit && typeof host._openEventInfoForEdit === "function" ? "_openEventInfoForEdit" : c.fn;
+try { await host[name].apply(host, args); } catch (e) { return; }
+if (c.fields) {
+const ov = await waitFor(() => openOverlays(host).find((o) => before.indexOf(o) < 0), 3000);
+await new Promise((r) => setTimeout(r, 150));
+writeFields(ov, c.fields);
+}
+}
+} finally {
+host.__fhReplaying = false;
+}
+}
+const snapAll = () => live.forEach((host) => { try { snapshot(host); } catch (e) {} });
+document.addEventListener("visibilitychange", () => {
+if (document.visibilityState === "hidden") { snapAll(); return; }
+// back without a reload or a rebuild: what was saved isn't needed (a card loading later shouldn't jump back to it)
+setTimeout(() => {
+if (document.visibilityState !== "visible") return;
+live.forEach((host) => { try { localStorage.removeItem(resumeKey(host)); } catch (e) {} });
+}, WINDOW_MS);
+});
+window.addEventListener("pagehide", snapAll);
+const _connected = connected;
+connected = function (host) {
+_connected(host);
+track(host);
+if (!host.__fhResumeChecked) {
+host.__fhResumeChecked = true;
+setTimeout(() => { if (host.isConnected && !host.__fhAdopted) resume(host); }, 300);
+}
+};
+window.__familyHubKeepAlive = { connected: (h) => connected(h), disconnected, modalOpen, parked, snapshot, resume, track };
 })();
 // FH-EINK END
 // FH-MODAL-SCROLL START - source: tools/modal_scroll_guard.js, copied into each card by tools/sync_modal_scroll_guard.py
@@ -1158,6 +1464,7 @@ class FamilyHubTodoCard extends HTMLElement {
         { name: "entities", selector: { entity: { domain: "todo", multiple: true } } },
         { name: "include_grocy_shopping_lists", selector: { boolean: {} } },
         { name: "kid_view", selector: { boolean: {} } },
+        { name: "hide_prices", selector: { boolean: {} } },
         {
           name: "fab_position",
           selector: { select: { mode: "dropdown", options: [
@@ -1167,7 +1474,7 @@ class FamilyHubTodoCard extends HTMLElement {
         },
       ],
       computeLabel: (s) =>
-        s.name === "title" ? "Title" : s.name === "entities" ? "Lists to show" : s.name === "include_grocy_shopping_lists" ? "Also show Grocy shopping list(s)" : s.name === "fab_position" ? "+ button position" : s.name === "kid_view" ? "Kid-friendly wish lists" : undefined,
+        s.name === "title" ? "Title" : s.name === "entities" ? "Lists to show" : s.name === "include_grocy_shopping_lists" ? "Also show Grocy shopping list(s)" : s.name === "fab_position" ? "+ button position" : s.name === "kid_view" ? "Kid-friendly wish lists" : s.name === "hide_prices" ? "Hide prices on wish lists" : undefined,
     };
   }
   // A custom editor element rather than letting Home Assistant auto-build one straight from getConfigForm's own schema.
@@ -1221,8 +1528,10 @@ class FamilyHubTodoCard extends HTMLElement {
       // per-card Theme override - see family-hub-goals-card.js's
       // identical field/comment for the full precedence story.
       theme_override: (config && typeof config.theme_override === "string") ? config.theme_override : "",
-      // 2026.11.1: wish lists as big picture tiles with hearts, no prices or claims (Grown-ups switches back for a while)
+      // 2026.11.1: wish lists as big picture tiles with hearts, no prices or claims (the card setting decides; no switching on screen)
       kid_view: !!(config && config.kid_view),
+      // wish lists without prices (a linked GoWish / Amazon wish's price), on this card only
+      hide_prices: !!(config && config.hide_prices),
     };
     this._registerFabCoordinator();
     if (!(config && config.card_id === cardId)) {
@@ -1240,6 +1549,10 @@ class FamilyHubTodoCard extends HTMLElement {
     if (this._grocyConfigured === undefined) this._grocyConfigured = undefined;
     // { [listKey]: boolean } - per-column Completed-accordion open state, device-local UI state only
     if (this._completedOpen === undefined) this._completedOpen = {};
+    // { "<listKey>|<link>": true } - which linked GoWish / Amazon sections are open (device-local, like Completed)
+    if (this._linkedOpen === undefined) this._linkedOpen = {};
+    // the list shown full screen (double-tap its name), or null
+    if (this._fullKey === undefined) this._fullKey = null;
     // Grocy locations, cached once per card session for the Put Away modal's own location picker
     if (this._grocyLocationsCache === undefined) this._grocyLocationsCache = null;
     if (this._firstLoadPromise === undefined) this._firstLoadPromise = null;
@@ -2478,7 +2791,7 @@ class FamilyHubTodoCard extends HTMLElement {
     const extra = parsed.extra || {};
     const sourceName = /^gowish:/.test(String(extra.source || "")) ? "GoWish" : /^amazon:/.test(String(extra.source || "")) ? "Amazon" : "";
     let priceText = "";
-    if (Number.isFinite(extra.price) && extra.price > 0) {
+    if (Number.isFinite(extra.price) && extra.price > 0 && !this._config.hide_prices) {
       try {
         priceText = extra.currency
           ? new Intl.NumberFormat(this._hass && this._hass.locale && this._hass.locale.language || undefined, { style: "currency", currency: extra.currency }).format(extra.price)
@@ -2545,6 +2858,69 @@ class FamilyHubTodoCard extends HTMLElement {
       </div>
     `;
   }
+  // A linked GoWish / Amazon list can be 100+ items, so on a wish list each one is its own collapsible section (named in
+  // Settings > Users > their profile), under the wishes added here. Returns null for lists that aren't wish lists.
+  _linkedGroups(descriptor, items) {
+    if (descriptor.kind === "grocy" || !this._isWishlistList(descriptor.key)) return null;
+    const own = [];
+    const byLink = {};
+    items.forEach((it) => {
+      const link = String((_parseWishlistDescription(it.description || "").extra || {}).sourceList || "");
+      if (!link) own.push(it);
+      else (byLink[link] = byLink[link] || []).push(it);
+    });
+    const links = Object.keys(byLink);
+    if (!links.length) return null;
+    const ownerId = (this._wishlistConfig[descriptor.key] || {}).ownerUserId || "";
+    const order = ((((this._settingsCache && this._settingsCache.userProfiles) || {})[ownerId] || {}).wishlistLinks || []).map((u) => this._wishlistLinkKey(u));
+    links.sort((a, b) => (order.indexOf(a) < 0 ? 999 : order.indexOf(a)) - (order.indexOf(b) < 0 ? 999 : order.indexOf(b)));
+    this._ensureLinkStatus();
+    return { own, lists: links.map((link) => ({ link, name: this._linkedListName(link), items: byLink[link] })) };
+  }
+  _wishlistLinkKey(url) {
+    let u = String(url || "").trim();
+    if (u && !/^https?:\/\//i.test(u)) u = "https://" + u;
+    return u.slice(0, 500);
+  }
+  // the name given in Settings, else the list's own title on GoWish / Amazon, else "GoWish list" / "Amazon list"
+  _linkedListName(link) {
+    const profiles = (this._settingsCache && this._settingsCache.userProfiles) || {};
+    for (const uid of Object.keys(profiles)) {
+      const names = (profiles[uid] && profiles[uid].wishlistLinkNames) || {};
+      if (typeof names[link] === "string" && names[link].trim()) return names[link].trim();
+    }
+    const status = this._linkStatus || {};
+    for (const uid of Object.keys(status)) {
+      const st = (status[uid] || {})[link];
+      if (st && st.title) return st.title;
+    }
+    if (/gowish\./i.test(link)) return this._t("todo.linked.gowish", "GoWish list");
+    if (/amazon\.|\/\/a\.co\/|amzn\./i.test(link)) return this._t("todo.linked.amazon", "Amazon list");
+    return this._t("todo.linked.other", "Linked list");
+  }
+  _ensureLinkStatus() {
+    if (!this._hass || !this._hass.connection || this._linkStatusLoading || Date.now() - (this._linkStatusAt || 0) < 10 * 60000) return;
+    this._linkStatusLoading = true;
+    this._hass.connection.sendMessagePromise({ type: "family_hub/wishlist_links/status" })
+      .then((r) => { this._linkStatus = (r && r.status) || {}; this._linkStatusAt = Date.now(); this._render(); })
+      .catch(() => { this._linkStatusAt = Date.now(); })
+      .then(() => { this._linkStatusLoading = false; });
+  }
+  _linkedSectionHtml(key, group, bodyHtml) {
+    const open = !!this._linkedOpen[`${key}|${group.link}`];
+    return `
+      <div class="linked-list${open ? " open" : ""}">
+        <button type="button" class="linked-list-header" data-list-key="${this._escAttr(key)}" data-link="${this._escAttr(group.link)}" aria-expanded="${open ? "true" : "false"}">
+          <span class="completed-toggle-icon">${open ? "&#9662;" : "&#9656;"}</span>
+          <span class="linked-list-name">&#127873; ${this._esc(group.name)}</span>
+          <span class="completed-badge">${group.items.length}</span>
+        </button>
+        ${open ? bodyHtml : ""}
+      </div>`;
+  }
+  _fullScreenBtnHtml(key) {
+    return `<button type="button" class="list-full-btn" data-list-key="${this._escAttr(key)}" title="${this._escAttr(this._t("todo.column.full_screen", "Full screen (or double-tap the name)"))}">&#10530;</button>`;
+  }
   _completedAccordionHtml(key) {
     const completed = this._completedItems(key);
     if (!completed.length) return "";
@@ -2569,9 +2945,14 @@ class FamilyHubTodoCard extends HTMLElement {
     }
     const color = this._listColor(key);
     const active = this._activeItems(key);
-    const itemsHtml = active.length
-      ? active.map((it) => this._itemHtml(key, it)).join("")
-      : `<div class="empty-state">${this._t("todo.column.nothing_here", "Nothing here")}</div>`;
+    const groups = this._linkedGroups(descriptor, active);
+    const shown = groups ? groups.own : active;
+    const itemsHtml = shown.length
+      ? shown.map((it) => this._itemHtml(key, it)).join("")
+      : groups ? "" : `<div class="empty-state">${this._t("todo.column.nothing_here", "Nothing here")}</div>`;
+    const linkedHtml = groups
+      ? groups.lists.map((g) => this._linkedSectionHtml(key, g, `<div class="linked-list-body">${g.items.map((it) => this._itemHtml(key, it)).join("")}</div>`)).join("")
+      : "";
     // a small "Grocy" tag on Grocy-backed columns, so the board makes it obvious at a glance which lists are shared with Grocy's own separate
     const grocyTag = descriptor.kind === "grocy" ? `<span class="todo-column-source-tag">${this._t("todo.column.grocy_tag", "Grocy")}</span>` : "";
     // Wish Lists: same small tag treatment as the Grocy one above
@@ -2579,12 +2960,14 @@ class FamilyHubTodoCard extends HTMLElement {
     return `
       <div class="todo-column" data-list-key="${this._escAttr(key)}">
         <div class="todo-column-header" style="border-top-color:${color}">
-          <span class="todo-column-title">${this._esc(this._listName(descriptor))}</span>
+          <span class="todo-column-title" data-list-key="${this._escAttr(key)}">${this._esc(this._listName(descriptor))}</span>
           ${grocyTag}
           ${wishlistTag}
           <span class="todo-column-count">${active.length}</span>
+          ${this._fullScreenBtnHtml(key)}
         </div>
         <div class="todo-column-items" data-list-key="${this._escAttr(key)}">${itemsHtml}</div>
+        ${linkedHtml}
         ${this._completedAccordionHtml(key)}
       </div>
     `;
@@ -2616,24 +2999,10 @@ class FamilyHubTodoCard extends HTMLElement {
   }
   // -- Kid-friendly wish lists (2026.11.1) -------------------------------------
   // kid_view: true draws every wish-list column as big picture tiles with 1-3 hearts. Prices and claims are never shown
-  // there, so the surprise is safe on any screen; Grown-ups flips this device back to the normal lists for 10 minutes.
+  // there, so the surprise is safe on any screen; the setting alone decides.
   _kidViewActive() {
     if (!this._config || !this._config.kid_view) return false;
-    if (this._kidGrownupsUntil && Date.now() < this._kidGrownupsUntil) return false;
-    this._kidGrownupsUntil = 0;
     return true;
-  }
-  _setKidGrownups(on) {
-    clearTimeout(this._kidGrownupsTimer);
-    this._kidGrownupsUntil = on ? Date.now() + 10 * 60 * 1000 : 0;
-    if (on) this._kidGrownupsTimer = setTimeout(() => { this._kidGrownupsUntil = 0; this._render(); }, 10 * 60 * 1000);
-    this._render();
-  }
-  _kidTouch() {
-    if (!this._kidGrownupsUntil) return;
-    this._kidGrownupsUntil = Date.now() + 10 * 60 * 1000;
-    clearTimeout(this._kidGrownupsTimer);
-    this._kidGrownupsTimer = setTimeout(() => { this._kidGrownupsUntil = 0; this._render(); }, 10 * 60 * 1000);
   }
   _kidHearts(parsed) {
     const n = Number(parsed && parsed.extra && parsed.extra.hearts);
@@ -2706,10 +3075,15 @@ class FamilyHubTodoCard extends HTMLElement {
     const pic = this._kidOwnerPicture(ownerId);
     const initial = (String(name || "?").trim().charAt(0) || "?").toUpperCase();
     const active = this._activeItems(key);
-    const ordered = active
+    const byHearts = (list) => list
       .map((it, i) => ({ it, i, h: this._kidHearts(_parseWishlistDescription(it.description || "")) }))
       .sort((a, b) => b.h - a.h || a.i - b.i);
+    const groups = this._linkedGroups(descriptor, active);
+    const ordered = byHearts(groups ? groups.own : active);
     const topUid = ordered.length && ordered[0].h === 3 ? ordered[0].it.uid : null;
+    const linkedHtml = groups
+      ? groups.lists.map((g) => this._linkedSectionHtml(key, g, `<div class="kid-wish-grid">${byHearts(g.items).map((o) => this._kidWishTileHtml(key, o.it, false)).join("")}</div>`)).join("")
+      : "";
     const bday = this._kidBirthday(name);
     const bdayHtml = bday === null ? ""
       : `<span class="kid-bday">&#127874; ${this._esc(bday === 0 ? this._t("todo.kid.birthday_today", "Happy birthday!") : bday === 1 ? this._t("todo.kid.birthday_tomorrow", "Birthday tomorrow!") : this._t("todo.kid.birthday_in", "Birthday in %n% days!", { n: String(bday) }))}</span>`;
@@ -2717,12 +3091,16 @@ class FamilyHubTodoCard extends HTMLElement {
       <div class="kid-wishes" data-list-key="${this._escAttr(key)}" style="--kid-c:${this._escAttr(color)}">
         <div class="kid-wish-top">
           <span class="kid-wish-av${pic ? " has-pic" : ""}" style="background-color:${this._escAttr(color)};${pic ? `background-image:url('${String(pic).replace(/["'()\\\s]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0"))}')` : ""}">${pic ? "" : this._esc(initial)}</span>
-          <h3>${this._esc(listName)}</h3>
+          <h3 class="todo-column-title" data-list-key="${this._escAttr(key)}">${this._esc(listName)}</h3>
           ${bdayHtml}
+          ${this._fullScreenBtnHtml(key)}
         </div>
-        <div class="kid-wish-grid">
-          ${ordered.map((o) => this._kidWishTileHtml(key, o.it, o.it.uid === topUid)).join("")}
-          <button type="button" class="kid-wish-add" data-list-key="${this._escAttr(key)}"><span class="kid-wish-plus">+</span>${this._esc(this._t("todo.kid.add_wish", "Add a wish"))}</button>
+        <div class="kid-wish-scroll">
+          <div class="kid-wish-grid">
+            ${ordered.map((o) => this._kidWishTileHtml(key, o.it, o.it.uid === topUid)).join("")}
+            <button type="button" class="kid-wish-add" data-list-key="${this._escAttr(key)}"><span class="kid-wish-plus">+</span>${this._esc(this._t("todo.kid.add_wish", "Add a wish"))}</button>
+          </div>
+          ${linkedHtml}
         </div>
       </div>`;
   }
@@ -2769,20 +3147,19 @@ class FamilyHubTodoCard extends HTMLElement {
     }
     return !!e.target.closest(".kid-wishes");
   }
-  _updateKidHeader(kidOn) {
-    const btn = this._root.querySelector(".kid-mode-btn");
-    if (!btn) return;
-    const hasWishlists = this._listDescriptors().some((d) => d.kind !== "grocy" && this._isWishlistList(d.key));
-    btn.hidden = !(this._config && this._config.kid_view && hasWishlists);
-    btn.innerHTML = kidOn ? `&#128274; ${this._esc(this._t("todo.kid.grownups", "Grown-ups"))}` : `&#129490; ${this._esc(this._t("todo.kid.kid_view", "Kid view"))}`;
-    btn.title = kidOn ? this._t("todo.kid.grownups_title", "Show the normal lists with claims and prices (goes back to the kid view after 10 minutes)") : this._t("todo.kid.kid_view_title", "Back to the kid view");
-  }
-
   _render() {
     if (!this._root) return;
-    this._updateKidHeader(this._kidViewActive());
     const board = this._root.querySelector(".board");
     board.innerHTML = this._boardHtml();
+    // the full-screen list (closed by its ✕, a tap outside, or Back - any of which drops the "open" class)
+    const fullOverlay = this._root.querySelector(".list-full-modal");
+    if (fullOverlay) {
+      if (this._fullKey && !fullOverlay.classList.contains("open")) this._fullKey = null;
+      const d = this._fullKey ? this._listDescriptors().find((x) => x.key === this._fullKey) : null;
+      if (!d) { this._fullKey = null; fullOverlay.classList.remove("open"); }
+      fullOverlay.querySelector(".list-full-board").innerHTML = d ? this._columnHtml(d) : "";
+      this.toggleAttribute("list-full", !!d);
+    }
     // toggled on the persistent `.board` node itself (unlike everything _boardHtml returns
     board.classList.toggle("fit-to-screen", this._fitToScreen());
     // Mirrors onto a host attribute too (same [fab-position="card"]-style pattern _registerFabCoordinator already uses) so the CSS that needs to
@@ -2805,12 +3182,12 @@ class FamilyHubTodoCard extends HTMLElement {
         <div class="header">
           <div class="title"></div>
           <div class="actions">
-            <button class="kid-mode-btn" hidden></button>
             <button data-fh-t="text.login" data-fh-title="text.log_in_as_a_specific_household_member" class="kiosk-login-btn" title="${__fhT("text.log_in_as_a_specific_household_member", "Log in as a specific household member on this kiosk display", null, "h")}" hidden>${__fhT("text.login", "🔒 Login", null, "h")}</button>
           </div>
         </div>
         <div class="board todo-board"></div>
       </ha-card>
+      <div class="modal-overlay list-full-modal"><div class="list-full-box"><button type="button" class="list-full-close" title="Close" data-i18n-title="common.close">&#10005;</button><div class="board todo-board list-full-board"></div></div></div>
       <div class="modal-overlay create-modal"><div class="modal-box"></div></div>
       <div class="modal-overlay putaway-modal"><div class="modal-box"></div></div>
       <div class="modal-overlay item-detail-modal"><div class="modal-box"></div></div>
@@ -2846,20 +3223,61 @@ class FamilyHubTodoCard extends HTMLElement {
     root.querySelector(".kiosk-login-pin-input").addEventListener("keydown", (e) => {
       if (e.key === "Enter") this._submitKioskLogin();
     });
-    const board = root.querySelector(".board");
-    board.addEventListener("click", (e) => {
-      if (this._kidViewActive() && this._onKidWishClick(e)) return;
-      this._onBoardClick(e);
+    root.querySelector(".list-full-close").addEventListener("click", () => this._closeFullList());
+    // the board and the full-screen copy of one list work the same
+    root.querySelectorAll(".board").forEach((board) => {
+      board.addEventListener("click", (e) => {
+        if (this._onListChromeClick(e)) return;
+        if (this._kidViewActive() && this._onKidWishClick(e)) return;
+        this._onBoardClick(e);
+      });
+      board.addEventListener("change", (e) => this._onBoardChange(e));
+      board.addEventListener("dragstart", (e) => this._onDragStart(e));
+      board.addEventListener("dragend", (e) => this._onDragEnd(e));
+      board.addEventListener("dragover", (e) => this._onDragOver(e));
+      board.addEventListener("dragleave", (e) => this._onDragLeave(e));
+      board.addEventListener("drop", (e) => this._onDrop(e));
+      if (!board.classList.contains("list-full-board")) board.addEventListener("pointerdown", (e) => this._onRowResizePointerDown(e));
     });
-    root.querySelector(".kid-mode-btn").addEventListener("click", () => this._setKidGrownups(this._kidViewActive()));
-    root.querySelector("ha-card").addEventListener("pointerdown", () => this._kidTouch(), { passive: true });
-    board.addEventListener("change", (e) => this._onBoardChange(e));
-    board.addEventListener("dragstart", (e) => this._onDragStart(e));
-    board.addEventListener("dragend", (e) => this._onDragEnd(e));
-    board.addEventListener("dragover", (e) => this._onDragOver(e));
-    board.addEventListener("dragleave", (e) => this._onDragLeave(e));
-    board.addEventListener("drop", (e) => this._onDrop(e));
-    board.addEventListener("pointerdown", (e) => this._onRowResizePointerDown(e));
+  }
+  // a linked list's section header, the full-screen button, and a double-tap on a list's name
+  _onListChromeClick(e) {
+    const head = e.target.closest(".linked-list-header");
+    if (head) {
+      const k = `${head.dataset.listKey}|${head.dataset.link}`;
+      this._linkedOpen[k] = !this._linkedOpen[k];
+      this._render();
+      return true;
+    }
+    const full = e.target.closest(".list-full-btn");
+    if (full) {
+      this._openFullList(full.dataset.listKey);
+      return true;
+    }
+    const title = e.target.closest(".todo-column-title");
+    if (title && !e.target.closest(".list-full-board")) {
+      const key = title.dataset.listKey;
+      const now = Date.now();
+      // our own double-tap: a touch screen's dblclick isn't dependable
+      if (this._lastTitleTap && this._lastTitleTap.key === key && now - this._lastTitleTap.at < 400) {
+        this._lastTitleTap = null;
+        this._openFullList(key);
+      } else this._lastTitleTap = { key, at: now };
+      return true;
+    }
+    return false;
+  }
+  _openFullList(key) {
+    if (!key) return;
+    this._fullKey = key;
+    const overlay = this._root.querySelector(".list-full-modal");
+    overlay.classList.add("open");
+    this._render();
+  }
+  _closeFullList() {
+    this._fullKey = null;
+    this._root.querySelector(".list-full-modal").classList.remove("open");
+    this._render();
   }
   _onBoardClick(e) {
     const completedHeader = e.target.closest(".completed-header");
@@ -3139,6 +3557,7 @@ class FamilyHubTodoCard extends HTMLElement {
     `;
     const listSelect = panel.querySelector(".f-list");
     if (this._dragState && this._dragState.sourceKey) listSelect.value = this._dragState.sourceKey;
+    else if (this._fullKey) listSelect.value = this._fullKey;
     const dueLabel = panel.querySelector(".f-due-label");
     const wishlistLinkLabel = panel.querySelector(".f-wishlist-link-label");
     const wishlistImageLabel = panel.querySelector(".f-wishlist-image-label");
@@ -3683,8 +4102,6 @@ class FamilyHubTodoCard extends HTMLElement {
   _css() {
     return `
       /* 2026.11.1 kid-friendly wish lists (kid_view) */
-      .kid-mode-btn { border: 1px solid var(--fc-border); border-radius: 999px; padding: 6px 14px; font: inherit; font-size: 13px; font-weight: 700; background: var(--fc-card); color: var(--fc-text); cursor: pointer; }
-      .kid-mode-btn[hidden] { display: none !important; }
       .todo-column.kid-wish-column { flex: 3 1 460px; max-width: none; padding: 0; background: none; box-shadow: none; }
       .kid-wishes { flex: 1; display: flex; flex-direction: column; gap: 12px; border-radius: 22px; padding: 14px; min-height: 0;
         background: linear-gradient(180deg, color-mix(in srgb, var(--kid-c) 28%, var(--fc-bg)), color-mix(in srgb, var(--kid-c) 10%, var(--fc-bg))); }
@@ -3813,11 +4230,30 @@ class FamilyHubTodoCard extends HTMLElement {
       /* fab_position: "card" - see family-hub-chores-card.js's
          identical .add-chore-fab rule for the same mechanism. */
       :host([fab-position="card"]) .add-todo-fab { position: absolute; bottom: 18px; }
+      /* a list shown full screen keeps its + button (drawn after the popups so the Add pop-up still covers it) */
+      :host([list-full]) .add-todo-fab { position: fixed; bottom: 18px; z-index: 1001; }
+      :host([list-full]) .modal-overlay.open:not(.list-full-modal) { z-index: 1002; }
       .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 1000; align-items: center; justify-content: center; }
       .modal-tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid var(--fc-border); }
       .modal-tab-btn { border: none; background: none; color: var(--fc-text-secondary); font-weight: 700; font-size: 13px; padding: 8px 4px 10px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
       .modal-tab-btn.active { color: var(--fc-accent); border-bottom-color: var(--fc-accent); }
       .modal-overlay.open { display: flex; }
+      .linked-list { margin-top: 6px; }
+      .linked-list-header { display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 6px; border: none; border-radius: 8px; background: var(--fc-surface-alt, rgba(0,0,0,0.04)); color: var(--fc-text); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; text-align: left; }
+      .linked-list-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .linked-list-body { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; }
+      .list-full-btn { border: none; background: none; color: var(--fc-text-secondary); font-size: 16px; line-height: 1; padding: 2px 4px; cursor: pointer; margin-left: 2px; }
+      .todo-column-title { cursor: default; -webkit-user-select: none; user-select: none; }
+      .list-full-box { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: var(--fc-bg, var(--card-background-color, #fff)); color: var(--fc-text, var(--primary-text-color, #222)); display: flex; flex-direction: column; padding: 12px; box-sizing: border-box; }
+      .list-full-close { align-self: flex-end; border: none; background: var(--fc-surface2); color: var(--fc-text); border-radius: 50%; width: 36px; height: 36px; font-size: 16px; cursor: pointer; flex: 0 0 auto; }
+      .list-full-board { flex: 1; min-height: 0; display: flex; overflow: hidden; margin-top: 8px; }
+      .list-full-board .todo-column { flex: 1 1 auto; max-width: none; min-width: 0; overflow-y: auto; }
+      .list-full-board .list-full-btn { display: none; }
+      .list-full-board .todo-column-items, .list-full-board .linked-list-body { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; }
+      .list-full-board .kid-wish-column { flex: 1; display: flex; }
+      .kid-wish-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+      .kid-wish-scroll .kid-wish-grid { overflow: visible; }
+      .kid-wishes .linked-list-header { background: rgba(255,255,255,0.6); font-size: 16px; padding: 10px 12px; border-radius: 14px; }
       .modal-box { background: var(--fc-bg); color: var(--fc-text); border-radius: 14px; padding: 18px; width: min(90vw, 420px); max-height: 85vh; overflow-y: auto; }
       .modal-box label { display: block; margin: 8px 0; font-size: 13px; font-weight: 700; }
       .modal-box label[hidden] { display: none; }
@@ -3975,6 +4411,7 @@ class FamilyHubTodoCardEditor extends HTMLElement {
       fab_position: this._config.fab_position === "card" ? "card" : "dashboard",
       theme_override: (typeof this._config.theme_override === "string") ? this._config.theme_override : "",
       kid_view: !!this._config.kid_view,
+      hide_prices: !!this._config.hide_prices,
     };
   }
   _schema() {
@@ -4000,7 +4437,9 @@ class FamilyHubTodoCardEditor extends HTMLElement {
     form.computeLabel = (s) => (s.name === "theme_override" ? "Theme" : computeLabel(s));
     form.computeHelper = (s) => (
       s.name === "kid_view"
-        ? "Wish lists show as big pictures with 1 to 3 hearts for how much they want each one. Prices and claims are hidden, so surprises stay safe on any screen. Tap Grown-ups on the card for the normal lists."
+        ? "Wish lists show as big pictures with 1 to 3 hearts for how much they want each one. Prices and claims are hidden, so surprises stay safe on any screen. Turn this off for the normal lists."
+        : s.name === "hide_prices"
+        ? "Wish lists on this card don't show what anything costs."
         : s.name === "theme_override"
         ? "Pin this one card to a specific theme, or leave on \"Use device settings\" to follow whatever this device/household normally shows."
         : undefined

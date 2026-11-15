@@ -52,7 +52,8 @@ a granular per-person permissions system.
   ("↩ Sent back", with an optional note, reopens it for a redo).
 - **Recurrence, two independent ways**: a plain schedule (every N days, or
   specific days of the week) that reopens the chore once it's both
-  approved and due again; and/or a sensor-driven auto-create trigger (an HA
+  approved and due again. It opens as its due day begins, so it can be
+  done any time that day, and keeps its due time; and/or a sensor-driven auto-create trigger (an HA
   entity state change, e.g. "Dryer finished") that cycles it back to open
   on its own. A separate auto-complete trigger can also mark a chore done
   automatically from a sensor.
@@ -247,12 +248,24 @@ The **📅** button at the top of the Chores card (v1.168.89+) swaps the board f
   amount to a running per-person bank instead of being a one-off, spent
   down later via a separate **Use** action), or **One-time** (the catalog
   item deletes itself after its first use).
+- **Who can get it** (2026.11.2+): **Everyone** (the default), or tap the
+  people it's for: "Sleepover at Grandma's" just for Emma, "Drive the
+  golf cart" just for the big kids. Only they can get it. It shows only
+  on their own screens (their Companion, their kid view, the Rewards
+  card when they're signed in), and only their saving-for goals can
+  pick it. Grown-ups who manage rewards still see it in the catalog,
+  marked **Only Emma**. On a shared tablet, Emma logs in with her PIN
+  to see it and get it, and it's hidden again when she logs out.
+
+  <img src="/HA-Family-Hub/img/screenshots/reward-who-can-get-it.webp" alt="Who can get it: Everyone, Mom, Dad, Emma (picked) and Leo" width="460" />
+
 - **Requires fulfillment**: an optional checkbox ("needs a parent to mark
   it done before it counts", e.g. cash allowance) that holds a redemption
   as pending until someone with pricing authority marks it done.
 - **Suggestions**: anyone without pricing authority can suggest a new
   reward with no cost set; it waits in **Suggested Rewards** until someone
-  prices and approves (or rejects) it.
+  prices and approves (or rejects) it. Children can also ask for one from
+  [Companion](/docs/cards/companion#rewards) (2026.11.2+).
 - **History**: every star change (chore/goal payouts, redemptions,
   overdue penalties, manual balance adjustments, gifts) is logged per
   person; a redemption can be **Reversed** (deletes the log entry and
@@ -273,6 +286,12 @@ The **📅** button at the top of the Chores card (v1.168.89+) swaps the board f
   [Wish Lists](/docs/features/todo-lists-and-wishlists#wish-lists).
 - **Stacks up rewards**: the catalog shows each person's banked amount
   ("Banked: 3 hours"). **Use** asks how much to spend now.
+- **Saved for later** (2026.11.2+): a child can keep an everyday reward to use
+  later with **Save it** (on [Companion](/docs/cards/companion#rewards) or the
+  Rewards card's kid view). The stars are spent then; the catalog shows how many
+  they've saved ("📦 2 saved") and **Use** spends one. A reward that needs a
+  grown-up waits for them when it's used, not when it's saved. Rewards with a
+  timer and one-time rewards can't be saved.
 
 ## Goals
 

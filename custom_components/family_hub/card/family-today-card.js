@@ -111,6 +111,46 @@ localStorage.setItem("familyHubA11yHouseholdLocal", next);
 }
 refreshAll();
 }
+// 2026.11.2.11: "Card background: See-through" (household settings.seeThroughBackground): the cards leave their own
+// background empty so the dashboard's (an animated background, a wallpaper) shows through; never in e-ink/high contrast,
+// nor while a card shows a photo of its own (the calendar's full-screen holiday photo sets fh-own-bg)
+function seeThrough() {
+try {
+return localStorage.getItem("familyHubSeeThroughLocal") === "1";
+} catch (e) {
+return false;
+}
+}
+function setSeeThrough(on) {
+const next = on ? "1" : "";
+let before = "";
+try {
+before = localStorage.getItem("familyHubSeeThroughLocal") || "";
+} catch (e) {
+}
+if (before === next) return;
+try {
+localStorage.setItem("familyHubSeeThroughLocal", next);
+} catch (e) {
+}
+refreshAll();
+}
+const SEE_THROUGH_CSS = `
+:host([fh-see-through]:not([fh-own-bg])) ha-card { background-color: transparent !important; background-image: none !important; box-shadow: none !important; }
+:host([fh-see-through]:not([fh-own-bg])) ha-card::before { display: none !important; }
+`;
+function applySeeThrough(host) {
+const on = seeThrough() && mode() === "off";
+if (on) host.setAttribute("fh-see-through", "");
+else host.removeAttribute("fh-see-through");
+const root = host.shadowRoot;
+if (on && root && !root.querySelector("style[data-fh-see-through]")) {
+const s = document.createElement("style");
+s.setAttribute("data-fh-see-through", "");
+s.textContent = SEE_THROUGH_CSS;
+root.appendChild(s);
+}
+}
 // every card loads the household settings itself; this reads the Accessibility part of them, at most every 5 minutes
 let householdFetch = null, householdAt = 0;
 function loadHousehold(hass) {
@@ -118,7 +158,10 @@ if (!hass || !hass.connection || householdFetch || Date.now() - householdAt < 5 
 householdFetch = hass.connection.sendMessagePromise({ type: "family_hub/get_settings" })
 .then((r) => {
 const s = r && r.settings;
-if (s && typeof s === "object") setHousehold(s.accessibility || {});
+if (s && typeof s === "object") {
+setHousehold(s.accessibility || {});
+setSeeThrough(s.seeThroughBackground === true);
+}
 })
 .catch(() => {})
 .then(() => {
@@ -409,6 +452,7 @@ if (!st) return;
 // the calendar loads the household settings itself (and hands the Accessibility part over with setHousehold)
 if (!st.opts.a11yOnly) loadHousehold(host._hass || host.hass);
 const v = applyA11y(host);
+applySeeThrough(host);
 const root = host.shadowRoot;
 if (st.opts.a11yOnly) {
 // the calendar draws its own e-ink and colour vision; this just gives it the shared accessibility attributes
@@ -471,7 +515,7 @@ attached.delete(host);
 }
 const refreshAll = () => attached.forEach((st, host) => apply(host));
 window.addEventListener("family-hub-eink-changed", refreshAll);
-window.addEventListener("storage", (e) => { if (!e.key || /^familyHub(Eink|A11y)/.test(e.key)) refreshAll(); });
+window.addEventListener("storage", (e) => { if (!e.key || /^familyHub(Eink|A11y|SeeThrough)/.test(e.key)) refreshAll(); });
 try {
 if (window.matchMedia) {
 const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -480,9 +524,271 @@ if (mq && mq.addEventListener) mq.addEventListener("change", refreshAll);
 } catch (e) {
 }
 window.__familyHubEink = {
-mode, deviceMode, tappable, background, cvFor, a11y, a11yClean, setHousehold, ensureFonts, A11Y_KEYS: A11Y, SHAPES, SHAPE_NAMES,
-attach: (host, opts) => attach(host, opts, 0), detach, refreshAll, BASE_CSS, A11Y_CSS,
+mode, deviceMode, tappable, background, cvFor, a11y, a11yClean, setHousehold, seeThrough, setSeeThrough, ensureFonts, A11Y_KEYS: A11Y, SHAPES, SHAPE_NAMES,
+attach: (host, opts) => {
+if (window.__familyHubKeepAlive) window.__familyHubKeepAlive.connected(host);
+attach(host, opts, 0);
+},
+detach: (host) => {
+detach(host);
+if (window.__familyHubKeepAlive) window.__familyHubKeepAlive.disconnected(host);
+},
+refreshAll, BASE_CSS, A11Y_CSS,
 };
+})();
+// 2026.11.2: keep an open pop-up open when you switch away from Home Assistant and come back. When the app comes back
+// and reconnects, Home Assistant reloads the dashboard and builds every card again, so a card that had a pop-up open
+// lost it. Now: when the page is hidden, each card notes whether it has a pop-up open; if Home Assistant then replaces
+// that card (within a minute of coming back), the new copy steps aside for the old one, pop-up and all, and passes
+// Home Assistant's updates on to it.
+(function () {
+if (window.__familyHubKeepAlive) return;
+const live = new Set();
+const parked = [];
+let visibleAt = 0;
+const WINDOW_MS = 60000;
+const ADOPT_MS = 20000;
+const keyOf = (host) => {
+if (host.__fhKeepKey === undefined) {
+let cfg = "";
+try { cfg = JSON.stringify(host._config || null); } catch (e) { cfg = ""; }
+host.__fhKeepKey = host.tagName + "|" + cfg;
+}
+return host.__fhKeepKey;
+};
+// a pop-up: something fixed on screen, showing, and covering a good part of it
+function modalOpen(host) {
+const root = host.shadowRoot;
+if (!root) return false;
+const min = (window.innerWidth || 0) * (window.innerHeight || 0) * 0.2;
+const els = root.querySelectorAll('[class*="modal"],[class*="overlay"],[class*="dialog"],[class*="sheet"],[class*="popup"],[class*="picker"],[class*="viewer"]');
+for (let i = 0; i < els.length; i++) {
+const cs = getComputedStyle(els[i]);
+if (cs.position !== "fixed" || cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) < 0.05) continue;
+const r = els[i].getBoundingClientRect();
+if (r.width * r.height >= min && min > 0) return true;
+}
+return false;
+}
+document.addEventListener("visibilitychange", () => {
+if (document.visibilityState === "hidden") {
+live.forEach((host) => {
+try { host.__fhKeepModal = modalOpen(host); } catch (e) { host.__fhKeepModal = false; }
+});
+} else {
+visibleAt = Date.now();
+}
+});
+const recent = () => document.visibilityState === "hidden" || Date.now() - visibleAt < WINDOW_MS;
+function disconnected(host) {
+live.delete(host);
+if (host.__fhKeepModal && recent()) parked.push({ host, key: keyOf(host), at: Date.now() });
+}
+let connected = function (host) {
+live.add(host);
+keyOf(host);
+// after this card's own connectedCallback has run
+setTimeout(() => {
+const now = Date.now();
+for (let i = parked.length - 1; i >= 0; i--) {
+if (now - parked[i].at > ADOPT_MS || parked[i].host.isConnected) parked.splice(i, 1);
+}
+if (!host.isConnected || host.__fhAdopted) return;
+const idx = parked.findIndex((p) => p.key === keyOf(host) && p.host !== host);
+if (idx < 0) return;
+const old = parked.splice(idx, 1)[0].host;
+old.__fhKeepModal = false;
+const latest = host._hass || host.hass;
+try { host.replaceWith(old); } catch (e) { return; }
+host.__fhAdopted = old;
+// the card is back as it was, so nothing needs putting back from what was saved
+try { localStorage.removeItem("familyHubResume:" + keyOf(old)); } catch (e) {}
+// Home Assistant keeps talking to the card it made; pass it all on
+Object.defineProperty(host, "hass", { configurable: true, get() { return old.hass; }, set(v) { old.hass = v; } });
+host.setConfig = (c) => old.setConfig(c);
+if (latest) old.hass = latest;
+}, 0);
+}
+// --- after a full page reload (the iPhone app reloads the whole page after a while away) -------------------------
+// Each card's pop-up openers are watched: what was opened, with what. When the page is hidden with a pop-up open, that
+// list and what's typed in each open pop-up are saved on this device; when the same card loads again within 15
+// minutes, the pop-ups are opened again, in order, and the typing put back.
+const RESUME_MS = 15 * 60000;
+const ready = {
+calendar: (c) => !!c._settingsCache,
+users: (c) => Array.isArray(c._notifyProfileUsersCache),
+};
+// per card: the pop-up openers to watch, what each needs before it can open again, and how to save/find its argument
+const OPENERS = {
+"FAMILY-WEEK-CALENDAR-CARD": {
+__view: { ready: (c) => !!(c._settingsCache && c._viewMode) },
+_openSettings: { ready: ready.calendar },
+_setSettingsTab: { ready: ready.calendar, follows: true },
+_openNotifyProfileModal: { ready: ready.users },
+_openAddEvent: { ready: ready.calendar },
+_openQuickAdd: { ready: ready.calendar },
+_openEventInfo: {
+save: (c, id) => { const d = (c._eventDetails || {})[id]; return d ? { uid: d.uid || "", start: d.start ? new Date(d.start).getTime() : 0, cal: d.calendarEntity || "", title: d.summary || "" } : null; },
+find: (c, w) => {
+const all = c._eventDetails || {};
+return Object.keys(all).find((id) => { const d = all[id]; return d && (d.calendarEntity || "") === w.cal && (d.start ? new Date(d.start).getTime() : 0) === w.start && ((w.uid && d.uid === w.uid) || (!w.uid && d.summary === w.title)); });
+},
+},
+_openEventInfoForEdit: { alias: "_openEventInfo" },
+},
+"FAMILY-HUB-CHORES-CARD": { _openCreateModal: {}, _openEditModal: {}, _openChoreDetailModal: {}, _openRoutineManageModal: {} },
+"FAMILY-HUB-REWARDS-CARD": {
+_openCreateRewardModal: {
+save: (c, item) => (item && item.id ? { id: item.id } : null),
+find: (c, w) => (c._catalog || []).find((it) => it.id === w.id),
+optional: true,
+},
+_openGiftStarsModal: {}, _openManageStarsModal: {}, _openStarHistoryModal: {},
+},
+"FAMILY-HUB-TODO-CARD": { _openCreateModal: {}, _openItemDetailModal: {} },
+};
+const openOverlays = (host) => {
+const root = host.shadowRoot;
+if (!root) return [];
+const out = [];
+const min = (window.innerWidth || 0) * (window.innerHeight || 0) * 0.2;
+root.querySelectorAll('[class*="modal"],[class*="overlay"],[class*="dialog"],[class*="sheet"],[class*="popup"],[class*="picker"],[class*="viewer"]').forEach((el) => {
+const cs = getComputedStyle(el);
+if (cs.position !== "fixed" || cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) < 0.05) return;
+const r = el.getBoundingClientRect();
+if (min > 0 && r.width * r.height >= min) out.push(el);
+});
+return out;
+};
+const FIELD = "input:not([type=file]):not([type=password]):not([type=hidden]):not([type=button]):not([type=submit]),textarea,select";
+const sig = (el) => el.tagName + ":" + (el.type || "") + ":" + (el.className || "");
+const readFields = (ov) => Array.prototype.map.call(ov.querySelectorAll(FIELD), (el) => [sig(el), el.type === "checkbox" || el.type === "radio" ? !!el.checked : el.value]);
+function writeFields(ov, saved) {
+if (!ov || !Array.isArray(saved)) return;
+const els = ov.querySelectorAll(FIELD);
+const touched = [];
+saved.forEach((f, i) => {
+const el = els[i];
+if (!el || sig(el) !== f[0]) return;
+if (el.type === "checkbox" || el.type === "radio") { if (el.checked !== !!f[1]) { el.checked = !!f[1]; touched.push([el, "change"]); } }
+else if (el.value !== f[1]) { el.value = f[1]; touched.push([el, el.tagName === "SELECT" ? "change" : "input"]); }
+});
+touched.forEach((t) => { try { t[0].dispatchEvent(new Event(t[1], { bubbles: true })); } catch (e) {} });
+}
+const resumeKey = (host) => "familyHubResume:" + keyOf(host);
+function track(host) {
+const table = OPENERS[host.tagName];
+if (!table || host.__fhTracked) return;
+host.__fhTracked = true;
+host.__fhCalls = [];
+Object.keys(table).forEach((name) => {
+if (name === "__view") return;
+const orig = host[name];
+if (typeof orig !== "function") return;
+const spec = table[name];
+const fn = spec.alias || name;
+const fspec = table[fn] || spec;
+host[name] = function () {
+const args = Array.prototype.slice.call(arguments);
+const outer = !host.__fhInOpener;
+// (pop-ups opened again after a reload are watched too, so leaving again keeps them)
+if (outer) {
+const before = openOverlays(host);
+if (!before.length && !fspec.follows) host.__fhCalls = [];
+let saved = args;
+if (fspec.save) { const w = fspec.save(host, args[0]); saved = w ? [{ __w: w }].concat(args.slice(1)) : (fspec.optional ? [] : null); }
+if (saved) {
+const call = { fn, args: saved, ov: null, edit: name === "_openEventInfoForEdit" };
+host.__fhCalls.push(call);
+// some open after loading something, so look a few times
+[0, 300, 1200].forEach((ms) => setTimeout(() => { if (!call.ov) call.ov = openOverlays(host).find((o) => before.indexOf(o) < 0) || null; }, ms));
+}
+}
+host.__fhInOpener = true;
+try { return orig.apply(this, arguments); } finally { if (outer) host.__fhInOpener = false; }
+};
+});
+}
+function snapshot(host) {
+const calls = host.__fhCalls || [];
+const open = openOverlays(host);
+// where the card was (the calendar's week, say), pop-up or not
+let view = null;
+try { view = typeof host._fhViewState === "function" ? host._fhViewState() : null; } catch (e) { view = null; }
+if ((!open.length || !calls.length) && !view) { try { localStorage.removeItem(resumeKey(host)); } catch (e) {} return; }
+let parentOpen = false;
+const keep = [];
+(open.length ? calls : []).forEach((c) => {
+const isOpen = c.ov ? open.indexOf(c.ov) >= 0 : parentOpen;
+if (c.ov) parentOpen = isOpen;
+if (isOpen) keep.push({ fn: c.fn, args: c.args, edit: c.edit, fields: c.ov ? readFields(c.ov) : null });
+});
+try {
+if (keep.length || view) localStorage.setItem(resumeKey(host), JSON.stringify({ at: Date.now(), calls: keep, view }));
+else localStorage.removeItem(resumeKey(host));
+} catch (e) {}
+}
+const waitFor = (test, ms) => new Promise((resolve) => {
+const end = Date.now() + ms;
+const tick = () => { let v = null; try { v = test(); } catch (e) { v = null; } if (v) resolve(v); else if (Date.now() > end) resolve(null); else setTimeout(tick, 200); };
+tick();
+});
+async function resume(host) {
+let saved = null;
+try { saved = JSON.parse(localStorage.getItem(resumeKey(host)) || "null"); localStorage.removeItem(resumeKey(host)); } catch (e) { saved = null; }
+if (!saved || !Array.isArray(saved.calls) || Date.now() - (saved.at || 0) > RESUME_MS) return;
+const table = OPENERS[host.tagName] || {};
+host.__fhReplaying = true;
+try {
+if (saved.view && typeof host._fhRestoreViewState === "function") {
+const vready = (table.__view || {}).ready;
+if (await waitFor(() => host._hass && (!vready || vready(host)), 10000)) {
+try { host._fhRestoreViewState(saved.view); } catch (e) {}
+}
+}
+for (const c of saved.calls) {
+const spec = table[c.fn] || {};
+if (!host.isConnected) return;
+if (!(await waitFor(() => host._hass && (!spec.ready || spec.ready(host)), 10000))) return;
+let args = c.args || [];
+if (args[0] && args[0].__w && spec.find) {
+const found = await waitFor(() => spec.find(host, args[0].__w), 10000);
+if (!found) return;
+args = [found].concat(args.slice(1));
+}
+const before = openOverlays(host);
+const name = c.edit && typeof host._openEventInfoForEdit === "function" ? "_openEventInfoForEdit" : c.fn;
+try { await host[name].apply(host, args); } catch (e) { return; }
+if (c.fields) {
+const ov = await waitFor(() => openOverlays(host).find((o) => before.indexOf(o) < 0), 3000);
+await new Promise((r) => setTimeout(r, 150));
+writeFields(ov, c.fields);
+}
+}
+} finally {
+host.__fhReplaying = false;
+}
+}
+const snapAll = () => live.forEach((host) => { try { snapshot(host); } catch (e) {} });
+document.addEventListener("visibilitychange", () => {
+if (document.visibilityState === "hidden") { snapAll(); return; }
+// back without a reload or a rebuild: what was saved isn't needed (a card loading later shouldn't jump back to it)
+setTimeout(() => {
+if (document.visibilityState !== "visible") return;
+live.forEach((host) => { try { localStorage.removeItem(resumeKey(host)); } catch (e) {} });
+}, WINDOW_MS);
+});
+window.addEventListener("pagehide", snapAll);
+const _connected = connected;
+connected = function (host) {
+_connected(host);
+track(host);
+if (!host.__fhResumeChecked) {
+host.__fhResumeChecked = true;
+setTimeout(() => { if (host.isConnected && !host.__fhAdopted) resume(host); }, 300);
+}
+};
+window.__familyHubKeepAlive = { connected: (h) => connected(h), disconnected, modalOpen, parked, snapshot, resume, track };
 })();
 // FH-EINK END
 // FH-MODAL-SCROLL START - source: tools/modal_scroll_guard.js, copied into each card by tools/sync_modal_scroll_guard.py
@@ -945,6 +1251,30 @@ if (!window.__familyHubThemeCache) {
   })();
 }
 
+// 2026.11.2 (#37): an event's location opens in a maps app. Household setting mapsProvider: "auto" (Apple Maps on an
+// iPhone, iPad or Mac, Google Maps everywhere else), "google", "apple", "waze", or "off" (plain text). A location
+// that's already a web address (a video call link, say) opens as itself.
+function __fhMapUrl(location, provider) {
+const text = String(location || "").trim();
+if (!text || provider === "off") return "";
+if (/^https?:\/\/\S+$/i.test(text)) return text;
+const q = encodeURIComponent(text.replace(/\s+/g, " "));
+let p = provider || "auto";
+if (p === "auto") {
+const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+p = /iPhone|iPad|iPod|Macintosh/.test(ua) ? "apple" : "google";
+}
+if (p === "apple") return "https://maps.apple.com/?q=" + q;
+if (p === "waze") return "https://waze.com/ul?q=" + q + "&navigate=yes";
+return "https://www.google.com/maps/search/?api=1&query=" + q;
+}
+function __fhMapLinkHtml(location, provider, cls) {
+const text = String(location || "");
+const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const url = __fhMapUrl(text, provider);
+if (!url) return esc(text);
+return '<a class="' + (cls || "fh-map-link") + '" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">&#128205;&nbsp;<span class="fh-map-text">' + esc(text) + "</span></a>";
+}
 class FamilyTodayCard extends HTMLElement {
   // 2026.11.1.16: this card's own e-ink styling, on top of the shared kit (FH-EINK)
   static get EINK_CSS() {
@@ -1412,9 +1742,11 @@ class FamilyTodayCard extends HTMLElement {
       blocks, weekendBreakfast, people, theme: { colors, fonts }, useGlobalTheme, globalThemeId,
       mealPlanEntity: str(parsed.mealPlanEntity), weatherEntity: str(parsed.weatherEntity), calendarCardEntities,
       userProfiles: parsed.userProfiles && typeof parsed.userProfiles === "object" ? parsed.userProfiles : {},
+      mapsProvider: ["auto", "google", "apple", "waze", "off"].includes(parsed.mapsProvider) ? parsed.mapsProvider : "auto",
       discreetModeEnabled: parsed.discreetModeEnabled === true,
       showPersonPictures: parsed.showPersonPictures !== false,
       showNowMarker: parsed.showNowMarker !== false,
+      familyBreaks: Array.isArray(parsed.familyBreaks) ? parsed.familyBreaks.filter((b) => b && typeof b.name === "string" && typeof b.start === "string" && typeof b.end === "string") : [],
     };
   }
   // which meal plan / reminders list / weather entity this card reads.
@@ -2899,6 +3231,10 @@ background-image: var(--fc-bg-overlay-image, none);
 .detail-title { font-size: 17px; font-weight: 800; margin: 0 24px 8px 0; }
 .detail-chip { display: inline-block; padding: 3px 9px; border-radius: 12px; font-size: 12px; font-weight: 700; margin-bottom: 8px; }
 .detail-row { font-size: 14px; color: var(--fc-text); margin-bottom: 6px; }
+.holiday-chip.dayoff-chip { background: #f3e2b3; color: #4a3800; }
+.holiday-chip.dayoff-chip.tomorrow { background: transparent; box-shadow: inset 0 0 0 1px #d9bf7e; color: var(--fc-text); }
+.detail-row .today-map-link { color: inherit; text-decoration: none; }
+.detail-row .today-map-link .fh-map-text { text-decoration: underline; text-underline-offset: 3px; }
 .detail-row.secondary { color: var(--fc-text-secondary); }
 .detail-actions { margin-top: 12px; display: flex; gap: 8px; }
 .detail-open-link-btn, .detail-done-btn { flex: 1 1 auto; border: none; border-radius: 10px; background: var(--fc-accent); color: var(--fc-accent-text); font-size: 13px; font-weight: 700; padding: 9px 12px; cursor: pointer; }
@@ -3158,17 +3494,42 @@ background-image: var(--fc-bg-overlay-image, none);
         (this._todayBadges || [])
           .map((b) => `<span class="custody-badge" style="background:${b.color};color:${this._textColorFor(b.color)}">${b.text}</span>`)
           .join("") +
+        this._familyBreaksToday()
+          .map((b) => `<span class="holiday-chip" style="--holiday-color:#8fb8de" title="${String(b.name).replace(/"/g, "&quot;").replace(/</g, "&lt;")}">\u{1F3D6}\uFE0F ${String(b.name).replace(/&/g, "&amp;").replace(/</g, "&lt;")}</span>`)
+          .join("") +
         (this._todayHolidays || [])
           .map((h) => `<span class="holiday-chip" style="--holiday-color:${h.color}" title="${String(h.summary).replace(/"/g, "&quot;").replace(/</g, "&lt;")}">${h.kind === "birthday" ? "\u{1F382}" : h.kind === "special" && /anniversar|wedding|hochzeit|boda|mariage|matrimonio|bruiloft|ślub|casamento/i.test(h.summary) ? "\u{1F48D}" : this._holidayIcon(h.summary)} ${String(h.summary).replace(/&/g, "&amp;").replace(/</g, "&lt;")}</span>`)
-          .join("");
+          .join("") +
+        this._dayOffChipsHtml();
     }
     this._renderFooterActions();
+  }
+  // 2026.11.2.8: the family's own holidays and breaks (calendar + > Holiday or Break) that cover today
+  _familyBreaksToday() {
+    const list = (this._settingsCache && this._settingsCache.familyBreaks) || [];
+    const d = new Date();
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    return Array.isArray(list) ? list.filter((b) => b && b.name && b.start <= key && key <= b.end) : [];
+  }
+  // 2026.11.2: "No school today" / "No work today" (or tomorrow), from Family Hub's day-off entities
+  _dayOffChipsHtml() {
+    const states = (this._hass && this._hass.states) || {};
+    const on = (kind, when) => { const st = states[`binary_sensor.family_hub_no_${kind}_${when}`]; return !!(st && st.state === "on"); };
+    const chips = [];
+    ["school", "work"].forEach((kind) => {
+      const when = on(kind, "today") ? "today" : on(kind, "tomorrow") ? "tomorrow" : "";
+      if (!when) return;
+      const label = this._t(`today.no_${kind}_${when}`, `No ${kind} ${when}`);
+      chips.push(`<span class="holiday-chip dayoff-chip${when === "tomorrow" ? " tomorrow" : ""}">${kind === "school" ? "\u{1F3EB}" : "\u{1F4BC}"} ${label}</span>`);
+    });
+    return chips.join("");
   }
   // extracted out of _render()'s old inline click handlers so both layouts
   _openEventDetail(ev) {
     const rows = [];
     rows.push({ text: ev.allDay ? this._t("today.detail.all_day", "All day") : `${this._fmtTime(ev.start)}${ev.end ? " - " + this._fmtTime(ev.end) : ""}` });
-    if (ev.location) rows.push({ text: `\u{1F4CD} ${ev.location}`, secondary: true });
+    // 2026.11.2 (#37): tap to open it in a maps app (calendar Settings > Event locations open in)
+    if (ev.location) rows.push({ text: __fhMapLinkHtml(ev.location, (this._settingsCache || {}).mapsProvider, "today-map-link"), secondary: true });
     if (ev.description) rows.push({ text: ev.description, secondary: true });
     this._openDetail({ chip: ev.personName, chipColor: ev.color, title: ev.summary, rows });
   }

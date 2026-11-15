@@ -7,6 +7,8 @@ The parser itself (quick_add.py) knows nothing about Home Assistant.
 """
 from __future__ import annotations
 
+from . import people as people_mod
+
 import json
 import logging
 import re
@@ -66,7 +68,7 @@ async def build_context(hass: HomeAssistant, entry_data: dict[str, Any], user_id
     member_ids = [str(u) for u in (settings.get("memberUserIds") or []) if str(u).strip()]
     rows = [r for r in (settings.get("people") or []) if isinstance(r, dict) and r.get("entity")]
     try:
-        users = await hass.auth.async_get_users()
+        users = await people_mod.async_get_users(hass)
         names = {u.id: (u.name or u.id) for u in users if not getattr(u, "system_generated", False)}
     except Exception:  # noqa: BLE001 - a missing name just means fewer ways to match someone
         names = {}

@@ -111,6 +111,46 @@ localStorage.setItem("familyHubA11yHouseholdLocal", next);
 }
 refreshAll();
 }
+// 2026.11.2.11: "Card background: See-through" (household settings.seeThroughBackground): the cards leave their own
+// background empty so the dashboard's (an animated background, a wallpaper) shows through; never in e-ink/high contrast,
+// nor while a card shows a photo of its own (the calendar's full-screen holiday photo sets fh-own-bg)
+function seeThrough() {
+try {
+return localStorage.getItem("familyHubSeeThroughLocal") === "1";
+} catch (e) {
+return false;
+}
+}
+function setSeeThrough(on) {
+const next = on ? "1" : "";
+let before = "";
+try {
+before = localStorage.getItem("familyHubSeeThroughLocal") || "";
+} catch (e) {
+}
+if (before === next) return;
+try {
+localStorage.setItem("familyHubSeeThroughLocal", next);
+} catch (e) {
+}
+refreshAll();
+}
+const SEE_THROUGH_CSS = `
+:host([fh-see-through]:not([fh-own-bg])) ha-card { background-color: transparent !important; background-image: none !important; box-shadow: none !important; }
+:host([fh-see-through]:not([fh-own-bg])) ha-card::before { display: none !important; }
+`;
+function applySeeThrough(host) {
+const on = seeThrough() && mode() === "off";
+if (on) host.setAttribute("fh-see-through", "");
+else host.removeAttribute("fh-see-through");
+const root = host.shadowRoot;
+if (on && root && !root.querySelector("style[data-fh-see-through]")) {
+const s = document.createElement("style");
+s.setAttribute("data-fh-see-through", "");
+s.textContent = SEE_THROUGH_CSS;
+root.appendChild(s);
+}
+}
 // every card loads the household settings itself; this reads the Accessibility part of them, at most every 5 minutes
 let householdFetch = null, householdAt = 0;
 function loadHousehold(hass) {
@@ -118,7 +158,10 @@ if (!hass || !hass.connection || householdFetch || Date.now() - householdAt < 5 
 householdFetch = hass.connection.sendMessagePromise({ type: "family_hub/get_settings" })
 .then((r) => {
 const s = r && r.settings;
-if (s && typeof s === "object") setHousehold(s.accessibility || {});
+if (s && typeof s === "object") {
+setHousehold(s.accessibility || {});
+setSeeThrough(s.seeThroughBackground === true);
+}
 })
 .catch(() => {})
 .then(() => {
@@ -409,6 +452,7 @@ if (!st) return;
 // the calendar loads the household settings itself (and hands the Accessibility part over with setHousehold)
 if (!st.opts.a11yOnly) loadHousehold(host._hass || host.hass);
 const v = applyA11y(host);
+applySeeThrough(host);
 const root = host.shadowRoot;
 if (st.opts.a11yOnly) {
 // the calendar draws its own e-ink and colour vision; this just gives it the shared accessibility attributes
@@ -471,7 +515,7 @@ attached.delete(host);
 }
 const refreshAll = () => attached.forEach((st, host) => apply(host));
 window.addEventListener("family-hub-eink-changed", refreshAll);
-window.addEventListener("storage", (e) => { if (!e.key || /^familyHub(Eink|A11y)/.test(e.key)) refreshAll(); });
+window.addEventListener("storage", (e) => { if (!e.key || /^familyHub(Eink|A11y|SeeThrough)/.test(e.key)) refreshAll(); });
 try {
 if (window.matchMedia) {
 const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -480,9 +524,271 @@ if (mq && mq.addEventListener) mq.addEventListener("change", refreshAll);
 } catch (e) {
 }
 window.__familyHubEink = {
-mode, deviceMode, tappable, background, cvFor, a11y, a11yClean, setHousehold, ensureFonts, A11Y_KEYS: A11Y, SHAPES, SHAPE_NAMES,
-attach: (host, opts) => attach(host, opts, 0), detach, refreshAll, BASE_CSS, A11Y_CSS,
+mode, deviceMode, tappable, background, cvFor, a11y, a11yClean, setHousehold, seeThrough, setSeeThrough, ensureFonts, A11Y_KEYS: A11Y, SHAPES, SHAPE_NAMES,
+attach: (host, opts) => {
+if (window.__familyHubKeepAlive) window.__familyHubKeepAlive.connected(host);
+attach(host, opts, 0);
+},
+detach: (host) => {
+detach(host);
+if (window.__familyHubKeepAlive) window.__familyHubKeepAlive.disconnected(host);
+},
+refreshAll, BASE_CSS, A11Y_CSS,
 };
+})();
+// 2026.11.2: keep an open pop-up open when you switch away from Home Assistant and come back. When the app comes back
+// and reconnects, Home Assistant reloads the dashboard and builds every card again, so a card that had a pop-up open
+// lost it. Now: when the page is hidden, each card notes whether it has a pop-up open; if Home Assistant then replaces
+// that card (within a minute of coming back), the new copy steps aside for the old one, pop-up and all, and passes
+// Home Assistant's updates on to it.
+(function () {
+if (window.__familyHubKeepAlive) return;
+const live = new Set();
+const parked = [];
+let visibleAt = 0;
+const WINDOW_MS = 60000;
+const ADOPT_MS = 20000;
+const keyOf = (host) => {
+if (host.__fhKeepKey === undefined) {
+let cfg = "";
+try { cfg = JSON.stringify(host._config || null); } catch (e) { cfg = ""; }
+host.__fhKeepKey = host.tagName + "|" + cfg;
+}
+return host.__fhKeepKey;
+};
+// a pop-up: something fixed on screen, showing, and covering a good part of it
+function modalOpen(host) {
+const root = host.shadowRoot;
+if (!root) return false;
+const min = (window.innerWidth || 0) * (window.innerHeight || 0) * 0.2;
+const els = root.querySelectorAll('[class*="modal"],[class*="overlay"],[class*="dialog"],[class*="sheet"],[class*="popup"],[class*="picker"],[class*="viewer"]');
+for (let i = 0; i < els.length; i++) {
+const cs = getComputedStyle(els[i]);
+if (cs.position !== "fixed" || cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) < 0.05) continue;
+const r = els[i].getBoundingClientRect();
+if (r.width * r.height >= min && min > 0) return true;
+}
+return false;
+}
+document.addEventListener("visibilitychange", () => {
+if (document.visibilityState === "hidden") {
+live.forEach((host) => {
+try { host.__fhKeepModal = modalOpen(host); } catch (e) { host.__fhKeepModal = false; }
+});
+} else {
+visibleAt = Date.now();
+}
+});
+const recent = () => document.visibilityState === "hidden" || Date.now() - visibleAt < WINDOW_MS;
+function disconnected(host) {
+live.delete(host);
+if (host.__fhKeepModal && recent()) parked.push({ host, key: keyOf(host), at: Date.now() });
+}
+let connected = function (host) {
+live.add(host);
+keyOf(host);
+// after this card's own connectedCallback has run
+setTimeout(() => {
+const now = Date.now();
+for (let i = parked.length - 1; i >= 0; i--) {
+if (now - parked[i].at > ADOPT_MS || parked[i].host.isConnected) parked.splice(i, 1);
+}
+if (!host.isConnected || host.__fhAdopted) return;
+const idx = parked.findIndex((p) => p.key === keyOf(host) && p.host !== host);
+if (idx < 0) return;
+const old = parked.splice(idx, 1)[0].host;
+old.__fhKeepModal = false;
+const latest = host._hass || host.hass;
+try { host.replaceWith(old); } catch (e) { return; }
+host.__fhAdopted = old;
+// the card is back as it was, so nothing needs putting back from what was saved
+try { localStorage.removeItem("familyHubResume:" + keyOf(old)); } catch (e) {}
+// Home Assistant keeps talking to the card it made; pass it all on
+Object.defineProperty(host, "hass", { configurable: true, get() { return old.hass; }, set(v) { old.hass = v; } });
+host.setConfig = (c) => old.setConfig(c);
+if (latest) old.hass = latest;
+}, 0);
+}
+// --- after a full page reload (the iPhone app reloads the whole page after a while away) -------------------------
+// Each card's pop-up openers are watched: what was opened, with what. When the page is hidden with a pop-up open, that
+// list and what's typed in each open pop-up are saved on this device; when the same card loads again within 15
+// minutes, the pop-ups are opened again, in order, and the typing put back.
+const RESUME_MS = 15 * 60000;
+const ready = {
+calendar: (c) => !!c._settingsCache,
+users: (c) => Array.isArray(c._notifyProfileUsersCache),
+};
+// per card: the pop-up openers to watch, what each needs before it can open again, and how to save/find its argument
+const OPENERS = {
+"FAMILY-WEEK-CALENDAR-CARD": {
+__view: { ready: (c) => !!(c._settingsCache && c._viewMode) },
+_openSettings: { ready: ready.calendar },
+_setSettingsTab: { ready: ready.calendar, follows: true },
+_openNotifyProfileModal: { ready: ready.users },
+_openAddEvent: { ready: ready.calendar },
+_openQuickAdd: { ready: ready.calendar },
+_openEventInfo: {
+save: (c, id) => { const d = (c._eventDetails || {})[id]; return d ? { uid: d.uid || "", start: d.start ? new Date(d.start).getTime() : 0, cal: d.calendarEntity || "", title: d.summary || "" } : null; },
+find: (c, w) => {
+const all = c._eventDetails || {};
+return Object.keys(all).find((id) => { const d = all[id]; return d && (d.calendarEntity || "") === w.cal && (d.start ? new Date(d.start).getTime() : 0) === w.start && ((w.uid && d.uid === w.uid) || (!w.uid && d.summary === w.title)); });
+},
+},
+_openEventInfoForEdit: { alias: "_openEventInfo" },
+},
+"FAMILY-HUB-CHORES-CARD": { _openCreateModal: {}, _openEditModal: {}, _openChoreDetailModal: {}, _openRoutineManageModal: {} },
+"FAMILY-HUB-REWARDS-CARD": {
+_openCreateRewardModal: {
+save: (c, item) => (item && item.id ? { id: item.id } : null),
+find: (c, w) => (c._catalog || []).find((it) => it.id === w.id),
+optional: true,
+},
+_openGiftStarsModal: {}, _openManageStarsModal: {}, _openStarHistoryModal: {},
+},
+"FAMILY-HUB-TODO-CARD": { _openCreateModal: {}, _openItemDetailModal: {} },
+};
+const openOverlays = (host) => {
+const root = host.shadowRoot;
+if (!root) return [];
+const out = [];
+const min = (window.innerWidth || 0) * (window.innerHeight || 0) * 0.2;
+root.querySelectorAll('[class*="modal"],[class*="overlay"],[class*="dialog"],[class*="sheet"],[class*="popup"],[class*="picker"],[class*="viewer"]').forEach((el) => {
+const cs = getComputedStyle(el);
+if (cs.position !== "fixed" || cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) < 0.05) return;
+const r = el.getBoundingClientRect();
+if (min > 0 && r.width * r.height >= min) out.push(el);
+});
+return out;
+};
+const FIELD = "input:not([type=file]):not([type=password]):not([type=hidden]):not([type=button]):not([type=submit]),textarea,select";
+const sig = (el) => el.tagName + ":" + (el.type || "") + ":" + (el.className || "");
+const readFields = (ov) => Array.prototype.map.call(ov.querySelectorAll(FIELD), (el) => [sig(el), el.type === "checkbox" || el.type === "radio" ? !!el.checked : el.value]);
+function writeFields(ov, saved) {
+if (!ov || !Array.isArray(saved)) return;
+const els = ov.querySelectorAll(FIELD);
+const touched = [];
+saved.forEach((f, i) => {
+const el = els[i];
+if (!el || sig(el) !== f[0]) return;
+if (el.type === "checkbox" || el.type === "radio") { if (el.checked !== !!f[1]) { el.checked = !!f[1]; touched.push([el, "change"]); } }
+else if (el.value !== f[1]) { el.value = f[1]; touched.push([el, el.tagName === "SELECT" ? "change" : "input"]); }
+});
+touched.forEach((t) => { try { t[0].dispatchEvent(new Event(t[1], { bubbles: true })); } catch (e) {} });
+}
+const resumeKey = (host) => "familyHubResume:" + keyOf(host);
+function track(host) {
+const table = OPENERS[host.tagName];
+if (!table || host.__fhTracked) return;
+host.__fhTracked = true;
+host.__fhCalls = [];
+Object.keys(table).forEach((name) => {
+if (name === "__view") return;
+const orig = host[name];
+if (typeof orig !== "function") return;
+const spec = table[name];
+const fn = spec.alias || name;
+const fspec = table[fn] || spec;
+host[name] = function () {
+const args = Array.prototype.slice.call(arguments);
+const outer = !host.__fhInOpener;
+// (pop-ups opened again after a reload are watched too, so leaving again keeps them)
+if (outer) {
+const before = openOverlays(host);
+if (!before.length && !fspec.follows) host.__fhCalls = [];
+let saved = args;
+if (fspec.save) { const w = fspec.save(host, args[0]); saved = w ? [{ __w: w }].concat(args.slice(1)) : (fspec.optional ? [] : null); }
+if (saved) {
+const call = { fn, args: saved, ov: null, edit: name === "_openEventInfoForEdit" };
+host.__fhCalls.push(call);
+// some open after loading something, so look a few times
+[0, 300, 1200].forEach((ms) => setTimeout(() => { if (!call.ov) call.ov = openOverlays(host).find((o) => before.indexOf(o) < 0) || null; }, ms));
+}
+}
+host.__fhInOpener = true;
+try { return orig.apply(this, arguments); } finally { if (outer) host.__fhInOpener = false; }
+};
+});
+}
+function snapshot(host) {
+const calls = host.__fhCalls || [];
+const open = openOverlays(host);
+// where the card was (the calendar's week, say), pop-up or not
+let view = null;
+try { view = typeof host._fhViewState === "function" ? host._fhViewState() : null; } catch (e) { view = null; }
+if ((!open.length || !calls.length) && !view) { try { localStorage.removeItem(resumeKey(host)); } catch (e) {} return; }
+let parentOpen = false;
+const keep = [];
+(open.length ? calls : []).forEach((c) => {
+const isOpen = c.ov ? open.indexOf(c.ov) >= 0 : parentOpen;
+if (c.ov) parentOpen = isOpen;
+if (isOpen) keep.push({ fn: c.fn, args: c.args, edit: c.edit, fields: c.ov ? readFields(c.ov) : null });
+});
+try {
+if (keep.length || view) localStorage.setItem(resumeKey(host), JSON.stringify({ at: Date.now(), calls: keep, view }));
+else localStorage.removeItem(resumeKey(host));
+} catch (e) {}
+}
+const waitFor = (test, ms) => new Promise((resolve) => {
+const end = Date.now() + ms;
+const tick = () => { let v = null; try { v = test(); } catch (e) { v = null; } if (v) resolve(v); else if (Date.now() > end) resolve(null); else setTimeout(tick, 200); };
+tick();
+});
+async function resume(host) {
+let saved = null;
+try { saved = JSON.parse(localStorage.getItem(resumeKey(host)) || "null"); localStorage.removeItem(resumeKey(host)); } catch (e) { saved = null; }
+if (!saved || !Array.isArray(saved.calls) || Date.now() - (saved.at || 0) > RESUME_MS) return;
+const table = OPENERS[host.tagName] || {};
+host.__fhReplaying = true;
+try {
+if (saved.view && typeof host._fhRestoreViewState === "function") {
+const vready = (table.__view || {}).ready;
+if (await waitFor(() => host._hass && (!vready || vready(host)), 10000)) {
+try { host._fhRestoreViewState(saved.view); } catch (e) {}
+}
+}
+for (const c of saved.calls) {
+const spec = table[c.fn] || {};
+if (!host.isConnected) return;
+if (!(await waitFor(() => host._hass && (!spec.ready || spec.ready(host)), 10000))) return;
+let args = c.args || [];
+if (args[0] && args[0].__w && spec.find) {
+const found = await waitFor(() => spec.find(host, args[0].__w), 10000);
+if (!found) return;
+args = [found].concat(args.slice(1));
+}
+const before = openOverlays(host);
+const name = c.edit && typeof host._openEventInfoForEdit === "function" ? "_openEventInfoForEdit" : c.fn;
+try { await host[name].apply(host, args); } catch (e) { return; }
+if (c.fields) {
+const ov = await waitFor(() => openOverlays(host).find((o) => before.indexOf(o) < 0), 3000);
+await new Promise((r) => setTimeout(r, 150));
+writeFields(ov, c.fields);
+}
+}
+} finally {
+host.__fhReplaying = false;
+}
+}
+const snapAll = () => live.forEach((host) => { try { snapshot(host); } catch (e) {} });
+document.addEventListener("visibilitychange", () => {
+if (document.visibilityState === "hidden") { snapAll(); return; }
+// back without a reload or a rebuild: what was saved isn't needed (a card loading later shouldn't jump back to it)
+setTimeout(() => {
+if (document.visibilityState !== "visible") return;
+live.forEach((host) => { try { localStorage.removeItem(resumeKey(host)); } catch (e) {} });
+}, WINDOW_MS);
+});
+window.addEventListener("pagehide", snapAll);
+const _connected = connected;
+connected = function (host) {
+_connected(host);
+track(host);
+if (!host.__fhResumeChecked) {
+host.__fhResumeChecked = true;
+setTimeout(() => { if (host.isConnected && !host.__fhAdopted) resume(host); }, 300);
+}
+};
+window.__familyHubKeepAlive = { connected: (h) => connected(h), disconnected, modalOpen, parked, snapshot, resume, track };
 })();
 // FH-EINK END
 /* FH-SS-ENGINE START - the screensaver's widgets, shared word for word by the calendar card and the
@@ -512,7 +818,11 @@ function legacyKind(cfg) {
   const t = cfg && cfg.type;
   if (t === "clock") return { kind: "clock", config: { style: "digits", seconds: !!cfg.show_seconds, date: false, format: cfg.time_format === "12" || cfg.time_format === "24" ? cfg.time_format : "auto" }, color: cfg.fh_style === "digits" && !cfg.fh_adaptive_color ? "light" : "auto" };
   if ((t === "weather-forecast" || t === "weather") && cfg.entity) return { kind: "weather", config: { entity: cfg.entity, show: "hilo" } };
-  if (t === "markdown") return { kind: "text", config: { text: String(cfg.content || "").replace(/[#*_`>]/g, "").trim() } };
+  if (t === "markdown") {
+    const content = String(cfg.content || "");
+    if (/\{\{|\{%/.test(content) || cfg.card_mod || cfg.style) return { kind: "card", config: { card: cfg } };
+    return { kind: "text", config: { text: content.replace(/[#*`>]/g, "").trim() } };
+  }
   return { kind: "card", config: { card: cfg } };
 }
 function anchorFromBox(w) {
@@ -769,6 +1079,7 @@ class Layer {
     this.el.querySelectorAll(".fh-ss-zone").forEach((z) => { this.zones[z.dataset.zone] = z; });
     this.items = {};
     this.ctx = {};
+    this.el.addEventListener("context-request", (e) => this._forwardContext(e));
     this._measure = () => {
       const r = this.el.getBoundingClientRect();
       const u = Math.max(2, Math.min(r.width || 0, r.height || 0) / 100) || 10;
@@ -778,6 +1089,18 @@ class Layer {
     if (window.ResizeObserver) { this._ro = new ResizeObserver(this._measure); this._ro.observe(this.el); }
     else window.addEventListener("resize", this._measure);
     this._measure();
+  }
+  _forwardContext(e) {
+    const host = this.ctx.contextHost || this.opts.contextHost;
+    if (!host || !host.isConnected || e.__fhForwarded) return;
+    e.stopPropagation();
+    const fwd = new Event("context-request", { bubbles: true, composed: true });
+    fwd.context = e.context;
+    fwd.callback = e.callback;
+    fwd.subscribe = e.subscribe;
+    fwd.contextTarget = e.contextTarget || (e.composedPath && e.composedPath()[0]) || e.target;
+    fwd.__fhForwarded = true;
+    host.dispatchEvent(fwd);
   }
   update(ctx) {
     this.ctx = Object.assign({}, this.ctx, ctx);
@@ -842,6 +1165,7 @@ class Layer {
       item.state.timer = setInterval(() => this._refreshCamera(item, false), 3000);
     } else if (w.kind === "text") {
       el.innerHTML = `<div class="fh-ss-text"></div>`;
+      this._subscribeTemplate(item);
     } else if (w.kind === "card") {
       el.innerHTML = `<div class="fh-ss-card${w.transparent ? " transparent" : ""}"></div>`;
       this._mountCard(item);
@@ -873,7 +1197,10 @@ class Layer {
       item.extraClass = c.tap && TOGGLE_DOMAINS.includes(domain) && !this.opts.preview ? " tappable" : "";
       el.className = `fh-ss-w fh-ss-k-${w.kind}${item.extraClass}`;
     } else if (w.kind === "camera") this._refreshCamera(item, true);
-    else if (w.kind === "text") el.querySelector(".fh-ss-text").textContent = c.text || "";
+    else if (w.kind === "text") {
+      if (!item.state.template) el.querySelector(".fh-ss-text").textContent = c.text || "";
+      else if (!item.state.unsub) this._subscribeTemplate(item);
+    }
     else if (w.kind === "card") { const card = el.querySelector(".fh-ss-card > *"); if (card) card.hass = hass; }
   }
   _tickClock(item) {
@@ -1046,6 +1373,17 @@ class Layer {
     const url = `${pic}${sep}fhts=${Date.now()}`;
     img.src = typeof hass.hassUrl === "function" ? hass.hassUrl(url) : url;
     item.state.loaded = true;
+  }
+  _subscribeTemplate(item) {
+    const text = String(item.w.config.text || "");
+    item.state.template = /\{\{|\{%/.test(text);
+    const hass = this.ctx.hass;
+    if (!item.state.template || item.state.unsub || !hass || !hass.connection || typeof hass.connection.subscribeMessage !== "function") return;
+    const box = item.el.querySelector(".fh-ss-text");
+    item.state.unsub = hass.connection.subscribeMessage((msg) => {
+      if (msg && msg.result !== undefined) { box.textContent = String(msg.result); this.fit(); }
+    }, { type: "render_template", template: text });
+    item.state.unsub.catch(() => { box.textContent = text; });
   }
   async _mountCard(item) {
     const host = item.el.querySelector(".fh-ss-card");
@@ -1356,7 +1694,7 @@ class Editor {
     const bgUrl = this.opts.backgroundUrl ? this.opts.backgroundUrl() : "";
     frame.innerHTML = bgUrl ? `<img class="bg" alt="" src="${esc(bgUrl)}">` : `<div class="bg"></div>`;
     if (this.layer) this.layer.destroy();
-    this.layer = new Layer(frame, { preview: true });
+    this.layer = new Layer(frame, { preview: true, contextHost: this.opts.contextHost });
     const bgImg = frame.querySelector("img.bg");
     this.layer.update({ hass: this.hass, widgets: this.widgets, options: this.options, settings: this.opts.settings ? this.opts.settings() : {}, t: this.t, getBackground: () => (bgImg && bgImg.naturalWidth ? bgImg : null) });
     this.layer.show();
@@ -2196,6 +2534,8 @@ const day = ((h + l - 7 * m + 114) % 31) + 1;
 return { month, day };
 }
 // The built-in US holiday calendar households can toggle on from Settings - dates only (no bundled image)
+// 2026.11.2.10: photos per holiday background
+const FH_HOLIDAY_MAX_PHOTOS = 5;
 const HOLIDAY_PREDEFINED_DEFS = [
 { key: "new_years", name: "New Year's Day", month: 1, day: 1 },
 { key: "valentines", name: "Valentine's Day", month: 2, day: 14 },
@@ -4857,8 +5197,8 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .fh-main-layout {
   display: grid;
   grid-template-columns: 1fr;
-  grid-template-rows: auto auto auto 1fr;
-  grid-template-areas: "nav" "shortcuts" "legend" "grid";
+  grid-template-rows: auto auto auto auto 1fr;
+  grid-template-areas: "nav" "shortcuts" "legend" "editbar" "grid";
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
@@ -4873,6 +5213,21 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .week-nav { grid-area: nav; }
 .week-shortcuts { grid-area: shortcuts; }
 .legend { grid-area: legend; }
+.edit-mode-bar { grid-area: editbar; }
+/* timeline events clip their overflow: keep the quick buttons inside, and leave room for them */
+.tl-event.event-draggable .eq-btns { top: 3px; right: 3px; }
+/* the list of a day's events scrolls, which also clips: same there */
+.events > .event.event-draggable .eq-btns { top: 4px; right: 4px; }
+.events > .event.event-draggable { padding-right: 54px !important; }
+.tl-event.event-draggable { padding-right: 54px !important; }
+.tl-event.tl-short.event-draggable .eq-btns { top: 50%; transform: translateY(-50%); gap: 2px; }
+.tl-event.tl-short.event-draggable .eq-btn { width: 16px; height: 16px; font-size: 9px; border-width: 1px; }
+.tl-event.tl-short.event-draggable { padding-right: 40px !important; }
+.event-draggable > .event-edit-pencil, .event-draggable .event-edit-pencil { display: none !important; }
+/* all-day chips over the timeline: the quick buttons sit at the end of the chip, not over its name */
+.all-day-chip.event-draggable { position: relative; padding-right: 42px !important; }
+.all-day-chip.event-draggable .eq-btns { top: 50%; right: 3px; transform: translateY(-50%); gap: 2px; }
+.all-day-chip.event-draggable .eq-btn { width: 16px; height: 16px; font-size: 9px; border-width: 1px; }
 .grid { grid-area: grid; }
 .fh-right-now-mount { display: none; grid-area: rightnow; min-width: 0; min-height: 0; overflow: hidden; }
 .fh-right-now-mount > family-right-now-card { display: block; width: 100%; height: 100%; }
@@ -4891,8 +5246,8 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
    (clock/weather header, presence/sensor pills - see that card's own
    rows-1/2/3 CSS) fits in this strip. */
 :host([right-now-topbar]) .fh-main-layout {
-  grid-template-rows: auto auto auto auto 1fr;
-  grid-template-areas: "rightnow" "nav" "shortcuts" "legend" "grid";
+  grid-template-rows: auto auto auto auto auto 1fr;
+  grid-template-areas: "rightnow" "nav" "shortcuts" "legend" "editbar" "grid";
   /* Household ask (earlier round): "still a bit of room between the
      tiles and the calendar" - with no gap at all the bar's own bottom
      edge (its person-tiles included) butted directly against .week-nav/
@@ -4960,8 +5315,8 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
      tablet screen. */
   :host([right-now-topbar][right-now-topbar-position="top"]) .fh-main-layout {
     grid-template-columns: minmax(140px, 20%) 1fr;
-    grid-template-rows: auto auto auto 1fr;
-    grid-template-areas: "nav rightnow" "shortcuts shortcuts" "legend legend" "grid grid";
+    grid-template-rows: auto auto auto auto 1fr;
+    grid-template-areas: "nav rightnow" "shortcuts shortcuts" "legend legend" "editbar editbar" "grid grid";
   }
   :host([right-now-topbar][right-now-topbar-position="top"]) .week-nav {
     display: flex;
@@ -5005,8 +5360,8 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
      back to its usual single-row look. */
   :host([right-now-topbar][right-now-topbar-position="top"][right-now-topbar-size="small"]) .fh-main-layout {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto auto auto 1fr;
-    grid-template-areas: "rightnow" "nav" "shortcuts" "legend" "grid";
+    grid-template-rows: auto auto auto auto auto 1fr;
+    grid-template-areas: "rightnow" "nav" "shortcuts" "legend" "editbar" "grid";
   }
   :host([right-now-topbar][right-now-topbar-position="top"][right-now-topbar-size="small"]) .week-nav {
     display: grid;
@@ -5026,13 +5381,13 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
      as the mobile fallback above. */
   :host([right-now-topbar][right-now-topbar-position="left"]) .fh-main-layout {
     grid-template-columns: auto 1fr;
-    grid-template-rows: auto auto auto 1fr;
-    grid-template-areas: "rightnow nav" "rightnow shortcuts" "rightnow legend" "rightnow grid";
+    grid-template-rows: auto auto auto auto 1fr;
+    grid-template-areas: "rightnow nav" "rightnow shortcuts" "rightnow legend" "rightnow editbar" "rightnow grid";
   }
   :host([right-now-topbar][right-now-topbar-position="right"]) .fh-main-layout {
     grid-template-columns: 1fr auto;
-    grid-template-rows: auto auto auto 1fr;
-    grid-template-areas: "nav rightnow" "shortcuts rightnow" "legend rightnow" "grid rightnow";
+    grid-template-rows: auto auto auto auto 1fr;
+    grid-template-areas: "nav rightnow" "shortcuts rightnow" "legend rightnow" "editbar rightnow" "grid rightnow";
   }
 }
 .week-nav { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; margin-bottom: 8px; flex: 0 0 auto; }
@@ -5045,6 +5400,7 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .week-label { font-size: var(--fs-header-title, 15px); font-weight: 700; cursor: pointer; text-align: center; color: var(--fc-text); }
 :host(.fh-bg-dark) .week-label, :host(.fh-bg-dark) .countdown-line { color: #fff; }
 :host(.fh-theme-bg-dark:not(.fh-bg-photo)) .week-label, :host(.fh-theme-bg-dark:not(.fh-bg-photo)) .countdown-line { color: #fff; }
+:host([fh-see-through]:not([fh-own-bg])) .week-label, :host([fh-see-through]:not([fh-own-bg])) .countdown-line { color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75), 0 0 10px rgba(0, 0, 0, 0.35); }
 .countdown-line { font-size: var(--fs-countdown, 11px); font-weight: 700; color: var(--fc-text-secondary); margin-top: 1px; min-height: 13px; }
 /* Desktop/tablet keeps the always-visible This Week/Next Week/In 2 Weeks
    row (see .week-shortcuts) - this toggle button only does anything on
@@ -5328,6 +5684,29 @@ backdrop-filter: blur(var(--fc-glass-blur, 0px));
 .menu-banner.edit-mode.drop-target { outline-color: var(--fc-accent3); outline-width: 3px; transform: scale(1.04); }
 .event.event-draggable { cursor: grab; }
 .event.event-draggable.dragging-source { opacity: 0.3; }
+/* 2026.11.2 Edit mode */
+.event-draggable { cursor: grab; touch-action: none; }
+.event-draggable:not(.tl-event) { position: relative; }
+.event-draggable.dragging-source, .mc-pill.dragging-source { opacity: 0.3; }
+.eq-btns { position: absolute; top: -10px; right: -6px; display: flex; gap: 3px; z-index: 6; }
+.eq-btn { width: 22px; height: 22px; padding: 0; border-radius: 50%; border: 1.5px solid var(--fc-card, #fff); background: var(--fc-text, #3b2f1e); color: var(--fc-card, #fff); font-size: 12px; font-weight: 800; line-height: 1; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+.eq-btn.eq-del.sure { background: #c0514a; width: auto; min-width: 22px; padding: 0 6px; border-radius: 11px; }
+.eq-btn.eq-del.sure::after { content: " ?"; }
+.menu-banner.edit-mode { position: relative; }
+.month-cell .mc-pill.event-draggable .eq-btns { top: -6px; right: -3px; }
+.month-cell .mc-pill .eq-btn { width: 18px; height: 18px; font-size: 9px; }
+.month-cell.drop-target { outline: 2px dashed var(--fc-accent); outline-offset: -2px; }
+.tl-resize { position: absolute; left: 20%; right: 20%; bottom: 0; height: 9px; cursor: ns-resize; touch-action: none; border-radius: 4px; }
+.tl-resize::after { content: ""; position: absolute; left: 30%; right: 30%; bottom: 3px; height: 3px; border-radius: 2px; background: currentColor; opacity: 0.55; }
+.tl-event.resizing { z-index: 20; box-shadow: 0 0 0 2px var(--fc-accent); }
+.drag-time-tag { position: absolute; left: 4px; bottom: -22px; padding: 2px 7px; border-radius: 8px; background: var(--fc-text, #3b2f1e); color: var(--fc-card, #fff); font-size: 11px; font-weight: 800; white-space: nowrap; pointer-events: none; }
+.drag-time-tag:empty { display: none; }
+.meal-drag-ghost.copying { outline: 2px dashed var(--fc-accent); }
+.meal-drag-ghost.copying::before { content: "+"; position: absolute; top: -9px; left: -9px; width: 20px; height: 20px; border-radius: 50%; background: var(--fc-accent); color: var(--fc-accent-text, #fff); font-weight: 900; display: flex; align-items: center; justify-content: center; }
+.edit-mode-bar { display: flex; align-items: center; justify-content: space-between; gap: 6px 10px; flex-wrap: wrap; margin: 0 4px 8px; min-width: 0; padding: 7px 12px; border-radius: 12px; background: color-mix(in srgb, var(--fc-accent) 14%, var(--fc-card)); border: 1px dashed var(--fc-accent); font-size: 12.5px; color: var(--fc-text); }
+.edit-mode-hint { flex: 1 1 260px; }
+.edit-copy-week-btn { flex: 0 0 auto; border: none; border-radius: 10px; padding: 7px 12px; background: var(--fc-accent); color: var(--fc-accent-text); font-weight: 700; font-size: 13px; cursor: pointer; }
+.edit-copy-week-btn:disabled { opacity: 0.5; }
 .day-col.drop-target { outline: 3px solid var(--fc-accent3); outline-offset: -2px; border-radius: 8px; }
 .menu-banner .cook-bar { position: absolute; left: 8px; right: 8px; bottom: 3px; height: 4px; border-radius: 3px; box-shadow: 0 0 0 1px rgba(0,0,0,0.18); pointer-events: none; }
 .cook-picker { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -5766,6 +6145,71 @@ comes later in paint order. */
 .notify-profile-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-radius: 10px; background: var(--fc-surface-alt); box-shadow: var(--fc-shadow); }
 .notify-profile-row-name { font-weight: 700; color: var(--fc-text); }
 .notify-profile-row-summary { font-size: 12px; color: var(--fc-text-secondary); margin-top: 2px; }
+.holiday-banner-off { margin-left: 6px; padding: 1px 7px; border-radius: 999px; background: rgba(255,255,255,0.85); color: #3b2f1e; font-size: 0.82em; font-weight: 700; white-space: nowrap; }
+.holiday-banner-off { flex: 0 0 auto; }
+.breaks-box { max-width: 560px; }
+/* 2026.11.2.8: Add event on a Holidays / Birthdays / Special days calendar asks only what that kind needs */
+.ae-special-fields { display: none; }
+.add-event-box[data-kind] .ae-special-fields { display: block; }
+.add-event-box[data-kind] .add-event-tabs, .add-event-box[data-kind] .add-event-allday-field, .add-event-box[data-kind] .add-event-time-field,
+.add-event-box[data-kind] .add-event-recur-field, .add-event-box[data-kind] .add-event-location-field, .add-event-box[data-kind] .add-event-remind-field,
+.add-event-box[data-kind] .add-event-people-field, .add-event-box[data-kind] .add-event-checklist-field, .add-event-box[data-kind] .add-event-category-field,
+.add-event-box[data-kind] .add-event-checklist-existing-field, .add-event-box[data-kind] .add-event-checklist-custom-field { display: none !important; }
+.add-event-box[data-kind="holiday"] .add-event-notes-field, .add-event-box[data-kind="holiday"] .ae-year-field { display: none !important; }
+.ae-what-field { display: none; }
+.add-event-box[data-kind="special"] .ae-what-field, .add-event-box[data-kind="birthday"][data-on-special] .ae-what-field { display: block; }
+.add-event-box[data-kind="birthday"] .add-event-enddate-field, .add-event-box[data-kind="special"] .add-event-enddate-field,
+.add-event-box[data-kind="birthday"] .ae-holiday-fields, .add-event-box[data-kind="special"] .ae-holiday-fields { display: none !important; }
+.ae-year { max-width: 120px; }
+.ae-off-row .size-btn, .ae-who-field .size-btn { font-size: 13px; }
+.ae-people { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 6px 0; }
+.ae-people[hidden] { display: none; }
+.ae-people .brk-person { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; margin: 0; font-size: 15px; font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--fc-text); }
+.ae-people .brk-person input { margin: 0; }
+.brk-list { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
+.brk-item { border: 1px solid var(--fc-border); border-radius: 12px; padding: 10px 12px; background: var(--fc-card); }
+.brk-item.focus { box-shadow: 0 0 0 2px var(--fc-accent, #c9a96e); }
+.brk-top { display: flex; align-items: center; gap: 8px; }
+.brk-icon { font-size: 22px; flex: 0 0 auto; }
+.brk-name { flex: 1 1 auto; min-width: 0; font-size: 16px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-family: inherit; }
+.brk-remove { flex: 0 0 auto; border: none; background: transparent; color: var(--fc-muted, #888); font-size: 16px; cursor: pointer; padding: 6px; }
+.brk-dates { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 8px 0; }
+.brk-dates label { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--fc-text); }
+.brk-dates input { font-size: 15px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-family: inherit; }
+.brk-off-row .size-btn, .brk-who .size-btn { font-size: 13px; }
+.brk-who { margin-top: 6px; }
+.brk-who[hidden], .brk-people[hidden] { display: none; }
+.brk-people { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 6px 0; }
+.brk-person { display: inline-flex; align-items: center; gap: 4px; font-size: 14px; color: var(--fc-text); }
+.brk-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 12px; }
+/* week/day columns: the name keeps its room and the tag goes on the next line when it doesn't fit beside it */
+.holiday-banners:not(.compact) .holiday-banner { flex-wrap: wrap; justify-content: center; }
+.holiday-banners:not(.compact) .holiday-banner-text { flex: 1 1 0; min-width: 55%; }
+.holiday-banners:not(.compact) .holiday-banner-off { margin: 2px auto 0; }
+/* small month cells: just the icon (the name says the rest when tapped) */
+.holiday-banners.compact .holiday-banner-off { margin-left: 3px; padding: 0 3px; background: transparent; }
+.holiday-banners.compact .holiday-banner-off-text { display: none; }
+.event-info-dayoff-btns { flex-wrap: wrap; }
+.event-info-dayoff-btns .size-btn { flex: 1 1 40%; min-height: 40px; font-size: 13px; }
+.remove-day-block-field { margin-top: 6px; }
+.btn-remove-day-block { width: 100%; min-height: 42px; border-radius: 10px; border: 1px dashed #c0514a; background: transparent; color: #b5483c; font-size: 14px; font-weight: 700; cursor: pointer; }
+.btn-remove-day-block.is-sure { background: #c0514a; color: #fff; border-style: solid; }
+.event-info-map-link { color: var(--fc-accent, #4a7bd0); text-decoration: none; word-break: break-word; }
+.event-info-map-link .fh-map-text { text-decoration: underline; text-underline-offset: 3px; }
+.maps-provider-select, .right-now-look-ahead-select { width: 100%; box-sizing: border-box; font-size: 16px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-family: inherit; }
+.notify-profile-row-local { font-size: 11.5px; color: var(--fc-text-secondary); margin-top: 3px; font-style: italic; }
+.notify-profile-row-move-btn { flex: none; border: none; border-radius: 8px; padding: 8px 12px; font-size: 13px; font-weight: 700; background: var(--fc-card); color: var(--fc-accent); cursor: pointer; box-shadow: var(--fc-shadow); margin-right: 6px; }
+.local-person-login { width: 100%; box-sizing: border-box; min-height: 42px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--fc-border, #ccc); background: var(--fc-card); color: var(--fc-text); font-size: 15px; margin: 6px 0 10px; }
+.notify-profile-row-rename-btn { flex: none; border: none; border-radius: 8px; padding: 8px 12px; font-size: 13px; font-weight: 700; background: var(--fc-card); color: var(--fc-text); cursor: pointer; box-shadow: var(--fc-shadow); margin-right: 6px; }
+.member-add-local-btn { margin-top: 8px; }
+.recur-scope-box.local-person-box { max-width: 460px; }
+.local-person-box .local-person-text, .local-person-box .local-person-list { text-align: left; }
+.local-person-text { font-size: 14px; line-height: 1.45; margin: 8px 0; }
+.local-person-list { font-size: 13.5px; line-height: 1.45; margin: 6px 0 8px; padding-left: 20px; }
+.local-person-list li { margin: 4px 0; }
+.local-person-ok:not(:disabled), .local-person-recommended { background: var(--fc-accent) !important; color: var(--fc-accent-text) !important; font-weight: 700; }
+.local-person-name { width: 100%; box-sizing: border-box; min-height: 42px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--fc-border, #ccc); background: var(--fc-card); color: var(--fc-text); font-size: 15px; margin: 6px 0 10px; }
+.local-person-error:empty { display: none; }
 .notify-profile-row-edit-btn { flex: none; border: none; border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 700; background: var(--fc-accent); color: var(--fc-accent-text); cursor: pointer; box-shadow: var(--fc-shadow); }
 .notify-profile-row-actions { display: flex; align-items: center; gap: 8px; flex: none; }
 .notify-profile-row-remove-btn { flex: none; width: 36px; height: 36px; border-radius: 8px; border: none; background: var(--fc-card); color: #b5583c; font-size: 15px; cursor: pointer; box-shadow: var(--fc-shadow); }
@@ -5873,6 +6317,40 @@ comes later in paint order. */
 .notify-profile-companion .cmp-field input[type=range] { padding: 0; border: none; background: none; }
 .notify-profile-companion .cmp-light { margin-bottom: 6px; }
 .notify-profile-companion .cmp-wl-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
+.notify-profile-companion .cmp-screens { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 4px 8px; }
+.notify-profile-companion .cmp-timer-list, .notify-profile-companion .cmp-room-list { display: flex; flex-direction: column; gap: 6px; }
+.notify-profile-companion .cmp-timer-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fc-text-secondary); }
+.notify-profile-companion .cmp-timer-row input, .notify-profile-companion .cmp-room { box-sizing: border-box; font: inherit; padding: 6px 8px; border: 1px solid var(--fc-border); border-radius: 8px; background: var(--fc-input-bg, var(--fc-card)); color: var(--fc-text); }
+.notify-profile-companion .cmp-timer-icon { width: 52px; text-align: center; }
+.notify-profile-companion .cmp-timer-title { flex: 1; min-width: 0; }
+.notify-profile-companion .cmp-timer-min, .notify-profile-companion .cmp-timer-stars { width: 60px; }
+.notify-profile-companion .cmp-room, .notify-profile-companion .cmp-info { width: 100%; box-sizing: border-box; font: inherit; font-size: 14px; padding: 7px 9px; border: 1px solid var(--fc-border); border-radius: 8px; background: var(--fc-card); color: var(--fc-text); }
+.notify-profile-companion .cmp-info-list { display: flex; flex-direction: column; gap: 6px; }
+.notify-profile-companion .cmp-pick { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; }
+.notify-profile-companion .cmp-pick-name { flex: 1 0 100%; order: 3; font-size: 11px; color: var(--fc-text-secondary); padding-left: 4px; }
+.notify-profile-companion .cmp-pick-name:empty { display: none; }
+.notify-profile-companion .cmp-pick-name.is-missing { color: #b5583c; }
+
+.notify-profile-companion .cmp-pick-list { position: absolute; left: 0; right: 0; top: 100%; z-index: 20; margin-top: 2px; max-height: 240px; overflow-y: auto; background: var(--fc-card-opaque, var(--fc-card)); border: 1px solid var(--fc-border); border-radius: 10px; box-shadow: 0 6px 18px rgba(0,0,0,0.18); }
+.notify-profile-companion .cmp-pick-list[hidden] { display: none; }
+.notify-profile-companion .cmp-pick-item { display: grid; grid-template-columns: 26px 1fr; grid-template-rows: auto auto; width: 100%; text-align: left; border: none; background: none; padding: 6px 10px; font: inherit; color: var(--fc-text); cursor: pointer; }
+.notify-profile-companion .cmp-pick-item:hover { background: var(--fc-surface-alt); }
+.notify-profile-companion .cmp-pick-item span { grid-row: 1 / span 2; align-self: center; }
+.notify-profile-companion .cmp-pick-item b { font-size: 14px; font-weight: 600; }
+.notify-profile-companion .cmp-pick-item small { font-size: 11px; color: var(--fc-text-secondary); }
+.notify-profile-companion .cmp-pick-none { padding: 8px 10px; font-size: 13px; color: var(--fc-text-secondary); }
+.notify-profile-companion .cmp-x { flex: 0 0 auto; border: none; background: none; color: var(--fc-text-secondary); font-size: 15px; cursor: pointer; padding: 4px 6px; }
+.notify-profile-companion .cmp-add { align-self: flex-start; margin-top: 6px; border: 1px dashed var(--fc-border); border-radius: 10px; background: none; color: var(--fc-text); padding: 6px 12px; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
+.notify-profile-companion .cmp-sel-play { display: flex; align-items: stretch; gap: 6px; }
+.notify-profile-companion .cmp-sel-play > select { flex: 1 1 0; min-width: 0; width: auto; }
+.notify-profile-companion .cmp-play { border: 1px solid var(--fc-border); border-radius: 999px; background: var(--fc-card); color: var(--fc-text); padding: 5px 11px; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
+.notify-profile-companion .cmp-pick > input, .notify-profile-companion .cmp-field .cmp-pick > input { flex: 1 1 0; width: auto; min-width: 0; margin-bottom: 0; }
+.notify-profile-companion .cmp-field .cmp-pick { width: 100%; }
+.notify-profile-companion .cmp-play.playing { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
+.notify-profile-companion .cmp-play { flex: 0 0 auto; white-space: nowrap; }
+.notify-profile-companion .cmp-play:disabled { opacity: 0.45; cursor: default; }
+.notify-profile-companion .cmp-play .cmp-play-stop, .notify-profile-companion .cmp-play.playing .cmp-play-go { display: none; }
+.notify-profile-companion .cmp-play.playing .cmp-play-stop { display: inline; }
 .notify-profile-companion .cmp-wl { box-sizing: border-box; width: 100%; font: inherit; font-size: 14px; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); }
 .notify-profile-companion .cmp-msg-row, .notify-profile-companion .cmp-row { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
 .notify-profile-companion .cmp-msg { flex: 1 1 180px; width: auto; }
@@ -5886,6 +6364,7 @@ comes later in paint order. */
 .wishlist-link-item { display: flex; flex-direction: column; gap: 4px; }
 .wishlist-link-row { display: flex; gap: 6px; align-items: center; }
 .wishlist-link-row .wishlist-link-input { flex: 1 1 0; min-width: 0; }
+.wishlist-link-name { width: 100%; box-sizing: border-box; }
 .wishlist-link-source { flex: 0 0 auto; font-size: 11px; font-weight: 800; padding: 3px 8px; border-radius: 999px; background: var(--fc-surface-2, rgba(0,0,0,0.06)); color: var(--fc-text-secondary); text-transform: uppercase; letter-spacing: 0.03em; }
 .wishlist-link-status { font-size: 12px; color: var(--fc-text-secondary); padding-left: 2px; }
 .wishlist-link-status.is-ok::before { content: "\\2713  "; color: #2e7d32; font-weight: 800; }
@@ -6228,6 +6707,22 @@ instead of the usual stacked field layout. */
 .recur-scope-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
 .recur-scope-btn { padding: 12px 14px; border-radius: 10px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
 .recur-scope-btn:active { opacity: 0.7; }
+.event-info-chip.is-movable { cursor: pointer; box-shadow: 0 0 0 1.5px var(--fc-border); }
+.event-info-chip.is-movable::after { content: " ▾"; font-size: 0.85em; opacity: 0.7; }
+.event-info-chip.is-moving { box-shadow: 0 0 0 2px var(--fc-accent); }
+.event-info-edit-cal-row { display: flex; align-items: center; gap: 8px; margin: 2px 0 6px; }
+.event-info-edit-cal-label { font-size: 13px; font-weight: 700; color: var(--fc-text-secondary); }
+.event-info-edit-cal-btn { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; padding: 6px 12px; border-radius: 999px; border: 1.5px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; }
+.event-info-edit-cal-btn.is-moving { border-color: var(--fc-accent); box-shadow: 0 0 0 2px var(--fc-accent); }
+.event-info-edit-cal-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.event-info-edit-cal-chev { font-size: 11px; color: var(--fc-text-secondary); }
+.event-info-edit-cal-dot { display: inline-block; width: 12px; height: 12px; min-width: 12px; border-radius: 50%; }
+.move-cal-btn { display: flex; align-items: center; gap: 10px; text-align: left; }
+.move-cal-btn .move-cal-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.move-cal-btn small { font-size: 12px; font-weight: 600; color: var(--fc-text-secondary); }
+.move-cal-btn.is-here { opacity: 0.75; }
+.move-cal-btn.is-picked { border-color: var(--fc-accent); }
+.move-cal-btn:disabled { opacity: 0.45; cursor: default; }
 .recur-scope-btn.recur-scope-cancel { background: transparent; box-shadow: none; border-color: transparent; color: var(--fc-text-secondary); font-weight: 600; }
 .dup-when-box { text-align: left; }
 .dup-when-box h2 { text-align: center; }
@@ -6556,15 +7051,19 @@ instead of the usual stacked field layout. */
 .holiday-bg-recurring-label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fc-text); cursor: pointer; }
 .holiday-bg-recurring-label input { width: 18px; height: 18px; flex: 0 0 auto; margin: 0; cursor: pointer; }
 .holiday-bg-cover-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
-.holiday-bg-cover-btn { min-height: 34px; padding: 4px 8px; border-radius: 8px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text-secondary); font-size: 12px; font-weight: 700; cursor: pointer; }
-.holiday-bg-cover-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
+.holiday-bg-cover-btn, .holiday-bg-span-btn { min-height: 34px; padding: 4px 8px; border-radius: 8px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text-secondary); font-size: 12px; font-weight: 700; cursor: pointer; }
+.holiday-bg-cover-btn.active, .holiday-bg-span-btn.active { background: var(--fc-accent); color: var(--fc-accent-text); border-color: var(--fc-accent); }
 .holiday-bg-image-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .holiday-bg-preview { width: 52px; height: 52px; object-fit: cover; border-radius: 8px; border: 1px solid var(--fc-border); flex: 0 0 auto; }
+.holiday-bg-thumb { position: relative; flex: 0 0 auto; }
+.holiday-bg-thumb .holiday-bg-remove-image-btn { position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; border-radius: 50%; border: none; background: var(--fc-card); color: #b5583c; font-size: 11px; line-height: 20px; padding: 0; cursor: pointer; box-shadow: var(--fc-shadow); }
+.holiday-bg-span-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.holiday-bg-day[hidden] { display: none; }
 .holiday-bg-preview-empty { display: flex; align-items: center; justify-content: center; font-size: 22px; background: var(--fc-card); opacity: 0.7; }
 .holiday-bg-btn { min-height: 34px; padding: 4px 12px; border-radius: 8px; border: 2px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: var(--fc-shadow); }
 .holiday-bg-upload-status { flex: 1 1 100%; font-size: 11px; color: var(--fc-text-secondary); font-style: italic; }
 .holiday-bg-empty { font-size: 12px; color: var(--fc-text-secondary); font-style: italic; margin-bottom: 6px; }
-@media (min-width: 640px) { .holiday-bg-cover-row { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+
 @media (max-width: 480px) { .holiday-bg-details { padding-left: 0; } }
 .number-input-row input[type="number"] { width: 70px; text-align: center; font-size: 14px; padding: 6px 4px; border-radius: 8px; border: 1px solid var(--fc-border); background: var(--fc-card); color: var(--fc-text); flex: 0 0 auto; }
 .number-input-hint { font-size: 12px; color: var(--fc-text-secondary); }
@@ -6648,8 +7147,46 @@ instead of the usual stacked field layout. */
 </style>
 `;
 
+// birthdays on a Special days calendar (a cake and an age instead of "N years")
+const FH_BIRTHDAY_WORDS = /birthday|b-day|bday|geburtstag|cumpleaños|cumpleanos|compleanno|verjaardag|urodzin|aniversário de|aniversario de nacimiento/;
+// 2026.11.2.8: banner colour for the family's own holidays and breaks
+const FH_BREAK_COLOR = "#8fb8de";
+// the Add event calendar picker's entry for Family Hub's own holidays & breaks when no calendar is set to Holidays
+const FH_BREAKS_PICK = "__family_breaks__";
 // 2026.11.1: a calendar can hold holidays, birthdays or special days (anniversaries, celebrations)
 const FH_SPECIAL_DAY_KINDS = ["holiday", "birthday", "special"];
+// 2026.11.2 (#37): an event's location opens in a maps app. Household setting mapsProvider: "auto" (Apple Maps on an
+// iPhone, iPad or Mac, Google Maps everywhere else), "google", "apple", "waze", or "off" (plain text). A location
+// that's already a web address (a video call link, say) opens as itself.
+// 2026.11.2: same as days_off.norm_name - "Thanksgiving Day (observed) 2026" -> "thanksgiving day"
+function __fhDayOffName(name) {
+let s = String(name || "").toLowerCase();
+s = s.replace(/\(\s*(observed|observance|substitute)\s*\)/g, " ");
+s = s.replace(/\b(19|20)\d{2}\b/g, " ");
+s = s.replace(/\s+/g, " ").trim().replace(/^[ \-–—:,]+|[ \-–—:,]+$/g, "");
+return s.slice(0, 120);
+}
+function __fhMapUrl(location, provider) {
+const text = String(location || "").trim();
+if (!text || provider === "off") return "";
+if (/^https?:\/\/\S+$/i.test(text)) return text;
+const q = encodeURIComponent(text.replace(/\s+/g, " "));
+let p = provider || "auto";
+if (p === "auto") {
+const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+p = /iPhone|iPad|iPod|Macintosh/.test(ua) ? "apple" : "google";
+}
+if (p === "apple") return "https://maps.apple.com/?q=" + q;
+if (p === "waze") return "https://waze.com/ul?q=" + q + "&navigate=yes";
+return "https://www.google.com/maps/search/?api=1&query=" + q;
+}
+function __fhMapLinkHtml(location, provider, cls) {
+const text = String(location || "");
+const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const url = __fhMapUrl(text, provider);
+if (!url) return esc(text);
+return '<a class="' + (cls || "fh-map-link") + '" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">&#128205;&nbsp;<span class="fh-map-text">' + esc(text) + "</span></a>";
+}
 class FamilyWeekCalendarCard extends HTMLElement {
 // No general getConfigElement/getConfigForm here on purpose - a graphical editor covering the full config was tried (v33) but reverted
 static getConfigElement() {
@@ -6981,6 +7518,7 @@ embedded_size: this._getRightNowTopBarSize(),
 embedded_layout: (position === "left" || position === "right") && wide ? "sidebar" : "bar",
 show_clock: this._getRightNowTopBarShowClock(),
 show_weather: this._getRightNowTopBarShowWeather(),
+look_ahead_days: this._getSettings().rightNowLookAheadDays || 2,
 people_entities: peopleOverride ? peopleOverride.map((p) => p.entity) : [],
 people_override: peopleOverride,
 };
@@ -7324,6 +7862,25 @@ this._renderGrid();
 this._fetchEvents();
 this._updateNavLabel();
 }
+// 2026.11.2: where you were (view and week/month/day), saved when the page is hidden and put back if the card loads
+// again soon after (the iPhone app reloads the whole page; Home Assistant also rebuilds cards when it reconnects).
+// Offsets count from today, so it's only put back on the same day.
+_fhViewState() {
+if (!this._viewMode) return null;
+return { day: this._dateKey(new Date()), mode: this._viewMode, week: this._weekOffset || 0, month: this._monthOffset || 0, dayOff: this._dayOffset || 0, picked: this._weekSelectedDate || null };
+}
+_fhRestoreViewState(v) {
+if (!v || v.day !== this._dateKey(new Date()) || typeof v.mode !== "string") return;
+if (v.mode === this._viewMode && !v.week && !v.month && !v.dayOff) return;
+this._viewMode = v.mode;
+this._weekOffset = Number(v.week) || 0;
+this._monthOffset = Number(v.month) || 0;
+this._dayOffset = Number(v.dayOff) || 0;
+this._weekSelectedDate = v.picked || null;
+this._renderGrid();
+this._fetchEvents();
+this._updateNavLabel();
+}
 _monthAnchor() {
 const now = new Date();
 return new Date(now.getFullYear(), now.getMonth() + (this._monthOffset || 0), 1);
@@ -7403,7 +7960,8 @@ btn.classList.toggle("active", btn.dataset.view === family);
 // Rearranging meals works off Week's day-columns, whatever row count this device has them split across (see _renderWeekGrid)
 const editBtn = this._root.querySelector(".edit-meals-btn");
 if (editBtn) {
-editBtn.style.display = (this._viewMode === "meals" || (this._viewMode === "week" && !this._getSettings().mealsOwnView)) && this._getBlocks().length ? "" : "none";
+// 2026.11.2: Week, Meals and Month (meals, events, reminders and chores)
+editBtn.style.display = this._editModeViewOk() ? "" : "none";
 }
 const shortcuts = this._root.querySelector(".week-shortcuts");
 if (this._viewFamily(this._viewMode) === "month") {
@@ -8390,7 +8948,8 @@ const d = when && typeof when.getFullYear === "function" ? when : this._toDate(e
 if (!d) return "";
 const n = d.getFullYear() - parseInt(m[1], 10);
 if (!(n > 0 && n < 150)) return "";
-if (kind === "special" || (kind !== "birthday" && /anniversar|jahrestag|aniversario|anniversaire|anniversario|jubileum|rocznic/i.test(ev.summary || ""))) {
+const birthdayOnSpecial = kind === "special" && (FH_BIRTHDAY_WORDS.test(String(ev.summary || "").toLowerCase()) || /\bborn\b/i.test(m[0]));
+if (!birthdayOnSpecial && (kind === "special" || (kind !== "birthday" && /anniversar|jahrestag|aniversario|anniversaire|anniversario|jubileum|rocznic/i.test(ev.summary || "")))) {
 return ` (${this._t("calendar.n_years", "%n% years", { n: String(n) })})`;
 }
 return ` (${n})`;
@@ -9281,6 +9840,8 @@ blocks: ["Breakfast", "Lunch", "Dinner"],
 dateBlocks: {},
 // EXTRA meal blocks that recur every week on a given DAY OF THE WEEK - e.g. Monday and Wednesday always get an extra Snack block
 weekdayBlocks: {},
+// 2026.11.2: extra blocks taken off one day ({ "YYYY-MM-DD": ["Snack"] }) - hidden there, so the other blocks keep their places
+hiddenDayBlocks: {},
 fontSize: "medium",
 blockSize: "medium",
 showTimeline: false,
@@ -9304,6 +9865,8 @@ rightNowTopBarSizeShared: "large",
 rightNowTopBarShowClockShared: true,
 rightNowTopBarShowWeatherShared: true,
 rightNowTopBarExcludedPeople: [],
+// 2026.11.2: how many days the Right Now "Next" line looks ahead (today counts as one) - household-wide
+rightNowLookAheadDays: 2,
 // Two separate settings combine to land on that view: this defaultView flag (Week family vs Month family
 defaultView: "month",
 countdownEnabled: true,
@@ -9338,6 +9901,8 @@ alarmTtsEntityId: "",
 people: [],
 weekendBreakfast: false,
 showMealsInMonth: false,
+// 2026.11.2.11: Card background: See-through - every Family Hub card leaves its background empty so the dashboard's shows
+seeThroughBackground: false,
 // 2026.11.1: meals get their own view (Meals in the Week/Day/Month menu) and leave the others
 mealsOwnView: false,
 // How many days ahead the Agenda view's scrolling list shows, starting from today (or wherever its own nav arrows have moved it to)
@@ -9352,6 +9917,8 @@ weatherEntity: "",
 // purely a visual "where am I in the day" aid: greys out an event/reminder that's already passed on TODAY's column, still fully interactable
 greyOutPastEvents: false,
 showPersonPictures: true,
+// 2026.11.2 (#37): which maps app an event's location opens in (see __fhMapUrl)
+mapsProvider: "auto",
 showNowMarker: true,
 smallScreenMode: false,
 scrollLocked: false,
@@ -9423,6 +9990,8 @@ remindersEntity: "",
 wishlistEntity: "",
 // 2026.11.1: GoWish / public Amazon wish lists brought onto that wish list (see wishlist_links.py)
 wishlistLinks: [],
+// a name for each linked list, keyed by its link ("https://..."); shown as that list's section on the To-Do card
+wishlistLinkNames: {},
 // 2026.11.1: their Family Hub Companion screen's day, sounds and room light (see companion.py); null = the defaults
 companion: null,
 // Which person.
@@ -9550,9 +10119,19 @@ if (!entry || typeof entry !== "object") return;
 const source = entry.source === "custom" ? "custom" : "predefined";
 const name = typeof entry.name === "string" ? entry.name.trim().slice(0, 60) : "";
 const enabled = !!entry.enabled;
-const imageUrl = typeof entry.imageUrl === "string" ? entry.imageUrl.trim().slice(0, 500) : "";
+// 2026.11.2.10: up to 5 photos (imageUrl stays the first, for older versions)
+const imageUrls = [];
+(Array.isArray(entry.imageUrls) ? entry.imageUrls : []).concat([entry.imageUrl]).forEach((u) => {
+const url = typeof u === "string" ? u.trim().slice(0, 500) : "";
+if (url && !imageUrls.includes(url) && imageUrls.length < FH_HOLIDAY_MAX_PHOTOS) imageUrls.push(url);
+});
+const imageUrl = imageUrls[0] || "";
 const expandFullDay = !!entry.expandFullDay;
-const expandScope = ["day", "week", "month"].includes(entry.expandScope) ? entry.expandScope : "day";
+// how long it lasts (its day, its Sunday-Saturday week, its month) - the theme and the photo for all of it; older
+// entries only had a week or month when the photo was full screen
+const oldScope = ["day", "week", "month"].includes(entry.expandScope) ? entry.expandScope : "day";
+const span = ["day", "week", "month"].includes(entry.span) ? entry.span : expandFullDay ? oldScope : "day";
+const expandScope = span;
 // optional: switch to this theme while the holiday's background is showing ("" = keep the usual theme)
 const themeId = typeof entry.themeId === "string" ? entry.themeId.trim().slice(0, 120) : "";
 if (source === "predefined") {
@@ -9560,7 +10139,7 @@ const predefinedKey = typeof entry.predefinedKey === "string" ? entry.predefined
 const def = HOLIDAY_PREDEFINED_DEFS.find((d) => d.key === predefinedKey);
 // An unrecognized predefinedKey (an older/newer version's holiday this build doesn't know about) is dropped rather than kept around as a row
 if (!def) return;
-byPredefinedKey[predefinedKey] = { id: `predefined-${predefinedKey}`, source: "predefined", predefinedKey, name: name || def.name, enabled, imageUrl, expandFullDay, expandScope, themeId };
+byPredefinedKey[predefinedKey] = { id: `predefined-${predefinedKey}`, source: "predefined", predefinedKey, name: name || def.name, enabled, imageUrl, imageUrls, expandFullDay, expandScope, span, themeId };
 } else {
 if (!name) return; // a custom date with no name is meaningless - drop it rather than showing a blank row forever
 // One custom entry can have several dates (e.g. "Birthdays" with everyone's), each with an
@@ -9588,11 +10167,11 @@ if (!dates.length) dates.push({ month: 1, day: 1, year: null, recurring: true, l
 const first = dates[0];
 const id = typeof entry.id === "string" && entry.id ? entry.id : `custom-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 // month/day/year/recurring mirror the first date, for older versions that only know one
-custom.push({ id, source: "custom", predefinedKey: null, name, enabled, month: first.month, day: first.day, year: first.year, recurring: first.recurring, dates, imageUrl, expandFullDay, expandScope, themeId });
+custom.push({ id, source: "custom", predefinedKey: null, name, enabled, month: first.month, day: first.day, year: first.year, recurring: first.recurring, dates, imageUrl, imageUrls, expandFullDay, expandScope, span, themeId });
 }
 });
 const predefined = HOLIDAY_PREDEFINED_DEFS.map(
-(def) => byPredefinedKey[def.key] || { id: `predefined-${def.key}`, source: "predefined", predefinedKey: def.key, name: def.name, enabled: false, imageUrl: "", expandFullDay: false, expandScope: "day", themeId: "" }
+(def) => byPredefinedKey[def.key] || { id: `predefined-${def.key}`, source: "predefined", predefinedKey: def.key, name: def.name, enabled: false, imageUrl: "", imageUrls: [], expandFullDay: false, expandScope: "day", span: "day", themeId: "" }
 );
 // Custom entries capped at a generous but bounded 50 - a household's own picked special days, not meant to become an unbounded list
 return predefined.concat(custom.slice(0, 50));
@@ -9905,6 +10484,13 @@ names.push(name);
 if (names.length) dateBlocks[dateKey] = names.slice(0, 6);
 });
 }
+const hiddenDayBlocks = {};
+if (parsed.hiddenDayBlocks && typeof parsed.hiddenDayBlocks === "object") {
+Object.keys(parsed.hiddenDayBlocks).filter((k) => /^\d{4}-\d{2}-\d{2}$/.test(k)).sort().slice(-200).forEach((k) => {
+const names = (Array.isArray(parsed.hiddenDayBlocks[k]) ? parsed.hiddenDayBlocks[k] : []).filter((n) => typeof n === "string" && n.trim()).map((n) => n.trim()).slice(0, 10);
+if (names.length) hiddenDayBlocks[k] = names;
+});
+}
 // Recurring per-weekday extra blocks (see _defaultSettings' weekdayBlocks comment) - same shape/validation as dateBlocks just above
 const weekdayBlocks = {};
 if (parsed.weekdayBlocks && typeof parsed.weekdayBlocks === "object") {
@@ -9947,6 +10533,7 @@ const rightNowTopBarShowWeatherShared = typeof parsed.rightNowTopBarShowWeatherS
 const rightNowTopBarExcludedPeople = Array.isArray(parsed.rightNowTopBarExcludedPeople)
 ? parsed.rightNowTopBarExcludedPeople.map((e) => (typeof e === "string" ? e.trim() : "")).filter(Boolean)
 : defaults.rightNowTopBarExcludedPeople;
+const rightNowLookAheadDays = [1, 2, 3, 7, 14].includes(Number(parsed.rightNowLookAheadDays)) ? Number(parsed.rightNowLookAheadDays) : defaults.rightNowLookAheadDays;
 let timelineStartHour = Number.isInteger(parsed.timelineStartHour) ? parsed.timelineStartHour : defaults.timelineStartHour;
 let timelineEndHour = Number.isInteger(parsed.timelineEndHour) ? parsed.timelineEndHour : defaults.timelineEndHour;
 timelineStartHour = Math.min(23, Math.max(0, timelineStartHour));
@@ -10010,12 +10597,18 @@ const weekendBreakfast = typeof parsed.weekendBreakfast === "boolean" ? parsed.w
 const showMealsInMonth = typeof parsed.showMealsInMonth === "boolean" ? parsed.showMealsInMonth : defaults.showMealsInMonth;
 const agendaShowMeals = typeof parsed.agendaShowMeals === "boolean" ? parsed.agendaShowMeals : defaults.agendaShowMeals;
 const mealsOwnView = typeof parsed.mealsOwnView === "boolean" ? parsed.mealsOwnView : defaults.mealsOwnView;
+const seeThroughBackground = parsed.seeThroughBackground === true;
 const discreetModeEnabled = typeof parsed.discreetModeEnabled === "boolean" ? parsed.discreetModeEnabled : defaults.discreetModeEnabled;
 const mealPlanEntity = typeof parsed.mealPlanEntity === "string" ? parsed.mealPlanEntity.trim() : defaults.mealPlanEntity;
 const mealTemplatesEntity = typeof parsed.mealTemplatesEntity === "string" ? parsed.mealTemplatesEntity.trim() : defaults.mealTemplatesEntity;
 const weatherEntity = typeof parsed.weatherEntity === "string" ? parsed.weatherEntity.trim() : defaults.weatherEntity;
 const greyOutPastEvents = typeof parsed.greyOutPastEvents === "boolean" ? parsed.greyOutPastEvents : defaults.greyOutPastEvents;
 const showPersonPictures = typeof parsed.showPersonPictures === "boolean" ? parsed.showPersonPictures : defaults.showPersonPictures;
+const mapsProvider = ["auto", "google", "apple", "waze", "off"].includes(parsed.mapsProvider) ? parsed.mapsProvider : defaults.mapsProvider;
+// 2026.11.2: holidays marked no school / no work (server-owned: family_hub/days_off/set)
+const daysOff = Array.isArray(parsed.daysOff) ? parsed.daysOff.filter((r) => r && typeof r.calendar === "string" && typeof r.name === "string" && ["school", "work", "both"].includes(r.off)) : [];
+// 2026.11.2.8: the family's own holidays and breaks (server-owned: family_hub/days_off/set_breaks)
+const familyBreaks = Array.isArray(parsed.familyBreaks) ? parsed.familyBreaks.filter((b) => b && typeof b.name === "string" && /^\d{4}-\d{2}-\d{2}$/.test(b.start || "") && /^\d{4}-\d{2}-\d{2}$/.test(b.end || "")) : [];
 const showNowMarker = typeof parsed.showNowMarker === "boolean" ? parsed.showNowMarker : defaults.showNowMarker;
 const smallScreenMode = typeof parsed.smallScreenMode === "boolean" ? parsed.smallScreenMode : defaults.smallScreenMode;
 const scrollLocked = typeof parsed.scrollLocked === "boolean" ? parsed.scrollLocked : defaults.scrollLocked;
@@ -10134,6 +10727,7 @@ return {
 blocks,
 dateBlocks,
 weekdayBlocks,
+hiddenDayBlocks,
 fontSize,
 blockSize,
 showTimeline,
@@ -10152,6 +10746,7 @@ rightNowTopBarSizeShared,
 rightNowTopBarShowClockShared,
 rightNowTopBarShowWeatherShared,
 rightNowTopBarExcludedPeople,
+rightNowLookAheadDays,
 timelineStartHour,
 timelineEndHour,
 defaultView,
@@ -10174,12 +10769,16 @@ weekendBreakfast,
 showMealsInMonth,
 agendaShowMeals,
 mealsOwnView,
+seeThroughBackground,
 discreetModeEnabled,
 mealPlanEntity,
 mealTemplatesEntity,
 weatherEntity,
 greyOutPastEvents,
 showPersonPictures,
+mapsProvider,
+daysOff,
+familyBreaks,
 showNowMarker,
 smallScreenMode,
 scrollLocked,
@@ -10296,6 +10895,16 @@ extraSensors: Array.isArray(p.extraSensors)
 wishlistLinks: Array.isArray(p.wishlistLinks)
 ? Array.from(new Set(p.wishlistLinks.map((e) => (typeof e === "string" ? e.trim() : "")).filter(Boolean))).slice(0, 20)
 : [],
+wishlistLinkNames: (() => {
+const names = p.wishlistLinkNames && typeof p.wishlistLinkNames === "object" && !Array.isArray(p.wishlistLinkNames) ? p.wishlistLinkNames : {};
+const out = {};
+(Array.isArray(p.wishlistLinks) ? p.wishlistLinks : []).forEach((u) => {
+const key = FamilyWeekCalendarCard._wishlistLinkKey(u);
+const name = typeof names[key] === "string" ? names[key].trim().slice(0, 60) : "";
+if (key && name) out[key] = name;
+});
+return out;
+})(),
 // 2026.11.1: Family Hub Companion (checked again by companion.normalize on the Home Assistant side)
 companion: p.companion && typeof p.companion === "object" && !Array.isArray(p.companion) ? Object.assign({}, p.companion) : null,
 };
@@ -10335,6 +10944,7 @@ const applyStoreSettings = (settings) => {
 this._settingsCache = this._normalizeSettings(settings);
 // the other cards on this device follow the same household Accessibility settings
 if (window.__familyHubEink) window.__familyHubEink.setHousehold(this._settingsCache.accessibility);
+if (window.__familyHubEink && window.__familyHubEink.setSeeThrough) window.__familyHubEink.setSeeThrough(this._settingsCache.seeThroughBackground === true);
 this._applySizeVars();
 this._registerFabCoordinator();
 if (this._root) {
@@ -10412,6 +11022,49 @@ return this._getSettings().blocks;
 // 2026.11.1: with "Meals in their own view" on, only the Meals view shows the meals
 _mealsShownHere() {
 return !this._getSettings().mealsOwnView || this._viewMode === "meals";
+}
+// 2026.11.2: an extra block (one added for a day or a weekday, not the everyday ones) can be taken off one day
+_baseBlockCount(dayDate) {
+const settings = this._getSettings();
+const blocks = settings.blocks.slice();
+const weekday = dayDate.getDay();
+if (blocks.length && settings.weekendBreakfast && (weekday === 0 || weekday === 6) && !blocks.some((b) => /breakfast/i.test(b))) return blocks.length + 1;
+return blocks.length;
+}
+_isDayBlockHidden(dateKey, name) {
+const list = ((this._getSettings().hiddenDayBlocks || {})[dateKey]) || [];
+const key = String(name || "").toLowerCase();
+return list.some((n) => n.toLowerCase() === key);
+}
+_isExtraBlock(dayDate, blockIndex) {
+return blockIndex >= this._baseBlockCount(dayDate);
+}
+async _removeBlockFromDay(dateKey, dayDate, blockIndex) {
+const blocks = this._getBlocksForDay(dayDate);
+const name = blocks[blockIndex];
+if (!name || !this._isExtraBlock(dayDate, blockIndex)) return;
+const settings = this._getSettings();
+const own = ((settings.dateBlocks || {})[dateKey]) || [];
+const isDateExtra = own.some((n) => n.toLowerCase() === name.toLowerCase());
+// added for just this day and nothing after it: take it off outright; otherwise hide it there, so later blocks keep
+// their places (meals are stored by block position)
+if (isDateExtra && blockIndex === blocks.length - 1) {
+const dateBlocks = {};
+Object.keys(settings.dateBlocks || {}).forEach((d) => { dateBlocks[d] = (settings.dateBlocks[d] || []).slice(); });
+dateBlocks[dateKey] = (dateBlocks[dateKey] || []).filter((n) => n.toLowerCase() !== name.toLowerCase());
+if (!dateBlocks[dateKey].length) delete dateBlocks[dateKey];
+await this._persistSettingsPatch({ dateBlocks });
+} else {
+const hiddenDayBlocks = {};
+Object.keys(settings.hiddenDayBlocks || {}).forEach((d) => { hiddenDayBlocks[d] = (settings.hiddenDayBlocks[d] || []).slice(); });
+const today = this._dateKey(new Date());
+// days long gone don't need remembering
+Object.keys(hiddenDayBlocks).forEach((d) => { if (d < today && d !== dateKey) delete hiddenDayBlocks[d]; });
+hiddenDayBlocks[dateKey] = (hiddenDayBlocks[dateKey] || []).concat(this._isDayBlockHidden(dateKey, name) ? [] : [name]);
+await this._persistSettingsPatch({ hiddenDayBlocks });
+}
+this._showToast(__fhT("text.x_removed_from_x", "%0% removed from %1%.", { 0: name, 1: this._fmtDate(dayDate, { weekday: "short", month: "short", day: "numeric" }) }));
+this._renderGrid();
 }
 _getBlocksForDay(dayDate) {
 const settings = this._getSettings();
@@ -10569,6 +11222,18 @@ return;
 }
 const dayDate = new Date(`${dateStr}T00:00:00`);
 const resolved = this._getBlocksForDay(dayDate);
+// taken off that day earlier: put it back
+if (this._isDayBlockHidden(dateStr, name)) {
+const settingsNow = this._getSettings();
+const hiddenDayBlocks = {};
+Object.keys(settingsNow.hiddenDayBlocks || {}).forEach((d) => { hiddenDayBlocks[d] = (settingsNow.hiddenDayBlocks[d] || []).slice(); });
+hiddenDayBlocks[dateStr] = (hiddenDayBlocks[dateStr] || []).filter((n) => n.toLowerCase() !== name.toLowerCase());
+if (!hiddenDayBlocks[dateStr].length) delete hiddenDayBlocks[dateStr];
+await this._persistSettingsPatch({ hiddenDayBlocks });
+this._showToast(__fhT("text.x_added", "%0% added.", {0: name}));
+this._closeMealBlockModal();
+return;
+}
 if (resolved.some((b) => b.toLowerCase() === name.toLowerCase())) {
 this._showToast(__fhT("text.that_day_already_has_a_x_block", "That day already has a %0% block.", {0: name}), true);
 return;
@@ -11162,6 +11827,8 @@ _specialDayIcon(kind, summary) {
 const s = String(summary || "").toLowerCase();
 if (kind === "birthday") return "\u{1F382}";
 if (kind === "special") {
+// one Special days calendar can hold birthdays too
+if (FH_BIRTHDAY_WORDS.test(s) || /\bborn\s*[=:]?\s*\d{4}\b/.test(s)) return "\u{1F382}";
 const rules = [
 [/anniversar|jahrestag|aniversario|anniversaire|anniversario|jubileum|rocznic|married|wedding|hochzeit|boda|mariage|matrimonio|bruiloft|ślub|slub|casamento/, "\u{1F48D}"],
 [/graduat|abschluss|gradua|diplôme|diplome|diploma|afstudeer/, "\u{1F393}"],
@@ -11195,8 +11862,9 @@ return hit ? hit[1] : "\u{1F389}";
 }
 // Today's holidays from the holiday calendars, each registered so a tap opens its details
 _holidaysForDate(dateObj) {
-const rows = this._getHolidayCalendars();
-if (!rows.length || !this._holidayEvents) return [];
+const rows = this._holidayEvents ? this._getHolidayCalendars() : [];
+const breaks = (this._getSettings() || {}).familyBreaks || [];
+if (!rows.length && !breaks.length) return [];
 if (this._privacyModeEffectiveLocked && this._privacyModeEffectiveLocked()) return [];
 const dayStart = new Date(dateObj);
 dayStart.setHours(0, 0, 0, 0);
@@ -11205,6 +11873,20 @@ dayEnd.setDate(dayEnd.getDate() + 1);
 const dateKey = this._dateKey(dayStart);
 const out = [];
 const seen = new Set();
+// 2026.11.2.8: the family's own holidays and breaks (spring break, a work holiday, a vacation) come first
+breaks.forEach((b) => {
+if (!(b.start <= dateKey && dateKey <= b.end)) return;
+const key = String(b.name || "").trim().toLowerCase();
+if (!key || seen.has(key)) return;
+seen.add(key);
+const id = `brk-${dateKey}-${b.id}`;
+if (!this._eventDetails) this._eventDetails = {};
+const calRow = b.calendar ? rows.find((r) => r.entity === b.calendar) || (this._getHolidayCalendars() || []).find((r) => r.entity === b.calendar) : null;
+const color = (calRow && calRow.color) || FH_BREAK_COLOR;
+this._eventDetails[id] = { summary: b.name, start: new Date(`${b.start}T00:00:00`), end: new Date(`${b.end}T00:00:00`), allDay: true, color, isExtraCalendar: true, isHoliday: true, isFamilyBreak: true, breakId: b.id, reminderMinutesList: [] };
+const who = Array.isArray(b.who) && b.who.length ? this._breakWhoNames(b.who) : "";
+out.push({ id, off: b.off || "", offWho: who, summary: b.name, kind: "break", label: b.name, color, icon: this._breakIcon(b.name) });
+});
 rows.forEach((row) => {
 (this._holidayEvents[row.entity] || []).forEach((ev) => {
 const allDay = !!(ev.start && ev.start.date && !ev.start.dateTime);
@@ -11234,10 +11916,224 @@ isExtraCalendar: true,
 isHoliday: true,
 specialDayKind: kind,
 };
-out.push({ id, summary, kind, label: summary + (kind === "holiday" ? "" : this._eventAgeSuffix(ev, dayStart, kind)), color: row.color || "#c9c2b3", icon: this._specialDayIcon(kind, kind === "special" ? `${summary} ${ev.description || ""}` : summary) });
+out.push({ id, off: this._dayOffFor(row.entity, summary), summary, kind, label: summary + (kind === "holiday" ? "" : this._eventAgeSuffix(ev, dayStart, kind)), color: row.color || "#c9c2b3", icon: this._specialDayIcon(kind, kind === "special" ? `${summary} ${ev.description || ""}` : summary) });
 });
 });
 return out;
+}
+// -- The family's own holidays and breaks (2026.11.2.8) -------------------------------------------
+_breakIcon(name) {
+const s = String(name || "").toLowerCase();
+const rules = [
+[/vacation|vacances|urlaub|vacaciones|vacanz|vakantie|wakacj|férias|ferias|holiday trip|trip|reise|viaje|voyage|viaggio|reis/, "\u2708\uFE0F"],
+[/summer|sommer|verano|été|ete|estate|zomer|lato|verão|verao/, "\u2600\uFE0F"],
+[/winter|christmas|xmas|weihnacht|invierno|navidad|hiver|noël|noel|inverno|natale|kerst|zima|zimow|świąt|swiat|natal/, "\u2744\uFE0F"],
+[/spring|easter|ostern|primavera|pascua|printemps|pâques|paques|pasqua|voorjaar|pasen|wiosn|wielkanoc|páscoa|pascoa/, "\u{1F337}"],
+[/fall|autumn|herbst|otoño|otono|toussaint|automne|autunno|herfst|jesien|jesień|outono|thanksgiving/, "\u{1F342}"],
+[/teacher|staff|in-?service|inset|pd day|lehrer|profesor|pédagog|pedagog|insegnant|leraar|nauczyciel|professor/, "\u{1F34E}"],
+[/work|office|company|arbeit|trabajo|travail|lavoro|werk|praca|trabalho/, "\u{1F4BC}"],
+[/camp|lager|campamento|colonie|campo|kamp|obóz|oboz|acampamento/, "\u26FA"],
+];
+const hit = rules.find(([re]) => re.test(s));
+return hit ? hit[1] : "\u{1F3D6}\uFE0F";
+}
+_breakWhoNames(ids) {
+const users = this._breakUsersCache || [];
+if (!users.length && !this._breakUsersLoading) this._loadBreakUsers();
+const names = ids.map((id) => { const u = users.find((x) => x.id === id); return u ? String(u.name || "").split(" ")[0] : ""; }).filter(Boolean);
+return names.length ? names.join(", ") : this._t("breaks.some_people", "Some people");
+}
+async _loadBreakUsers() {
+if (!this._hass || this._breakUsersLoading) return this._breakUsersCache || [];
+this._breakUsersLoading = true;
+try {
+const res = await this._hass.connection.sendMessagePromise({ type: "family_hub/list_users" });
+const all = Array.isArray(res && res.users) ? res.users : [];
+const members = (this._getSettings() || {}).memberUserIds;
+const profiles = (this._getSettings() || {}).userProfiles || {};
+const list = all.filter((u) => u && u.id && !u.system_generated && (!Array.isArray(members) || !members.length || members.includes(u.id)))
+.map((u) => ({ id: u.id, name: u.name || u.id, child: !!(profiles[u.id] && profiles[u.id].isChildAccount) }));
+list.sort((a, b) => (a.child === b.child ? String(a.name).localeCompare(String(b.name)) : a.child ? -1 : 1));
+const had = (this._breakUsersCache || []).length;
+this._breakUsersCache = list;
+if (!had && list.length && ((this._getSettings() || {}).familyBreaks || []).some((b) => b.who && b.who.length)) this._renderGrid();
+} catch (e) {
+this._breakUsersCache = this._breakUsersCache || [];
+} finally {
+this._breakUsersLoading = false;
+}
+return this._breakUsersCache;
+}
+async _openBreaksEditor(focusId) {
+const overlay = this._root && this._root.querySelector(".breaks-overlay");
+if (!overlay) return;
+this._breaksDraft = JSON.parse(JSON.stringify((this._getSettings() || {}).familyBreaks || []));
+this._breaksFocus = focusId || null;
+if (focusId === "new") this._addBreakDraft();
+const dl = this._root.querySelector("#brk-name-options");
+if (dl) dl.innerHTML = [["s_spring", "Spring break"], ["s_summer", "Summer break"], ["s_winter", "Winter break"], ["s_fall", "Fall break"], ["s_teacher", "Teacher workday"], ["s_work", "Work holiday"], ["s_vacation", "Vacation"]]
+.map(([k, fb]) => `<option value="${__fhEsc(this._t("breaks." + k, fb))}"></option>`).join("");
+this._renderBreaksEditor();
+this._openModal(overlay);
+await this._loadBreakUsers();
+if (overlay.classList.contains("open")) this._renderBreaksEditor();
+}
+_closeBreaksEditor() {
+const overlay = this._root && this._root.querySelector(".breaks-overlay");
+if (overlay) overlay.classList.remove("open");
+this._syncModalScrollLock && this._syncModalScrollLock();
+}
+_addBreakDraft() {
+const today = this._dateKey(new Date());
+const id = `b${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
+this._breaksDraft.push({ id, name: "", start: today, end: today, off: "school", who: [] });
+this._breaksFocus = id;
+}
+_syncBreaksDraftFromDom() {
+const root = this._root;
+if (!root || !Array.isArray(this._breaksDraft)) return;
+root.querySelectorAll(".brk-item").forEach((row) => {
+const b = this._breaksDraft.find((x) => x.id === row.dataset.id);
+if (!b) return;
+b.name = row.querySelector(".brk-name").value;
+b.start = row.querySelector(".brk-start").value || b.start;
+b.end = row.querySelector(".brk-end").value || b.start;
+const off = row.querySelector(".brk-off-btn.active");
+b.off = off ? off.dataset.value : "";
+const some = row.querySelector(".brk-who-btn.active");
+b.who = some && some.dataset.value === "some" ? Array.from(row.querySelectorAll(".brk-person input:checked")).map((c) => c.value) : [];
+if (some && some.dataset.value === "some") b._some = true; else delete b._some;
+});
+}
+_renderBreaksEditor() {
+const root = this._root;
+const list = root && root.querySelector(".brk-list");
+if (!list) return;
+const can = this._canEditEvent();
+const users = this._breakUsersCache || [];
+const offOpts = [["", this._t("breaks.off_none", "Just show it")], ["school", this._dayOffLabel("school")], ["work", this._dayOffLabel("work")], ["both", this._dayOffLabel("both")]];
+const draft = (this._breaksDraft || []).slice().sort((a, b) => (a.start || "").localeCompare(b.start || ""));
+list.innerHTML = draft.length ? draft.map((b) => {
+const some = !!(b._some || (b.who && b.who.length));
+const people = users.map((u) => `<label class="brk-person"><input type="checkbox" value="${__fhEsc(u.id)}"${(b.who || []).includes(u.id) ? " checked" : ""}${can ? "" : " disabled"} /> ${__fhEsc(u.name)}</label>`).join("");
+return `<div class="brk-item${this._breaksFocus === b.id ? " focus" : ""}" data-id="${__fhEsc(b.id)}">
+<div class="brk-top"><span class="brk-icon" aria-hidden="true">${this._breakIcon(b.name)}</span><input type="text" class="brk-name" list="brk-name-options" maxlength="60" value="${__fhEsc(b.name || "")}" placeholder="${__fhEsc(this._t("breaks.name_placeholder", "e.g. Spring break"))}"${can ? "" : " disabled"} />${can ? `<button type="button" class="brk-remove" title="${__fhEsc(this._t("breaks.remove", "Remove"))}">&#10005;</button>` : ""}</div>
+<div class="brk-dates"><label>${__fhEsc(this._t("breaks.from", "From"))} <input type="date" class="brk-start" value="${__fhEsc(b.start || "")}"${can ? "" : " disabled"} /></label><label>${__fhEsc(this._t("breaks.to", "To"))} <input type="date" class="brk-end" value="${__fhEsc(b.end || "")}"${can ? "" : " disabled"} /></label></div>
+<div class="size-btn-row brk-off-row">${offOpts.map(([v, l]) => `<button type="button" class="size-btn brk-off-btn${(b.off || "") === v ? " active" : ""}" data-value="${v}"${can ? "" : " disabled"}>${__fhEsc(l)}</button>`).join("")}</div>
+<div class="brk-who"${b.off ? "" : " hidden"}><div class="size-btn-row"><button type="button" class="size-btn brk-who-btn${some ? "" : " active"}" data-value="all"${can ? "" : " disabled"}>${__fhEsc(this._t("breaks.who_everyone", "Everyone"))}</button><button type="button" class="size-btn brk-who-btn${some ? " active" : ""}" data-value="some"${can ? "" : " disabled"}>${__fhEsc(this._t("breaks.who_some", "Only some people"))}</button></div>
+<div class="brk-people"${some ? "" : " hidden"}>${people || `<span class="remind-hint">${__fhEsc(this._t("breaks.loading_people", "Loading people…"))}</span>`}</div>
+<div class="remind-hint">${__fhEsc(some ? this._t("breaks.who_some_hint", "Only the people you tick are off - for a child whose school has a different break, or one grown-up's day off.") : this._t("breaks.who_everyone_hint", "No school is for the children, no work for the grown-ups."))}</div></div>
+</div>`;
+}).join("") : `<div class="remind-hint brk-empty">${__fhEsc(this._t("breaks.empty", "Nothing yet. Add spring break, summer break, a work holiday or a vacation."))}</div>`;
+const addBtn = root.querySelector(".brk-add");
+if (addBtn) addBtn.hidden = !can;
+const saveBtn = root.querySelector(".brk-save");
+if (saveBtn) saveBtn.hidden = !can;
+const focus = this._breaksFocus && list.querySelector(`.brk-item[data-id="${this._breaksFocus}"]`);
+if (focus) {
+if (focus.scrollIntoView) focus.scrollIntoView({ block: "nearest" });
+const name = focus.querySelector(".brk-name");
+if (name && !name.value && name.focus) name.focus();
+}
+}
+_onBreaksEditorClick(e) {
+const t = e.target;
+const row = t.closest(".brk-item");
+if (t.closest(".brk-add")) {
+this._syncBreaksDraftFromDom();
+this._addBreakDraft();
+this._renderBreaksEditor();
+return;
+}
+if (!row) return;
+if (t.closest(".brk-remove")) {
+this._syncBreaksDraftFromDom();
+this._breaksDraft = this._breaksDraft.filter((b) => b.id !== row.dataset.id);
+this._renderBreaksEditor();
+return;
+}
+const off = t.closest(".brk-off-btn");
+if (off) {
+row.querySelectorAll(".brk-off-btn").forEach((x) => x.classList.toggle("active", x === off));
+const who = row.querySelector(".brk-who");
+if (who) who.hidden = !off.dataset.value;
+return;
+}
+const whoBtn = t.closest(".brk-who-btn");
+if (whoBtn) {
+this._syncBreaksDraftFromDom();
+const b = this._breaksDraft.find((x) => x.id === row.dataset.id);
+if (b) { if (whoBtn.dataset.value === "some") b._some = true; else { delete b._some; b.who = []; } }
+this._breaksFocus = row.dataset.id;
+this._renderBreaksEditor();
+}
+}
+async _saveBreaks() {
+this._syncBreaksDraftFromDom();
+const root = this._root;
+const bad = this._breaksDraft.find((b) => !String(b.name || "").trim());
+if (bad) {
+this._breaksFocus = bad.id;
+this._renderBreaksEditor();
+if (this._showToast) this._showToast(this._t("breaks.need_name", "Give each one a name."), true);
+return;
+}
+const someEmpty = this._breaksDraft.find((b) => b.off && b._some && !(b.who || []).length);
+if (someEmpty) {
+this._breaksFocus = someEmpty.id;
+this._renderBreaksEditor();
+if (this._showToast) this._showToast(this._t("breaks.need_people", "Tick who's off, or pick Everyone."), true);
+return;
+}
+const breaks = this._breaksDraft.map((b) => ({ id: b.id, name: String(b.name).trim(), start: b.start, end: b.end && b.end >= b.start ? b.end : b.start, off: b.off || "", who: b.off ? (b.who || []) : [], calendar: b.calendar || "" }));
+const btn = root.querySelector(".brk-save");
+if (btn) btn.disabled = true;
+try {
+const res = await this._hass.connection.sendMessagePromise({ type: "family_hub/days_off/set_breaks", breaks });
+const s = this._getSettings();
+if (s) s.familyBreaks = (res && res.breaks) || breaks;
+this._closeBreaksEditor();
+this._renderGrid();
+} catch (err) {
+if (this._showToast) this._showToast((err && err.message) || this._t("days_off.failed", "Couldn't save that - try again."), true);
+} finally {
+if (btn) btn.disabled = false;
+}
+}
+// "school" | "work" | "both" | "" for a holiday on a calendar
+_dayOffFor(calendarEntity, summary) {
+const rules = (this._getSettings() || {}).daysOff || [];
+const key = __fhDayOffName(summary);
+const hit = rules.find((r) => r.calendar === calendarEntity && r.name === key);
+return hit ? hit.off : "";
+}
+_dayOffIcon(off) {
+return off === "school" ? "\u{1F3EB}" : off === "work" ? "\u{1F4BC}" : off === "both" ? "\u{1F3D6}\uFE0F" : "";
+}
+_dayOffText(off) {
+return off === "school" ? this._t("days_off.no_school", "No school") : off === "work" ? this._t("days_off.no_work", "No work") : off === "both" ? this._t("days_off.no_school_or_work", "No school or work") : "";
+}
+_dayOffLabel(off) {
+if (off === "school") return `\u{1F3EB} ${this._t("days_off.no_school", "No school")}`;
+if (off === "work") return `\u{1F4BC} ${this._t("days_off.no_work", "No work")}`;
+if (off === "both") return `\u{1F3D6}\uFE0F ${this._t("days_off.no_school_or_work", "No school or work")}`;
+return "";
+}
+async _setDayOff(detail, off) {
+const root = this._root;
+const btns = root ? root.querySelectorAll(".event-info-dayoff-btn") : [];
+btns.forEach((x) => { x.disabled = true; });
+try {
+const res = await this._hass.connection.sendMessagePromise({ type: "family_hub/days_off/set", calendar: detail.calendarEntity, name: detail.summary, off: off || null });
+const s = this._getSettings();
+if (s) s.daysOff = (res && res.days_off) || [];
+btns.forEach((x) => x.classList.toggle("active", (x.dataset.value || "") === off));
+this._renderGrid();
+} catch (e) {
+if (this._showToast) this._showToast((e && e.message) || this._t("days_off.failed", "Couldn't save that - try again."), true);
+} finally {
+btns.forEach((x) => { x.disabled = false; });
+}
 }
 _holidayBannersHtml(dateObj, compact) {
 const list = this._holidaysForDate(dateObj);
@@ -11245,7 +12141,7 @@ if (!list.length) return "";
 return `<div class="holiday-banners${compact ? " compact" : ""}">${list
 .map(
 (h) =>
-`<div class="holiday-banner${h.kind && h.kind !== "holiday" ? " special-day-" + h.kind : ""}" data-event-id="${h.id}" style="--holiday-color:${h.color};--holiday-text:${this._textColorFor(h.color)}" title="${__fhEsc(h.label || h.summary)}"><span class="holiday-banner-icon" aria-hidden="true">${h.icon}</span><span class="holiday-banner-text">${__fhEsc(this._discreetText ? this._discreetText(h.label || h.summary) : h.label || h.summary)}</span></div>`
+`<div class="holiday-banner${h.kind && h.kind !== "holiday" ? " special-day-" + h.kind : ""}" data-event-id="${h.id}" style="--holiday-color:${h.color};--holiday-text:${this._textColorFor(h.color)}" title="${__fhEsc(h.label || h.summary)}"><span class="holiday-banner-icon" aria-hidden="true">${h.icon}</span><span class="holiday-banner-text">${__fhEsc(this._discreetText ? this._discreetText(h.label || h.summary) : h.label || h.summary)}</span>${h.off ? `<span class="holiday-banner-off" title="${__fhEsc(this._dayOffLabel(h.off) + (h.offWho ? ` (${h.offWho})` : ""))}">${this._dayOffIcon(h.off)}<span class="holiday-banner-off-text"> ${__fhEsc(h.offWho || this._dayOffText(h.off))}</span></span>` : ""}</div>`
 )
 .join("")}</div>`;
 }
@@ -11728,8 +12624,10 @@ return `
 <div>
 <div class="notify-profile-row-name">${u.name}${u.id === currentUserId ? __fhT("text.this_login", " (this login)", null, "h") : ""}</div>
 <div class="notify-profile-row-summary">${this._userProfileSummaryText(profile)}</div>
+${u.local ? `<div class="notify-profile-row-local">${__fhEsc(this._t("settings.local_row_note", "No Home Assistant login - signs in with a PIN; notifications go to the admin's phone"))}</div>` : ""}
 </div>
 <div class="notify-profile-row-actions">
+${u.local && isAdminUser ? `<button type="button" class="notify-profile-row-move-btn" data-user-id="${u.id}">${__fhEsc(this._t("settings.local_move", "Give them a login"))}</button><button type="button" class="notify-profile-row-rename-btn" data-user-id="${u.id}">${__fhEsc(this._t("settings.local_rename", "Rename"))}</button>` : ""}
 <button data-fh-t="text.edit" type="button" class="notify-profile-row-edit-btn" data-user-id="${u.id}">${__fhT("text.edit", "Edit", null, "h")}</button>
 ${removeBtnHtml}
 </div>
@@ -11742,6 +12640,12 @@ btn.addEventListener("click", () => this._openNotifyProfileModal(btn.dataset.use
 });
 listEl.querySelectorAll(".notify-profile-row-remove-btn").forEach((btn) => {
 btn.addEventListener("click", () => this._removeFamilyHubMember(btn.dataset.userId));
+});
+listEl.querySelectorAll(".notify-profile-row-move-btn").forEach((btn) => {
+btn.addEventListener("click", () => this._moveLocalPersonToLogin(btn.dataset.userId));
+});
+listEl.querySelectorAll(".notify-profile-row-rename-btn").forEach((btn) => {
+btn.addEventListener("click", () => this._renameLocalPerson(btn.dataset.userId));
 });
 }
 // Populates the "Add a person" dropdown (Users tab) with whoever's in the raw Home Assistant user pool but NOT already a Family Hub member
@@ -11776,9 +12680,205 @@ this._renderNotifyProfilesList();
 }
 _removeFamilyHubMember(userId) {
 if (!userId || !Array.isArray(this._settingsMemberIdsDraft)) return;
+const localUser = (this._notifyProfileUsersCache || []).find((u) => u.id === userId && u.local);
+if (localUser) {
+this._removeLocalPerson(localUser);
+return;
+}
 const idx = this._settingsMemberIdsDraft.indexOf(userId);
 if (idx === -1) return;
 this._settingsMemberIdsDraft.splice(idx, 1);
+this._renderNotifyProfilesList();
+}
+// 2026.11.2: someone without a Home Assistant login. A pop-up recommends a Home Assistant login first (their own
+// phone, their own sign-in), then asks their name. They sign in on a shared screen with a PIN, and their
+// notifications go to this admin's phone.
+_localPersonDialog(html, wire) {
+return new Promise((resolve) => {
+const overlay = document.createElement("div");
+overlay.className = "modal-overlay recur-scope-overlay local-person-overlay open";
+overlay.innerHTML = `<div class="modal-box recur-scope-box local-person-box">${html}</div>`;
+const finish = (value) => {
+overlay.remove();
+resolve(value);
+};
+overlay.addEventListener("click", (e) => {
+if (e.target === overlay) finish(null);
+});
+overlay.querySelectorAll(".local-person-cancel").forEach((b) => b.addEventListener("click", () => finish(null)));
+(this._root || document.body).appendChild(overlay);
+wire(overlay, finish);
+});
+}
+_localPersonWarn() {
+const t = (k, fb) => __fhEsc(this._t("settings.local_" + k, fb));
+return this._localPersonDialog(`
+<h2>&#9888;&#65039; ${t("warn_title", "We recommend a Home Assistant login")}</h2>
+<p class="local-person-text">${t("warn_body", "Family Hub works best when everyone has their own Home Assistant login - even kids. It's free, and you can still make it a Child account.")}</p>
+<ul class="local-person-list">
+<li>${t("warn_with", "With a login they get notifications on their own phone, can open Family Hub on their own device, and can have their own Home Assistant settings.")}</li>
+<li>${t("warn_without", "Without one they can only use Family Hub on a shared screen by signing in with a PIN, their notifications go to your phone, and anything Home Assistant-specific comes from your account.")}</li>
+</ul>
+<p class="local-person-text">${t("warn_how", "To add a login: Home Assistant > Settings > People > Add person, turn on Allow login, then add them here with Add a person.")}</p>
+<div class="recur-scope-actions">
+<button type="button" class="recur-scope-btn local-person-cancel local-person-recommended">${t("warn_cancel", "Cancel - I'll make a login")}</button>
+<button type="button" class="recur-scope-btn local-person-continue">${t("warn_continue", "Continue anyway")}</button>
+</div>`, (overlay, finish) => {
+overlay.querySelector(".local-person-continue").addEventListener("click", () => finish(true));
+});
+}
+_localPersonNameDialog(current) {
+const t = (k, fb) => __fhEsc(this._t("settings.local_" + k, fb));
+const renaming = current != null;
+return this._localPersonDialog(`
+<h2>${renaming ? t("rename_title", "Rename") : t("name_title", "Who are you adding?")}</h2>
+<input type="text" class="local-person-name" maxlength="40" placeholder="${t("name_placeholder", "Their name")}" value="${__fhEsc(current || "")}" />
+${renaming ? "" : `<label class="remind-check-opt"><input type="checkbox" class="local-person-child" checked /> <span>${t("name_child", "This is a child (a Child account)")}</span></label>`}
+<div class="local-person-error"></div>
+<div class="recur-scope-actions">
+<button type="button" class="recur-scope-btn local-person-ok" disabled>${renaming ? t("rename_save", "Save") : t("name_add", "Add them")}</button>
+<button type="button" class="recur-scope-btn local-person-cancel">${__fhEsc(this._t("common.cancel", "Cancel"))}</button>
+</div>`, (overlay, finish) => {
+const input = overlay.querySelector(".local-person-name");
+const ok = overlay.querySelector(".local-person-ok");
+const sync = () => { ok.disabled = !input.value.trim(); };
+input.addEventListener("input", sync);
+sync();
+const go = () => {
+if (ok.disabled) return;
+const child = overlay.querySelector(".local-person-child");
+finish({ name: input.value.trim(), child: !!(child && child.checked) });
+};
+ok.addEventListener("click", go);
+input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+try { input.focus(); } catch (e) {}
+});
+}
+_localPersonError(err) {
+return (err && err.message) || this._t("settings.local_failed", "That didn't work - try again.");
+}
+async _addLocalPerson() {
+if (!this._hass || !this._hass.connection) return;
+if (!(await this._localPersonWarn())) return;
+const picked = await this._localPersonNameDialog(null);
+if (!picked) return;
+let res;
+try {
+res = await this._hass.connection.sendMessagePromise({ type: "family_hub/people/add_local", name: picked.name, child: picked.child });
+} catch (err) {
+this._showToast && this._showToast(this._localPersonError(err), true);
+return;
+}
+const person = res && res.person;
+if (!person || !person.id) return;
+// the server already saved them; keep this open Settings in step so its own Save doesn't undo anything
+if (!Array.isArray(this._settingsMemberIdsDraft)) this._settingsMemberIdsDraft = [];
+if (!this._settingsMemberIdsDraft.includes(person.id)) this._settingsMemberIdsDraft.push(person.id);
+if (!Array.isArray(this._settingsKioskLoginUserIdsDraft)) this._settingsKioskLoginUserIdsDraft = [];
+if (!this._settingsKioskLoginUserIdsDraft.includes(person.id)) this._settingsKioskLoginUserIdsDraft.push(person.id);
+if (!this._settingsUserProfilesDraft) this._settingsUserProfilesDraft = {};
+this._settingsUserProfilesDraft[person.id] = Object.assign(this._defaultUserProfile(), { isChildAccount: !!picked.child });
+if (!Array.isArray(this._notifyProfileUsersCache)) this._notifyProfileUsersCache = [];
+this._notifyProfileUsersCache.push({ id: person.id, name: person.name, local: true });
+this._renderNotifyProfilesList();
+// straight into their profile, where the PIN they'll sign in with is set
+this._openNotifyProfileModal(person.id);
+}
+async _renameLocalPerson(userId) {
+const user = (this._notifyProfileUsersCache || []).find((u) => u.id === userId);
+if (!user || !this._hass) return;
+const picked = await this._localPersonNameDialog(user.name || "");
+if (!picked || picked.name === user.name) return;
+try {
+const res = await this._hass.connection.sendMessagePromise({ type: "family_hub/people/rename_local", user_id: userId, name: picked.name });
+user.name = (res && res.person && res.person.name) || picked.name;
+} catch (err) {
+this._showToast && this._showToast(this._localPersonError(err), true);
+return;
+}
+this._renderNotifyProfilesList();
+}
+// Someone without a login gets one: pick their new Home Assistant login and everything Family Hub has for them
+// (profile, PIN, chores, stars, rewards, routines, timers, Companion) moves to it (family_hub/people/move_to_login)
+async _moveLocalPersonToLogin(userId) {
+const user = (this._notifyProfileUsersCache || []).find((u) => u.id === userId && u.local);
+if (!user || !this._hass) return;
+const t = (k, fb, v) => __fhEsc(this._t("settings.local_" + k, fb, v));
+const memberIds = Array.isArray(this._settingsMemberIdsDraft) ? this._settingsMemberIdsDraft : [];
+const logins = (this._notifyProfileUsersCache || []).filter((u) => !u.local && !memberIds.includes(u.id));
+const picked = await this._localPersonDialog(`
+<h2>&#128273; ${t("move_title", "Give %name% a Home Assistant login", { name: user.name })}</h2>
+<p class="local-person-text">${t("move_body", "Pick their Home Assistant login. Everything Family Hub has for them moves to it - their profile, PIN, chores, stars, rewards, routines, timers and Companion - and their notifications go to their own phone from now on.")}</p>
+${logins.length ? `<select class="local-person-login">${logins.map((u) => `<option value="${__fhEsc(u.id)}">${__fhEsc(u.name || u.id)}</option>`).join("")}</select>` : `<p class="local-person-text local-person-none">${t("move_none", "There's no Home Assistant login to move them to yet. Make one first: Home Assistant > Settings > People > Add person, turn on Allow login, then come back here. (Don't add it with Add a person.)")}</p>`}
+<div class="recur-scope-actions">
+${logins.length ? `<button type="button" class="recur-scope-btn local-person-ok local-person-move">${t("move_go", "Move them")}</button>` : ""}
+<button type="button" class="recur-scope-btn local-person-cancel">${__fhEsc(this._t("common.cancel", "Cancel"))}</button>
+</div>`, (overlay, finish) => {
+const go = overlay.querySelector(".local-person-move");
+if (go) go.addEventListener("click", () => finish(overlay.querySelector(".local-person-login").value));
+});
+if (!picked) return;
+let res;
+try {
+res = await this._hass.connection.sendMessagePromise({ type: "family_hub/people/move_to_login", user_id: userId, to_user_id: picked });
+} catch (err) {
+this._showToast && this._showToast(this._localPersonError(err), true);
+return;
+}
+// the server moved everything; this open Settings follows, so its own Save writes the login, never the old id
+this._swapIdInSettingsDrafts(userId, picked);
+const prof = this._settingsUserProfilesDraft && this._settingsUserProfilesDraft[picked];
+if (prof && res && Array.isArray(res.notify_targets) && res.notify_targets.length && !(prof.notifyTargets || []).length) prof.notifyTargets = res.notify_targets.slice();
+this._notifyProfileUsersCache = (this._notifyProfileUsersCache || []).filter((u) => u.id !== userId);
+this._renderNotifyProfilesList();
+this._showToast && this._showToast(this._t("settings.local_moved", "Done - %name% now uses their Home Assistant login.", { name: (res && res.name) || user.name }));
+}
+_swapIdInSettingsDrafts(oldId, newId) {
+const swap = (obj) => {
+if (Array.isArray(obj)) {
+obj.forEach((v, i) => {
+if (typeof v === "string") { if (v.indexOf(oldId) !== -1) obj[i] = v.split(oldId).join(newId); }
+else if (v && typeof v === "object") swap(v);
+});
+} else if (obj && typeof obj === "object") {
+Object.keys(obj).forEach((k) => {
+const v = obj[k];
+if (typeof v === "string") { if (v.indexOf(oldId) !== -1) obj[k] = v.split(oldId).join(newId); }
+else if (v && typeof v === "object") swap(v);
+if (k.indexOf(oldId) !== -1) {
+obj[k.split(oldId).join(newId)] = obj[k];
+delete obj[k];
+}
+});
+}
+};
+Object.keys(this).forEach((k) => {
+if ((/^_settings.*Draft$/.test(k) || k === "_permissionsDraft" || k === "_settingsCache") && this[k] && typeof this[k] === "object") swap(this[k]);
+});
+}
+async _removeLocalPerson(user) {
+const t = (k, fb, v) => __fhEsc(this._t("settings.local_" + k, fb, v));
+const sure = await this._localPersonDialog(`
+<h2>${t("remove_title", "Remove %name%?", { name: user.name })}</h2>
+<p class="local-person-text">${t("remove_body", "They don't have a Home Assistant login, so this removes them from Family Hub for good - their profile and PIN go too. Their past chores and stars stay in the history.")}</p>
+<div class="recur-scope-actions">
+<button type="button" class="recur-scope-btn local-person-remove">${t("remove_yes", "Remove")}</button>
+<button type="button" class="recur-scope-btn local-person-cancel">${__fhEsc(this._t("common.cancel", "Cancel"))}</button>
+</div>`, (overlay, finish) => {
+overlay.querySelector(".local-person-remove").addEventListener("click", () => finish(true));
+});
+if (!sure) return;
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/people/remove_local", user_id: user.id });
+} catch (err) {
+this._showToast && this._showToast(this._localPersonError(err), true);
+return;
+}
+const drop = (arr) => (Array.isArray(arr) ? arr.filter((id) => id !== user.id) : arr);
+this._settingsMemberIdsDraft = drop(this._settingsMemberIdsDraft);
+this._settingsKioskLoginUserIdsDraft = drop(this._settingsKioskLoginUserIdsDraft);
+if (this._settingsUserProfilesDraft) delete this._settingsUserProfilesDraft[user.id];
+this._notifyProfileUsersCache = (this._notifyProfileUsersCache || []).filter((u) => u.id !== user.id);
 this._renderNotifyProfilesList();
 }
 // Plain-language one-liner for a user's profile row - "Not set up yet" when every toggle is still off/empty
@@ -12232,15 +13332,55 @@ _matchHolidayBackgroundForDate(settings, dateObj, isRenderingToday) {
 const list = settings && settings.holidayBackgrounds;
 if (!Array.isArray(list) || !list.length) return null;
 const expandedEntry = this._matchExpandedHolidayForCurrentView(settings);
-const year = dateObj.getFullYear();
-const month = dateObj.getMonth() + 1;
-const day = dateObj.getDate();
-for (const entry of list) {
-if (!entry || !entry.enabled || !entry.imageUrl) continue;
-if (entry.expandFullDay && expandedEntry && expandedEntry.id === entry.id) continue;
-if (this._holidayEntryDatesForYear(entry, year).some((d) => d.month === month && d.day === day)) return entry;
+const target = new Date(dateObj);
+target.setHours(0, 0, 0, 0);
+const year = target.getFullYear();
+// a day's own holiday beats a week, a week beats a month
+const rank = { day: 0, week: 1, month: 2 };
+let best = null;
+list.forEach((entry, order) => {
+if (!entry || !entry.enabled || !this._holidayPhotos(entry).length) return;
+if (entry.expandFullDay && expandedEntry && expandedEntry.id === entry.id) return;
+const span = ["week", "month"].includes(entry.span) ? entry.span : "day";
+const hit = [year - 1, year, year + 1].some((y) => this._holidayEntryDatesForYear(entry, y).some((d) => {
+const anchor = new Date(y, d.month - 1, d.day);
+return this._holidayExpandScopeMatchesRange(span, anchor, target, target);
+}));
+if (hit && (!best || rank[span] < best.rank || (rank[span] === best.rank && order < best.order))) best = { entry, rank: rank[span], order };
+});
+return best ? this._holidayWithPhotoFor(best.entry, target) : null;
 }
-return null;
+// 2026.11.2.10: a holiday's photos (up to 5)
+_holidayPhotos(entry) {
+if (!entry) return [];
+const list = Array.isArray(entry.imageUrls) && entry.imageUrls.length ? entry.imageUrls : entry.imageUrl ? [entry.imageUrl] : [];
+return list.filter((u) => typeof u === "string" && u);
+}
+// The photo for a day: a shuffled order per round of N days (seeded by the holiday and the round), so every screen
+// shows the same one, it changes each morning, and every photo is used before any repeats
+_holidayPhotoFor(entry, dateObj) {
+const photos = this._holidayPhotos(entry);
+if (photos.length <= 1) return photos[0] || "";
+const n = photos.length;
+const d = new Date(dateObj);
+const dayNum = Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000);
+const order = (round) => {
+let h = 2166136261;
+const key = `${entry.id || entry.name || ""}:${round}`;
+for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+const idx = Array.from({ length: n }, (_, i) => i);
+for (let i = n - 1; i > 0; i--) { h = (Math.imul(h, 1103515245) + 12345) >>> 0; const j = h % (i + 1); [idx[i], idx[j]] = [idx[j], idx[i]]; }
+return idx;
+};
+const round = Math.floor(dayNum / n);
+const cur = order(round);
+// the first day of a round never repeats the last day of the one before
+const prevLast = order(round - 1)[n - 1];
+if (cur[0] === prevLast) [cur[0], cur[1]] = [cur[1], cur[0]];
+return photos[cur[dayNum % n]];
+}
+_holidayWithPhotoFor(entry, dateObj) {
+return entry ? Object.assign({}, entry, { imageUrl: this._holidayPhotoFor(entry, dateObj) }) : null;
 }
 // Sunday-through-Saturday calendar week containing `date`, as plain local midnight Date objects
 _calendarWeekRangeForDate(date) {
@@ -12307,7 +13447,7 @@ const scopeRank = { day: 0, week: 1, month: 2 };
 const candidates = [];
 const years = new Set([rangeStart.getFullYear(), rangeEnd.getFullYear()]);
 list.forEach((entry, order) => {
-if (!entry || !entry.enabled || !entry.imageUrl || !entry.expandFullDay) return;
+if (!entry || !entry.enabled || !this._holidayPhotos(entry).length || !entry.expandFullDay) return;
 const scope = ["day", "week", "month"].includes(entry.expandScope) ? entry.expandScope : "day";
 if (scope === "day") {
 const isToday = this._holidayEntryDatesForYear(entry, todayYear).some((resolved) => {
@@ -12330,7 +13470,7 @@ candidates.push({ entry, order, scopeRank: scopeRank[scope], distanceDays });
 });
 if (!candidates.length) return null;
 candidates.sort((a, b) => a.scopeRank - b.scopeRank || a.distanceDays - b.distanceDays || a.order - b.order);
-return candidates[0].entry;
+return this._holidayWithPhotoFor(candidates[0].entry, referenceDate);
 }
 _isHolidayBackgroundDark(imageUrl) {
 if (!imageUrl) return false;
@@ -12453,6 +13593,9 @@ matchedFullDayHoliday
 const isBgDark = !!(bg && bg.image && this._isHolidayBackgroundDark(bg.image));
 this.classList.toggle("fh-bg-dark", isBgDark);
 this.classList.toggle("fh-bg-photo", !!(bg && bg.image));
+// a full-screen holiday photo (or Halloween's) shows even with Card background: See-through
+if (matchedFullDayHoliday || bg !== theme.background) this.setAttribute("fh-own-bg", "");
+else this.removeAttribute("fh-own-bg");
 if (this._rightNowTopBarEl) {
 this._rightNowTopBarEl.classList.toggle("bg-dark", isBgDark);
 // tells the bar a photo is behind it, so its own dark-theme-background heading flip
@@ -13372,6 +14515,7 @@ dayDate.setDate(start.getDate() + dayIndex);
 const dateKey = this._dateKey(dayDate);
 const dayBlocks = this._getBlocksForDay(dayDate);
 dayBlocks.forEach((blockName, blockIndex) => {
+if (this._isDayBlockHidden(dateKey, blockName)) return;
 const m = this._getMealForDay(dateKey, dayDate, blockIndex);
 if (!m || !m.name || !m.name.trim()) return;
 blocks.push({
@@ -13749,6 +14893,10 @@ ${FAMILY_HUB_SHARED_STYLE_BLOCK}
 <button data-fh-title="text.love_it" class="rating-btn btn-heart" title="${__fhT("text.love_it", "Love it", null, "h")}">&#10084;&#65039;</button>
 <button data-fh-title="text.not_a_fan_2" class="rating-btn btn-thumbsdown" title="${__fhT("text.not_a_fan_2", "Not a fan", null, "h")}">&#128078;</button>
 </div>
+<div class="field remove-day-block-field" style="display:none;">
+<button type="button" class="btn-remove-day-block"></button>
+<div class="remind-hint remove-day-block-hint"></div>
+</div>
 <div data-fh-t="text.you_can_suggest_a_meal_for_this_day" class="remind-hint menu-suggest-hint" style="display:none;">${__fhT("text.you_can_suggest_a_meal_for_this_day", "You can suggest a meal for this day - someone who can edit the menu decides whether it goes on.", null, "h")}</div>
 <div class="modal-actions">
 <button data-fh-t="text.clear" class="btn-clear">${__fhT("text.clear", "Clear", null, "h")}</button>
@@ -14102,6 +15250,20 @@ ${FAMILY_HUB_SHARED_STYLE_BLOCK}
 </div>
 </div>
 </div>
+<div class="modal-overlay breaks-overlay">
+<div class="modal-box breaks-box">
+<button class="modal-close brk-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
+<h2 data-i18n="breaks.title">🏖️ Holidays &amp; breaks</h2>
+<div class="remind-hint" data-i18n="breaks.hint">Your family's own days: spring break, summer break, a work holiday, a vacation. They show under the date like holidays, and No school / No work days change Companion's wake-up and the no school / no work entities.</div>
+<datalist id="brk-name-options"></datalist>
+<div class="brk-list"></div>
+<button type="button" class="suggestion-add-btn brk-add" data-i18n="breaks.add">+ Add a holiday or break</button>
+<div class="modal-actions brk-actions">
+<button type="button" class="btn-cancel brk-cancel" data-i18n="common.cancel">Cancel</button>
+<button type="button" class="btn-save brk-save" data-i18n="common.save">Save</button>
+</div>
+</div>
+</div>
 <div class="modal-overlay debug-overlay">
 <div class="modal-box debug-box">
 <button class="modal-close debug-close" aria-label="Close" data-i18n-title="common.close">&#10005;</button>
@@ -14146,6 +15308,11 @@ ${FAMILY_HUB_SHARED_STYLE_BLOCK}
 <input type="text" class="weather-entity-input" list="weather-entity-datalist" placeholder="weather.forecast_home" />
 <datalist id="weather-entity-datalist"></datalist>
 <div class="remind-hint" data-i18n="settings.weather_entity_hint">The weather entity each day-column's forecast is pulled from. Leave blank to use the dashboard's own config (or Home Assistant's weather.forecast_home default).</div>
+</div>
+<div class="field">
+<label data-i18n="breaks.settings_label">Holidays &amp; breaks</label>
+<button type="button" class="btn-cancel breaks-settings-btn" data-i18n="breaks.settings_btn">🏖️ Edit holidays &amp; breaks</button>
+<div class="remind-hint" data-i18n="breaks.settings_hint">Spring break, summer break, work holidays and vacations, with who's off school or work. Also on the + button.</div>
 </div>
 <div class="field">
 <button type="button" class="accordion-toggle" data-target="calendars-body">
@@ -14359,6 +15526,17 @@ ${FAMILY_HUB_SHARED_STYLE_BLOCK}
 <div class="remind-hint" data-i18n="settings.person_pictures_hint">Show each person's picture from Home Assistant (Settings → People) on their events and name pills, on every Family Hub card. Their initial shows when they have no picture.</div>
 </div>
 <div class="field admin-only-setting">
+<label data-i18n="settings.maps_provider_label">Event locations open in</label>
+<select class="maps-provider-select">
+<option value="auto" data-i18n="settings.maps_provider_auto">Apple Maps on Apple devices, Google Maps on others</option>
+<option value="google" data-i18n="settings.maps_provider_google">Google Maps</option>
+<option value="apple" data-i18n="settings.maps_provider_apple">Apple Maps</option>
+<option value="waze" data-i18n="settings.maps_provider_waze">Waze</option>
+<option value="off" data-i18n="settings.maps_provider_off">Don't link them</option>
+</select>
+<div class="remind-hint" data-i18n="settings.maps_provider_hint">Tap an event's location to open it in a maps app for directions. A location that's a web address (a video call link, say) opens as itself.</div>
+</div>
+<div class="field admin-only-setting">
 <label data-i18n="settings.now_marker_label">Mark what's happening now</label>
 <div class="size-btn-row">
 <button type="button" class="size-btn now-marker-btn" data-value="off" data-i18n="common.off">Off</button>
@@ -14435,6 +15613,17 @@ ${FAMILY_HUB_SHARED_STYLE_BLOCK}
 <label class="right-now-topbar-style-toggle"><input type="checkbox" class="right-now-topbar-show-weather-checkbox" /> <span data-i18n="settings.right_now_topbar_show_weather">Weather</span></label>
 </div>
 <div class="remind-hint" data-i18n="settings.right_now_topbar_style_hint">Only visible at the Large size (see above) - that's the only tier with room for either one.</div>
+</div>
+<div class="field right-now-topbar-option-field right-now-look-ahead-field" style="display:none;">
+<label data-i18n="settings.right_now_look_ahead_label">Right Now looks ahead</label>
+<select class="right-now-look-ahead-select">
+<option value="1" data-i18n="settings.right_now_look_ahead_1">Today only</option>
+<option value="2" data-i18n="settings.right_now_look_ahead_2">Today and tomorrow</option>
+<option value="3" data-i18n="settings.right_now_look_ahead_3">3 days</option>
+<option value="7" data-i18n="settings.right_now_look_ahead_7">7 days</option>
+<option value="14" data-i18n="settings.right_now_look_ahead_14">14 days</option>
+</select>
+<div class="remind-hint" data-i18n="settings.right_now_look_ahead_hint">How far ahead each person's "Next" line looks for their next event. Applies to the Right Now bar here and to Right Now cards that don't set their own. Further ahead, Next says which day it is.</div>
 </div>
 <div class="field right-now-topbar-option-field right-now-topbar-people-field" style="display:none;">
 <label data-i18n="settings.right_now_topbar_people_label">Who's shown on the top bar</label>
@@ -14734,6 +15923,14 @@ ${FAMILY_HUB_SHARED_STYLE_BLOCK}
 <div class="global-theme-status" style="display:none;font-size:12px;color:var(--fc-text-secondary);font-style:italic;margin-top:6px;"></div>
 </div>
 <div class="field">
+<label data-i18n="settings.see_through_label">Card background</label>
+<div class="size-btn-row">
+<button type="button" class="size-btn see-through-btn" data-value="off" data-i18n="settings.see_through_off">The theme's</button>
+<button type="button" class="size-btn see-through-btn" data-value="on" data-i18n="settings.see_through_on">See-through</button>
+</div>
+<div class="remind-hint" data-i18n="settings.see_through_hint">See-through leaves every Family Hub card's background empty, so the dashboard's own background shows behind them - an animated background (like lovelace-animated-background) or a wallpaper. The panels keep the theme's colours; lower Card transparency in Theme Builder to see more of it. Holiday photos still take over, and e-ink and high contrast stay plain.</div>
+</div>
+<div class="field">
 <label data-i18n="settings.device_theme_label">This device's theme</label>
 <select class="device-theme-override-select" style="width:100%;box-sizing:border-box;font-size:16px;padding:10px 12px;border-radius:8px;border:1px solid var(--fc-border);background:var(--fc-card);color:var(--fc-text);font-family:inherit;"></select>
 <div class="remind-hint" data-i18n="settings.device_theme_hint">Overrides the shared theme above for just this device/tablet - every other Family Hub card here (Chores, Rewards, Goals, My Pantry, My Chores) picks it up too, but no other device is affected. Takes effect immediately, with no Save needed.</div>
@@ -14814,6 +16011,7 @@ ${FAMILY_HUB_SHARED_STYLE_BLOCK}
 <select class="member-add-select"></select>
 <button type="button" class="member-add-btn" data-i18n="settings.add_a_person">&#10133; Add a person</button>
 </div>
+<button type="button" class="add-person-btn member-add-local-btn" data-i18n="settings.local_add">+ Add someone without a Home Assistant login</button>
 </div>
 <div class="field">
 <div class="people-hint" data-i18n="settings.profiles_hint">Each Home Assistant login has its own profile here - which calendars they get reminders from, whether they want standalone Reminders, and whether/what they want in the Daily Digest. Tap a person below to set theirs up, or Remove to take them out of Family Hub - nothing about them is deleted, and re-adding them brings everything right back.</div>
@@ -15213,11 +16411,11 @@ ${FAMILY_HUB_SHARED_STYLE_BLOCK}
 <select class="hour-select add-event-calendar-select"></select>
 </div>
 <div class="field">
-<label data-i18n="add_event.title_label">Title</label>
+<label class="add-event-title-label" data-i18n="add_event.title_label">Title</label>
 <input data-fh-placeholder="text.e_g_dentist_appointment" type="text" class="add-event-title" placeholder="${__fhT("text.e_g_dentist_appointment", "e.g. Dentist appointment", null, "h")}" maxlength="120" />
 </div>
 <div class="add-event-tab-panel" data-tab-panel="calendar">
-<div class="field">
+<div class="field add-event-allday-field">
 <label data-i18n="add_event.allday_label">All day</label>
 <div class="size-btn-row">
 <button type="button" class="size-btn add-event-allday-btn" data-value="off" data-i18n="add_event.timed">Timed</button>
@@ -15226,17 +16424,40 @@ ${FAMILY_HUB_SHARED_STYLE_BLOCK}
 </div>
 <div class="add-event-dates-row">
 <div class="field">
-<label data-i18n="add_event.date_label">Date</label>
+<label class="add-event-date-label" data-i18n="add_event.date_label">Date</label>
 <div class="date-picker-row">
 <input type="date" class="add-event-date" />
 <button type="button" class="add-event-date-btn" title="Pick a date" data-i18n-title="add_event.pick_date">&#128197;</button>
 </div>
 </div>
 <div class="field add-event-enddate-field">
-<label data-i18n="add_event.enddate_short_label" title="For events that last more than one day">End date (optional)</label>
+<label class="add-event-enddate-label" data-i18n="add_event.enddate_short_label" title="For events that last more than one day">End date (optional)</label>
 <div class="date-picker-row">
 <input type="date" class="add-event-end-date" />
 <button type="button" class="add-event-end-date-btn" title="Pick a date" data-i18n-title="add_event.pick_date">&#128197;</button>
+</div>
+</div>
+</div>
+<div class="ae-special-fields">
+<div class="field ae-what-field">
+<label data-i18n="add_event.what_label">What is it?</label>
+<div class="size-btn-row"><button type="button" class="size-btn ae-what-btn" data-value="birthday">&#127874; <span data-i18n="settings.calendar_kind_birthday_one">Birthday</span></button><button type="button" class="size-btn ae-what-btn active" data-value="special">&#128141; <span data-i18n="settings.calendar_kind_special_one">Special day</span></button></div>
+</div>
+<div class="field ae-year-field">
+<label class="ae-year-label"></label>
+<input type="number" class="hour-select ae-year" min="1900" max="2100" step="1" inputmode="numeric" />
+<div class="remind-hint ae-year-hint"></div>
+</div>
+<div class="ae-holiday-fields">
+<div class="field">
+<label data-i18n="days_off.label">Day off</label>
+<div class="size-btn-row ae-off-row"></div>
+</div>
+<div class="field ae-who-field">
+<label data-i18n="add_event.whos_off_label">Who's off</label>
+<div class="size-btn-row"><button type="button" class="size-btn ae-who-btn active" data-value="all" data-i18n="breaks.who_everyone">Everyone</button><button type="button" class="size-btn ae-who-btn" data-value="some" data-i18n="breaks.who_some">Only some people</button></div>
+<div class="ae-people" hidden></div>
+<div class="remind-hint ae-who-hint"></div>
 </div>
 </div>
 </div>
@@ -15290,7 +16511,7 @@ ${FAMILY_HUB_SHARED_STYLE_BLOCK}
 <input type="time" class="hour-select add-event-end-time" />
 </div>
 </div>
-<div class="field">
+<div class="field add-event-location-field">
 <label data-i18n="add_event.location_label">Location (optional)</label>
 <input data-fh-placeholder="text.optional" type="text" class="add-event-location" placeholder="${__fhT("text.optional", "Optional", null, "h")}" maxlength="120" />
 </div>
@@ -15357,7 +16578,7 @@ ${FAMILY_HUB_SHARED_STYLE_BLOCK}
 </div>
 <div class="remind-hint" data-i18n="add_event.checklist_hint">A "just for this" list is deleted automatically once this happens (plus a grace window, so it doesn't vanish mid-use) - an existing list you attach is only ever unlinked, never touched or deleted itself.</div>
 </div>
-<div class="field">
+<div class="field add-event-notes-field">
 <label data-i18n="add_event.notes_label">Notes (optional)</label>
 <textarea data-fh-placeholder="text.optional_details" class="add-event-description" placeholder="${__fhT("text.optional_details", "Optional details", null, "h")}" maxlength="255"></textarea>
 </div>
@@ -15424,6 +16645,11 @@ return;
 }
 const evCard = e.target.closest(".event, .tl-event, .all-day-chip, .holiday-banner");
 if (evCard && evCard.dataset.eventId) {
+const brk = this._eventDetails && this._eventDetails[evCard.dataset.eventId];
+if (brk && brk.isFamilyBreak) {
+this._openBreaksEditor(brk.breakId);
+return;
+}
 this._openEventInfo(evCard.dataset.eventId);
 return;
 }
@@ -15517,7 +16743,7 @@ const mode = family === "month" ? this._getMonthViewVariant() : family === "day"
 this._closeViewSelectMenu();
 if (mode === this._viewMode) return;
 this._viewMode = mode;
-if (mode !== "week" && mode !== "meals" && this._mealEditMode) {
+if (this._mealEditMode && !["week", "meals", "month", "split"].includes(mode)) {
 this._mealEditMode = false;
 const editBtn = root.querySelector(".edit-meals-btn");
 if (editBtn) {
@@ -15991,6 +17217,17 @@ root.querySelector(".add-fab-meal-block").addEventListener("click", () => {
 this._closeAddMenu();
 this._openMealBlockModal();
 });
+const brkOverlay = root.querySelector(".breaks-overlay");
+brkOverlay.addEventListener("click", (e) => this._onBreaksEditorClick(e));
+brkOverlay.addEventListener("input", (e) => {
+if (!e.target.classList.contains("brk-name")) return;
+const ico = e.target.closest(".brk-item").querySelector(".brk-icon");
+if (ico) ico.textContent = this._breakIcon(e.target.value);
+});
+root.querySelector(".brk-close").addEventListener("click", () => this._closeBreaksEditor());
+root.querySelector(".brk-cancel").addEventListener("click", () => this._closeBreaksEditor());
+root.querySelector(".brk-save").addEventListener("click", () => this._saveBreaks());
+root.querySelector(".breaks-settings-btn").addEventListener("click", () => this._openBreaksEditor());
 root.querySelector(".meal-block-close").addEventListener("click", () => this._closeMealBlockModal());
 root.querySelectorAll(".mb-mode-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
@@ -16102,6 +17339,28 @@ if (addEventCalendarSelectEl) {
 // Whoever's calendar is picked can't also be tagged as "someone else this is also for" (see _openEventInfo's identical others-filter)
 addEventCalendarSelectEl.addEventListener("change", () => this._renderAddEventPeopleField());
 addEventCalendarSelectEl.addEventListener("change", () => this._refreshAddEventRecurSupport());
+addEventCalendarSelectEl.addEventListener("change", () => this._applyAddEventKind());
+const aeBox = root.querySelector(".add-event-box");
+aeBox.addEventListener("click", (e) => {
+const off = e.target.closest(".ae-off-btn");
+if (off) {
+aeBox.querySelectorAll(".ae-off-btn").forEach((b) => b.classList.toggle("active", b === off));
+const who = aeBox.querySelector(".ae-who-field");
+if (who) who.style.display = off.dataset.value ? "" : "none";
+return;
+}
+const what = e.target.closest(".ae-what-btn");
+if (what) {
+aeBox.querySelectorAll(".ae-what-btn").forEach((b) => b.classList.toggle("active", b === what));
+this._applyAddEventKind();
+return;
+}
+const whoBtn = e.target.closest(".ae-who-btn");
+if (whoBtn) {
+aeBox.querySelectorAll(".ae-who-btn").forEach((b) => b.classList.toggle("active", b === whoBtn));
+this._renderAddEventWho();
+}
+});
 }
 root.querySelectorAll(".add-event-recur-freq-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
@@ -16154,6 +17413,7 @@ root.querySelector(".screensaver-widgets-close").addEventListener("click", () =>
 root.querySelector(".screensaver-widgets-done").addEventListener("click", () => this._closeScreenSaverWidgetsModal());
 root.querySelector(".notify-devices-add-btn").addEventListener("click", () => this._addNotifyDevice());
 root.querySelector(".member-add-btn").addEventListener("click", () => this._addFamilyHubMember());
+root.querySelector(".member-add-local-btn").addEventListener("click", () => this._addLocalPerson());
 root.querySelector(".notify-devices-autodetect-btn").addEventListener("click", () => this._autoDetectNotifyTarget());
 root.querySelectorAll(".settings-tab-btn").forEach((btn) => {
 btn.addEventListener("click", () => this._setSettingsTab(btn.dataset.settingsTab));
@@ -16500,6 +17760,12 @@ btn.classList.add("active");
 root.querySelectorAll(".meals-own-view-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
 root.querySelectorAll(".meals-own-view-btn").forEach((b) => b.classList.remove("active"));
+btn.classList.add("active");
+});
+});
+root.querySelectorAll(".see-through-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+root.querySelectorAll(".see-through-btn").forEach((b) => b.classList.remove("active"));
 btn.classList.add("active");
 });
 });
@@ -17242,17 +18508,22 @@ custom.length && native.length ? `<optgroup label="Theme Builder">${custom.map(o
 }${selected && !known ? `<option value="${esc(selected)}" selected>${esc(selected)}</option>` : ""}`;
 };
 const coverOptions = [
-["column", this._t("settings.holiday_cover_column", "Behind its day")],
-["day", this._t("settings.holiday_cover_day", "Full screen, that day")],
-["week", this._t("settings.holiday_cover_week", "Full screen, that week")],
-["month", this._t("settings.holiday_cover_month", "Full screen, that month")],
+["column", this._t("settings.holiday_cover_each_day", "Behind each day")],
+["full", this._t("settings.holiday_cover_full", "Full screen")],
+];
+const spanOptions = [
+["day", this._t("settings.holiday_span_day", "Its day")],
+["week", this._t("settings.holiday_span_week", "Its week")],
+["month", this._t("settings.holiday_span_month", "Its month")],
 ];
 const rowHtml = (entry, idx) => {
 const isPredefined = entry.source === "predefined";
 const def = isPredefined ? HOLIDAY_PREDEFINED_DEFS.find((d) => d.key === entry.predefinedKey) : null;
 // A predefined row's name translates through settings.holiday_predefined_<key> as long as it's still exactly this def's own English default
 const predefinedDisplayName = def && entry.name === def.name ? this._t(`settings.holiday_predefined_${def.key}`, def.name) : entry.name;
-const cover = entry.expandFullDay ? entry.expandScope || "day" : "column";
+const cover = entry.expandFullDay ? "full" : "column";
+const span = ["week", "month"].includes(entry.span) ? entry.span : "day";
+const photos = this._holidayPhotos(entry);
 const nameField = isPredefined
 ? `<span class="holiday-bg-name">${esc(predefinedDisplayName)}</span><span class="holiday-bg-date-label">${esc(this._holidayBackgroundDateLabel(def))}</span>`
 : `<input type="text" class="holiday-bg-name-input" data-idx="${idx}" maxlength="60" value="${esc(entry.name)}" placeholder="${esc(this._t("settings.holiday_name_placeholder", "Name (e.g. Grandma's Birthday)"))}" />`;
@@ -17260,7 +18531,7 @@ const dateLine = (d, di, count) => `<div class="holiday-bg-date-line" data-date-
 <input type="text" class="holiday-bg-date-label-input" maxlength="40" value="${esc(d.label)}" placeholder="${esc(this._t("settings.holiday_date_label_placeholder", "Who or what (optional)"))}" />
 <div class="holiday-bg-date-row">
 <select class="holiday-bg-month">${monthNames.map((m, i) => `<option value="${i + 1}"${d.month === i + 1 ? " selected" : ""}>${esc(m)}</option>`).join("")}</select>
-<select class="holiday-bg-day">${Array.from({ length: 31 }, (_, i) => `<option value="${i + 1}"${d.day === i + 1 ? " selected" : ""}>${i + 1}</option>`).join("")}</select>
+<select class="holiday-bg-day"${span === "month" ? " hidden" : ""}>${Array.from({ length: 31 }, (_, i) => `<option value="${i + 1}"${d.day === i + 1 ? " selected" : ""}>${i + 1}</option>`).join("")}</select>
 ${!d.recurring ? `<input type="number" class="holiday-bg-year" min="2000" max="2100" value="${d.year || new Date().getFullYear()}" />` : ""}
 <label class="holiday-bg-recurring-label"><input type="checkbox" class="holiday-bg-recurring" data-idx="${idx}" data-date-idx="${di}" ${d.recurring ? "checked" : ""} /> ${esc(this._t("settings.holiday_every_year", "Every year"))}</label>
 ${count > 1 ? `<button type="button" class="holiday-bg-date-remove-btn" data-idx="${idx}" data-date-idx="${di}" title="${esc(this._t("settings.holiday_remove_date", "Remove this date"))}">&#10005;</button>` : ""}
@@ -17281,14 +18552,19 @@ ${isPredefined ? "" : `<button type="button" class="holiday-bg-remove-btn" data-
 </div>
 <div class="holiday-bg-details"${entry.enabled ? "" : " hidden"}>
 ${dateRow}
-<div class="holiday-bg-field"><span class="holiday-bg-field-label">${esc(this._t("settings.holiday_photo_label", "Photo"))}</span>
+<div class="holiday-bg-field"><span class="holiday-bg-field-label">${esc(this._t("settings.holiday_span_label", "Lasts"))}</span>
+<div class="holiday-bg-span-row" data-idx="${idx}">${spanOptions
+.map(([v, label]) => `<button type="button" class="holiday-bg-span-btn${span === v ? " active" : ""}" data-idx="${idx}" data-value="${v}">${esc(label)}</button>`)
+.join("")}</div>
+<span class="holiday-bg-field-hint">${esc(this._t("settings.holiday_span_hint", "Its week is Sunday to Saturday around the date; its month is the whole month. The theme and the photo stay on for all of it."))}</span></div>
+<div class="holiday-bg-field"><span class="holiday-bg-field-label">${esc(this._t("settings.holiday_photos_label", "Photos"))}</span>
 <div class="holiday-bg-image-row">
-${entry.imageUrl ? `<img class="holiday-bg-preview" src="${esc(entry.imageUrl)}" alt="" />` : `<div class="holiday-bg-preview holiday-bg-preview-empty">&#128444;</div>`}
+${photos.length ? photos.map((u, pi) => `<span class="holiday-bg-thumb"><img class="holiday-bg-preview" src="${esc(u)}" alt="" /><button type="button" class="holiday-bg-remove-image-btn" data-idx="${idx}" data-photo="${pi}" title="${esc(this._t("settings.holiday_remove_photo", "Remove photo"))}">&#10005;</button></span>`).join("") : `<div class="holiday-bg-preview holiday-bg-preview-empty">&#128444;</div>`}
 <input type="file" accept="image/*" class="holiday-bg-file-input" data-idx="${idx}" style="display:none" />
-<button type="button" class="holiday-bg-btn holiday-bg-upload-btn" data-idx="${idx}">${esc(entry.imageUrl ? this._t("settings.holiday_change_photo", "Change photo") : this._t("settings.holiday_upload_photo", "Upload photo"))}</button>
-${entry.imageUrl ? `<button type="button" class="holiday-bg-btn holiday-bg-remove-image-btn" data-idx="${idx}">${esc(this._t("settings.holiday_remove_photo", "Remove photo"))}</button>` : ""}
-<span class="holiday-bg-upload-status" data-idx="${idx}">${entry.imageUrl ? "" : esc(this._t("settings.holiday_no_photo_hint", "No photo yet - the theme can still change."))}</span>
-</div></div>
+${photos.length < FH_HOLIDAY_MAX_PHOTOS ? `<button type="button" class="holiday-bg-btn holiday-bg-upload-btn" data-idx="${idx}">${esc(photos.length ? this._t("settings.holiday_add_photo", "+ Add photo") : this._t("settings.holiday_upload_photo", "Upload photo"))}</button>` : ""}
+<span class="holiday-bg-upload-status" data-idx="${idx}">${photos.length ? "" : esc(this._t("settings.holiday_no_photo_hint", "No photo yet - the theme can still change."))}</span>
+</div>
+<span class="holiday-bg-field-hint">${esc(this._t("settings.holiday_photos_hint", "Up to 5. With more than one, a different one shows each day, and every photo is used before any repeats."))}</span></div>
 <div class="holiday-bg-field"><span class="holiday-bg-field-label">${esc(this._t("settings.holiday_cover_label", "Show the photo"))}</span>
 <div class="holiday-bg-cover-row" data-idx="${idx}">${coverOptions
 .map(([v, label]) => `<button type="button" class="holiday-bg-cover-btn${cover === v ? " active" : ""}" data-idx="${idx}" data-value="${v}">${esc(label)}</button>`)
@@ -17360,7 +18636,18 @@ rerender();
 container.querySelectorAll(".holiday-bg-remove-image-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
 this._syncHolidayBackgroundsDraftFromDom();
-this._settingsHolidayBackgroundsDraft[parseInt(btn.dataset.idx, 10)].imageUrl = "";
+const entry = this._settingsHolidayBackgroundsDraft[parseInt(btn.dataset.idx, 10)];
+const photos = this._holidayPhotos(entry).slice();
+photos.splice(parseInt(btn.dataset.photo || "0", 10), 1);
+entry.imageUrls = photos;
+entry.imageUrl = photos[0] || "";
+rerender();
+});
+});
+container.querySelectorAll(".holiday-bg-span-btn").forEach((btn) => {
+btn.addEventListener("click", () => {
+btn.closest(".holiday-bg-span-row").querySelectorAll(".holiday-bg-span-btn").forEach((b) => b.classList.toggle("active", b === btn));
+this._syncHolidayBackgroundsDraftFromDom();
 rerender();
 });
 });
@@ -17386,7 +18673,11 @@ if (statusEl) statusEl.textContent = this._t("settings.holiday_uploading", "Uplo
 try {
 this._syncHolidayBackgroundsDraftFromDom();
 const url = await this._holidayBgUploadImage(file);
-this._settingsHolidayBackgroundsDraft[idx].imageUrl = url;
+const entry = this._settingsHolidayBackgroundsDraft[idx];
+const photos = this._holidayPhotos(entry).slice();
+if (!photos.includes(url) && photos.length < FH_HOLIDAY_MAX_PHOTOS) photos.push(url);
+entry.imageUrls = photos;
+entry.imageUrl = photos[0] || "";
 rerender();
 } catch (err) {
 if (statusEl) statusEl.textContent = this._t("settings.holiday_upload_failed", "Couldn't upload that photo.");
@@ -17411,8 +18702,10 @@ year: null,
 recurring: true,
 dates: [{ month: new Date().getMonth() + 1, day: new Date().getDate(), year: null, recurring: true, label: "" }],
 imageUrl: "",
+imageUrls: [],
 expandFullDay: false,
 expandScope: "day",
+span: "day",
 themeId: "",
 });
 rerender();
@@ -17462,11 +18755,12 @@ label: labelEl ? labelEl.value.trim().slice(0, 40) : before.label || "",
 const first = prior.dates[0];
 Object.assign(prior, { month: first.month, day: first.day, year: first.year, recurring: first.recurring });
 }
+const spanBtn = row.querySelector(".holiday-bg-span-btn.active");
+if (spanBtn) prior.span = spanBtn.dataset.value;
 const cover = row.querySelector(".holiday-bg-cover-btn.active");
-if (cover) {
-prior.expandFullDay = cover.dataset.value !== "column";
-if (prior.expandFullDay) prior.expandScope = cover.dataset.value;
-}
+if (cover) prior.expandFullDay = cover.dataset.value === "full";
+// older versions read the full-screen length from expandScope
+prior.expandScope = ["week", "month"].includes(prior.span) ? prior.span : "day";
 const themeEl = row.querySelector(".holiday-bg-theme");
 if (themeEl) prior.themeId = themeEl.value || "";
 });
@@ -18324,6 +19618,12 @@ this._renderNotifyProfileAdditionalRemindersLists(userId);
 });
 }
 // 2026.11.1: linked GoWish / Amazon wish lists on a person's profile
+// the same key the Home Assistant side gives a link (wishlist_import.normalize_links): trimmed, https:// added
+static _wishlistLinkKey(url) {
+let u = String(url || "").trim();
+if (u && !/^https?:\/\//i.test(u)) u = "https://" + u;
+return u.slice(0, 500);
+}
 static _wishlistLinkSource(url) {
 const u = String(url || "").toLowerCase();
 if (/(^|\/\/|\.)gowish\.com/.test(u)) return "GoWish";
@@ -18338,7 +19638,10 @@ return { text: this._t("settings.wishlist_links_ok", "%name%: %count% wishes", {
 }
 // -- Family Hub Companion settings on a person's profile (2026.11.1) - see companion.py / family-hub-companion-card.js
 static _companionDefaults() {
-return { wake: "07:00", wakeWeekend: "08:00", bedtime: "19:30", bedtimeWeekend: "20:30", afternoon: "15:30", windDown: 30, wakeWindow: 30, alarm: "chime", sound: "off", soundVolume: 40, nightScreen: "dim", light: "", nightlight: true, sunrise: true, sunriseMinutes: 20, okToWake: true, wakeLight: "green", wakeLights: [], wakeAction: "", comfortNotify: [] };
+return { wake: "07:00", wakeWeekend: "08:00", bedtime: "19:30", bedtimeWeekend: "20:30", afternoon: "15:30", windDown: 30, wakeWindow: 30, alarm: "chime", sound: "off", soundVolume: 40, nightScreen: "dim", light: "", nightlight: true, sunrise: true, sunriseMinutes: 20, okToWake: true, wakeLight: "green", wakeLights: [], wakeAction: "", comfortNotify: [],
+screens: { myday: true, jobs: true, rewards: true, wishes: true, timers: false, room: false },
+timers: [{ title: "Reading", minutes: 20, icon: "\u{1F4DA}" }, { title: "Practice", minutes: 15, icon: "\u{1F3B9}" }, { title: "Tidy up", minutes: 10, icon: "\u{1F9F8}" }],
+roomButtons: [], infoSensors: [], customTimer: true, askStars: true, askRewards: true, screensaver: false, screensaverIdle: 5, screensaverSource: "household", screensaverVideoUrl: "", screensaverCamera: "" };
 }
 _renderNotifyProfileCompanion(userId) {
 const root = this._root;
@@ -18348,16 +19651,42 @@ const draft = this._settingsUserProfilesDraft[userId] || this._defaultUserProfil
 const c = Object.assign(FamilyWeekCalendarCard._companionDefaults(), draft.companion && typeof draft.companion === "object" ? draft.companion : {});
 const esc = (t) => __fhEsc(String(t == null ? "" : t));
 const t = (k, fb) => esc(this._t("settings.companion_" + k, fb));
+const screens = Object.assign({}, FamilyWeekCalendarCard._companionDefaults().screens, c.screens || {});
 const opt = (val, cur, label) => `<option value="${esc(val)}"${String(val) === String(cur) ? " selected" : ""}>${esc(label)}</option>`;
 const time = (key, label) => `<label class="cmp-field"><span>${label}</span><input type="time" class="cmp-in" data-key="${key}" value="${esc(c[key])}" /></label>`;
 const check = (key, label) => `<label class="remind-check-opt"><input type="checkbox" class="cmp-in" data-key="${key}"${c[key] ? " checked" : ""} /> <span>${label}</span></label>`;
-const lights = Object.keys((this._hass && this._hass.states) || {}).filter((id) => id.indexOf("light.") === 0).sort();
 const members = ((this._getSettings().memberUserIds) || []).filter((id) => id !== userId);
 const names = {};
 (this._notifyProfileUsersCache || []).forEach((u) => { if (u && u.id) names[u.id] = u.name || u.id; });
 const parents = members.map((id) => `<label class="remind-check-opt"><input type="checkbox" class="cmp-parent" value="${esc(id)}"${(c.comfortNotify || []).indexOf(id) >= 0 ? " checked" : ""} /> <span>${esc(names[id] || id)}</span></label>`).join("");
 box.innerHTML = `
 <div class="remind-hint">${t("intro", "For a child's own screen by their bed: add the Family Hub Companion card to a dashboard on that screen. Their routines, chores and stars come from Family Hub; these set their day.")}</div>
+<div class="cmp-sub">${t("screens", "What's on their screen")}</div>
+<div class="cmp-screens">${[["myday", "\u{1F4C5}", t("screen_myday", "My day")], ["jobs", "✅", t("screen_jobs", "Jobs")], ["rewards", "⭐", t("screen_rewards", "Rewards")], ["wishes", "\u{1F381}", t("screen_wishes", "Wish list")], ["timers", "⏱️", t("screen_timers", "Timers")], ["room", "\u{1F4A1}", t("screen_room", "Room buttons")]].map(([k, ico, label]) => `<label class="remind-check-opt"><input type="checkbox" class="cmp-screen" value="${k}"${screens[k] ? " checked" : ""} /> <span>${ico} ${label}</span></label>`).join("")}</div>
+<div class="remind-hint">${t("screens_hint", "The clock is always there. Wish list needs their wish list set above; Room buttons need at least one button below.")}</div>
+${check("askStars", t("ask_stars", "Jobs has an Ask for stars button (a grown-up approves it)"))}
+${check("askRewards", t("ask_rewards", "Rewards has an Ask for a new reward button (a grown-up sets its stars and approves it)"))}
+<div class="cmp-sub">${t("timers", "Timers they can start")}</div>
+<div class="cmp-timer-list">${(c.timers || []).slice(0, 12).map((tm, i) => `<div class="cmp-timer-row"><input type="text" class="cmp-timer-icon" maxlength="8" placeholder="⏱️" value="${esc(tm.icon)}" /><input type="text" class="cmp-timer-title" maxlength="30" placeholder="${t("timer_title", "Reading")}" value="${esc(tm.title)}" /><input type="number" class="cmp-timer-min" min="1" max="180" value="${esc(tm.minutes)}" /><span>${t("timer_min", "min")}</span><input type="number" class="cmp-timer-stars" min="0" max="20" value="${esc(tm.stars || 0)}" title="${t("timer_stars_title", "Stars for finishing it")}" /><span>⭐</span><button type="button" class="cmp-x" data-list="timers" data-i="${i}" title="${t("remove", "Remove")}">✕</button></div>`).join("")}</div>
+${(c.timers || []).length < 12 ? `<button type="button" class="cmp-add" data-list="timers">+ ${t("add_timer", "Add a timer")}</button>` : ""}
+<div class="remind-hint">${t("timers_hint", "Stars are earned when the timer runs all the way out. Stopping it early earns nothing.")}</div>
+${check("customTimer", t("custom_timer", "They can also start a timer of their own, any length up to 2 hours (no stars)"))}
+<div class="cmp-sub">${t("room", "Room buttons")}</div>
+<div class="cmp-room-list">${(c.roomButtons || []).slice(0, 6).map((id, i) => `<div class="cmp-pick"><input type="text" class="cmp-room" data-pick="room" autocomplete="off" placeholder="${t("pick_placeholder", "Type to search, like lamp")}" value="${esc(id)}" /><button type="button" class="cmp-x" data-list="roomButtons" data-i="${i}" title="${t("remove", "Remove")}">✕</button></div>`).join("")}</div>
+${(c.roomButtons || []).length < 6 ? `<button type="button" class="cmp-add" data-list="roomButtons">+ ${t("add_room", "Add a button")}</button>` : ""}
+<div class="remind-hint">${t("room_hint", "Lights, switches, fans, speakers, blinds, scenes and scripts. Never locks or alarms.")}</div>
+<div class="cmp-sub">${t("info", "Room info they can see")}</div>
+<div class="cmp-info-list">${(c.infoSensors || []).slice(0, 4).map((id, i) => `<div class="cmp-pick"><input type="text" class="cmp-info" data-pick="info" autocomplete="off" placeholder="${t("pick_info_placeholder", "Type to search, like temperature")}" value="${esc(id)}" /><button type="button" class="cmp-x" data-list="infoSensors" data-i="${i}" title="${t("remove", "Remove")}">✕</button></div>`).join("")}</div>
+${(c.infoSensors || []).length < 4 ? `<button type="button" class="cmp-add" data-list="infoSensors">+ ${t("add_info", "Add a sensor")}</button>` : ""}
+<div class="remind-hint">${t("info_hint", "Up to 4, like their room's temperature or humidity, a door, or the weather. Shown under the clock and on the Room screen.")}</div>
+<div class="cmp-sub">${t("screensaver", "Screensaver")}</div>
+${check("screensaver", t("screensaver_on", "Show the screensaver when nobody has touched the screen for a while (daytime only)"))}
+<div class="cmp-grid">
+<label class="cmp-field"><span>${t("ss_show", "Show")}</span><select class="cmp-in cmp-ss-source" data-key="screensaverSource">${opt("household", c.screensaverSource, this._t("settings.companion_ss_household", "The Family Hub screensaver"))}${opt("video", c.screensaverSource, this._t("settings.companion_ss_video", "A video"))}${opt("camera", c.screensaverSource, this._t("settings.companion_ss_camera", "A camera"))}</select></label>
+${c.screensaverSource === "video" ? `<label class="cmp-field"><span>${t("ss_video_url", "Video URL")}</span><input type="text" class="cmp-in" data-key="screensaverVideoUrl" placeholder="/local/screensaver.mp4" value="${esc(c.screensaverVideoUrl)}" /></label>` : ""}
+${c.screensaverSource === "camera" ? `<label class="cmp-field"><span>${t("ss_camera", "Camera")}</span><span class="cmp-pick"><input type="text" class="cmp-in" data-key="screensaverCamera" data-pick="camera" autocomplete="off" placeholder="camera.backyard" value="${esc(c.screensaverCamera)}" /></span></label>` : ""}
+<label class="cmp-field"><span>${t("ss_idle", "Start after")}</span><select class="cmp-in" data-key="screensaverIdle">${[1, 2, 5, 10, 15, 30].map((n) => opt(n, c.screensaverIdle, this._t("settings.companion_minutes", "%n% min", { n }))).join("")}</select></label>
+</div>
 <div class="cmp-sub">${t("schedule", "Their day")}</div>
 <div class="cmp-grid">
 ${time("wake", t("wake", "Wake up (Mon-Fri)"))}
@@ -18369,25 +19698,26 @@ ${time("afternoon", t("afternoon", "After school starts"))}
 </div>
 <div class="cmp-sub">${t("sounds", "Sounds (from the screen)")}</div>
 <div class="cmp-grid">
-<label class="cmp-field"><span>${t("alarm", "Wake-up alarm")}</span><select class="cmp-in" data-key="alarm">${opt("off", c.alarm, this._t("settings.companion_alarm_off", "No alarm"))}${opt("chime", c.alarm, this._t("settings.companion_alarm_chime", "Chimes"))}${opt("birds", c.alarm, this._t("settings.companion_alarm_birds", "Birds"))}${opt("marimba", c.alarm, this._t("settings.companion_alarm_marimba", "Marimba"))}</select></label>
-<label class="cmp-field"><span>${t("sound", "Sleep sound")}</span><select class="cmp-in" data-key="sound">${opt("off", c.sound, this._t("settings.companion_sound_off", "None"))}${opt("white", c.sound, this._t("settings.companion_sound_white", "White noise"))}${opt("pink", c.sound, this._t("settings.companion_sound_pink", "Soft noise"))}${opt("brown", c.sound, this._t("settings.companion_sound_brown", "Deep rumble"))}${opt("rain", c.sound, this._t("settings.companion_sound_rain", "Rain"))}${opt("waves", c.sound, this._t("settings.companion_sound_waves", "Waves"))}</select></label>
+<label class="cmp-field"><span>${t("alarm", "Wake-up alarm")}</span><span class="cmp-sel-play"><select class="cmp-in" data-key="alarm">${opt("off", c.alarm, this._t("settings.companion_alarm_off", "No alarm"))}${opt("chime", c.alarm, this._t("settings.companion_alarm_chime", "Chimes"))}${opt("birds", c.alarm, this._t("settings.companion_alarm_birds", "Birds"))}${opt("marimba", c.alarm, this._t("settings.companion_alarm_marimba", "Marimba"))}</select><button type="button" class="cmp-play" data-which="alarm" title="${t("listen", "Listen")}"${c.alarm === "off" ? " disabled" : ""}><span class="cmp-play-go">▶ ${t("listen", "Listen")}</span><span class="cmp-play-stop">■ ${esc(this._t("text.stop", "Stop"))}</span></button></span></label>
+<label class="cmp-field"><span>${t("sound", "Sleep sound")}</span><span class="cmp-sel-play"><select class="cmp-in" data-key="sound">${opt("off", c.sound, this._t("settings.companion_sound_off", "None"))}${opt("white", c.sound, this._t("settings.companion_sound_white", "White noise"))}${opt("pink", c.sound, this._t("settings.companion_sound_pink", "Soft noise"))}${opt("brown", c.sound, this._t("settings.companion_sound_brown", "Deep rumble"))}${opt("rain", c.sound, this._t("settings.companion_sound_rain", "Rain"))}${opt("waves", c.sound, this._t("settings.companion_sound_waves", "Waves"))}</select><button type="button" class="cmp-play" data-which="sound" title="${t("listen", "Listen")}"${c.sound === "off" ? " disabled" : ""}><span class="cmp-play-go">▶ ${t("listen", "Listen")}</span><span class="cmp-play-stop">■ ${esc(this._t("text.stop", "Stop"))}</span></button></span></label>
 <label class="cmp-field"><span>${t("volume", "Sleep sound volume")}</span><input type="range" min="5" max="100" step="5" class="cmp-in" data-key="soundVolume" value="${esc(c.soundVolume)}" /></label>
+</div>
+<div class="remind-hint">${t("listen_hint", "Plays on this device, the same sounds the Companion screen makes. Tap again to stop.")}</div>
+<div class="cmp-grid">
 <label class="cmp-field"><span>${t("night_screen", "At night the screen")}</span><select class="cmp-in" data-key="nightScreen">${opt("dim", c.nightScreen, this._t("settings.companion_night_dim", "Shows a dim clock"))}${opt("off", c.nightScreen, this._t("settings.companion_night_off", "Goes dark (tap to see the time)"))}</select></label>
 </div>
 <div class="cmp-sub">${t("light", "Their room light")}</div>
-<input type="text" class="cmp-in cmp-light" data-key="light" list="cmp-lights" placeholder="light.kids_room" value="${esc(c.light)}" />
-<datalist id="cmp-lights">${lights.map((id) => `<option value="${esc(id)}">`).join("")}</datalist>
+<div class="cmp-pick"><input type="text" class="cmp-in cmp-light" data-key="light" data-pick="light" autocomplete="off" placeholder="light.kids_room" value="${esc(c.light)}" /></div>
 ${check("nightlight", t("nightlight", "Amber nightlight all night (it means: stay in bed)"))}
 <div class="cmp-sub">${t("waking_up", "Waking up")}</div>
 <label class="cmp-field"><span>${t("wake_lights", "More lights to wake them (sunrise and wake-up only)")}</span></label>
-<div class="cmp-wl-list">${(c.wakeLights || []).concat([""]).map((id) => `<input type="text" class="cmp-wl" list="cmp-lights" placeholder="light.ceiling" value="${esc(id)}" />`).join("")}</div>
+<div class="cmp-wl-list">${(c.wakeLights || []).concat([""]).map((id) => `<div class="cmp-pick"><input type="text" class="cmp-wl" data-pick="light" autocomplete="off" placeholder="light.ceiling" value="${esc(id)}" /></div>`).join("")}</div>
 ${check("sunrise", t("sunrise", "Sunrise: slowly brighten before wake-up, then the alarm"))}
 <div class="cmp-grid">
 <label class="cmp-field"><span>${t("sunrise_length", "Sunrise takes")}</span><select class="cmp-in" data-key="sunriseMinutes">${[10, 15, 20, 30, 45, 60].map((n) => opt(n, c.sunriseMinutes, this._t("settings.companion_minutes", "%n% min", { n }))).join("")}</select></label>
 <label class="cmp-field"><span>${t("wake_light", "When it's time to get up")}</span><select class="cmp-in" data-key="wakeLight">${opt("green", c.wakeLight, this._t("settings.companion_wake_green", "Green: ok to get up, then off"))}${opt("bright", c.wakeLight, this._t("settings.companion_wake_bright", "Bright light, stays on"))}${opt("sunrise", c.wakeLight, this._t("settings.companion_wake_sunrise", "Stay as the sunrise ended"))}</select></label>
 </div>
-<label class="cmp-field"><span>${t("wake_action", "Also at wake-up, run (scene, script or automation)")}</span><input type="text" class="cmp-in cmp-light" data-key="wakeAction" list="cmp-actions" placeholder="scene.good_morning" value="${esc(c.wakeAction)}" /></label>
-<datalist id="cmp-actions">${Object.keys((this._hass && this._hass.states) || {}).filter((id) => /^(scene|script|automation)\./.test(id)).sort().map((id) => `<option value="${esc(id)}">`).join("")}</datalist>
+<label class="cmp-field"><span>${t("wake_action", "Also at wake-up, run (scene, script or automation)")}</span><span class="cmp-pick"><input type="text" class="cmp-in cmp-light" data-key="wakeAction" data-pick="action" autocomplete="off" placeholder="scene.good_morning" value="${esc(c.wakeAction)}" /></span></label>
 <div class="cmp-sub">${t("comfort", "\"I need a hug\" button tells")}</div>
 <div class="cmp-parents">${parents || `<div class="remind-hint">${t("no_parents", "Nobody else is in Family Hub yet.")}</div>`}</div>
 <div class="remind-hint">${t("comfort_hint", "They get a notification on their phone (their own Notify devices). Automations can use family_hub_companion_event too.")}</div>
@@ -18396,7 +19726,35 @@ ${check("sunrise", t("sunrise", "Sunrise: slowly brighten before wake-up, then t
 <div class="cmp-row"><button type="button" class="cmp-mode-btn" data-mode="bedtime">${t("bedtime_now", "Bedtime now")}</button><button type="button" class="cmp-mode-btn" data-mode="auto">${t("back_to_schedule", "Back to the schedule")}</button></div>
 <div class="cmp-status"></div>
 `;
-box.querySelectorAll(".cmp-in, .cmp-parent").forEach((el) => el.addEventListener("change", () => this._syncNotifyProfileCompanionFromDom(userId)));
+box.querySelectorAll(".cmp-in, .cmp-parent, .cmp-screen").forEach((el) => el.addEventListener("change", () => this._syncNotifyProfileCompanionFromDom(userId)));
+// a blank row for another timer or room button, always one at the end
+box.querySelectorAll(".cmp-timer-row input, .cmp-room, .cmp-info, .cmp-ss-source").forEach((el) => el.addEventListener("change", () => this._syncNotifyProfileCompanionFromDom(userId)));
+box.querySelector(".cmp-ss-source").addEventListener("change", () => this._renderNotifyProfileCompanion(userId));
+// + Add / ✕ for timers, room buttons and sensors
+box.querySelectorAll(".cmp-add").forEach((btn) => btn.addEventListener("click", () => {
+this._syncNotifyProfileCompanionFromDom(userId);
+const cc = this._settingsUserProfilesDraft[userId].companion;
+const key = btn.dataset.list;
+cc[key] = (cc[key] || []).concat([key === "timers" ? { title: "", minutes: 10, icon: "", stars: 0 } : ""]);
+this._renderNotifyProfileCompanion(userId);
+const rows = box.querySelectorAll(key === "timers" ? ".cmp-timer-title" : key === "roomButtons" ? ".cmp-room" : ".cmp-info");
+if (rows.length) rows[rows.length - 1].focus();
+}));
+box.querySelectorAll(".cmp-x").forEach((btn) => btn.addEventListener("click", () => {
+this._syncNotifyProfileCompanionFromDom(userId);
+const cc = this._settingsUserProfilesDraft[userId].companion;
+const key = btn.dataset.list;
+cc[key] = (cc[key] || []).filter((x, i) => i !== Number(btn.dataset.i));
+this._renderNotifyProfileCompanion(userId);
+}));
+box.querySelectorAll("[data-pick]").forEach((input) => this._companionPicker(input, userId));
+box.querySelectorAll(".cmp-play").forEach((btn) => btn.addEventListener("click", (e) => { e.preventDefault(); this._companionPreview(btn); }));
+box.querySelectorAll(".cmp-sel-play select").forEach((sel) => sel.addEventListener("change", () => {
+const btn = sel.parentNode.querySelector(".cmp-play");
+if (!btn) return;
+btn.disabled = sel.value === "off";
+this._companionPreview(btn, true);
+}));
 // a blank row for another wake-up light, always one at the end
 box.querySelectorAll(".cmp-wl").forEach((el) => el.addEventListener("change", () => { this._syncNotifyProfileCompanionFromDom(userId); this._renderNotifyProfileCompanion(userId); }));
 box.querySelectorAll(".cmp-in[type=range]").forEach((el) => el.addEventListener("input", () => this._syncNotifyProfileCompanionFromDom(userId)));
@@ -18425,6 +19783,102 @@ setStatus((e && e.message) || this._t("settings.companion_send_failed", "Couldn'
 }));
 this._loadCompanionStatus(userId);
 }
+// a search box for entities: type a few letters of the name (or the id) and pick from the list
+static _companionPickDomains(kind) {
+return { room: /^(light|switch|fan|input_boolean|media_player|cover|scene|script)\./, info: /^(sensor|binary_sensor|climate|weather)\./, light: /^light\./, camera: /^camera\./, action: /^(scene|script|automation)\./ }[kind] || /^$/;
+}
+_companionPicker(input, userId) {
+const wrap = input.parentNode;
+const list = document.createElement("div");
+list.className = "cmp-pick-list";
+list.hidden = true;
+wrap.appendChild(list);
+const re = FamilyWeekCalendarCard._companionPickDomains(input.dataset.pick);
+const DOM_ICON = { light: "\u{1F4A1}", switch: "\u{1F50C}", fan: "\u{1F300}", input_boolean: "✅", media_player: "\u{1F3B5}", cover: "\u{1FA9F}", scene: "✨", script: "▶️", automation: "⚙️", sensor: "\u{1F321}️", binary_sensor: "\u{1F6AA}", climate: "\u{1F321}️", weather: "⛅", camera: "\u{1F4F7}" };
+const esc = (t) => __fhEsc(String(t == null ? "" : t));
+const nameOf = (id) => { const st = ((this._hass && this._hass.states) || {})[id]; return st && st.attributes && st.attributes.friendly_name ? st.attributes.friendly_name : ""; };
+const label = document.createElement("small");
+label.className = "cmp-pick-name";
+const setLabel = () => {
+const id = input.value.trim();
+const known = !!(((this._hass && this._hass.states) || {})[id]);
+label.textContent = id ? (known ? nameOf(id) : this._t("settings.companion_pick_missing", "Not found in Home Assistant")) : "";
+label.classList.toggle("is-missing", !!id && !known);
+};
+wrap.appendChild(label);
+setLabel();
+input.addEventListener("change", setLabel);
+const show = () => {
+const states = (this._hass && this._hass.states) || {};
+const q = input.value.trim().toLowerCase();
+const words = q.split(/\s+/).filter(Boolean);
+const rows = Object.keys(states).filter((id) => re.test(id)).map((id) => {
+const name = (states[id].attributes && states[id].attributes.friendly_name) || id;
+return { id, name, hay: (name + " " + id).toLowerCase() };
+}).filter((r) => words.every((w) => r.hay.indexOf(w) >= 0) && r.id !== q).sort((a, b) => a.name.localeCompare(b.name)).slice(0, 40);
+list.innerHTML = rows.length
+? rows.map((r) => `<button type="button" class="cmp-pick-item" data-id="${esc(r.id)}"><span>${DOM_ICON[r.id.split(".")[0]] || "•"}</span><b>${esc(r.name)}</b><small>${esc(r.id)}</small></button>`).join("")
+: `<div class="cmp-pick-none">${esc(this._t("settings.companion_pick_none", "Nothing matches"))}</div>`;
+list.hidden = false;
+};
+const pick = (id) => {
+input.value = id;
+list.hidden = true;
+input.dispatchEvent(new Event("change", { bubbles: true }));
+};
+input.addEventListener("focus", show);
+input.addEventListener("input", show);
+input.addEventListener("blur", () => setTimeout(() => { list.hidden = true; }, 150));
+input.addEventListener("keydown", (e) => {
+if (e.key === "Enter") {
+const first = list.querySelector(".cmp-pick-item");
+if (first && !list.hidden) { e.preventDefault(); pick(first.dataset.id); }
+} else if (e.key === "Escape") list.hidden = true;
+});
+// mousedown, so the pick lands before the box loses focus
+list.addEventListener("mousedown", (e) => {
+const item = e.target.closest(".cmp-pick-item");
+if (!item) return;
+e.preventDefault();
+pick(item.dataset.id);
+});
+}
+// plays a Companion alarm or sleep sound on this device, with the Companion's own sound maker
+async _companionPreview(btn, restart) {
+let Sound = window.FamilyHubCompanionSound;
+if (!Sound) {
+try { await import("/family_hub_companion_card/family-hub-companion-card.js"); } catch (e) { /* shown below */ }
+Sound = window.FamilyHubCompanionSound;
+}
+const box = this._root && this._root.querySelector(".notify-profile-companion");
+const status = box && box.querySelector(".cmp-status");
+if (!Sound) {
+if (status) status.textContent = this._t("settings.companion_no_sound", "Couldn't load the Companion sounds on this device.");
+return;
+}
+if (!this.__cmpSound) this.__cmpSound = new Sound();
+const snd = this.__cmpSound;
+const ctx = snd._ctx();
+if (ctx && ctx.state === "suspended" && ctx.resume) { try { await ctx.resume(); } catch (e) { /* stays blocked */ } }
+const wasOn = btn.classList.contains("playing") && !restart;
+const sel = btn.parentNode && btn.parentNode.querySelector("select");
+const kind = sel ? sel.value : btn.dataset.kind;
+snd.stopAll();
+clearTimeout(this.__cmpSoundTimer);
+if (box) box.querySelectorAll(".cmp-play.playing").forEach((b) => b.classList.remove("playing"));
+if (wasOn || !kind || kind === "off") return;
+btn.classList.add("playing");
+const done = (ms) => { this.__cmpSoundTimer = setTimeout(() => { snd.stopAll(); btn.classList.remove("playing"); }, ms); };
+if (btn.dataset.which === "alarm") {
+// two rounds, the way it repeats at wake-up
+snd.startAlarm(kind);
+done(5800);
+} else {
+const vol = box && box.querySelector(".cmp-in[data-key=soundVolume]");
+snd.startNoise(kind, vol ? parseInt(vol.value, 10) || 40 : 40);
+done(10000);
+}
+}
 _syncNotifyProfileCompanionFromDom(userId) {
 const box = this._root && this._root.querySelector(".notify-profile-companion");
 if (!box) return;
@@ -18433,11 +19887,23 @@ const c = Object.assign(FamilyWeekCalendarCard._companionDefaults(), this._setti
 box.querySelectorAll(".cmp-in").forEach((el) => {
 const key = el.dataset.key;
 if (el.type === "checkbox") c[key] = el.checked;
-else if (el.type === "range" || key === "windDown" || key === "sunriseMinutes") c[key] = parseInt(el.value, 10) || 0;
+else if (el.type === "range" || key === "windDown" || key === "sunriseMinutes" || key === "screensaverIdle") c[key] = parseInt(el.value, 10) || 0;
 else c[key] = el.value.trim();
 });
 c.comfortNotify = Array.from(box.querySelectorAll(".cmp-parent:checked")).map((el) => el.value);
 c.wakeLights = Array.from(box.querySelectorAll(".cmp-wl")).map((el) => el.value.trim()).filter((v, i, a) => v && a.indexOf(v) === i).slice(0, 6);
+// empty rows stay while they're being filled in (Family Hub ignores them when it reads the settings)
+const keep = (sel, max) => Array.from(box.querySelectorAll(sel)).map((el) => el.value.trim()).filter((v, i, a) => !v || a.indexOf(v) === i).slice(0, max);
+c.infoSensors = keep(".cmp-info", 4);
+c.screens = {};
+box.querySelectorAll(".cmp-screen").forEach((el) => { c.screens[el.value] = el.checked; });
+c.timers = Array.from(box.querySelectorAll(".cmp-timer-row")).map((row) => ({
+icon: row.querySelector(".cmp-timer-icon").value.trim(),
+title: row.querySelector(".cmp-timer-title").value.trim(),
+minutes: Math.max(1, Math.min(180, parseInt(row.querySelector(".cmp-timer-min").value, 10) || 10)),
+stars: Math.max(0, Math.min(20, parseInt(row.querySelector(".cmp-timer-stars").value, 10) || 0)),
+})).slice(0, 12);
+c.roomButtons = keep(".cmp-room", 6);
 this._settingsUserProfilesDraft[userId].companion = c;
 }
 async _loadCompanionStatus(userId) {
@@ -18463,21 +19929,31 @@ const profile = this._settingsUserProfilesDraft[userId] || this._defaultUserProf
 const links = Array.isArray(profile.wishlistLinks) ? profile.wishlistLinks : [];
 const statusFor = ((this._wishlistLinksStatus || {})[userId]) || {};
 const esc = (t) => __fhEsc(String(t || ""));
+const names = profile.wishlistLinkNames || {};
 container.innerHTML = links.map((url, idx) => {
 const src = FamilyWeekCalendarCard._wishlistLinkSource(url);
-const st = url ? this._wishlistLinkStatusText(statusFor[/^https?:\/\//i.test(url) ? url : "https://" + url]) : null;
+const key = FamilyWeekCalendarCard._wishlistLinkKey(url);
+const raw = url ? statusFor[key] : null;
+const st = url ? this._wishlistLinkStatusText(raw) : null;
+const siteTitle = raw && raw.title ? raw.title : "";
 return `<div class="wishlist-link-item" data-link-idx="${idx}">
 <div class="wishlist-link-row">
 ${src ? `<span class="wishlist-link-source">${esc(src)}</span>` : ""}
 <input type="url" class="wishlist-link-input" inputmode="url" placeholder="https://gowish.com/s/..." value="${esc(url)}" />
 <button type="button" class="wishlist-link-remove-btn" data-link-idx="${idx}" title="${esc(this._t("settings.wishlist_links_remove", "Remove this link"))}">&#10005;</button>
 </div>
+<input type="text" class="wishlist-link-name" maxlength="60" placeholder="${esc(siteTitle || this._t("settings.wishlist_links_name_placeholder", "Name it, like Christmas or Lego"))}" value="${esc(names[key] || "")}" />
 ${st ? `<div class="wishlist-link-status ${st.cls}">${esc(st.text)}</div>` : ""}
 </div>`;
 }).join("");
 container.querySelectorAll(".wishlist-link-input").forEach((input) => {
 input.addEventListener("input", () => this._syncNotifyProfileWishlistLinksFromDom(userId));
 input.addEventListener("change", () => this._renderNotifyProfileWishlistLinks(userId));
+});
+// a list's name is kept as it's typed (it used to be read only when a link changed, so a new name was lost on Done)
+container.querySelectorAll(".wishlist-link-name").forEach((input) => {
+input.addEventListener("input", () => this._syncNotifyProfileWishlistLinksFromDom(userId));
+input.addEventListener("change", () => this._syncNotifyProfileWishlistLinksFromDom(userId));
 });
 container.querySelectorAll(".wishlist-link-remove-btn").forEach((btn) => {
 btn.addEventListener("click", () => {
@@ -18494,9 +19970,17 @@ if (inputs.length) inputs[inputs.length - 1].focus();
 _syncNotifyProfileWishlistLinksFromDom(userId) {
 const container = this._root && this._root.querySelector(".notify-profile-wishlist-links");
 if (!container) return;
-const links = Array.from(container.querySelectorAll(".wishlist-link-input")).map((i) => i.value.trim());
+const rows = Array.from(container.querySelectorAll(".wishlist-link-item"));
+const links = rows.map((r) => r.querySelector(".wishlist-link-input").value.trim());
+const names = {};
+rows.forEach((r) => {
+const key = FamilyWeekCalendarCard._wishlistLinkKey(r.querySelector(".wishlist-link-input").value);
+const name = (r.querySelector(".wishlist-link-name") || {}).value || "";
+if (key && name.trim()) names[key] = name.trim().slice(0, 60);
+});
 if (!this._settingsUserProfilesDraft[userId]) this._settingsUserProfilesDraft[userId] = this._defaultUserProfile();
 this._settingsUserProfilesDraft[userId].wishlistLinks = links;
+this._settingsUserProfilesDraft[userId].wishlistLinkNames = names;
 }
 async _loadWishlistLinksStatus(userId) {
 if (!this._hass || !this._hass.connection) return;
@@ -19144,6 +20628,9 @@ btn.classList.toggle("active", btn.dataset.value === (settings.agendaShowMeals ?
 root.querySelectorAll(".meals-own-view-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.mealsOwnView ? "on" : "off"));
 });
+root.querySelectorAll(".see-through-btn").forEach((btn) => {
+btn.classList.toggle("active", btn.dataset.value === (settings.seeThroughBackground ? "on" : "off"));
+});
 root.querySelectorAll(".discreet-mode-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.discreetModeEnabled ? "on" : "off"));
 });
@@ -19168,6 +20655,8 @@ weatherEntityDatalistEl.innerHTML = this._entitiesForDomain("weather").map((e) =
 root.querySelectorAll(".person-pictures-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.showPersonPictures !== false ? "on" : "off"));
 });
+const mapsProviderSel = root.querySelector(".maps-provider-select");
+if (mapsProviderSel) mapsProviderSel.value = settings.mapsProvider || "auto";
 root.querySelectorAll(".now-marker-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (settings.showNowMarker !== false ? "on" : "off"));
 });
@@ -19203,6 +20692,8 @@ const rightNowShowClockCheckbox = root.querySelector(".right-now-topbar-show-clo
 if (rightNowShowClockCheckbox) rightNowShowClockCheckbox.checked = this._getRightNowTopBarShowClock();
 const rightNowShowWeatherCheckbox = root.querySelector(".right-now-topbar-show-weather-checkbox");
 if (rightNowShowWeatherCheckbox) rightNowShowWeatherCheckbox.checked = this._getRightNowTopBarShowWeather();
+const rightNowAheadSel = root.querySelector(".right-now-look-ahead-select");
+if (rightNowAheadSel) rightNowAheadSel.value = String(this._getSettings().rightNowLookAheadDays || 2);
 this._syncRightNowTopBarPositionFieldVisibility(root);
 root.querySelectorAll(".scroll-lock-btn").forEach((btn) => {
 btn.classList.toggle("active", btn.dataset.value === (this._getScrollLocked() ? "on" : "off"));
@@ -19416,7 +20907,8 @@ this._screenSaverUsersError = false;
 this._renderScreenSaverUsersList();
 try {
 const result = await this._hass.connection.sendMessagePromise({ type: "family_hub/list_users" });
-this._screenSaverUsersCache = Array.isArray(result && result.users) ? result.users : [];
+// per-login, so only people who can log in to Home Assistant (2026.11.2: not Family Hub-only people)
+this._screenSaverUsersCache = Array.isArray(result && result.users) ? result.users.filter((u) => !u.local) : [];
 } catch (e) {
 this._screenSaverUsersCache = [];
 this._screenSaverUsersError = true;
@@ -19556,6 +21048,7 @@ this._openModal(root.querySelector(".screensaver-widgets-overlay"));
 const host = root.querySelector(".screensaver-widgets-editor-host");
 if (this._ssEditor) this._ssEditor.destroy();
 this._ssEditor = window.FamilyHubScreensaver.createEditor(host, {
+contextHost: this,
 widgets: this._settingsScreenSaverWidgetsDraft || [],
 options: this._settingsScreenSaverOptionsDraft || window.FamilyHubScreensaver.normalizeOptions(this._getSettings().screenSaver),
 getHass: () => this._hass,
@@ -19711,6 +21204,7 @@ const ss = this._getSettings().screenSaver || {};
 this._ssLayer.update({
 hass: this._hass,
 getHass: () => this._hass,
+contextHost: this,
 widgets: this._getSettings().screenSaverWidgets || [],
 hiddenIds: this._getScreenSaverHiddenWidgetIds(),
 options: ss,
@@ -20070,6 +21564,9 @@ const activeAgendaShowMealsBtn = root.querySelector(".agenda-show-meals-btn.acti
 const agendaShowMeals = activeAgendaShowMealsBtn ? activeAgendaShowMealsBtn.dataset.value === "on" : false;
 const activeMealsOwnViewBtn = root.querySelector(".meals-own-view-btn.active");
 const mealsOwnView = activeMealsOwnViewBtn ? activeMealsOwnViewBtn.dataset.value === "on" : false;
+const activeSeeThroughBtn = root.querySelector(".see-through-btn.active");
+const seeThroughBackground = activeSeeThroughBtn ? activeSeeThroughBtn.dataset.value === "on" : false;
+if (window.__familyHubEink && window.__familyHubEink.setSeeThrough) window.__familyHubEink.setSeeThrough(seeThroughBackground);
 // Must be included in settingsObj below (family_hub/set_settings is a full replace, not a merge
 const mealPlanEntityInputForSave = root.querySelector(".meal-plan-entity-input");
 const mealPlanEntity = mealPlanEntityInputForSave ? mealPlanEntityInputForSave.value.trim() : "";
@@ -20081,6 +21578,8 @@ const activeGreyOutPastBtn = root.querySelector(".grey-out-past-btn.active");
 const greyOutPastEvents = activeGreyOutPastBtn ? activeGreyOutPastBtn.dataset.value === "on" : false;
 const activePicturesBtn = root.querySelector(".person-pictures-btn.active");
 const showPersonPictures = activePicturesBtn ? activePicturesBtn.dataset.value === "on" : true;
+const mapsProviderSelect = root.querySelector(".maps-provider-select");
+const mapsProvider = mapsProviderSelect && ["auto", "google", "apple", "waze", "off"].includes(mapsProviderSelect.value) ? mapsProviderSelect.value : (this._getSettings().mapsProvider || "auto");
 const activeNowBtn = root.querySelector(".now-marker-btn.active");
 const showNowMarker = activeNowBtn ? activeNowBtn.dataset.value === "on" : true;
 const activePreventDuplicateEventsBtn = root.querySelector(".prevent-duplicate-events-btn.active");
@@ -20104,6 +21603,8 @@ const rightNowTopBarExcludedPeople = Array.from(root.querySelectorAll(".right-no
 .filter((cb) => !cb.checked)
 .map((cb) => cb.dataset.entity)
 .filter(Boolean);
+const rightNowAheadSelect = root.querySelector(".right-now-look-ahead-select");
+const rightNowLookAheadDays = rightNowAheadSelect && [1, 2, 3, 7, 14].includes(Number(rightNowAheadSelect.value)) ? Number(rightNowAheadSelect.value) : (this._getSettings().rightNowLookAheadDays || 2);
 try {
 this._setScopedSettingItem("familyCalendarSmallScreenModeLocal", smallScreenMode ? "on" : "off");
 } catch (e) {
@@ -20320,6 +21821,7 @@ blocks,
 dateBlocks: this._getSettings().dateBlocks || {},
 // Recurring per-weekday extra blocks (see _defaultSettings' weekdayBlocks comment) - same "no field on this form
 weekdayBlocks: this._getSettings().weekdayBlocks || {},
+hiddenDayBlocks: this._getSettings().hiddenDayBlocks || {},
 blockSize,
 showTimeline,
 // A mirror of every Week/Month view/layout field's CURRENT value (whatever this device/instance just saved above)
@@ -20344,6 +21846,7 @@ rightNowTopBarShowWeatherShared: rightNowTopBarShowWeather,
 }
 : {}),
 rightNowTopBarExcludedPeople,
+rightNowLookAheadDays,
 timelineStartHour,
 timelineEndHour,
 defaultView,
@@ -20364,12 +21867,14 @@ weekendBreakfast,
 showMealsInMonth,
 agendaShowMeals,
 mealsOwnView,
+seeThroughBackground,
 discreetModeEnabled,
 mealPlanEntity,
 mealTemplatesEntity,
 weatherEntity,
 greyOutPastEvents,
 showPersonPictures,
+mapsProvider,
 showNowMarker,
 preventDuplicateEvents,
 eventCategories: this._normalizeEventCategories(this._settingsCategoriesDraft || this._getSettings().eventCategories),
@@ -21374,7 +22879,7 @@ rows.push(
 );
 }
 if (detail.location) {
-rows.push(`<div class="event-info-row"><div class="label">${this._t("event_info.location", "Location")}</div>${detail.location}</div>`);
+rows.push(`<div class="event-info-row"><div class="label">${this._t("event_info.location", "Location")}</div>${__fhMapLinkHtml(detail.location, this._getSettings().mapsProvider, "event-info-map-link")}</div>`);
 }
 // No row at all without can_edit_event - same "you don't even see the affordance" shape as the Delete row just below
 const actionButtons = [];
@@ -21401,7 +22906,7 @@ const mealBlocks = this._getBlocksForDay(detail.start);
 // "use as meal" shortcut for them.
 if (!detail.isReminder) {
 const useMealButtonsHtml = mealBlocks
-.map((blockName, blockIndex) => `<button type="button" class="event-info-use-meal-btn" data-block-index="${blockIndex}">${blockName}</button>`)
+.map((blockName, blockIndex) => this._isDayBlockHidden(this._dateKey(detail.start), blockName) ? "" : `<button type="button" class="event-info-use-meal-btn" data-block-index="${blockIndex}">${blockName}</button>`)
 .join("");
 rows.push(
 `<div class="event-info-row event-info-use-meal-row"><div class="label">${this._t("event_info.use_as_meal", "Use as meal")}</div><div class="event-info-use-meal-buttons">${useMealButtonsHtml}</div></div>`
@@ -21426,6 +22931,13 @@ actionButtons.push(
 `<span class="event-info-action event-info-delete-row"><button type="button" class="event-info-delete-btn" disabled>${this._t("event_info.checking", "Checking…")}</button></span>`
 );
 }
+// 2026.11.2: a holiday can be a day off - no school (the children), no work (the grown-ups) or both - every year
+if (detail.isHoliday && detail.calendarEntity) {
+const cur = this._dayOffFor(detail.calendarEntity, detail.summary);
+const can = this._canEditEvent();
+const b = (v, label) => `<button type="button" class="size-btn event-info-dayoff-btn${cur === v ? " active" : ""}" data-value="${v}"${can ? "" : " disabled"}>${label}</button>`;
+rows.push(`<div class="event-info-row event-info-dayoff-row"><div class="label">${this._t("days_off.label", "Day off")}</div><div class="size-btn-row event-info-dayoff-btns">${b("", this._t("days_off.regular", "Regular day"))}${b("school", this._dayOffLabel("school"))}${b("work", this._dayOffLabel("work"))}${b("both", this._dayOffLabel("both"))}</div><div class="remind-hint">${this._t("days_off.hint", "Every year. No school is for the children, no work for the grown-ups. On a no-school day Companion wakes them at their weekend time.")}</div></div>`);
+}
 if (actionButtons.length) rows.push(`<div class="event-info-row event-info-actions-row">${actionButtons.join("")}</div>`);
 if (showEditAction) rows.push('<div class="event-info-row event-info-edit-form-row" style="display:none"><div class="event-info-edit-content"></div></div>');
 root.querySelector(".event-info-content").innerHTML = rows.join("");
@@ -21440,6 +22952,9 @@ if (categorySelectEl) categorySelectEl.addEventListener("change", () => this._ap
 if (!detail.isReminder && !detail.isExtraCalendar && this._canDeleteEvent()) this._wireEventInfoDeleteButton(id, detail);
 if (!detail.isReminder && !detail.isExtraCalendar && this._canEditEvent()) this._wireEventInfoEditButton(id, detail);
 this._wireEventInfoSeriesAccordion(id, detail);
+root.querySelectorAll(".event-info-dayoff-btn").forEach((btn) => {
+btn.addEventListener("click", () => this._setDayOff(detail, btn.dataset.value || ""));
+});
 root.querySelectorAll(".event-info-use-meal-btn").forEach((btn) => {
 btn.addEventListener("click", async () => {
 const blockIndex = parseInt(btn.dataset.blockIndex, 10);
@@ -21666,7 +23181,8 @@ if (nowOpen) {
 formRow.style.display = "none";
 return;
 }
-this._renderEventInfoEditForm(id, detail, { mode, canDuplicate });
+// 2026.11.2: moving it to another calendar removes it from this one, so this calendar has to allow deleting
+this._renderEventInfoEditForm(id, detail, { mode, canDuplicate, canMove: !!support.supported });
 formRow.style.display = "";
 });
 // v1.168.65: opened from an event's pencil - go straight to editing
@@ -21678,6 +23194,15 @@ const mode = (opts && opts.mode) || "edit";
 const canDuplicate = !opts || opts.canDuplicate !== false;
 const content = this._root.querySelector(".event-info-edit-content");
 if (!content) return;
+// 2026.11.2: the calendar it's on - tap it to move the event to another of this card's calendars
+const moveTargets = mode === "edit" && opts && opts.canMove ? this._getPeople().filter((p) => p && p.entity && p.entity !== detail.calendarEntity) : [];
+this.__eventMoveTo = null;
+const calOf = (entity) => this._getPeople().find((p) => p.entity === entity) || null;
+const calName = (entity) => { const p = calOf(entity); const st = this._hass && this._hass.states && this._hass.states[entity]; return (p && p.name) || (st && st.attributes && st.attributes.friendly_name) || entity; };
+const calDot = (entity) => { const p = calOf(entity); return `<span class="event-info-edit-cal-dot" style="background:${__fhEsc((p && p.color) || "#999")}"></span>`; };
+const calRow = moveTargets.length
+? `<div class="event-info-edit-cal-row"><span class="event-info-edit-cal-label">${this._t("event_info.calendar_label", "Calendar")}</span><button type="button" class="event-info-edit-cal-btn" title="${__fhEsc(this._t("event_info.move_tap", "Tap to move it to another calendar"))}">${calDot(detail.calendarEntity)}<span class="event-info-edit-cal-name">${__fhEsc(calName(detail.calendarEntity))}</span> <span class="event-info-edit-cal-chev">&#9662;</span></button></div><div class="remind-hint event-info-edit-move-hint" hidden></div>`
+: "";
 const fmtTimeInput = (d) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 const allDay = !!detail.allDay;
 content.innerHTML = `
@@ -21689,6 +23214,7 @@ ${allDay ? "" : '<input type="time" class="hour-select event-info-edit-end-time"
 </div>
 <input type="text" class="event-info-edit-location" maxlength="120" placeholder="${this._t("add_event.location_placeholder", "Location (optional)")}" />
 <textarea class="event-info-edit-description"${this._isDiscreetMode() ? " hidden" : ""} rows="3" maxlength="4000" placeholder="${__fhT("text.optional_details", "Optional details", null, "h")}"></textarea>
+${calRow}
 ${mode === "duplicate" ? `<div class="remind-hint">${this._t("event_info.duplicate_hint", "Change anything you like - the copy is added to the same calendar and this event stays as it is.")}</div>` : ""}
 <div class="event-info-edit-actions">
 ${mode === "edit" ? `<button type="button" class="event-info-edit-save-btn">\u{1F4BE} ${this._t("common.save", "Save")}</button>` : ""}
@@ -21706,6 +23232,40 @@ content.querySelector(".event-info-edit-location").value = detail.location || ""
 // 2026.11.1: the description can be edited too - shown without Family Hub's hidden reminder/category markers, which are kept on save
 content.querySelector(".event-info-edit-description").value = typeof detail.rawDescription === "string" ? this._parseReminderMarker(detail.rawDescription).clean : (detail.description || "");
 const statusEl = content.querySelector(".event-info-edit-status");
+const calBtn = content.querySelector(".event-info-edit-cal-btn");
+// the calendar name at the top of the popup does the same once Edit is open (it's where you'd look for it)
+const topChip = calBtn ? this._root.querySelector(".event-info-overlay .event-info-row .event-info-chip") : null;
+const topChipWas = topChip ? { text: topChip.textContent, bg: topChip.style.background, fg: topChip.style.color } : null;
+if (topChip) {
+topChip.classList.add("is-movable");
+topChip.setAttribute("role", "button");
+topChip.title = this._t("event_info.move_tap", "Tap to move it to another calendar");
+topChip.onclick = () => {
+const formRow = this._root.querySelector(".event-info-edit-form-row");
+if (formRow && formRow.style.display === "none") formRow.style.display = "";
+calBtn.click();
+};
+}
+if (calBtn) calBtn.addEventListener("click", async () => {
+const picked = await this._showMoveCalendarPicker(detail, moveTargets, this.__eventMoveTo);
+if (picked === null) return;
+this.__eventMoveTo = picked === detail.calendarEntity ? null : picked;
+const shown = this.__eventMoveTo || detail.calendarEntity;
+calBtn.innerHTML = `${calDot(shown)}<span class="event-info-edit-cal-name">${__fhEsc(calName(shown))}</span> <span class="event-info-edit-cal-chev">&#9662;</span>`;
+calBtn.classList.toggle("is-moving", !!this.__eventMoveTo);
+if (topChip && topChipWas) {
+const p = calOf(shown);
+topChip.textContent = this.__eventMoveTo ? `\u2192 ${calName(shown)}` : topChipWas.text;
+topChip.style.background = this.__eventMoveTo && p && p.color ? p.color : topChipWas.bg;
+topChip.style.color = this.__eventMoveTo && p && p.color ? this._textColorFor(p.color) : topChipWas.fg;
+topChip.classList.toggle("is-moving", !!this.__eventMoveTo);
+}
+const hint = content.querySelector(".event-info-edit-move-hint");
+if (hint) {
+hint.hidden = !this.__eventMoveTo;
+hint.textContent = this.__eventMoveTo ? this._t("event_info.move_hint", "Save moves it from %from% to %to%.", { from: calName(detail.calendarEntity), to: calName(this.__eventMoveTo) }) : "";
+}
+});
 const dupBtn = content.querySelector(".event-info-edit-dup-btn");
 if (dupBtn) dupBtn.addEventListener("click", async () => {
 if (mode !== "edit") {
@@ -21747,6 +23307,11 @@ d.setDate(d.getDate() + 1);
 endDateVal = this._dateKey(d);
 }
 eventFields.end_date_time = `${endDateVal}T${endTimeVal}:00`;
+}
+// 2026.11.2: another calendar was picked - move it (with these edits) instead of saving it where it is
+if (this.__eventMoveTo && this.__eventMoveTo !== detail.calendarEntity) {
+await this._moveEventFromForm(detail, eventFields, this.__eventMoveTo, saveBtn, statusEl);
+return;
 }
 // A recurring occurrence needs to know which events this edit should touch before it's sent at all
 const isRecurringOccurrence = !!(detail.rrule || detail.recurrenceId);
@@ -21940,17 +23505,97 @@ if (e.target === overlay) close();
 overlay.querySelector(".dup-merge-info-ok").addEventListener("click", close);
 this._root.appendChild(overlay);
 }
-_showRecurEditScopePicker() {
+// "Move to which calendar?" - this card's other calendars; one that can't take new events is shown but can't be picked
+_showMoveCalendarPicker(detail, targets, current) {
+return new Promise((resolve) => {
+const overlay = document.createElement("div");
+overlay.className = "modal-overlay recur-scope-overlay move-cal-overlay open";
+const row = (p, here) => `<button type="button" class="recur-scope-btn move-cal-btn${here ? " is-here" : ""}" data-entity="${__fhEsc(p.entity)}"><span class="event-info-edit-cal-dot" style="background:${__fhEsc(p.color || "#999")}"></span><span class="move-cal-name">${__fhEsc(p.name || p.entity)}</span>${here ? `<small>${this._t("event_info.move_here", "It's here now")}</small>` : '<small class="move-cal-note"></small>'}</button>`;
+const here = this._getPeople().find((p) => p.entity === detail.calendarEntity) || { entity: detail.calendarEntity, name: detail.calendarEntity };
+overlay.innerHTML = `
+<div class="modal-box recur-scope-box move-cal-box">
+<h2>&#128197; ${this._t("event_info.move_title", "Move to which calendar?")}</h2>
+<div class="recur-scope-actions">
+${row(here, true)}
+${targets.map((p) => row(p, false)).join("")}
+<button type="button" class="recur-scope-btn recur-scope-cancel">${this._t("common.cancel", "Cancel")}</button>
+</div>
+</div>
+`;
+const finish = (value) => {
+overlay.remove();
+resolve(value);
+};
+overlay.addEventListener("click", (e) => {
+if (e.target === overlay) finish(null);
+});
+overlay.querySelector(".recur-scope-cancel").addEventListener("click", () => finish(null));
+overlay.querySelectorAll(".move-cal-btn").forEach((btn) => {
+if (btn.dataset.entity === current) btn.classList.add("is-picked");
+btn.addEventListener("click", () => { if (!btn.disabled) finish(btn.dataset.entity); });
+});
+// a calendar that can't take new events (a read-only Holidays calendar, say) says so
+targets.forEach((p) => {
+this._getCalendarDeleteSupport(p.entity).then((sup) => {
+if (!sup || !sup.known || sup.createSupported) return;
+const btn = Array.from(overlay.querySelectorAll(".move-cal-btn")).find((b) => b.dataset.entity === p.entity);
+if (!btn) return;
+btn.disabled = true;
+const note = btn.querySelector(".move-cal-note");
+if (note) note.textContent = this._t("event_info.move_cant_add", "Can't add events");
+});
+});
+this._root.appendChild(overlay);
+});
+}
+// Adds the event (with the form's edits) to the new calendar, then removes it from this one, on the server
+async _moveEventFromForm(detail, eventFields, toEntity, saveBtn, statusEl) {
+const msg = { type: "family_hub/calendar/move_event", from_entity_id: detail.calendarEntity, to_entity_id: toEntity, uid: detail.uid, event: Object.assign({}, eventFields) };
+const rrule = detail.rrule ? String(detail.rrule).replace(/^RRULE:/i, "") : "";
+if (detail.recurrenceId) {
+// one of a repeating series: just this one, or this one and the ones after it (copied as a new series from here;
+// a series with a fixed number of repeats can only move one at a time, since what's left of the count isn't known)
+const scope = await this._showRecurEditScopePicker({ move: true, noFuture: !rrule || /(^|;)COUNT=/i.test(rrule) });
+if (!scope) return;
+msg.recurrence_id = detail.recurrenceId;
+if (scope === "future") {
+msg.recurrence_range = "THISANDFUTURE";
+msg.event.rrule = rrule;
+}
+} else if (rrule) {
+// the whole series, from its start
+msg.event.rrule = rrule;
+}
+saveBtn.disabled = true;
+saveBtn.textContent = this._t("event_info.moving", "Moving…");
+if (statusEl) statusEl.textContent = "";
+try {
+await this._hass.connection.sendMessagePromise(msg);
+} catch (e) {
+saveBtn.disabled = false;
+saveBtn.textContent = `\u{1F4BE} ${this._t("common.save", "Save")}`;
+if (statusEl) statusEl.textContent = (e && e.code === "partly_moved" ? this._t("event_info.move_partly", "It's on the new calendar now, but it couldn't be removed from the old one. Delete it there.") : (e && e.message)) || this._t("event_info.move_failed", "Couldn't move it - try again");
+if (e && e.code === "partly_moved") await this._fetchEvents();
+return;
+}
+this.__eventMoveTo = null;
+this._root.querySelector(".event-info-overlay").classList.remove("open");
+this._eventInfoOpenId = null;
+await this._fetchEvents();
+}
+_showRecurEditScopePicker(opts) {
+const move = !!(opts && opts.move);
+const noFuture = !!(opts && opts.noFuture);
 return new Promise((resolve) => {
 const overlay = document.createElement("div");
 overlay.className = "modal-overlay recur-scope-overlay open";
 overlay.innerHTML = `
 <div class="modal-box recur-scope-box">
-<h2>${this._t("event_info.recur_scope_title", "Which events?")}</h2>
+<h2>${move ? this._t("event_info.move_scope_title", "Move which events?") : this._t("event_info.recur_scope_title", "Which events?")}</h2>
 <div class="recur-scope-actions">
 <button type="button" class="recur-scope-btn" data-scope="this">${this._t("event_info.recur_scope_this", "This event")}</button>
-<button type="button" class="recur-scope-btn" data-scope="future">${this._t("event_info.recur_scope_future", "This and following events")}</button>
-<button type="button" class="recur-scope-btn" data-scope="all">${this._t("event_info.recur_scope_all", "All events in the series")}</button>
+${noFuture ? "" : `<button type="button" class="recur-scope-btn" data-scope="future">${this._t("event_info.recur_scope_future", "This and following events")}</button>`}
+${move ? "" : `<button type="button" class="recur-scope-btn" data-scope="all">${this._t("event_info.recur_scope_all", "All events in the series")}</button>`}
 <button type="button" class="recur-scope-btn recur-scope-cancel">${this._t("common.cancel", "Cancel")}</button>
 </div>
 </div>
@@ -22527,7 +24172,36 @@ this._setMealEditorViewMode(isSet);
 // after every other field has been laid out, decide whether this person gets the real editor or the Suggest flow
 this._renderMenuSuggestions();
 this._applyMenuEditPermissionUi();
+this._renderRemoveDayBlockField(dayDate, blockName);
 this._openModal(root.querySelector(".edit-overlay"));
+}
+// 2026.11.2: an extra meal block (not one of the everyday ones) can be taken off just this day; two taps to be sure
+_renderRemoveDayBlockField(dayDate, blockName) {
+const root = this._root;
+const field = root && root.querySelector(".remove-day-block-field");
+if (!field) return;
+const show = !this._dishEditorMode && this._canEditMenu() && this._isExtraBlock(dayDate, this._editingBlockIndex);
+field.style.display = show ? "" : "none";
+if (!show) return;
+const day = this._fmtDate(dayDate, { weekday: "short", month: "short", day: "numeric" });
+const btn = field.querySelector(".btn-remove-day-block");
+btn.classList.remove("is-sure");
+btn.textContent = `\u{1F5D1}\uFE0F ${this._t("meal_block.remove_from_day", "Remove %name% from %day%", { name: blockName, day })}`;
+field.querySelector(".remove-day-block-hint").textContent = this._t("meal_block.remove_from_day_hint", "Only this day. It stays on the other days it's added to.");
+btn.onclick = async () => {
+if (!btn.classList.contains("is-sure")) {
+btn.classList.add("is-sure");
+btn.textContent = this._t("meal_block.remove_sure", "Tap again to remove it");
+return;
+}
+btn.disabled = true;
+try {
+await this._removeBlockFromDay(this._editingDateKey, dayDate, this._editingBlockIndex);
+this._closeEditor();
+} finally {
+btn.disabled = false;
+}
+};
 }
 _closeEditor() {
 this._closeMenuLinkAddForm();
@@ -22558,6 +24232,8 @@ el.hidden = true;
 }, isError ? 4500 : 2200);
 }
 _openDishEditor(recipe) {
+const removeDayField = this._root && this._root.querySelector(".remove-day-block-field");
+if (removeDayField) removeDayField.style.display = "none";
 const root = this._root;
 this._dishEditorMode = true;
 this._editingDishUid = recipe ? recipe.uid : null;
@@ -25751,7 +27427,7 @@ const root = this._root;
 const select = root.querySelector(".add-event-calendar-select");
 select.innerHTML = this._getPeople()
 .map((p) => `<option value="${p.entity}">${p.name}</option>`)
-.join("");
+.join("") + this._addEventSpecialOptionsHtml();
 // (calendar UX review): start on the signed-in person's own calendar when they have one on this card, instead of always the first column.
 const myProfile = ((this._getSettings() || {}).userProfiles || {})[this._hass && this._hass.user ? this._hass.user.id : ""];
 const myCalendar = myProfile && myProfile.primaryCalendar;
@@ -25796,6 +27472,8 @@ root.querySelectorAll(".add-event-allday-btn").forEach((b) => b.classList.toggle
 this._updateAddEventFieldVisibility(false);
 this._renderAddEventPeopleField();
 this._resetAddEventRecurFields();
+this._resetAddEventSpecialFields();
+this._applyAddEventKind();
 this._refreshAddEventRecurSupport();
 this._pruneReadOnlyAddEventCalendars();
 const catField = root.querySelector(".add-event-category-field");
@@ -25994,6 +27672,7 @@ heading.innerHTML = isReminder
 ? `&#128276; ${this._t("add_event.heading_reminder", "New Reminder")}`
 : `&#10133; ${this._t("add_event.heading_event", "New Event")}`;
 }
+this._applyAddEventKind();
 this._setAddEventError("");
 this._refreshAddReminderMissingWarn();
 }
@@ -26023,6 +27702,155 @@ box.style.display = "";
 box.textContent = "";
 box.style.display = "none";
 }
+}
+// -- Add event on a special-days calendar (2026.11.2.8) ----------------------------------------------------------
+// The calendar's type (Settings > Calendars > its type picker) decides the form: Holidays -> a holiday or break with
+// dates and who's off (kept by Family Hub, since holiday calendars are usually read-only); Birthdays and Special days ->
+// one date that repeats every year, with the year they were born / it started (for the age or years on the banner).
+_addEventKindFor(entity) {
+if (entity === FH_BREAKS_PICK) return "holiday";
+const row = (this._getHolidayCalendars() || []).find((r) => r.entity === entity);
+return row ? this._calendarKind(row) : "";
+}
+_addEventKind() {
+if (this._addEventActiveTab === "reminder") return "";
+const sel = this._root && this._root.querySelector(".add-event-calendar-select");
+const kind = sel ? this._addEventKindFor(sel.value) : "";
+if (kind === "special" && this._root.querySelector('.ae-what-btn.active[data-value="birthday"]')) return "birthday";
+return kind;
+}
+_addEventSpecialOptionsHtml() {
+const rows = (this._getHolidayCalendars() || []).filter((r) => this._calendarKind(r));
+const icon = (k) => (k === "birthday" ? "\u{1F382}" : k === "special" ? "\u{1F48D}" : "\u{1F389}");
+let opts = rows.map((r) => `<option value="${__fhEsc(r.entity)}">${icon(this._calendarKind(r))} ${__fhEsc(r.name || r.entity)}</option>`).join("");
+if (!rows.some((r) => this._calendarKind(r) === "holiday")) opts += `<option value="${FH_BREAKS_PICK}">\u{1F3D6}\uFE0F ${__fhEsc(this._t("add_event.breaks_option", "Holidays & breaks"))}</option>`;
+return `<optgroup label="${__fhEsc(this._t("add_event.special_group", "Holidays, birthdays & special days"))}">${opts}</optgroup>`;
+}
+_resetAddEventSpecialFields() {
+const root = this._root;
+const year = root.querySelector(".ae-year");
+if (year) year.value = "";
+const offs = [["", this._t("breaks.off_none", "Just show it")], ["school", this._dayOffLabel("school")], ["work", this._dayOffLabel("work")], ["both", this._dayOffLabel("both")]];
+const row = root.querySelector(".ae-off-row");
+if (row) row.innerHTML = offs.map(([v, l]) => `<button type="button" class="size-btn ae-off-btn${v === "school" ? " active" : ""}" data-value="${v}">${__fhEsc(l)}</button>`).join("");
+root.querySelectorAll(".ae-who-btn").forEach((b) => b.classList.toggle("active", b.dataset.value === "all"));
+root.querySelectorAll(".ae-what-btn").forEach((b) => b.classList.toggle("active", b.dataset.value === "special"));
+const who = root.querySelector(".ae-who-field");
+if (who) who.style.display = "";
+const people = root.querySelector(".ae-people");
+if (people) { people.innerHTML = ""; people.hidden = true; }
+this._renderAddEventWho();
+}
+async _renderAddEventWho() {
+const root = this._root;
+const some = !!root.querySelector('.ae-who-btn.active[data-value="some"]');
+const box = root.querySelector(".ae-people");
+const hint = root.querySelector(".ae-who-hint");
+if (hint) hint.textContent = some ? this._t("breaks.who_some_hint", "Only the people you tick are off - for a child whose school has a different break, or one grown-up's day off.") : this._t("breaks.who_everyone_hint", "No school is for the children, no work for the grown-ups.");
+if (!box) return;
+box.hidden = !some;
+if (!some || box.childElementCount) return;
+box.innerHTML = `<span class="remind-hint">${__fhEsc(this._t("breaks.loading_people", "Loading people…"))}</span>`;
+const users = await this._loadBreakUsers();
+box.innerHTML = users.map((u) => `<label class="brk-person"><input type="checkbox" class="ae-person" value="${__fhEsc(u.id)}" /> ${__fhEsc(u.name)}</label>`).join("");
+}
+_applyAddEventKind() {
+const root = this._root;
+const box = root && root.querySelector(".add-event-box");
+if (!box) return;
+const kind = this._addEventKind();
+if (kind) box.dataset.kind = kind;
+else delete box.dataset.kind;
+const selEl = root.querySelector(".add-event-calendar-select");
+if (kind === "birthday" && selEl && this._addEventKindFor(selEl.value) === "special") box.dataset.onSpecial = "1";
+else delete box.dataset.onSpecial;
+const set = (sel, text) => { const el = root.querySelector(sel); if (el) el.textContent = text; };
+const title = root.querySelector(".add-event-title");
+if (kind === "birthday") {
+set(".add-event-title-label", this._t("add_event.birthday_name_label", "Whose birthday?"));
+if (title) title.placeholder = this._t("add_event.birthday_name_ph", "e.g. Grandma");
+set(".add-event-date-label", this._t("add_event.birthday_date_label", "Birthday"));
+set(".ae-year-label", this._t("add_event.born_year_label", "Year they were born (optional)"));
+set(".ae-year-hint", this._t("add_event.born_year_hint", "Repeats every year. With the year, the banner shows how old they're turning."));
+} else if (kind === "special") {
+set(".add-event-title-label", this._t("add_event.special_name_label", "What is it?"));
+if (title) title.placeholder = this._t("add_event.special_name_ph", "e.g. Mom & Dad's anniversary");
+set(".add-event-date-label", this._t("add_event.date_label", "Date"));
+set(".ae-year-label", this._t("add_event.since_year_label", "The year it started (optional)"));
+set(".ae-year-hint", this._t("add_event.since_year_hint", "Repeats every year. With the year, the banner shows how many years it's been."));
+} else if (kind === "holiday") {
+set(".add-event-title-label", this._t("add_event.title_label", "Title"));
+if (title) title.placeholder = this._t("breaks.name_placeholder", "e.g. Spring break");
+set(".add-event-date-label", this._t("breaks.from", "From"));
+set(".add-event-enddate-label", this._t("breaks.to", "To"));
+} else {
+set(".add-event-title-label", this._t("add_event.title_label", "Title"));
+if (title) title.placeholder = __fhT("text.e_g_dentist_appointment", "e.g. Dentist appointment");
+set(".add-event-date-label", this._t("add_event.date_label", "Date"));
+set(".add-event-enddate-label", this._t("add_event.enddate_short_label", "End date (optional)"));
+}
+if (kind && this._addEventActiveTab !== "reminder") {
+const heading = root.querySelector(".add-event-heading");
+const h = kind === "birthday" ? `\u{1F382} ${this._t("add_event.heading_birthday", "New Birthday")}` : kind === "special" ? `\u{1F48D} ${this._t("add_event.heading_special", "New Special Day")}` : `\u{1F3D6}\uFE0F ${this._t("add_event.heading_break", "New Holiday or Break")}`;
+if (heading) heading.textContent = h;
+} else if (this._addEventActiveTab !== "reminder") {
+const heading = root.querySelector(".add-event-heading");
+if (heading) heading.innerHTML = `&#10133; ${this._t("add_event.heading_event", "New Event")}`;
+}
+}
+async _saveAddEventBreak() {
+const root = this._root;
+this._setAddEventError("");
+const entity = root.querySelector(".add-event-calendar-select").value;
+const name = root.querySelector(".add-event-title").value.trim();
+const start = root.querySelector(".add-event-date").value;
+if (!name || !start) return;
+const endVal = root.querySelector(".add-event-end-date").value;
+const off = (root.querySelector(".ae-off-btn.active") || {}).dataset ? root.querySelector(".ae-off-btn.active").dataset.value : "";
+const some = !!root.querySelector('.ae-who-btn.active[data-value="some"]');
+const who = off && some ? Array.from(root.querySelectorAll(".ae-person:checked")).map((c) => c.value) : [];
+if (off && some && !who.length) {
+this._setAddEventError(this._t("breaks.need_people", "Tick who's off, or pick Everyone."));
+return;
+}
+const brk = { id: `b${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`, name, start, end: endVal && endVal >= start ? endVal : start, off: off || "", who, calendar: entity === FH_BREAKS_PICK ? "" : entity };
+const breaks = ((this._getSettings() || {}).familyBreaks || []).concat([brk]);
+try {
+const res = await this._hass.connection.sendMessagePromise({ type: "family_hub/days_off/set_breaks", breaks });
+const st = this._getSettings();
+if (st) st.familyBreaks = (res && res.breaks) || breaks;
+} catch (e) {
+this._setAddEventError(`\u26A0\uFE0F ${(e && e.message) || this._t("days_off.failed", "Couldn't save that - try again.")}`);
+return;
+}
+this._closeAddEvent();
+this._renderGrid();
+}
+async _saveAddEventYearly(kind) {
+const root = this._root;
+this._setAddEventError("");
+const entity = root.querySelector(".add-event-calendar-select").value;
+const name = root.querySelector(".add-event-title").value.trim();
+const date = root.querySelector(".add-event-date").value;
+if (!entity || !name || !date) return;
+const year = parseInt(root.querySelector(".ae-year").value, 10);
+const notes = root.querySelector(".add-event-description").value.trim();
+let summary = name;
+if (kind === "birthday" && !/birthday|geburtstag|cumple|anniversaire|compleanno|verjaardag|urodzin|anivers/i.test(name)) summary = this._t("add_event.birthday_title", "%name%'s birthday", { name });
+const yearLine = year >= 1900 && year <= 2100 ? `${kind === "birthday" ? "born" : "since"} ${year}` : "";
+const description = [yearLine, notes].filter(Boolean).join("\n");
+const end = new Date(`${date}T00:00:00`);
+end.setDate(end.getDate() + 1);
+const event = { summary, start_date: date, end_date: this._dateKey(end), rrule: "FREQ=YEARLY" };
+if (description) event.description = description;
+try {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/calendar/create_event", entity_id: entity, event });
+} catch (e) {
+this._setAddEventError(`\u26A0\uFE0F ${this._t("add_event.yearly_failed", "Couldn't save it on that calendar")}: ${e && e.message ? e.message : e}`);
+return;
+}
+this._closeAddEvent();
+this._fetchEvents();
 }
 _closeAddEvent() {
 this._root.querySelector(".add-event-overlay").classList.remove("open");
@@ -26132,7 +27960,7 @@ const root = this._root;
 const field = root.querySelector(".add-event-recur-field");
 if (!field) return;
 const entity = root.querySelector(".add-event-calendar-select").value;
-if (!entity) {
+if (!entity || entity === FH_BREAKS_PICK) {
 field.style.display = "none";
 return;
 }
@@ -26153,7 +27981,7 @@ async _pruneReadOnlyAddEventCalendars() {
 const root = this._root;
 const select = root && root.querySelector(".add-event-calendar-select");
 if (!select) return;
-const entities = Array.from(select.options).map((o) => o.value).filter(Boolean);
+const entities = Array.from(select.options).map((o) => o.value).filter((v) => v && v !== FH_BREAKS_PICK && this._addEventKindFor(v) !== "holiday");
 const supports = await Promise.all(entities.map((e) => this._getCalendarDeleteSupport(e).catch(() => null)));
 const readOnly = new Set(entities.filter((e, i) => supports[i] && supports[i].known && !supports[i].createSupported));
 if (!readOnly.size) return;
@@ -26283,6 +28111,9 @@ if (this._addEventActiveTab === "reminder") {
 await this._saveAddReminder();
 return;
 }
+const aeKind = this._addEventKind();
+if (aeKind === "holiday") return this._saveAddEventBreak();
+if (aeKind === "birthday" || aeKind === "special") return this._saveAddEventYearly(aeKind);
 const root = this._root;
 this._setAddEventError("");
 const entity = root.querySelector(".add-event-calendar-select").value;
@@ -26620,6 +28451,9 @@ if (this._viewMode !== "week") return this._renderGrid();
 this._renderWeekGrid();
 }
 this._decorateEditableEvents();
+// 2026.11.2: Edit mode works in Week, Meals and Month
+if (this._mealEditMode && this._editModeViewOk()) this._attachMealDragHandlers();
+else this._hideEditModeBar();
 }
 _decorateEditableEvents() {
 if (!this._root || !this._eventDetails || !this._canEditEvent()) return;
@@ -26665,6 +28499,27 @@ const { dayNames, cellsHtml } = this._buildMonthCellsHtml(null);
 gridEl.innerHTML = `<div class="month-weekday-row">${[0, 1, 2, 3, 4, 5, 6].map((i) => `<div class="mwd">${dayNames[(i + this._firstWeekday()) % 7]}</div>`).join("")}</div><div class="month-cells">${cellsHtml}</div>`;
 }
 // split out of the old _renderMonthGrid so the classic Month view and the new "split" variant's own calendar pane
+// 2026.11.2: a Month pill's details, registered like the Week view's, so Edit mode can work with it
+_registerMonthPillDetail(e, dateKey) {
+if (!this._eventDetails) this._eventDetails = {};
+const id = `mc-${dateKey}-${Object.keys(this._eventDetails).length}`;
+if (e.rem) {
+const r = e.rem;
+this._eventDetails[id] = { summary: e.summary, start: r.due, end: new Date(r.due.getTime() + 60000), allDay: false, color: e.color, personName: r.personName || "", calendarEntity: r.listEntity || this._config.reminders_entity, description: r.description || "", reminderMinutesList: [], isReminder: true, todoUid: r.uid, isChore: !!r.isChore, choreId: r.choreId || null, choreStars: r.choreStars || 0, choreAssignedTo: r.choreAssignedTo || null, rollover: !!r.rollover, rolloverDays: r.rolloverDays || [], location: "" };
+return id;
+}
+if (!e.src) return "";
+const ev = e.src.ev;
+const person = e.src.person;
+const info = this._parseReminderMarker ? this._parseReminderMarker(ev.description || "") : { clean: ev.description || "", minutesList: [] };
+this._eventDetails[id] = {
+summary: this._discreetText(ev.summary || "(untitled)"), start: e.start, end: e.end, allDay: e.allDay, color: e.color,
+personName: person.name || person.entity, calendarEntity: ev._fhEntity || person.entity, isExtraCalendar: !!(ev._fhEntity && ev._fhEntity !== person.entity),
+description: this._discreetText(info.clean || ""), rawDescription: ev.description || "", rawSummary: ev.summary || "", rawLocation: ev.location || "",
+reminderMinutesList: info.minutesList || [], location: this._discreetText(ev.location || ""), uid: ev.uid || null, rrule: ev.rrule || null, recurrenceId: ev.recurrence_id || null,
+};
+return id;
+}
 _buildMonthCellsHtml(selectedDateKey) {
 const { gridStart, anchor } = this._monthGridRange();
 const today = new Date();
@@ -26762,6 +28617,8 @@ isReminder,
 allDay: this._isAllDay(ev),
 start: evStart,
 end: evEnd,
+// 2026.11.2: so Edit mode can drag/delete it from Month view too
+src: { ev, person },
 });
 }
 }
@@ -26774,7 +28631,7 @@ if (r.due >= dayStart && r.due < dayEnd) {
 // an individual list's reminders use their owning person's own color (r.color) instead of the fixed purple - the shared family list
 const remColor = r.color || REMINDER_COLOR;
 // A reminder is a single point in time, never all-day and never multi-day
-dayEvents.push({ summary: this._discreetText(r.summary), color: remColor, bg: `background:${remColor};color:${this._textColorFor(remColor)}`, isReminder: true, isChore: !!r.isChore, allDay: false, start: r.due, end: new Date(r.due.getTime() + 60000) });
+dayEvents.push({ summary: this._discreetText(r.summary), color: remColor, bg: `background:${remColor};color:${this._textColorFor(remColor)}`, isReminder: true, isChore: !!r.isChore, allDay: false, start: r.due, end: new Date(r.due.getTime() + 60000), rem: r });
 }
 }
 }
@@ -26801,7 +28658,8 @@ const continuesToNext = !e.isReminder && e.end && e.end.getTime() > dayEnd.getTi
 const continueClass = `${continuesFromPrev ? " mc-continue-prev" : ""}${continuesToNext ? " mc-continue-next" : ""}`;
 const prefix = continuesFromPrev ? "◂ " : "";
 const suffix = continuesToNext ? " ▸" : "";
-return `<div class="mc-pill${e.isReminder ? " mc-reminder-pill" : ""}${continueClass}${isPastEvent(e) ? " past" : ""}" style="${this._pillStyle(e)}">${e.isReminder ? (e.isChore ? "&#129529; " : "&#128276; ") : ""}${prefix}${e.summary}${suffix}</div>`;
+const mcId = this._registerMonthPillDetail(e, dateKey);
+return `<div class="mc-pill${e.isReminder ? " mc-reminder-pill" : ""}${continueClass}${isPastEvent(e) ? " past" : ""}"${mcId ? ` data-event-id="${mcId}"` : ""} style="${this._pillStyle(e)}">${e.isReminder ? (e.isChore ? "&#129529; " : "&#128276; ") : ""}${prefix}${e.summary}${suffix}</div>`;
 })
 .join("") + (more > 0 ? `<div class="mc-more">${__fhT("text.x_more", "+%0% more", {0: more}, "h")}</div>` : "");
 // meals render BEFORE (above) events/reminders in each cell, not after
@@ -26810,6 +28668,7 @@ if (settings.showMealsInMonth && !settings.mealsOwnView) {
 const dayBlocks = this._getBlocksForDay(cellDate);
 mealsHtml = dayBlocks
 .map((blockName, bi) => {
+if (this._isDayBlockHidden(dateKey, blockName)) return "";
 const m = this._getMealForDay(dateKey, cellDate, bi);
 if (!m || !m.name || !m.name.trim()) return "";
 const repeatIcon = m.recur === "weekly" ? "\u{1F501} " : "";
@@ -26914,6 +28773,8 @@ isExtraCalendar: !!(ev._fhEntity && ev._fhEntity !== person.entity),
 description: this._discreetText(reminderInfo.clean),
 // 2026.11.1: the stored description (Family Hub's reminder/category markers included), for editing it
 rawDescription: ev.description || "",
+rawSummary: ev.summary || "",
+rawLocation: ev.location || "",
 reminderMinutesList: reminderInfo.minutesList,
 categoryId: reminderInfo.categoryId,
 isReminder: reminderInfo.isReminder,
@@ -26982,6 +28843,7 @@ if (settings.showMealsInMonth && !settings.mealsOwnView) {
 const dayBlocks = this._getBlocksForDay(cellDate);
 mealsHtml = dayBlocks
 .map((blockName, bi) => {
+if (this._isDayBlockHidden(dateKey, blockName)) return "";
 const m = this._getMealForDay(dateKey, cellDate, bi);
 if (!m || !m.name || !m.name.trim()) return "";
 const repeatIcon = m.recur === "weekly" ? "\u{1F501} " : "";
@@ -27211,6 +29073,7 @@ forecast && forecast.high != null
 : "";
 let bannersHtml = "";
 blocks.forEach((blockName, blockIndex) => {
+if (this._isDayBlockHidden(dateKey, blockName)) return;
 const plan = this._getMealForDay(dateKey, dayStart, blockIndex);
 const hasName = plan && plan.name && plan.name.trim();
 const recipe = hasName ? this._recipes.find((r) => r.name.toLowerCase() === plan.name.trim().toLowerCase()) : null;
@@ -27291,6 +29154,8 @@ isExtraCalendar: !!(ev._fhEntity && ev._fhEntity !== person.entity),
 description: this._discreetText(reminderInfo.clean),
 // 2026.11.1: the stored description (Family Hub's reminder/category markers included), for editing it
 rawDescription: ev.description || "",
+rawSummary: ev.summary || "",
+rawLocation: ev.location || "",
 reminderMinutesList: reminderInfo.minutesList,
 categoryId: reminderInfo.categoryId,
 isReminder: reminderInfo.isReminder,
@@ -27723,6 +29588,8 @@ calendarEntity: pooled.ev._fhEntity || pooled.ownerEntity,
 isExtraCalendar: !!(pooled.ev._fhEntity && pooled.ev._fhEntity !== pooled.ownerEntity),
 description: this._discreetText(pooled.reminderInfo.clean),
 rawDescription: pooled.ev.description || "",
+rawSummary: pooled.ev.summary || "",
+rawLocation: pooled.ev.location || "",
 reminderMinutesList: pooled.reminderInfo.minutesList,
 categoryId: pooled.reminderInfo.categoryId,
 isReminder: pooled.reminderInfo.isReminder,
@@ -27842,6 +29709,8 @@ calendarEntity: pooled.ev._fhEntity || pooled.ownerEntity,
 isExtraCalendar: !!(pooled.ev._fhEntity && pooled.ev._fhEntity !== pooled.ownerEntity),
 description: this._discreetText(pooled.reminderInfo.clean),
 rawDescription: pooled.ev.description || "",
+rawSummary: pooled.ev.summary || "",
+rawLocation: pooled.ev.location || "",
 reminderMinutesList: pooled.reminderInfo.minutesList,
 categoryId: pooled.reminderInfo.categoryId,
 isReminder: pooled.reminderInfo.isReminder,
@@ -28014,6 +29883,8 @@ isExtraCalendar: !!(ev._fhEntity && ev._fhEntity !== person.entity),
 description: this._discreetText(reminderInfo.clean),
 // 2026.11.1: the stored description (Family Hub's reminder/category markers included), for editing it
 rawDescription: ev.description || "",
+rawSummary: ev.summary || "",
+rawLocation: ev.location || "",
 reminderMinutesList: reminderInfo.minutesList,
 categoryId: reminderInfo.categoryId,
 isReminder: reminderInfo.isReminder,
@@ -28072,6 +29943,7 @@ if (settings.agendaShowMeals && !settings.mealsOwnView) {
 const dayBlocks = this._getBlocksForDay(dayStart);
 mealsHtml = dayBlocks
 .map((blockName, bi) => {
+if (this._isDayBlockHidden(dateKey, blockName)) return "";
 const m = this._getMealForDay(dateKey, dayStart, bi);
 if (!m || !m.name || !m.name.trim()) return "";
 const repeatIcon = m.recur === "weekly" ? "\u{1F501} " : "";
@@ -28101,35 +29973,270 @@ if (hasFamilyReminders) html += this._buildPersonLaneHtml(null, ctx);
 gridEl.innerHTML = html;
 this._afterRenderPersonLanes(ctx);
 }
+// ---- Edit mode (2026.11.2) -------------------------------------------------------------------------------------
+// Edit (top bar) turns on: drag meals between days and slots (hold one, or Alt/Ctrl-drag, to copy it), drag events,
+// reminders and chores to another day (Week and Month), drag a timeline event up/down to change its time or its
+// bottom edge to change how long it is, quick Delete/Duplicate buttons on each item, and "Copy last week's meals".
+// Repeating events and repeating reminders aren't dragged (open them to change them).
+_editModeViewOk() {
+// Week (its day columns), Meals, and Month (classic or split) - not Planner, Agenda or Day
+return ["week", "meals", "month", "split"].includes(this._viewMode);
+}
+_editItemKind(detail) {
+if (!detail || detail.isHoliday) return "";
+if (detail.isChore && detail.choreId) return "chore";
+if (detail.todoUid) return "reminder";
+if (detail.uid && detail.calendarEntity && !detail.isExtraCalendar) return "event";
+return "";
+}
+_editFindReminder(detail) {
+const t = detail.start ? new Date(detail.start).getTime() : 0;
+return (this._privacyReminders() || []).find((r) => r.uid === detail.todoUid && r.due && r.due.getTime() === t) || null;
+}
+// can this item be dragged / changed from Edit mode?
+_editItemOk(detail, kind) {
+if (kind === "event") {
+if (!this._canEditEvent() || detail.rrule || detail.recurrenceId) return false;
+const support = this._calendarDeleteSupport && this._calendarDeleteSupport[detail.calendarEntity];
+return !!(support && support.updateSupported);
+}
+if (kind === "reminder") {
+const r = this._editFindReminder(detail);
+return !!(r && !r.projected && !r.repeat);
+}
+return kind === "chore";
+}
 _attachMealDragHandlers() {
 const root = this._root;
-const banners = root.querySelectorAll(".menu-banner.edit-mode:not(.empty)");
-banners.forEach((banner) => {
-banner.addEventListener("pointerdown", (e) => this._startMealDrag(e, banner));
+if (!root || !this._mealEditMode) return;
+this._renderEditModeBar();
+const wire = (el, fn) => {
+if (el.dataset.fhEditWired) return;
+el.dataset.fhEditWired = "1";
+el.addEventListener("pointerdown", fn);
+};
+const canMenu = this._canEditMenu();
+// meals: Week's banners, and Month's meal pills (only meals entered for that day, not repeats or leftovers)
+if (canMenu) {
+root.querySelectorAll(".menu-banner.edit-mode:not(.empty)").forEach((banner) => {
+const start = this._weekStart();
+const d = new Date(start);
+d.setDate(start.getDate() + parseInt(banner.dataset.dayIndex, 10));
+const key = this._dateKey(d);
+const bi = parseInt(banner.dataset.blockIndex, 10);
+if (this._mealPlan[key] && this._mealPlan[key][bi]) this._addEditQuickButtons(banner, { meal: true, dateKey: key, blockIndex: bi });
+wire(banner, (e) => {
+if (e.target.closest && e.target.closest(".eq-btns")) return;
+this._startMealDrag(e, banner);
 });
-// Calendar events only pick up dragging once Edit Meals mode's own prefetch
-if (this._canEditEvent()) {
-root.querySelectorAll(".day-col .events .event").forEach((el) => {
-const eventId = el.dataset.eventId;
-const detail = eventId && this._eventDetails ? this._eventDetails[eventId] : null;
-if (!detail || detail.isReminder || !detail.uid) return;
-const support = this._calendarDeleteSupport && this._calendarDeleteSupport[detail.calendarEntity];
-if (!support || !support.updateSupported) return;
-el.classList.add("event-draggable");
-el.addEventListener("pointerdown", (e) => this._startEventDrag(e, el, eventId));
+});
+root.querySelectorAll(".month-cell .mc-meal-pill[data-date]").forEach((pill) => {
+const key = pill.dataset.date;
+const bi = parseInt(pill.dataset.blockIndex, 10);
+if (!(this._mealPlan[key] && this._mealPlan[key][bi])) return;
+pill.classList.add("event-draggable");
+wire(pill, (e) => {
+if (e.target.closest && e.target.closest(".eq-btns")) return;
+this._startMealDrag(e, pill);
+});
 });
 }
+// events, reminders and chores
+root.querySelectorAll(".day-col .events .event[data-event-id], .day-col .tl-event[data-event-id], .day-col .all-day-chip[data-event-id], .month-cell .mc-pill[data-event-id]").forEach((el) => {
+const eventId = el.dataset.eventId;
+const detail = this._eventDetails && this._eventDetails[eventId];
+const kind = this._editItemKind(detail);
+if (!kind || !this._editItemOk(detail, kind)) return;
+el.classList.add("event-draggable");
+// Month's pills are too small for buttons: drag there, and delete or duplicate from the pop-up
+if (!el.classList.contains("mc-pill")) this._addEditQuickButtons(el, { eventId, kind, detail });
+if (el.classList.contains("tl-event") && !detail.allDay && kind === "event" && !el.querySelector(".tl-resize")) {
+const h = document.createElement("span");
+h.className = "tl-resize";
+h.title = this._t("edit_mode.resize", "Drag to change how long it is");
+el.appendChild(h);
+}
+wire(el, (e) => {
+if (e.target.closest && e.target.closest(".eq-btns")) return;
+if (e.target.closest && e.target.closest(".tl-resize")) return this._startEventResize(e, el, eventId);
+this._startEventDrag(e, el, eventId);
+});
+});
+}
+_addEditQuickButtons(el, info) {
+if (el.querySelector(".eq-btns")) return;
+const box = document.createElement("span");
+box.className = "eq-btns";
+const add = (cls, label, title, fn) => {
+const b = document.createElement("button");
+b.type = "button";
+b.className = `eq-btn ${cls}`;
+b.innerHTML = label;
+b.title = title;
+b.addEventListener("pointerdown", (e) => e.stopPropagation());
+b.addEventListener("click", (e) => {
+e.preventDefault();
+e.stopPropagation();
+fn(b);
+});
+box.appendChild(b);
+};
+const canDup = info.meal ? false : info.kind === "reminder" || (info.kind === "event" && ((this._calendarDeleteSupport || {})[info.detail.calendarEntity] || {}).createSupported);
+const canDel = info.meal ? true : info.kind !== "event" || ((this._calendarDeleteSupport || {})[info.detail.calendarEntity] || {}).supported;
+if (canDup) add("eq-dup", "&#10697;", this._t("edit_mode.duplicate", "Duplicate"), () => this._editQuickDuplicate(info));
+if (canDel) add("eq-del", "&#10005;", this._t("edit_mode.delete", "Delete"), (b) => {
+// two taps: the first turns it red
+if (!b.classList.contains("sure")) {
+b.classList.add("sure");
+b.title = this._t("edit_mode.delete_sure", "Tap again to delete");
+clearTimeout(b._fhSureTimer);
+b._fhSureTimer = setTimeout(() => { b.classList.remove("sure"); b.title = this._t("edit_mode.delete", "Delete"); }, 4000);
+return;
+}
+this._editQuickDelete(info);
+});
+if (box.children.length) el.appendChild(box);
+}
+async _editQuickDelete(info) {
+try {
+if (info.meal) {
+await this._removeMealPlan(info.dateKey, info.blockIndex);
+return;
+}
+const d = info.detail;
+if (info.kind === "event") {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/calendar/delete_event", entity_id: d.calendarEntity, uid: d.uid });
+await this._fetchEvents();
+} else if (info.kind === "reminder") {
+const r = this._editFindReminder(d);
+await this._hass.callService("todo", "remove_item", { item: d.todoUid }, { entity_id: (r && r.listEntity) || d.calendarEntity });
+await this._fetchReminders();
+this._renderGrid();
+} else if (info.kind === "chore") {
+await this._hass.connection.sendMessagePromise({ type: "family_hub/chores/delete", chore_id: d.choreId });
+await this._fetchReminders();
+this._renderGrid();
+}
+} catch (e) {
+this._showToast((e && e.message) || this._t("edit_mode.failed", "That didn't work - try again."), true);
+}
+}
+async _editQuickDuplicate(info) {
+const d = info.detail;
+const two = (n) => String(n).padStart(2, "0");
+const hms = (x) => `${two(x.getHours())}:${two(x.getMinutes())}:00`;
+try {
+if (info.kind === "event") {
+const data = { summary: d.rawSummary || d.summary };
+if (d.rawLocation) data.location = d.rawLocation;
+const desc = typeof d.rawDescription === "string" ? d.rawDescription : "";
+if (desc) data.description = desc;
+if (d.allDay) {
+data.start_date = this._dateKey(d.start);
+data.end_date = this._dateKey(d.end > d.start ? d.end : new Date(d.start.getTime() + 86400000));
+} else {
+data.start_date_time = `${this._dateKey(d.start)} ${hms(d.start)}`;
+data.end_date_time = `${this._dateKey(d.end)} ${hms(d.end)}`;
+}
+await this._hass.callService("calendar", "create_event", data, { entity_id: d.calendarEntity });
+await this._fetchEvents();
+} else if (info.kind === "reminder") {
+const r = this._editFindReminder(d);
+if (!r) return;
+const data = { item: r.summary };
+if (r.dateOnly) data.due_date = this._dateKey(r.due);
+else data.due_datetime = `${this._dateKey(r.due)}T${hms(r.due)}`;
+if (r.rawDescription || r.description) data.description = r.rawDescription || r.description;
+await this._hass.callService("todo", "add_item", data, { entity_id: r.listEntity || d.calendarEntity });
+await this._fetchReminders();
+this._renderGrid();
+}
+this._showToast(this._t("edit_mode.duplicated", "Copy added - drag it where it goes."));
+} catch (e) {
+this._showToast((e && e.message) || this._t("edit_mode.failed", "That didn't work - try again."), true);
+}
+}
+// a strip above the grid while editing: what you can do, and Copy last week's meals
+_renderEditModeBar() {
+const root = this._root;
+const grid = root && root.querySelector(".grid");
+if (!grid) return;
+let bar = root.querySelector(".edit-mode-bar");
+if (!bar) {
+bar = document.createElement("div");
+bar.className = "edit-mode-bar";
+grid.insertAdjacentElement("beforebegin", bar);
+}
+const showCopy = this._canEditMenu() && this._viewFamily(this._viewMode) !== "month" && this._getBlocks().length && (this._viewMode === "meals" || !this._getSettings().mealsOwnView);
+// resizing only exists on the timeline (Week/Split with it on)
+const canResize = this._viewFamily(this._viewMode) !== "month" && this._viewMode !== "meals" && !!(this._getShowTimeline && this._getShowTimeline());
+const hint = canResize ? this._t("edit_mode.hint", "Drag to move. Hold a meal (or Alt-drag) to copy it. Drag the bottom of a timed event to change how long it is.") : this._t("edit_mode.hint_short", "Drag to move. Hold a meal (or Alt-drag) to copy it.");
+bar.innerHTML = `<span class="edit-mode-hint">${__fhEsc(hint)}</span>${showCopy ? `<button type="button" class="edit-copy-week-btn">&#10697; ${__fhEsc(this._t("edit_mode.copy_week", "Copy last week's meals"))}</button>` : ""}`;
+const btn = bar.querySelector(".edit-copy-week-btn");
+if (btn) btn.addEventListener("click", () => this._copyLastWeekMeals(btn));
+bar.style.display = "";
+}
+_hideEditModeBar() {
+const bar = this._root && this._root.querySelector(".edit-mode-bar");
+if (bar) bar.style.display = "none";
+}
+// every meal entered last week goes into the same day and slot this week, where that slot is still empty
+async _copyLastWeekMeals(btn) {
+if (!this._canEditMenu()) return;
+if (btn) btn.disabled = true;
+const start = this._weekStart();
+let copied = 0;
+let skipped = 0;
+try {
+for (let i = 0; i < 7; i++) {
+const day = new Date(start);
+day.setDate(start.getDate() + i);
+const key = this._dateKey(day);
+const from = new Date(day);
+from.setDate(day.getDate() - 7);
+const fromKey = this._dateKey(from);
+const blocks = this._getBlocksForDay(day);
+for (let bi = 0; bi < blocks.length; bi++) {
+if (this._isDayBlockHidden(key, blocks[bi])) continue;
+const src = this._mealPlan[fromKey] && this._mealPlan[fromKey][bi];
+if (!src || !src.name || !src.name.trim()) continue;
+const here = this._getMealForDay(key, day, bi);
+if (here && here.name && here.name.trim()) {
+skipped += 1;
+continue;
+}
+await this._upsertMealPlan(key, bi, src.name, src.description || "", src.link || "", src.color || "", null, src.grocyRecipeId || null, typeof src.servings === "number" ? src.servings : null, 1, src.additionalRecipes || [], undefined, src.cook || null);
+copied += 1;
+}
+}
+} finally {
+if (btn) btn.disabled = false;
+}
+await this._fetchMealPlan();
+this._showToast(copied
+? this._t("edit_mode.copied_week", "Copied %n% meals from last week%skip%.", { n: String(copied), skip: skipped ? this._t("edit_mode.copied_week_skip", " (%n% spots already had one)", { n: String(skipped) }) : "" })
+: this._t("edit_mode.copied_none", "Nothing to copy - last week had no meals in the empty spots."));
+}
+// where a meal is: a Week banner (day + slot) or a Month pill (date + slot)
+_mealSpotOf(el) {
+if (el.dataset.date) return { dateKey: el.dataset.date, blockIndex: parseInt(el.dataset.blockIndex || "0", 10) };
+const start = this._weekStart();
+const d = new Date(start);
+d.setDate(start.getDate() + parseInt(el.dataset.dayIndex, 10));
+return { dateKey: this._dateKey(d), blockIndex: parseInt(el.dataset.blockIndex || "0", 10) };
 }
 _startMealDrag(e, banner) {
 if (e.button !== undefined && e.button !== 0) return;
 e.preventDefault();
 const root = this._root;
-const fromDayIndex = parseInt(banner.dataset.dayIndex, 10);
-const fromBlockIndex = parseInt(banner.dataset.blockIndex, 10);
+const from = this._mealSpotOf(banner);
+const isMonth = !!banner.closest(".month-cell");
 const rect = banner.getBoundingClientRect();
 const ghost = banner.cloneNode(true);
 ghost.classList.add("meal-drag-ghost");
 ghost.classList.remove("edit-mode");
+const eq = ghost.querySelector(".eq-btns");
+if (eq) eq.remove();
 ghost.style.width = `${rect.width}px`;
 ghost.style.height = `${rect.height}px`;
 ghost.style.left = `${rect.left}px`;
@@ -28139,32 +30246,46 @@ root.appendChild(ghost);
 banner.classList.add("dragging-source");
 const offsetX = e.clientX - rect.left;
 const offsetY = e.clientY - rect.top;
+const sx = e.clientX;
+const sy = e.clientY;
+let moved = false;
+// Alt/Ctrl/Cmd-drag, or holding it still for a moment, copies instead of moving
+let copy = !!(e.altKey || e.ctrlKey || e.metaKey);
+const markCopy = () => {
+copy = true;
+ghost.classList.add("copying");
+banner.classList.remove("dragging-source");
+};
+if (copy) markCopy();
+const holdTimer = setTimeout(() => { if (!moved) markCopy(); }, 450);
 let currentTarget = null;
 const onMove = (ev) => {
+if (Math.abs(ev.clientX - sx) > 6 || Math.abs(ev.clientY - sy) > 6) moved = true;
 ghost.style.left = `${ev.clientX - offsetX}px`;
 ghost.style.top = `${ev.clientY - offsetY}px`;
-const under = root.elementFromPoint
-? root.elementFromPoint(ev.clientX, ev.clientY)
-: document.elementFromPoint(ev.clientX, ev.clientY);
-const targetBanner = under && under.closest ? under.closest(".menu-banner") : null;
-if (targetBanner !== currentTarget) {
+const under = root.elementFromPoint ? root.elementFromPoint(ev.clientX, ev.clientY) : document.elementFromPoint(ev.clientX, ev.clientY);
+let t = null;
+if (under && under.closest) t = isMonth ? under.closest(".month-cell") : under.closest(".menu-banner");
+if (t === banner) t = null;
+if (t !== currentTarget) {
 if (currentTarget) currentTarget.classList.remove("drop-target");
-currentTarget = targetBanner && targetBanner !== banner ? targetBanner : null;
+currentTarget = t;
 if (currentTarget) currentTarget.classList.add("drop-target");
 }
 };
 const onUp = () => {
+clearTimeout(holdTimer);
 window.removeEventListener("pointermove", onMove);
 window.removeEventListener("pointerup", onUp);
 window.removeEventListener("pointercancel", onUp);
 ghost.remove();
 banner.classList.remove("dragging-source");
-if (currentTarget) {
+if (!currentTarget) return;
 currentTarget.classList.remove("drop-target");
-const toDayIndex = parseInt(currentTarget.dataset.dayIndex, 10);
-const toBlockIndex = parseInt(currentTarget.dataset.blockIndex, 10);
-this._dragMoveMeal(fromDayIndex, fromBlockIndex, toDayIndex, toBlockIndex);
-}
+const to = isMonth ? { dateKey: currentTarget.dataset.date, blockIndex: from.blockIndex } : this._mealSpotOf(currentTarget);
+if (!to.dateKey || (to.dateKey === from.dateKey && to.blockIndex === from.blockIndex)) return;
+if (copy) this._copyMealPlan(from.dateKey, from.blockIndex, to.dateKey, to.blockIndex);
+else this._moveMealPlan(from.dateKey, from.blockIndex, to.dateKey, to.blockIndex);
 };
 window.addEventListener("pointermove", onMove);
 window.addEventListener("pointerup", onUp);
@@ -28179,7 +30300,27 @@ const toDate = new Date(start);
 toDate.setDate(start.getDate() + toDayIndex);
 await this._moveMealPlan(this._dateKey(fromDate), fromBlockIndex, this._dateKey(toDate), toBlockIndex);
 }
-// Same pointerdown/ghost/elementFromPoint shape as _startMealDrag, just dropping onto any point inside a *day-col*
+async _copyMealPlan(fromDateKey, fromBlockIndex, toDateKey, toBlockIndex) {
+const src = this._mealPlan[fromDateKey] && this._mealPlan[fromDateKey][fromBlockIndex];
+if (!src) return false;
+const toDay = new Date(`${toDateKey}T00:00:00`);
+const here = this._getMealForDay(toDateKey, toDay, toBlockIndex);
+if (here && here.name && here.name.trim()) {
+this._showToast(this._t("edit_mode.spot_taken", "That spot already has a meal - move or clear it first."), true);
+return false;
+}
+const ok = await this._upsertMealPlan(toDateKey, toBlockIndex, src.name, src.description || "", src.link || "", src.color || "", null, src.grocyRecipeId || null, typeof src.servings === "number" ? src.servings : null, 1, src.additionalRecipes || [], undefined, src.cook || null);
+await this._fetchMealPlan();
+return ok !== false;
+}
+// the day under the pointer: a Week day column or a Month cell
+_dropDayAt(root, x, y) {
+const under = root.elementFromPoint ? root.elementFromPoint(x, y) : document.elementFromPoint(x, y);
+const col = under && under.closest ? under.closest(".day-col, .month-cell") : null;
+if (!col) return { col: null, dateKey: null };
+const header = col.querySelector(".day-header");
+return { col, dateKey: col.dataset.date || (header && header.dataset.date) || null };
+}
 _startEventDrag(e, el, eventId) {
 if (e.button !== undefined && e.button !== 0) return;
 e.preventDefault();
@@ -28188,6 +30329,8 @@ const root = this._root;
 const rect = el.getBoundingClientRect();
 const ghost = el.cloneNode(true);
 ghost.classList.add("meal-drag-ghost");
+const eq = ghost.querySelector(".eq-btns");
+if (eq) eq.remove();
 ghost.style.width = `${rect.width}px`;
 ghost.style.height = `${rect.height}px`;
 ghost.style.left = `${rect.left}px`;
@@ -28197,16 +30340,32 @@ root.appendChild(ghost);
 el.classList.add("dragging-source");
 const offsetX = e.clientX - rect.left;
 const offsetY = e.clientY - rect.top;
+const sy = e.clientY;
+// a timed event on the timeline: moving it up or down changes its time (15-minute steps)
+const onTimeline = el.classList.contains("tl-event");
+const detail = this._eventDetails[eventId];
+const timed = onTimeline && detail && !detail.allDay;
 let currentCol = null;
+let minutes = 0;
+let timeTag = null;
+if (timed) {
+timeTag = document.createElement("span");
+timeTag.className = "drag-time-tag";
+ghost.appendChild(timeTag);
+}
 const onMove = (ev) => {
 ghost.style.left = `${ev.clientX - offsetX}px`;
 ghost.style.top = `${ev.clientY - offsetY}px`;
-const under = root.elementFromPoint ? root.elementFromPoint(ev.clientX, ev.clientY) : document.elementFromPoint(ev.clientX, ev.clientY);
-const targetCol = under && under.closest ? under.closest(".day-col") : null;
-if (targetCol !== currentCol) {
+const hit = this._dropDayAt(root, ev.clientX, ev.clientY);
+if (hit.col !== currentCol) {
 if (currentCol) currentCol.classList.remove("drop-target");
-currentCol = targetCol;
+currentCol = hit.col;
 if (currentCol) currentCol.classList.add("drop-target");
+}
+if (timed) {
+minutes = Math.round(((ev.clientY - sy) / 40) * 60 / 15) * 15;
+const t = new Date(detail.start.getTime() + minutes * 60000);
+timeTag.textContent = this._fmtTimeOfDay(t);
 }
 };
 const onUp = () => {
@@ -28215,25 +30374,74 @@ window.removeEventListener("pointerup", onUp);
 window.removeEventListener("pointercancel", onUp);
 ghost.remove();
 el.classList.remove("dragging-source");
-if (currentCol) {
+if (!currentCol) return;
 currentCol.classList.remove("drop-target");
 const header = currentCol.querySelector(".day-header");
-const toDateKey = header ? header.dataset.date : null;
-if (toDateKey) this._dragMoveEvent(eventId, toDateKey);
-}
+const toDateKey = currentCol.dataset.date || (header && header.dataset.date);
+if (toDateKey) this._dragMoveEvent(eventId, toDateKey, timed ? minutes : 0);
 };
 window.addEventListener("pointermove", onMove);
 window.addEventListener("pointerup", onUp);
 window.addEventListener("pointercancel", onUp);
 }
-// Moves an event to a different day, keeping its own time-of-day and duration (an all-day event stays all-day, just on the new date)
-async _dragMoveEvent(eventId, toDateKey) {
+// the handle along a timeline event's bottom edge: drag it to change when it ends (15-minute steps, at least 15 minutes)
+_startEventResize(e, el, eventId) {
+if (e.button !== undefined && e.button !== 0) return;
+e.preventDefault();
+e.stopPropagation();
+const detail = this._eventDetails[eventId];
+if (!detail) return;
+const startH = el.getBoundingClientRect().height;
+const sy = e.clientY;
+const durMin = Math.round((detail.end - detail.start) / 60000);
+let minutes = 0;
+el.classList.add("resizing");
+const tag = document.createElement("span");
+tag.className = "drag-time-tag";
+el.appendChild(tag);
+const onMove = (ev) => {
+minutes = Math.round(((ev.clientY - sy) / 40) * 60 / 15) * 15;
+if (durMin + minutes < 15) minutes = 15 - durMin;
+el.style.height = `${Math.max(16, startH + (minutes / 60) * 40)}px`;
+tag.textContent = `${this._fmtTimeOfDay(detail.start)} – ${this._fmtTimeOfDay(new Date(detail.end.getTime() + minutes * 60000))}`;
+};
+const onUp = () => {
+window.removeEventListener("pointermove", onMove);
+window.removeEventListener("pointerup", onUp);
+window.removeEventListener("pointercancel", onUp);
+el.classList.remove("resizing");
+tag.remove();
+if (minutes) this._dragMoveEvent(eventId, this._dateKey(detail.start), 0, minutes);
+else el.style.height = "";
+};
+window.addEventListener("pointermove", onMove);
+window.addEventListener("pointerup", onUp);
+window.addEventListener("pointercancel", onUp);
+}
+// Moves an event, reminder or chore to another day, keeping its time of day (an all-day event stays all-day), and/or
+// shifts its start by startDeltaMin (timeline drag) or its end by endDeltaMin (timeline resize)
+async _dragMoveEvent(eventId, toDateKey, startDeltaMin, endDeltaMin) {
 const detail = this._eventDetails && this._eventDetails[eventId];
-if (!detail || !detail.uid) return;
+const kind = this._editItemKind(detail);
+if (!kind) return;
+startDeltaMin = startDeltaMin || 0;
+endDeltaMin = endDeltaMin || 0;
 const fromDateKey = this._dateKey(detail.start);
-if (fromDateKey === toDateKey) return;
-const eventFields = { summary: detail.summary };
-if (detail.location) eventFields.location = detail.location;
+if (fromDateKey === toDateKey && !startDeltaMin && !endDeltaMin) return;
+const two = (n) => String(n).padStart(2, "0");
+const hms = (x) => `${two(x.getHours())}:${two(x.getMinutes())}:${two(x.getSeconds())}`;
+// the same time of day on the new date, then the timeline shift
+const shift = (d, extra) => {
+const out = new Date(`${toDateKey}T${hms(d)}`);
+return new Date(out.getTime() + (extra || 0) * 60000);
+};
+try {
+if (kind === "event") {
+if (!detail.uid) return;
+const eventFields = { summary: detail.rawSummary || detail.summary };
+const loc = typeof detail.rawLocation === "string" ? detail.rawLocation : detail.location;
+if (loc) eventFields.location = loc;
+if (typeof detail.rawDescription === "string" && detail.rawDescription) eventFields.description = detail.rawDescription;
 if (detail.allDay) {
 const durationDays = Math.max(1, Math.round((detail.end.getTime() - detail.start.getTime()) / 86400000));
 const endDate = new Date(`${toDateKey}T00:00:00`);
@@ -28241,27 +30449,36 @@ endDate.setDate(endDate.getDate() + durationDays);
 eventFields.start_date = toDateKey;
 eventFields.end_date = this._dateKey(endDate);
 } else {
-const durationMs = detail.end.getTime() - detail.start.getTime();
-const fmtTime = (d) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
-const newStart = new Date(`${toDateKey}T${fmtTime(detail.start)}`);
-const newEnd = new Date(newStart.getTime() + durationMs);
-eventFields.start_date_time = `${toDateKey}T${fmtTime(detail.start)}`;
-eventFields.end_date_time = `${this._dateKey(newEnd)}T${fmtTime(newEnd)}`;
+const newStart = shift(detail.start, startDeltaMin);
+const newEnd = new Date(newStart.getTime() + (detail.end.getTime() - detail.start.getTime()) + endDeltaMin * 60000);
+eventFields.start_date_time = `${this._dateKey(newStart)}T${hms(newStart)}`;
+eventFields.end_date_time = `${this._dateKey(newEnd)}T${hms(newEnd)}`;
 }
-try {
-await this._hass.connection.sendMessagePromise({
-type: "family_hub/calendar/update_event",
-entity_id: detail.calendarEntity,
-uid: detail.uid,
-event: eventFields,
-});
-} catch (e) {
-window.alert((e && e.message) || this._t("event_info.edit_failed", "Couldn't move this event - try again."));
+await this._hass.connection.sendMessagePromise({ type: "family_hub/calendar/update_event", entity_id: detail.calendarEntity, uid: detail.uid, event: eventFields });
+await this._fetchEvents();
 return;
 }
+const r = this._editFindReminder(detail);
+const when = shift(detail.start, startDeltaMin);
+if (kind === "reminder") {
+if (!r) return;
+const data = { item: detail.todoUid };
+if (r.dateOnly) data.due_date = this._dateKey(when);
+else data.due_datetime = `${this._dateKey(when)}T${hms(when)}`;
+await this._hass.callService("todo", "update_item", data, { entity_id: r.listEntity || detail.calendarEntity });
+} else {
+const dateOnly = !!(r && r.dateOnly);
+await this._hass.connection.sendMessagePromise({ type: "family_hub/chores/update", chore_id: detail.choreId, due_date: dateOnly ? this._dateKey(when) : when.toISOString() });
+}
+await this._fetchReminders();
+this._renderGrid();
+} catch (e) {
+this._showToast((e && e.message) || this._t("event_info.edit_failed", "Couldn't move this event - try again."), true);
 await this._fetchEvents();
 }
 }
+}
+
 
 // Minimal GUI editor for HA's native Edit Card screen, covering ONLY the staticLayoutAcrossDevices config option
 class FamilyWeekCalendarCardEditor extends HTMLElement {

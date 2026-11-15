@@ -31,6 +31,7 @@ calendar_dashboard_path: /lovelace-family/0
 | `show_weather` | `true` | **Show the weather.** Turn it off if the dashboard already shows the weather. |
 | `calendar_dashboard_path` | none | A relative dashboard path. Adds **Go to Calendar** to the card's ⋮ menu. |
 | `calendar_button_label` | **Go to Calendar** | The label for that menu item. |
+| `look_ahead_days` | household setting | **Next looks ahead**: how far ahead each person's **Next** line looks for their next event: `1` (today only), `2` (today and tomorrow), `3`, `7` or `14` days. Left unset, it follows the calendar's **Settings → General → Calendar Card Layout → Right Now looks ahead** (it shows once **Calendar top bar style** is **Right Now**) (today and tomorrow unless changed). A Next that isn't today says which day (Tomorrow, Tue, or Tue, Nov 17). |
 | `theme_override` | device theme | Pin this card to one theme. |
 
 ## Who gets a tile

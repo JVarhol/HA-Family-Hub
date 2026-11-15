@@ -46,6 +46,6 @@ These snapshots cover Family Hub's settings only. Chores, rewards, goals, star b
 
 ## Update Family Hub
 
-Upload a `family_hub_vN.zip` release file to update without SSH or a file manager. The current install is backed up automatically first, and nothing is overwritten unless the zip checks out. Restart Home Assistant afterwards (Settings → System → Restart). Your themes, calendars and reminders are untouched.
+Upload a `family_hub_vN.zip` release file to update without SSH or a file manager. The current install is backed up automatically first, and nothing is overwritten unless the zip checks out. When it's installed, tap **Restart Home Assistant now** to load it straight away (Home Assistant checks its configuration first, and this page reconnects by itself in a minute or two), or **Later** to restart yourself from Settings → System → Restart. Your themes, calendars and reminders are untouched.
 
 With HACS, just update from HACS instead.

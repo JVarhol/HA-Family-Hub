@@ -200,14 +200,17 @@ class Presence:
         return self.fetched_at is None or (dt_util.utcnow() - self.fetched_at).total_seconds() > REFRESH_SECONDS
 
     async def refresh(self, hass: Any, settings: dict[str, Any]) -> bool:
-        """Fetch the badge calendars and work out who's away. Returns True when anything changed."""
+        """Fetch the badge calendars and work out who's away. Returns True when anything changed (who's away, or which
+        badges say something - the who's-home entities follow the badges)."""
+        rules_before = self.rules
         self.rules = badge_rules(settings)
+        rules_changed = rules_before != self.rules
         today = dt_util.now().date()
         first, last = today - timedelta(days=LOOK_BEHIND_DAYS), today + timedelta(days=LOOK_AHEAD_DAYS)
         before = {u: set(d) for u, d in self.away.items()}
         if not self.rules:
             self.set_from({}, first, last)
-            return before != self.away
+            return before != self.away or rules_changed
         tz = dt_util.get_default_time_zone()
         start = datetime.combine(first, datetime.min.time(), tz)
         end = datetime.combine(last + timedelta(days=1), datetime.min.time(), tz)
@@ -221,8 +224,8 @@ class Presence:
                 )
             except Exception as err:  # noqa: BLE001 - one calendar failing keeps the last known answer for it
                 _LOGGER.debug("Family Hub: who's-home check couldn't read %s: %s", cal, err)
-                return False
+                return rules_changed
             events[cal] = ((resp or {}).get(cal) or {}).get("events", []) or []
         days = [first + timedelta(days=i) for i in range((last - first).days + 1)]
         self.set_from(compute_away_days(self.rules, events, days), first, last)
-        return before != self.away
+        return before != self.away or rules_changed

@@ -16,6 +16,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_point_in_utc_time
 from homeassistant.util import dt as dt_util
 
+from . import people as people_mod
 from . import chore_engine, goal_engine, libraries, privacy_mode_shared, reward_engine, routine_engine, routine_library, sensor as timer_sensor, store as chores_store, switch as device_settings_switch, timer_engine
 from .const import (
     ALARM_AUTO_STOP_SECONDS,
@@ -127,7 +128,7 @@ async def _user_display_name(hass: HomeAssistant, user_id: Optional[str]) -> str
     if not user_id:
         return "Someone"
     try:
-        users = await hass.auth.async_get_users()
+        users = await people_mod.async_get_users(hass)
     except Exception:  # noqa: BLE001
         return user_id
     match = next((u for u in users if u.id == user_id), None)
@@ -1317,6 +1318,8 @@ async def ws_get_rewards_state(hass: HomeAssistant, connection: websocket_api.Ac
         # see const.py's REWARD_KEY_ALARM_AUDIENCE/
         # TIMER_ALARM_AUDIENCES.
         vol.Optional("alarm_audience"): str,
+        # 2026.11.2: only these people can get it (empty or left out = everyone)
+        vol.Optional("for_users"): [str],
         vol.Optional("elevation_token"): str,
     }
 )
@@ -1340,6 +1343,7 @@ async def ws_add_catalog_item(hass: HomeAssistant, connection: websocket_api.Act
             stack_unit_label=msg.get("stack_unit_label", ""),
             timer_minutes=msg.get("timer_minutes"),
             alarm_audience=msg.get("alarm_audience"),
+            for_users=msg.get("for_users"),
         )
     except reward_engine.RewardError as err:
         connection.send_error(msg["id"], err.code, str(err))
@@ -1363,6 +1367,7 @@ async def ws_add_catalog_item(hass: HomeAssistant, connection: websocket_api.Act
         vol.Optional("stack_unit_label"): str,
         vol.Optional("timer_minutes"): vol.Any(int, None),
         vol.Optional("alarm_audience"): str,
+        vol.Optional("for_users"): [str],
     }
 )
 @websocket_api.async_response
@@ -1407,6 +1412,8 @@ async def ws_delete_catalog_item(hass: HomeAssistant, connection: websocket_api.
         vol.Required("item_id"): str,
         vol.Optional("user_id"): str,
         vol.Optional("elevation_token"): str,
+        # 2026.11.2: keep it to use later (an everyday reward goes into their bank for it, one at a time)
+        vol.Optional("save"): bool,
     }
 )
 @websocket_api.async_response
@@ -1431,7 +1438,7 @@ async def ws_redeem_reward(hass: HomeAssistant, connection: websocket_api.Active
         connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted reward-override permission) can redeem on someone else's behalf.")
         return
     try:
-        redemption = reward_engine.redeem_item(entry_data["rewards"], target_user_id, msg["item_id"])
+        redemption = reward_engine.redeem_item(entry_data["rewards"], target_user_id, msg["item_id"], save=bool(msg.get("save")))
     except reward_engine.RewardError as err:
         connection.send_error(msg["id"], err.code, str(err))
         return
@@ -1578,7 +1585,7 @@ async def ws_mark_fulfilled(hass: HomeAssistant, connection: websocket_api.Activ
 
 
 @websocket_api.websocket_command(
-    {vol.Required("type"): "family_hub/rewards/use_bank", vol.Required("item_id"): str, vol.Required("amount"): vol.Any(int, float), vol.Optional("user_id"): str}
+    {vol.Required("type"): "family_hub/rewards/use_bank", vol.Required("item_id"): str, vol.Required("amount"): vol.Any(int, float), vol.Optional("user_id"): str, vol.Optional("elevation_token"): str}
 )
 @websocket_api.async_response
 async def ws_use_bank(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
@@ -1590,12 +1597,13 @@ async def ws_use_bank(hass: HomeAssistant, connection: websocket_api.ActiveConne
     entry_data = _entry_data_or_error(hass, connection, msg["id"])
     if entry_data is None:
         return
-    actor_id = _actor_id(connection)
+    # whoever is signed in, or a child signed in with their PIN on a kiosk (their own saved rewards need no permission)
+    actor_id, is_admin = await _effective_actor(hass, connection, entry_data, msg)
     target_user_id = msg.get("user_id") or actor_id
     if not target_user_id:
         connection.send_error(msg["id"], "no_user", "Not logged in.")
         return
-    if target_user_id != actor_id and not _has_permission(entry_data, connection, PERMISSION_REWARD_OVERRIDE):
+    if target_user_id != actor_id and not _has_permission_ctx(entry_data, actor_id, is_admin, PERMISSION_REWARD_OVERRIDE):
         connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted reward-override permission) can use a bank on someone else's behalf.")
         return
     try:
@@ -1695,6 +1703,10 @@ async def ws_gift_stars(hass: HomeAssistant, connection: websocket_api.ActiveCon
         vol.Required("title"): str,
         vol.Optional("icon"): str,
         vol.Optional("color"): str,
+        # 2026.11.2: a child asking from their Companion screen (signed in as them, with their kiosk PIN, or on a
+        # screen signed in as a grown-up who could act for them)
+        vol.Optional("user_id"): str,
+        vol.Optional("elevation_token"): str,
     }
 )
 @websocket_api.async_response
@@ -1703,12 +1715,18 @@ async def ws_add_suggestion(hass: HomeAssistant, connection: websocket_api.Activ
     entry_data = _entry_data_or_error(hass, connection, msg["id"])
     if entry_data is None:
         return
-    actor_id = _actor_id(connection)
+    actor_id, is_admin = await _effective_actor(hass, connection, entry_data, msg)
     if not actor_id:
         connection.send_error(msg["id"], "no_user", "Not logged in.")
         return
+    # suggested in someone else's name (a child's Companion on a screen signed in as a grown-up): only by someone who
+    # could act for them anyway
+    by = msg.get("user_id") or actor_id
+    if by != actor_id and not _has_permission_ctx(entry_data, actor_id, is_admin, PERMISSION_REWARD_OVERRIDE):
+        connection.send_error(msg["id"], "forbidden", "Only an admin (or someone granted reward-override permission) can suggest a reward for someone else.")
+        return
     try:
-        suggestion = reward_engine.add_suggestion(entry_data["rewards"], actor_id, msg["title"], msg.get("icon", ""), msg.get("color", ""))
+        suggestion = reward_engine.add_suggestion(entry_data["rewards"], by, msg["title"], msg.get("icon", ""), msg.get("color", ""))
     except reward_engine.RewardError as err:
         connection.send_error(msg["id"], err.code, str(err))
         return
@@ -1866,7 +1884,7 @@ async def ws_kiosk_list_login_users(hass: HomeAssistant, connection: websocket_a
     enabled_ids = settings.get("kioskLoginEnabledUserIds") or []
     profiles = settings.get("userProfiles") or {}
     try:
-        ha_users = await hass.auth.async_get_users()
+        ha_users = await people_mod.async_get_users(hass)
     except Exception:  # noqa: BLE001
         ha_users = []
     names = {u.id: (u.name or u.id) for u in ha_users}
@@ -2494,6 +2512,8 @@ async def _notify_goal_approved(hass: HomeAssistant, entry_data: dict[str, Any],
     {
         vol.Required("type"): "family_hub/goals/archive",
         vol.Required("goal_id"): str,
+        # the Chores and Rewards cards send it when someone's logged in with their PIN on a shared screen
+        vol.Optional("elevation_token"): str,
     }
 )
 @websocket_api.async_response
@@ -2510,9 +2530,9 @@ async def ws_archive_goal(hass: HomeAssistant, connection: websocket_api.ActiveC
     if entry_data is None:
         return
     goal = entry_data["goals"].get(msg["goal_id"])
-    user_id = _actor_id(connection)
+    user_id, is_admin = await _effective_actor(hass, connection, entry_data, msg)
     is_assignee = goal is not None and goal.get("assigned_to") == user_id
-    can_manage = _has_permission(entry_data, connection, PERMISSION_ASSIGN) or _is_admin(connection)
+    can_manage = _has_permission_ctx(entry_data, user_id, is_admin, PERMISSION_ASSIGN)
     if not is_assignee and not can_manage:
         connection.send_error(msg["id"], "forbidden", "Only the person this goal belongs to (or an admin/goal-manager) can archive it.")
         return
@@ -3341,8 +3361,16 @@ async def _fire_reward_timer(hass: HomeAssistant, entry_data: dict[str, Any], ti
 
 
 async def _fire_standalone_timer(hass: HomeAssistant, entry_data: dict[str, Any], timer: dict[str, Any]) -> None:
-    """A standalone (general-purpose) timer running out just says so."""
+    """A standalone (general-purpose) timer running out just says so. A Companion timer a grown-up gave stars to pays
+    them now, when it ran all the way out (a cancelled timer never gets here)."""
     label = timer.get("title") or "Timer"
+    stars = int(timer.get("companion_stars") or 0)
+    if stars > 0 and timer.get("user_id"):
+        reward_engine.add_stars(entry_data["rewards"], timer["user_id"], stars, reason=f"Timer: {label}", source=reward_engine.LEDGER_SOURCE_TIMER_FINISHED)
+        await _save_rewards(hass, entry_data)
+        await _log_timer_update(entry_data, timer.get("uid"), {"result": f"+{stars} stars"})
+        await _dispatch_timer_alarm(hass, entry_data, timer, "Family Hub timer", f"Time's up - {label}. +{stars} stars!")
+        return
     await _dispatch_timer_alarm(hass, entry_data, timer, "Family Hub timer", f"Time's up - {label}.")
 
 
@@ -3890,7 +3918,7 @@ async def ws_privacy_mode_list_eligible_users(hass: HomeAssistant, connection: w
         return
     pins = await async_load_pins(hass, entry_data)
     try:
-        ha_users = await hass.auth.async_get_users()
+        ha_users = await people_mod.async_get_users(hass)
     except Exception:  # noqa: BLE001
         ha_users = []
     users = []

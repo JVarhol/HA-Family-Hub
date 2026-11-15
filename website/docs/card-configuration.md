@@ -11,7 +11,7 @@ Family Hub ships **13 dashboard cards**. Add any of them from **Edit dashboard �
 | [Family Hub Week Calendar](/docs/cards/family-week-calendar) | `custom:family-week-calendar-card` | The main card: Week/Month/Planner/Agenda calendar, meals, reminders, and **⚙️ Settings for all of Family Hub** |
 | [Family Hub Today](/docs/cards/family-today) | `custom:family-today-card` | Today's events, meals and reminders, for a phone or a corner of any dashboard |
 | [Right Now](/docs/cards/right-now) | `custom:family-right-now-card` | Who's home, what everyone is doing now, and what's next |
-| [Companion](/docs/cards/companion) | `custom:family-hub-companion-card` | A child's own bedside screen: wake-up, routines step by step, timers, stars, messages |
+| [Companion](/docs/cards/companion) | `custom:family-hub-companion-card` | A child's own screen by their bed or on their phone: an ok-to-wake clock, routines step by step, their day, jobs, rewards, wish list, timers, room buttons and readings, messages |
 | [Chores](/docs/cards/chores) | `custom:family-hub-chores-card` | The chore board, the Chore Bin, routines and star requests |
 | [Rewards](/docs/cards/rewards) | `custom:family-hub-rewards-card` | Star balances, the reward catalog, suggestions and history |
 | [Goals](/docs/cards/goals) | `custom:family-hub-goals-card` | One-off goals with progress and a reward |
