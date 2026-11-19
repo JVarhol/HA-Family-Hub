@@ -6,8 +6,9 @@
 *{box-sizing:border-box}body{margin:0}main{max-width:1500px;margin:auto;padding:20px}
 header{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
 small,.muted{color:#627083}.notice{padding:10px 14px;background:#e6f3ff;border-radius:9px;margin:14px 0}
-.layout{display:grid;grid-template-columns:minmax(0,1fr) 245px;gap:14px;margin-top:16px}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) var(--panel-width,245px);gap:14px;margin-top:16px}
 .layout.calendar-only{grid-template-columns:minmax(0,1fr)}
+.layout.widgets-left:not(.calendar-only):not(.month-view){grid-template-columns:var(--panel-width,245px) minmax(0,1fr)}
 .layout.widgets-left .calendar{order:2}.layout.widgets-left .side{order:1}
 .toolbar-top{display:flex;align-items:center;justify-content:flex-end;margin:14px 0 8px}
 .settings-button,.action-button{border:1px solid #cbd5e1;border-radius:9px;background:white;padding:10px 14px;min-height:44px}
@@ -24,11 +25,43 @@ small,.muted{color:#627083}.notice{padding:10px 14px;background:#e6f3ff;border-r
 .calendar,.side{background:white;border-radius:12px;padding:16px;box-shadow:0 1px 4px #0001}
 .days{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:7px}
 .day{border:1px solid #dce2e9;border-radius:9px;min-height:180px;padding:8px;overflow-wrap:anywhere}
-.day strong{display:block;margin-bottom:12px}.event{background:#dceafb;border-radius:6px;padding:7px;margin:6px 0;font-size:.85rem}
+.day-heading{text-align:center;display:block;margin-bottom:8px}
+.day-body{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px;align-items:start}
+.events{text-align:right}.day-body.events-only{grid-template-columns:minmax(0,1fr)}
+.weather{display:grid;justify-items:center;gap:3px;font-size:.75rem;font-variant-numeric:tabular-nums}
+.weather-button{border:0;background:transparent;padding:0;width:44px;height:44px;font-size:1.25rem}
+.range{position:relative;width:5px;height:42px;border-radius:4px;background:linear-gradient(#fb9958,#79b7ee)}
+.current{position:absolute;top:var(--position);left:50%;width:9px;height:9px;transform:translate(-50%,-50%);border:1px solid #304459;border-radius:50%;background:white}
+.calendar-header,.month-top,.detail-header{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.calendar-header h2,.month-top h3,.detail-header h3{margin:0}
+.calendar-header{margin-bottom:12px}
+.view-toggle [aria-pressed="true"],.month-day[aria-expanded="true"]{background:#dceafb}
+.layout.month-view{grid-template-columns:minmax(0,1fr);grid-template-areas:"calendar" "widgets"}
+.layout.month-view .calendar{grid-area:calendar;order:0}
+.layout.month-view .side{grid-area:widgets;order:0}
+.month-top{margin-bottom:10px}.month-navigation{display:flex;gap:6px}
+.month-content{display:grid;gap:12px}
+.month-content.has-details{grid-template-columns:minmax(0,1fr) minmax(155px,18%)}
+.month-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}
+.weekday{text-align:center;font-size:.75rem}
+.month-day{display:grid;align-content:start;gap:3px;min-width:0;min-height:66px;text-align:left;border:1px solid #dce2e9;border-radius:7px;background:white;padding:5px;color:inherit}
+.month-day .event{padding:3px;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.72rem}
+.month-day-top{display:flex;justify-content:space-between;gap:1px}
+.day-details{border:1px solid #dce2e9;border-radius:9px;padding:10px;align-self:start}
+.detail-header h3{font-size:1rem}
+dialog{width:min(380px,calc(100% - 32px));border:1px solid #cbd5e1;border-radius:12px;padding:22px;color:inherit}
+dialog::backdrop{background:#22304770}
+@media(max-width:700px){
+  .month-content.has-details{grid-template-columns:minmax(0,1fr)}
+  .month-day .event{font-size:0;min-height:4px;padding:0}
+}
+.event{display:block;background:#dceafb;border-radius:6px;padding:7px;margin:6px 0;font-size:.85rem}
 .event.alt{background:#e8f4dc}.event.third{background:#fae8dd}
 .side h3{margin-top:0}.device{padding:12px;border:1px solid #e2e6eb;border-radius:9px;margin:10px 0}
 button{font:inherit;cursor:pointer}.device button{border:0;border-radius:8px;background:#e4ebf6;padding:8px 12px}
-@media(max-width:850px){.layout{grid-template-columns:1fr}.days{grid-template-columns:repeat(2,minmax(0,1fr))}.day{min-height:120px}}
+@media(max-width:1100px){.days{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(max-width:850px){.layout,.layout.widgets-left:not(.calendar-only):not(.month-view){grid-template-columns:minmax(0,1fr)}.days{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:440px){main{padding:10px}.calendar{padding:10px}.days{grid-template-columns:minmax(0,1fr)}.day{min-height:120px}}
 </style></head><body><main>
 <header><div><h1>Family Hub</h1><small>Development preview — fictional household</small></div><small>Static demo · No Home Assistant connection</small></header>
 <p class="notice">This preview uses invented events and simulated controls. Nothing here connects to a real home.</p>
@@ -53,22 +86,48 @@ button{font:inherit;cursor:pointer}.device button{border:0;border-radius:8px;bac
 </section>
 <family-hub-ribbon></family-hub-ribbon>
 <div class="layout" id="layout">
-<section class="calendar"><h2>Family calendar · Demo week</h2><div class="days">
-<div class="day"><strong>Mon 16</strong><div class="event">School drop-off</div><div class="event alt">Soccer practice</div></div>
-<div class="day"><strong>Tue 17</strong><div class="event third">Library day</div><div class="event alt">Taco Tuesday</div></div>
-<div class="day"><strong>Wed 18</strong><div class="event">Dentist appointment</div></div>
-<div class="day"><strong>Thu 19</strong><div class="event alt">Team practice</div></div>
-<div class="day"><strong>Fri 20</strong><div class="event third">Movie night</div></div>
-<div class="day"><strong>Sat 21</strong><div class="event">Family outing</div></div>
-<div class="day"><strong>Sun 22</strong><div class="event alt">Meal planning</div></div>
-</div></section>
+<section class="calendar" aria-label="Family calendar">
+<div class="calendar-header">
+  <h2>Family calendar</h2>
+  <div class="view-toggle" role="group" aria-label="Calendar view">
+    <button class="action-button" id="week-view" type="button" aria-pressed="true">Week</button>
+    <button class="action-button" id="month-view" type="button" aria-pressed="false">Month</button>
+  </div>
+</div>
+<div id="week"><div class="days" id="week-days"></div></div>
+<div id="month" hidden>
+  <div class="month-top">
+    <h3 id="month-title"></h3>
+    <div class="month-navigation">
+      <button class="action-button" id="previous-month" type="button" aria-label="Previous month">‹</button>
+      <button class="action-button" id="next-month" type="button" aria-label="Next month">›</button>
+    </div>
+  </div>
+  <div class="month-content" id="month-content">
+    <div class="month-grid" id="month-grid" aria-labelledby="month-title"></div>
+    <aside class="day-details" id="day-details" aria-labelledby="day-title" hidden>
+      <div class="detail-header">
+        <h3 id="day-title"></h3>
+        <button class="action-button" type="button" id="close-day" aria-label="Close day details">×</button>
+      </div>
+      <div id="day-events"></div>
+    </aside>
+  </div>
+</div>
+</section>
 <aside class="side" id="widget-panel"><h3>Quick widgets</h3>
-<div class="device" data-widget="weather">☀️ Weather<br><strong>72°F · Sunny</strong></div>
 <div class="device" data-widget="lights">💡 Living room light<br><button id="light" type="button" aria-pressed="false">Off (simulated)</button></div>
 <div class="device" data-widget="climate">🌡️ Thermostat<br><strong>70°F (simulated)</strong></div>
 <div class="device" data-widget="garage">🚙 Garage<br><strong>Closed (simulated)</strong></div>
 </aside>
 </div><p class="muted" id="status" role="status">Ribbon preferences are stored only in this browser.</p>
+<dialog id="weather-details" aria-labelledby="weather-title">
+  <div class="detail-header">
+    <h2 id="weather-title"></h2>
+    <form method="dialog"><button class="action-button" aria-label="Close weather details">×</button></form>
+  </div>
+  <p id="weather-summary"></p>
+</dialog>
 </main><script type="module" src="./ribbon.js"></script>
 <script>
 const KEY='family-hub.demo.configuration.v1';
@@ -84,12 +143,12 @@ function refresh(){
   state.visible=state.visible.filter(id=>state.configured.includes(id));
   ribbon.widgets=all.filter(w=>state.configured.includes(w.id)).map(w=>({...w,visible:state.visible.includes(w.id)}));
   for(const el of document.querySelectorAll('[data-widget]'))el.hidden=!state.visible.includes(el.dataset.widget);
-  const none=state.visible.length===0;
+  const none=!state.visible.some(id=>id!=='weather');
   panel.hidden=none&&state.autoExpand;
   layout.classList.toggle('calendar-only',none&&state.autoExpand);
   layout.classList.toggle('widgets-left',state.side==='left');
-  layout.style.gridTemplateColumns=(none&&state.autoExpand)?'minmax(0,1fr)':(state.side==='left'?state.width+'px minmax(0,1fr)':'minmax(0,1fr) '+state.width+'px');
-  if(matchMedia('(max-width:850px)').matches)layout.style.gridTemplateColumns='1fr';
+  layout.style.setProperty('--panel-width', state.width+'px');
+  renderCalendar();
   for(const input of document.querySelectorAll('[data-config]'))input.checked=state.configured.includes(input.dataset.config);
   document.getElementById('widget-side').value=state.side;
   document.getElementById('panel-width').value=state.width;
@@ -116,5 +175,126 @@ open.addEventListener('click',()=>showSettings(settings.hidden));
 document.getElementById('settings-close').addEventListener('click',()=>showSettings(false));
 const light=document.getElementById('light');
 light.addEventListener('click',()=>{const on=light.getAttribute('aria-pressed')!=='true';light.setAttribute('aria-pressed',String(on));light.textContent=on?'On (simulated)':'Off (simulated)'});
+const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const demoDays = [
+  {icon:'☀️', condition:'Sunny', high:75, low:55, events:[['School drop-off'], ['Soccer practice','alt']]},
+  {icon:'🌤️', condition:'Mostly sunny', high:76, low:57, events:[['Library day','third'], ['Taco Tuesday','alt']]},
+  {icon:'☀️', condition:'Sunny', high:77, low:58, current:72, events:[['Dentist appointment']]},
+  {icon:'⛅', condition:'Partly cloudy', high:74, low:61, events:[['Team practice','alt']]},
+  {icon:'🌧️', condition:'Rain', high:68, low:57, events:[['Movie night','third']]},
+  {icon:'🌥️', condition:'Mostly cloudy', high:66, low:53, events:[['Family outing']]},
+  {icon:'☀️', condition:'Sunny', high:71, low:52, events:[['Meal planning','alt']]}
+];
+const weekDays = document.getElementById('week-days');
+const monthGrid = document.getElementById('month-grid');
+const dayDetails = document.getElementById('day-details');
+const weatherDetails = document.getElementById('weather-details');
+let monthView = false;
+let month = new Date(2026, 10, 1);
+let selectedDay = null;
+
+function eventCards(events, tag = 'div') {
+  return events.map(([title, color = '']) => `<${tag} class="event ${color}">${title}</${tag}>`).join('');
+}
+
+function weatherSummary(day, index) {
+  const marker = day.current === undefined ? '' :
+    `<span class="current" style="--position:${100*(day.high-day.current)/(day.high-day.low)}%"></span>`;
+  return `<div class="weather">
+    <button class="weather-button" type="button" data-forecast="${index}"
+      aria-label="Weather details for ${weekdays[index]} ${16+index}">${day.icon}</button>
+    <span aria-label="High ${day.high} degrees">${day.high}°</span>
+    <span class="range" role="img" aria-label="${day.current === undefined ? 'Forecast temperature range' : 'Current temperature '+day.current+' degrees'}">${marker}</span>
+    <span aria-label="Low ${day.low} degrees">${day.low}°</span>
+  </div>`;
+}
+
+function renderCalendar() {
+  const showWeather = state.visible.includes('weather');
+  document.getElementById('week').hidden = monthView;
+  document.getElementById('month').hidden = !monthView;
+  document.getElementById('week-view').setAttribute('aria-pressed', String(!monthView));
+  document.getElementById('month-view').setAttribute('aria-pressed', String(monthView));
+  layout.classList.toggle('month-view', monthView);
+  if (!monthView) {
+    weekDays.innerHTML = demoDays.map((day, index) => `<article class="day">
+      <strong class="day-heading">${weekdays[index]} ${16+index}</strong>
+      <div class="day-body ${showWeather ? '' : 'events-only'}">
+        ${showWeather ? weatherSummary(day, index) : ''}
+        <div class="events">${eventCards(day.events)}</div>
+      </div>
+    </article>`).join('');
+    return;
+  }
+
+  const year = month.getFullYear();
+  const monthNumber = month.getMonth();
+  const offset = (month.getDay()+6)%7;
+  const dayCount = new Date(year, monthNumber+1, 0).getDate();
+  const getDemoDay = day => year === 2026 && monthNumber === 10 ? demoDays[day-16] : undefined;
+  document.getElementById('month-title').textContent = month.toLocaleDateString('en-US', {month:'long', year:'numeric'});
+  monthGrid.innerHTML = weekdays.map(day => `<div class="weekday">${day}</div>`).join('') +
+    '<span aria-hidden="true"></span>'.repeat(offset) +
+    Array.from({length:dayCount}, (_, index) => {
+      const day = index+1;
+      const demo = getDemoDay(day);
+      return `<button type="button" class="month-day" data-day="${day}" aria-controls="day-details"
+        aria-expanded="${day === selectedDay}">
+        <span class="month-day-top">${day}${showWeather && demo ? `<span title="${demo.condition}">${demo.icon}</span>` : ''}</span>
+        ${eventCards(demo?.events ?? [], 'span')}
+      </button>`;
+    }).join('');
+  dayDetails.hidden = selectedDay === null;
+  document.getElementById('month-content').classList.toggle('has-details', selectedDay !== null);
+  if (selectedDay !== null) {
+    document.getElementById('day-title').textContent = new Date(year, monthNumber, selectedDay)
+      .toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'});
+    const demo = getDemoDay(selectedDay);
+    document.getElementById('day-events').innerHTML =
+      (showWeather && demo ? `<p>${demo.icon} ${demo.high}° / ${demo.low}°</p>` : '') +
+      (demo ? eventCards(demo.events) : '<p>No events</p>');
+  }
+}
+
+weekDays.addEventListener('click', event => {
+  const button = event.target.closest('[data-forecast]');
+  if (!button) return;
+  const index = Number(button.dataset.forecast);
+  const day = demoDays[index];
+  document.getElementById('weather-title').textContent = `Weather for ${weekdays[index]} ${16+index}`;
+  document.getElementById('weather-summary').textContent =
+    `${day.condition}. High ${day.high}°F, low ${day.low}°F.` +
+    (day.current === undefined ? '' : ` Current temperature ${day.current}°F.`);
+  weatherDetails.showModal();
+});
+document.getElementById('week-view').addEventListener('click', () => {
+  monthView = false;
+  renderCalendar();
+});
+document.getElementById('month-view').addEventListener('click', () => {
+  monthView = true;
+  renderCalendar();
+});
+monthGrid.addEventListener('click', event => {
+  const button = event.target.closest('[data-day]');
+  if (!button) return;
+  const day = Number(button.dataset.day);
+  selectedDay = selectedDay === day ? null : day;
+  renderCalendar();
+  monthGrid.querySelector(`[data-day="${day}"]`).focus();
+});
+document.getElementById('close-day').addEventListener('click', () => {
+  const day = selectedDay;
+  selectedDay = null;
+  renderCalendar();
+  monthGrid.querySelector(`[data-day="${day}"]`).focus();
+});
+for (const [id, direction] of [['previous-month', -1], ['next-month', 1]]) {
+  document.getElementById(id).addEventListener('click', () => {
+    month = new Date(month.getFullYear(), month.getMonth()+direction, 1);
+    selectedDay = null;
+    renderCalendar();
+  });
+}
 refresh();
 </script></body></html>
