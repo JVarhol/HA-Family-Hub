@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Family Hub — Demo Preview</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#223047;background:#f1f4f8}
+*{box-sizing:border-box}body{margin:0}main{max-width:1500px;margin:auto;padding:20px}
+header{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
+small,.muted{color:#627083}.notice{padding:10px 14px;background:#e6f3ff;border-radius:9px;margin:14px 0}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 245px;gap:14px;margin-top:16px}
+.calendar,.side{background:white;border-radius:12px;padding:16px;box-shadow:0 1px 4px #0001}
+.days{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:7px}
+.day{border:1px solid #dce2e9;border-radius:9px;min-height:180px;padding:8px;overflow-wrap:anywhere}
+.day strong{display:block;margin-bottom:12px}.event{background:#dceafb;border-radius:6px;padding:7px;margin:6px 0;font-size:.85rem}
+.event.alt{background:#e8f4dc}.event.third{background:#fae8dd}
+.side h3{margin-top:0}.device{padding:12px;border:1px solid #e2e6eb;border-radius:9px;margin:10px 0}
+button{font:inherit;cursor:pointer}.device button{border:0;border-radius:8px;background:#e4ebf6;padding:8px 12px}
+@media(max-width:850px){.layout{grid-template-columns:1fr}.days{grid-template-columns:repeat(2,minmax(0,1fr))}.day{min-height:120px}}
+</style></head><body><main>
+<header><div><h1>Family Hub</h1><small>Development preview — fictional household</small></div><small>Static demo · No Home Assistant connection</small></header>
+<p class="notice">This preview uses invented events and simulated controls. Nothing here connects to a real home.</p>
+<family-hub-ribbon></family-hub-ribbon>
+<div class="layout" id="layout">
+<section class="calendar"><h2>Family calendar · Demo week</h2><div class="days">
+<div class="day"><strong>Mon 16</strong><div class="event">School drop-off</div><div class="event alt">Soccer practice</div></div>
+<div class="day"><strong>Tue 17</strong><div class="event third">Library day</div><div class="event alt">Taco Tuesday</div></div>
+<div class="day"><strong>Wed 18</strong><div class="event">Dentist appointment</div></div>
+<div class="day"><strong>Thu 19</strong><div class="event alt">Team practice</div></div>
+<div class="day"><strong>Fri 20</strong><div class="event third">Movie night</div></div>
+<div class="day"><strong>Sat 21</strong><div class="event">Family outing</div></div>
+<div class="day"><strong>Sun 22</strong><div class="event alt">Meal planning</div></div>
+</div></section>
+<aside class="side"><h3>Demo widgets</h3><div class="device">☀️ Weather<br><strong>72°F · Sunny</strong></div><div class="device">💡 Living room light<br><button id="light" type="button" aria-pressed="false">Off (simulated)</button></div><div class="device">🌡️ Thermostat<br><strong>70°F (simulated)</strong></div></aside>
+</div><p class="muted" id="status" role="status">Ribbon preferences are stored only in this browser.</p>
+</main><script type="module" src="./ribbon.js"></script>
+<script>
+const light=document.getElementById('light');light.addEventListener('click',()=>{const on=light.getAttribute('aria-pressed')!=='true';light.setAttribute('aria-pressed',String(on));light.textContent=on?'On (simulated)':'Off (simulated)'});
+document.addEventListener('family-hub-ribbon-change',e=>{document.getElementById('status').textContent='Ribbon: '+(e.detail.expanded?'expanded':'collapsed')+', '+(e.detail.pinned?'pinned':'unpinned')+'. Preferences are local to this browser.'});
+</script></body></html>
