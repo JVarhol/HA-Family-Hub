@@ -27,7 +27,9 @@ small,.muted{color:#627083}.notice{padding:10px 14px;background:#e6f3ff;border-r
 .day{border:1px solid #dce2e9;border-radius:9px;min-height:180px;padding:8px;overflow-wrap:anywhere}
 .day-heading{text-align:center;display:block;margin-bottom:8px}
 .day-body{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px;align-items:start}
-.events{text-align:right}.day-body.events-only{grid-template-columns:minmax(0,1fr)}
+.events{text-align:left}
+.events .event{padding-inline:4px}
+.day-body.events-only{grid-template-columns:minmax(0,1fr)}
 .weather{display:grid;justify-items:center;gap:3px;font-size:.75rem;font-variant-numeric:tabular-nums}
 .weather-button{border:0;background:transparent;padding:0;width:44px;height:44px;font-size:1.25rem}
 .range{position:relative;width:5px;height:42px;border-radius:4px;background:linear-gradient(#fb9958,#79b7ee)}
