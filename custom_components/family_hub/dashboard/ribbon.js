@@ -75,7 +75,10 @@ export class FamilyHubRibbon extends HTMLElement {
           border:0; border-radius:8px; padding:8px 12px;
           background:transparent; color:inherit; }
         button:hover, button:focus-visible { background:var(--secondary-background-color, #eee); }
-        button[aria-selected="true"] { background:var(--secondary-background-color, #eee); font-weight:650; }
+        button[aria-pressed="true"] { background:var(--secondary-background-color, #eee); font-weight:650; }
+        .icon-button { display:inline-flex; align-items:center; justify-content:center; padding:8px; }
+        .icon-button svg { width:19px; height:19px; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; pointer-events:none; }
+        .icon-button[aria-pressed="true"] { background:var(--secondary-background-color, #eee); }
         .panel { padding:12px 16px; border-top:1px solid var(--divider-color, #ddd); }
         .hint { opacity:.7; font-size:.9em; }
       </style>
@@ -84,8 +87,8 @@ export class FamilyHubRibbon extends HTMLElement {
           <span class="title">Family Hub</span>
           <button data-action="tab" data-tab="widgets" aria-pressed="${tab === "widgets"}">Widgets</button>
           <button data-action="tab" data-tab="layout" aria-pressed="${tab === "layout"}">Layout</button>
-          <button data-action="pin" aria-pressed="${pinned}" title="${pinned ? "Unpin ribbon" : "Pin ribbon"}">${pinned ? "Unpin" : "Pin"}</button>
-          <button data-action="toggle" aria-expanded="${expanded}">${expanded ? "Collapse" : "Expand"}</button>
+          <button class="icon-button" data-action="pin" aria-pressed="${pinned}" aria-label="${pinned ? "Unpin ribbon" : "Pin ribbon"}" title="${pinned ? "Unpin ribbon" : "Pin ribbon"}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3H8l1.5 5L6 11v2h5v8l2-8h5v-2l-3.5-3L16 3Z" fill="${pinned ? "currentColor" : "none"}"/></svg></button>
+          <button class="icon-button" data-action="toggle" aria-expanded="${expanded}" aria-label="${expanded ? "Collapse ribbon" : "Expand ribbon"}" title="${expanded ? "Collapse ribbon" : "Expand ribbon"}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${expanded ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"}"/></svg></button>
         </div>
         ${expanded ? `<div class="panel" role="region" aria-label="${tab} settings">
           <span class="hint">${tab === "widgets"
