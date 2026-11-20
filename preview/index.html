@@ -52,6 +52,19 @@ small,.muted{color:#627083}.notice{padding:10px 14px;background:#e6f3ff;border-r
 .month-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}
 .weekday{text-align:center;font-size:.75rem}
 .month-day{display:grid;align-content:start;gap:3px;min-width:0;min-height:66px;text-align:left;border:1px solid #dce2e9;border-radius:7px;background:white;padding:5px;color:inherit}
+.month-content:not(.has-details) .month-day{min-height:clamp(86px,11vh,125px)}
+.day-details{display:flex;flex-direction:column;min-height:0;contain:size}
+.day-details[hidden]{display:none}
+#day-events{overflow-y:auto;overscroll-behavior:contain}
+.day-event{margin:6px 0;padding:10px}
+.day-event p{margin:4px 0;overflow-wrap:anywhere}
+.day-event summary{cursor:pointer;min-height:32px}
+.description-preview{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+.day-event details[open] .description-preview{display:none}
+#quick-pin{min-width:88px;border:1px solid #cbd5e1;border-radius:8px;min-height:38px}
+.settings-list{list-style:none;padding:0}
+.settings-list li{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
+.widget-grid.wide{grid-template-columns:minmax(0,1fr)}
 .month-day .event{padding:3px;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.72rem}
 .month-day-top{display:flex;justify-content:space-between;gap:1px}
 .day-details{border:1px solid #dce2e9;border-radius:9px;padding:10px;align-self:stretch}
@@ -60,6 +73,8 @@ dialog{width:min(380px,calc(100% - 32px));border:1px solid #cbd5e1;border-radius
 dialog::backdrop{background:#22304770}
 @media(max-width:800px){
   .month-content.has-details{grid-template-columns:minmax(0,1fr)}
+  .day-details{contain:none;max-height:360px}
+  .month-content:not(.has-details) .month-day{min-height:76px}
   .month-day .event{font-size:0;min-height:4px;padding:0}
 }
 .event{display:block;background:#dceafb;border-radius:6px;padding:7px;margin:6px 0;font-size:.85rem}
@@ -78,17 +93,21 @@ button{font:inherit;cursor:pointer}.device button{border:0;border-radius:8px;bac
 <p class="helper">Choose the controls and information cards to show on this dashboard.</p>
 <div class="settings-grid">
 <fieldset><legend><strong>Quick Actions</strong></legend>
-<label><input type="checkbox" data-config="lights"> Living room light</label>
-<label><input type="checkbox" data-config="garage"> Open garage</label>
-<label><input type="checkbox" data-config="script"> Run evening routine</label>
+<ul class="settings-list" id="action-settings"></ul>
+<label>Action <select id="add-action"></select></label>
+<button class="action-button" type="button" id="append-action">+ Add action</button>
+<p class="helper">Up to 4 actions.</p>
 </fieldset>
 <fieldset><legend><strong>Quick Widgets</strong></legend>
-<label><input type="checkbox" data-config="forecast"> Weather forecast</label>
-<label><input type="checkbox" data-config="pollen"> Pollen</label>
-<label><input type="checkbox" data-config="climate"> Thermostat status</label>
+<ul class="settings-list" id="widget-settings"></ul>
+<label>Widget <select id="add-widget"></select></label>
+<button class="action-button" type="button" id="append-widget">+ Add widget</button>
+<p class="helper">Up to 4 widgets.</p>
+<label>Widget layout <select id="widget-layout"><option value="grid">Side by side</option><option value="wide">Full width, stacked</option></select></label>
 </fieldset>
 <fieldset><legend><strong>Calendar</strong></legend>
 <label><input type="checkbox" data-config="weather"> Show weather on the calendar</label>
+<label>Default view <select id="default-view"><option value="week">Week</option><option value="month">Month</option></select></label>
 </fieldset>
 </div>
 <p class="helper">Demo-only settings persist in this browser. Entity selection will be added when connected to Home Assistant.</p>
@@ -96,7 +115,7 @@ button{font:inherit;cursor:pointer}.device button{border:0;border-radius:8px;bac
 <section class="quick-actions" aria-label="Quick Actions" id="quick-actions">
   <div class="quick-header">
     <button type="button" id="quick-toggle" aria-controls="quick-controls" aria-expanded="true">Quick Actions</button>
-    <button type="button" id="quick-pin" aria-label="Pin Quick Actions" aria-pressed="false">📌</button>
+    <button type="button" id="quick-pin" aria-label="Pin Quick Actions" aria-pressed="false">Pin</button>
   </div>
   <div class="action-grid" id="quick-controls">
     <button class="quick-control" id="light" type="button" data-action="lights" aria-pressed="false"><span aria-hidden="true">💡</span><span>Living room light<small id="light-state">Off</small></span></button>
@@ -130,7 +149,7 @@ button{font:inherit;cursor:pointer}.device button{border:0;border-radius:8px;bac
         <h3 id="day-title"></h3>
         <button class="action-button" type="button" id="close-day" aria-label="Close day details">×</button>
       </div>
-      <div id="day-events"></div>
+      <div id="day-events" tabindex="0" role="region" aria-label="Events for selected day"></div>
     </aside>
   </div>
 </div>
@@ -164,7 +183,9 @@ const KEY='family-hub.demo.configuration.v1';
 const defaults = {
   configured: ['weather', 'lights', 'climate', 'garage', 'script', 'forecast', 'pollen'],
   expanded: true,
-  pinned: false
+  pinned: false,
+  defaultView: 'week',
+  widgetLayout: 'grid'
 };
 let stored;
 try { stored = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (_) {}
@@ -188,6 +209,8 @@ function updateQuickActions() {
   quickToggle.textContent = state.expanded ? '▾ Quick Actions' : '▸ Quick Actions';
   quick.classList.toggle('pinned', state.pinned);
   quickPin.setAttribute('aria-pressed', String(state.pinned));
+  quickPin.textContent = state.pinned ? '✓ Pinned' : 'Pin';
+  quickPin.setAttribute('aria-label', state.pinned ? 'Unpin Quick Actions' : 'Pin Quick Actions');
   try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (_) {}
 }
 
@@ -197,6 +220,8 @@ function refresh() {
   document.getElementById('no-actions').hidden = actionButtons.some(button => !button.hidden);
   panel.hidden = widgetCards.every(card => card.hidden);
   for (const input of configInputs) input.checked = state.configured.includes(input.dataset.config);
+  for (const group of settingsGroups) renderSettingsGroup(group);
+  panel.querySelector('.widget-grid').classList.toggle('wide', state.widgetLayout === 'wide');
   updateQuickActions();
   renderCalendar();
 }
@@ -215,6 +240,50 @@ for (const input of configInputs) {
   input.addEventListener('change', () => {
     const id = input.dataset.config;
     state.configured = input.checked ? [...state.configured, id] : state.configured.filter(item => item !== id);
+    refresh();
+  });
+}
+const settingsGroups = [
+  {type:'action', options:{lights:'Living room light', garage:'Open garage', script:'Evening routine'}},
+  {type:'widget', options:{forecast:'Weather forecast', pollen:'Pollen', climate:'Thermostat status'}}
+];
+function renderSettingsGroup({type, options}) {
+  const active = Object.keys(options).filter(id => state.configured.includes(id));
+  const available = Object.keys(options).filter(id => !state.configured.includes(id));
+  const list = document.getElementById(type+'-settings');
+  const select = document.getElementById('add-'+type);
+  const full = active.length >= 4;
+  list.innerHTML = active.map(id => `<li>${options[id]} <button type="button" class="action-button" data-remove="${id}" aria-label="Remove ${options[id]}">Remove</button></li>`).join('');
+  select.innerHTML = available.length
+    ? available.map(id => `<option value="${id}">${options[id]}</option>`).join('')
+    : '<option value="">All examples added</option>';
+  select.disabled = full || !available.length;
+  document.getElementById('append-'+type).disabled = select.disabled;
+}
+for (const {type, options} of settingsGroups) {
+  document.getElementById(type+'-settings').addEventListener('click', event => {
+    const button = event.target.closest('[data-remove]');
+    if (!button) return;
+    state.configured = state.configured.filter(id => id !== button.dataset.remove);
+    refresh();
+    document.getElementById('add-'+type).focus();
+  });
+  document.getElementById('append-'+type).addEventListener('click', () => {
+    const id = document.getElementById('add-'+type).value;
+    if (Object.hasOwn(options, id) && !state.configured.includes(id) &&
+        Object.keys(options).filter(item => state.configured.includes(item)).length < 4) {
+      state.configured.push(id);
+      refresh();
+      document.querySelector(`[data-remove="${id}"]`).focus();
+    }
+  });
+}
+for (const [id, key] of [['default-view','defaultView'], ['widget-layout','widgetLayout']]) {
+  const select = document.getElementById(id);
+  select.value = state[key];
+  select.addEventListener('change', () => {
+    state[key] = select.value;
+    if (key === 'defaultView') monthView = select.value === 'month';
     refresh();
   });
 }
@@ -246,24 +315,34 @@ document.getElementById('routine').addEventListener('click', () => {
 });
 const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const demoDays = [
-  {icon:'☀️', condition:'Sunny', high:75, low:55, events:[['School drop-off'], ['Soccer practice','alt']]},
-  {icon:'🌤️', condition:'Mostly sunny', high:76, low:57, events:[['Library day','third'], ['Taco Tuesday','alt']]},
-  {icon:'☀️', condition:'Sunny', high:77, low:58, current:72, events:[['Dentist appointment']]},
-  {icon:'⛅', condition:'Partly cloudy', high:74, low:61, events:[['Team practice','alt']]},
-  {icon:'🌧️', condition:'Rain', high:68, low:57, events:[['Movie night','third']]},
-  {icon:'🌥️', condition:'Mostly cloudy', high:66, low:53, events:[['Family outing']]},
-  {icon:'☀️', condition:'Sunny', high:71, low:52, events:[['Meal planning','alt']]}
+  {icon:'☀️', condition:'Sunny', high:75, low:55, events:[['School drop-off','',{time:'7:30–8:00 AM'}], ['Soccer practice','alt',{time:'5:00–6:00 PM',location:'Field 2'}]]},
+  {icon:'🌤️', condition:'Mostly sunny', high:76, low:57, events:[['Library day','third',{time:'All day'}], ['Taco Tuesday','alt',{time:'6:00–7:00 PM'}]]},
+  {icon:'☀️', condition:'Sunny', high:77, low:58, current:72, events:[['Dentist appointment', '', {time:'9:00–9:45 AM', location:'Oak Dental · 123 Example Lane', description:'Bring the updated insurance card and arrive 10 minutes early to check in. Ask about scheduling the next cleaning before leaving.'}]]},
+  {icon:'⛅', condition:'Partly cloudy', high:74, low:61, events:[['Team practice','alt',{time:'4:30–5:30 PM'}]]},
+  {icon:'🌧️', condition:'Rain', high:68, low:57, events:[['Movie night','third',{time:'7:00–9:00 PM'}]]},
+  {icon:'🌥️', condition:'Mostly cloudy', high:66, low:53, events:[['Family outing','',{time:'All day'}]]},
+  {icon:'☀️', condition:'Sunny', high:71, low:52, events:[['Meal planning','alt',{time:'4:00–4:30 PM'}]]}
 ];
 const weekDays = document.getElementById('week-days');
 const monthGrid = document.getElementById('month-grid');
 const dayDetails = document.getElementById('day-details');
 const weatherDetails = document.getElementById('weather-details');
-let monthView = false;
+let monthView = state.defaultView === 'month';
 let month = new Date(2026, 10, 1);
 let selectedDay = null;
 
 function eventCards(events, tag = 'div') {
   return events.map(([title, color = '']) => `<${tag} class="event ${color}">${title}</${tag}>`).join('');
+}
+
+function dayEventCards(events) {
+  return events.map(([title, color = '', details = {}]) => `<article class="event day-event ${color}">
+    <strong>${title}</strong>
+    ${details.time ? `<p>${details.time}</p>` : ''}
+    ${details.location ? `<p>${details.location}</p>` : ''}
+    ${details.description ? `<details><summary>Event notes</summary>
+      <p>${details.description}</p></details><p class="description-preview">${details.description}</p>` : ''}
+  </article>`).join('');
 }
 
 function weatherSummary(day, index) {
@@ -318,9 +397,11 @@ function renderCalendar() {
     document.getElementById('day-title').textContent = new Date(year, monthNumber, selectedDay)
       .toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'});
     const demo = getDemoDay(selectedDay);
-    document.getElementById('day-events').innerHTML =
+    const eventList = document.getElementById('day-events');
+    eventList.scrollTop = 0;
+    eventList.innerHTML =
       (showWeather && demo ? `<p>${demo.icon} ${demo.high}° / ${demo.low}°</p>` : '') +
-      (demo ? eventCards(demo.events) : '<p>No events</p>');
+      (demo ? dayEventCards(demo.events) : '<p>No events</p>');
   }
 }
 
