@@ -34,7 +34,9 @@ small,.muted{color:#627083}.notice{padding:10px 14px;background:#e6f3ff;border-r
 .days{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:7px}
 .day{border:1px solid #dce2e9;border-radius:9px;min-height:180px;padding:8px;overflow-wrap:anywhere}
 .day,.month-day{box-shadow:0 2px 4px #22304714,0 1px 1px #2230470a}
-.day-heading{text-align:center;display:block;margin-bottom:8px}
+.day-heading{display:block;width:100%;min-height:44px;margin-bottom:4px;border:0;border-radius:6px;background:transparent;color:inherit;font-weight:700;text-align:center}
+.day-heading:hover,.day-heading:focus-visible{background:#eaf1fa}
+#week-day-details{width:min(540px,calc(100% - 32px));max-height:calc(100dvh - 32px);overflow-y:auto;overscroll-behavior:contain}
 .day-body{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px;align-items:start}
 .events{text-align:left}
 .events .event{padding-inline:4px}
@@ -169,6 +171,13 @@ button{font:inherit;cursor:pointer}.device button{border:0;border-radius:8px;bac
 </div>
 </section>
 </div><p class="muted" id="status" role="status"></p>
+<dialog id="week-day-details" aria-labelledby="week-day-title">
+  <div class="detail-header">
+    <h2 id="week-day-title"></h2>
+    <form method="dialog"><button class="action-button" aria-label="Close day details">×</button></form>
+  </div>
+  <div id="week-day-events"></div>
+</dialog>
 <dialog id="weather-details" aria-labelledby="weather-title">
   <div class="detail-header">
     <h2 id="weather-title"></h2>
@@ -375,7 +384,7 @@ function renderCalendar() {
   document.getElementById('month-view').setAttribute('aria-pressed', String(monthView));
   if (!monthView) {
     weekDays.innerHTML = demoDays.map((day, index) => `<article class="day">
-      <strong class="day-heading">${weekdays[index]} ${16+index}</strong>
+      <button type="button" class="day-heading" data-week-day="${index}" aria-haspopup="dialog" aria-label="View events for ${weekdays[index]} ${16+index}">${weekdays[index]} ${16+index}</button>
       <div class="day-body ${showWeather ? '' : 'events-only'}">
         ${showWeather ? weatherSummary(day, index) : ''}
         <div class="events">${eventCards(day.events)}</div>
@@ -416,6 +425,17 @@ function renderCalendar() {
 }
 
 weekDays.addEventListener('click', event => {
+  const dayButton = event.target.closest('[data-week-day]');
+  if (dayButton) {
+    const index = Number(dayButton.dataset.weekDay);
+    const dialog = document.getElementById('week-day-details');
+    document.getElementById('week-day-title').textContent = new Date(2026, 10, 16+index)
+      .toLocaleDateString('en-US', {weekday:'long', month:'short', day:'numeric'});
+    document.getElementById('week-day-events').innerHTML = dayEventCards(demoDays[index].events) || '<p>No events</p>';
+    dialog.showModal();
+    dialog.scrollTop = 0;
+    return;
+  }
   const button = event.target.closest('[data-forecast]');
   if (!button) return;
   const index = Number(button.dataset.forecast);
