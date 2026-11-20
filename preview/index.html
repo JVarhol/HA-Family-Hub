@@ -6,15 +6,23 @@
 *{box-sizing:border-box}body{margin:0}main{max-width:1500px;margin:auto;padding:20px}
 header{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
 small,.muted{color:#627083}.notice{padding:10px 14px;background:#e6f3ff;border-radius:9px;margin:14px 0}
-.layout{display:grid;grid-template-columns:minmax(0,1fr) var(--panel-width,245px);gap:14px;margin-top:16px}
-.layout.calendar-only{grid-template-columns:minmax(0,1fr)}
-.layout.widgets-left:not(.calendar-only):not(.month-view){grid-template-columns:var(--panel-width,245px) minmax(0,1fr)}
-.layout.widgets-left .calendar{order:2}.layout.widgets-left .side{order:1}
+.layout{display:grid;gap:14px;margin-top:16px}
+.quick-actions{background:white;border:1px solid #dce2e9;border-radius:12px}
+.quick-actions.pinned{position:sticky;top:0;z-index:2}
+.quick-header{display:flex;align-items:center;gap:8px;padding:0 10px}
+.quick-header button{min-height:44px;border:0;background:transparent;color:inherit}
+#quick-toggle{flex:1;text-align:left;font-weight:600}
+#quick-pin[aria-pressed="true"]{background:#dceafb}
+.action-grid,.widget-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,175px),1fr));gap:12px}
+.action-grid{padding:12px;border-top:1px solid #dce2e9}
+.quick-control{display:flex;align-items:center;gap:10px;min-height:64px;padding:10px;border:1px solid #cbd5e1;border-radius:9px;background:#f4f7fb;text-align:left;color:inherit}
+.quick-control[aria-pressed="true"]{background:#fff1bf}
+.quick-control small,.device strong{display:block}
 .toolbar-top{display:flex;align-items:center;justify-content:flex-end;margin:14px 0 8px}
 .settings-button,.action-button{border:1px solid #cbd5e1;border-radius:9px;background:white;padding:10px 14px;min-height:44px}
 .settings-button{display:flex;align-items:center;gap:8px}
 .settings{background:white;border:1px solid #cbd5e1;border-radius:12px;padding:18px;margin:12px 0}
-.settings[hidden],.device[hidden],.side[hidden]{display:none!important}
+.settings[hidden],.device[hidden],.side[hidden],.action-grid[hidden],.quick-control[hidden]{display:none!important}
 .settings-head{display:flex;align-items:center;justify-content:space-between}
 .settings-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
 .settings fieldset{border:1px solid #dbe2ea;border-radius:9px;padding:14px}
@@ -38,12 +46,9 @@ small,.muted{color:#627083}.notice{padding:10px 14px;background:#e6f3ff;border-r
 .calendar-header h2,.month-top h3,.detail-header h3{margin:0}
 .calendar-header{margin-bottom:12px}
 .view-toggle [aria-pressed="true"],.month-day[aria-expanded="true"]{background:#dceafb}
-.layout.month-view{grid-template-columns:minmax(0,1fr);grid-template-areas:"calendar" "widgets"}
-.layout.month-view .calendar{grid-area:calendar;order:0}
-.layout.month-view .side{grid-area:widgets;order:0}
 .month-top{margin-bottom:10px}.month-navigation{display:flex;gap:6px}
 .month-content{display:grid;gap:12px}
-.month-content.has-details{grid-template-columns:minmax(0,1fr) minmax(155px,18%)}
+.month-content.has-details{grid-template-columns:minmax(0,1fr) minmax(220px,32%)}
 .month-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}
 .weekday{text-align:center;font-size:.75rem}
 .month-day{display:grid;align-content:start;gap:3px;min-width:0;min-height:66px;text-align:left;border:1px solid #dce2e9;border-radius:7px;background:white;padding:5px;color:inherit}
@@ -53,7 +58,7 @@ small,.muted{color:#627083}.notice{padding:10px 14px;background:#e6f3ff;border-r
 .detail-header h3{font-size:1rem}
 dialog{width:min(380px,calc(100% - 32px));border:1px solid #cbd5e1;border-radius:12px;padding:22px;color:inherit}
 dialog::backdrop{background:#22304770}
-@media(max-width:700px){
+@media(max-width:800px){
   .month-content.has-details{grid-template-columns:minmax(0,1fr)}
   .month-day .event{font-size:0;min-height:4px;padding:0}
 }
@@ -62,7 +67,7 @@ dialog::backdrop{background:#22304770}
 .side h3{margin-top:0}.device{padding:12px;border:1px solid #e2e6eb;border-radius:9px;margin:10px 0}
 button{font:inherit;cursor:pointer}.device button{border:0;border-radius:8px;background:#e4ebf6;padding:8px 12px}
 @media(max-width:1100px){.days{grid-template-columns:repeat(4,minmax(0,1fr))}}
-@media(max-width:850px){.layout,.layout.widgets-left:not(.calendar-only):not(.month-view){grid-template-columns:minmax(0,1fr)}.days{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:850px){.days{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:440px){main{padding:10px}.calendar{padding:10px}.days{grid-template-columns:minmax(0,1fr)}.day{min-height:120px}}
 </style></head><body><main>
 <header><div><h1>Family Hub</h1><small>Development preview — fictional household</small></div><small>Static demo · No Home Assistant connection</small></header>
@@ -70,23 +75,36 @@ button{font:inherit;cursor:pointer}.device button{border:0;border-radius:8px;bac
 <div class="toolbar-top"><button id="settings-open" class="settings-button" type="button" aria-expanded="false" aria-controls="settings">⚙️ Dashboard settings</button></div>
 <section id="settings" class="settings" aria-label="Dashboard configuration" hidden>
 <div class="settings-head"><h2>Configure Family Hub</h2><button class="action-button" id="settings-close" type="button">Done</button></div>
-<p class="helper">Choose which demo widgets are available. The ribbon only shows or hides widgets you configure here.</p>
+<p class="helper">Choose the controls and information cards to show on this dashboard.</p>
 <div class="settings-grid">
-<fieldset><legend><strong>Configured widgets</strong></legend>
-<label><input type="checkbox" data-config="weather"> Weather</label>
-<label><input type="checkbox" data-config="lights"> Living room lights</label>
-<label><input type="checkbox" data-config="climate"> Thermostat</label>
-<label><input type="checkbox" data-config="garage"> Garage</label>
+<fieldset><legend><strong>Quick Actions</strong></legend>
+<label><input type="checkbox" data-config="lights"> Living room light</label>
+<label><input type="checkbox" data-config="garage"> Open garage</label>
+<label><input type="checkbox" data-config="script"> Run evening routine</label>
 </fieldset>
-<fieldset><legend><strong>Layout preferences</strong></legend>
-<label>Widget position <select id="widget-side"><option value="right">Right sidebar</option><option value="left">Left sidebar</option></select></label>
-<label>Panel width <select id="panel-width"><option value="220">Narrow</option><option value="245">Standard</option><option value="320">Wide</option></select></label>
-<label><input type="checkbox" id="auto-expand" checked> Expand calendar when all widgets hidden</label>
+<fieldset><legend><strong>Quick Widgets</strong></legend>
+<label><input type="checkbox" data-config="forecast"> Weather forecast</label>
+<label><input type="checkbox" data-config="pollen"> Pollen</label>
+<label><input type="checkbox" data-config="climate"> Thermostat status</label>
+</fieldset>
+<fieldset><legend><strong>Calendar</strong></legend>
+<label><input type="checkbox" data-config="weather"> Show weather on the calendar</label>
 </fieldset>
 </div>
 <p class="helper">Demo-only settings persist in this browser. Entity selection will be added when connected to Home Assistant.</p>
 </section>
-<family-hub-ribbon></family-hub-ribbon>
+<section class="quick-actions" aria-label="Quick Actions" id="quick-actions">
+  <div class="quick-header">
+    <button type="button" id="quick-toggle" aria-controls="quick-controls" aria-expanded="true">Quick Actions</button>
+    <button type="button" id="quick-pin" aria-label="Pin Quick Actions" aria-pressed="false">📌</button>
+  </div>
+  <div class="action-grid" id="quick-controls">
+    <button class="quick-control" id="light" type="button" data-action="lights" aria-pressed="false"><span aria-hidden="true">💡</span><span>Living room light<small id="light-state">Off</small></span></button>
+    <button class="quick-control" id="garage" type="button" data-action="garage"><span aria-hidden="true">🚙</span><span>Open garage<small id="garage-state">Closed</small></span></button>
+    <button class="quick-control" id="routine" type="button" data-action="script"><span aria-hidden="true">🌙</span><span>Evening routine<small>Run script</small></span></button>
+    <span id="no-actions" hidden>No actions configured. Add them in Dashboard settings.</span>
+  </div>
+</section>
 <div class="layout" id="layout">
 <section class="calendar" aria-label="Family calendar">
 <div class="calendar-header">
@@ -117,12 +135,15 @@ button{font:inherit;cursor:pointer}.device button{border:0;border-radius:8px;bac
   </div>
 </div>
 </section>
-<aside class="side" id="widget-panel"><h3>Quick widgets</h3>
-<div class="device" data-widget="lights">💡 Living room light<br><button id="light" type="button" aria-pressed="false">Off (simulated)</button></div>
-<div class="device" data-widget="climate">🌡️ Thermostat<br><strong>70°F (simulated)</strong></div>
-<div class="device" data-widget="garage">🚙 Garage<br><strong>Closed (simulated)</strong></div>
-</aside>
-</div><p class="muted" id="status" role="status">Ribbon preferences are stored only in this browser.</p>
+<section class="side" id="widget-panel" aria-labelledby="widgets-title">
+<h3 id="widgets-title">Quick Widgets</h3>
+<div class="widget-grid">
+  <div class="device" data-widget="forecast">☀️ Weather forecast<strong>Sunny · 72°F</strong><small>High 77°F · Low 58°F</small></div>
+  <div class="device" data-widget="pollen">🌿 Pollen<strong>Moderate</strong><small>Tree pollen is the main contributor</small></div>
+  <div class="device" data-widget="climate">🌡️ Thermostat<strong>70°F</strong><small>Indoor temperature</small></div>
+</div>
+</section>
+</div><p class="muted" id="status" role="status"></p>
 <dialog id="weather-details" aria-labelledby="weather-title">
   <div class="detail-header">
     <h2 id="weather-title"></h2>
@@ -130,53 +151,99 @@ button{font:inherit;cursor:pointer}.device button{border:0;border-radius:8px;bac
   </div>
   <p id="weather-summary"></p>
 </dialog>
-</main><script type="module" src="./ribbon.js"></script>
+<dialog id="garage-confirm" aria-labelledby="garage-title">
+  <h2 id="garage-title">Open the garage?</h2>
+  <form method="dialog">
+    <button class="action-button" value="cancel" autofocus>Cancel</button>
+    <button class="action-button" value="open">Open garage</button>
+  </form>
+</dialog>
+</main>
 <script>
 const KEY='family-hub.demo.configuration.v1';
-const defaults={configured:['weather','lights','climate'],visible:['weather','lights','climate'],side:'right',width:'245',autoExpand:true};
-let state;
-try {const stored=JSON.parse(localStorage.getItem(KEY)||'{}');state={...defaults,...stored};} catch (_) {state={...defaults};}
-const all=[{id:'weather',label:'Weather',icon:'weather'},{id:'lights',label:'Lights',icon:'light'},{id:'climate',label:'Thermostat',icon:'climate'},{id:'garage',label:'Garage',icon:'garage'}];
-const ribbon=document.querySelector('family-hub-ribbon');
-const panel=document.getElementById('widget-panel'),layout=document.getElementById('layout');
-const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(state))}catch(_){}};
-function refresh(){
-  state.configured=state.configured.filter(id=>all.some(w=>w.id===id));
-  state.visible=state.visible.filter(id=>state.configured.includes(id));
-  ribbon.widgets=all.filter(w=>state.configured.includes(w.id)).map(w=>({...w,visible:state.visible.includes(w.id)}));
-  for(const el of document.querySelectorAll('[data-widget]'))el.hidden=!state.visible.includes(el.dataset.widget);
-  const none=!state.visible.some(id=>id!=='weather');
-  panel.hidden=none&&state.autoExpand;
-  layout.classList.toggle('calendar-only',none&&state.autoExpand);
-  layout.classList.toggle('widgets-left',state.side==='left');
-  layout.style.setProperty('--panel-width', state.width+'px');
-  renderCalendar();
-  for(const input of document.querySelectorAll('[data-config]'))input.checked=state.configured.includes(input.dataset.config);
-  document.getElementById('widget-side').value=state.side;
-  document.getElementById('panel-width').value=state.width;
-  document.getElementById('auto-expand').checked=state.autoExpand;
-  save();
+const defaults = {
+  configured: ['weather', 'lights', 'climate', 'garage', 'script', 'forecast', 'pollen'],
+  expanded: true,
+  pinned: false
+};
+let stored;
+try { stored = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (_) {}
+const state = {...defaults, ...stored};
+if (!Array.isArray(state.configured)) state.configured = [...defaults.configured];
+if (Array.isArray(stored?.configured) && !('expanded' in stored)) {
+  state.configured = [...new Set([...state.configured, 'garage', 'script', 'forecast', 'pollen'])];
 }
-document.addEventListener('family-hub-widget-toggle',event=>{
- const {id,visible}=event.detail;if(!state.configured.includes(id))return;
- state.visible=visible?[...new Set([...state.visible,id])]:state.visible.filter(x=>x!==id);
- refresh();
+const panel = document.getElementById('widget-panel');
+const quick = document.getElementById('quick-actions');
+const quickToggle = document.getElementById('quick-toggle');
+const quickPin = document.getElementById('quick-pin');
+const quickControls = document.getElementById('quick-controls');
+const actionButtons = [...quickControls.querySelectorAll('[data-action]')];
+const widgetCards = [...panel.querySelectorAll('[data-widget]')];
+const configInputs = [...document.querySelectorAll('[data-config]')];
+
+function updateQuickActions() {
+  quickControls.hidden = !state.expanded;
+  quickToggle.setAttribute('aria-expanded', String(state.expanded));
+  quickToggle.textContent = state.expanded ? '▾ Quick Actions' : '▸ Quick Actions';
+  quick.classList.toggle('pinned', state.pinned);
+  quickPin.setAttribute('aria-pressed', String(state.pinned));
+  try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (_) {}
+}
+
+function refresh() {
+  for (const button of actionButtons) button.hidden = !state.configured.includes(button.dataset.action);
+  for (const card of widgetCards) card.hidden = !state.configured.includes(card.dataset.widget);
+  document.getElementById('no-actions').hidden = actionButtons.some(button => !button.hidden);
+  panel.hidden = widgetCards.every(card => card.hidden);
+  for (const input of configInputs) input.checked = state.configured.includes(input.dataset.config);
+  updateQuickActions();
+  renderCalendar();
+}
+
+quickToggle.addEventListener('click', () => {
+  state.expanded = !state.expanded;
+  if (!state.expanded) state.pinned = false;
+  updateQuickActions();
 });
-for(const input of document.querySelectorAll('[data-config]'))input.addEventListener('change',()=>{
- const id=input.dataset.config;
- state.configured=input.checked?[...new Set([...state.configured,id])]:state.configured.filter(x=>x!==id);
- state.visible=input.checked?[...new Set([...state.visible,id])]:state.visible.filter(x=>x!==id);
- refresh();
+quickPin.addEventListener('click', () => {
+  state.pinned = !state.pinned;
+  if (state.pinned) state.expanded = true;
+  updateQuickActions();
 });
-document.getElementById('widget-side').addEventListener('change',e=>{state.side=e.target.value;refresh()});
-document.getElementById('panel-width').addEventListener('change',e=>{state.width=e.target.value;refresh()});
-document.getElementById('auto-expand').addEventListener('change',e=>{state.autoExpand=e.target.checked;refresh()});
+for (const input of configInputs) {
+  input.addEventListener('change', () => {
+    const id = input.dataset.config;
+    state.configured = input.checked ? [...state.configured, id] : state.configured.filter(item => item !== id);
+    refresh();
+  });
+}
 const settings=document.getElementById('settings'),open=document.getElementById('settings-open');
 function showSettings(show){settings.hidden=!show;open.setAttribute('aria-expanded',String(show));}
 open.addEventListener('click',()=>showSettings(settings.hidden));
 document.getElementById('settings-close').addEventListener('click',()=>showSettings(false));
-const light=document.getElementById('light');
-light.addEventListener('click',()=>{const on=light.getAttribute('aria-pressed')!=='true';light.setAttribute('aria-pressed',String(on));light.textContent=on?'On (simulated)':'Off (simulated)'});
+const light = document.getElementById('light');
+light.addEventListener('click', () => {
+  const on = light.getAttribute('aria-pressed') !== 'true';
+  light.setAttribute('aria-pressed', String(on));
+  document.getElementById('light-state').textContent = on ? 'On' : 'Off';
+});
+const garage = document.getElementById('garage');
+const garageConfirm = document.getElementById('garage-confirm');
+const status = document.getElementById('status');
+garage.addEventListener('click', () => {
+  garageConfirm.returnValue = '';
+  garageConfirm.showModal();
+});
+garageConfirm.addEventListener('close', () => {
+  if (garageConfirm.returnValue !== 'open') return;
+  document.getElementById('garage-state').textContent = 'Open';
+  garage.disabled = true;
+  status.textContent = 'Garage opened in the demo.';
+});
+document.getElementById('routine').addEventListener('click', () => {
+  status.textContent = 'Evening routine ran in the demo.';
+});
 const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const demoDays = [
   {icon:'☀️', condition:'Sunny', high:75, low:55, events:[['School drop-off'], ['Soccer practice','alt']]},
@@ -212,12 +279,11 @@ function weatherSummary(day, index) {
 }
 
 function renderCalendar() {
-  const showWeather = state.visible.includes('weather');
+  const showWeather = state.configured.includes('weather');
   document.getElementById('week').hidden = monthView;
   document.getElementById('month').hidden = !monthView;
   document.getElementById('week-view').setAttribute('aria-pressed', String(!monthView));
   document.getElementById('month-view').setAttribute('aria-pressed', String(monthView));
-  layout.classList.toggle('month-view', monthView);
   if (!monthView) {
     weekDays.innerHTML = demoDays.map((day, index) => `<article class="day">
       <strong class="day-heading">${weekdays[index]} ${16+index}</strong>
