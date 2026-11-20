@@ -33,6 +33,7 @@ small,.muted{color:#627083}.notice{padding:10px 14px;background:#e6f3ff;border-r
 .calendar,.side{background:white;border-radius:12px;padding:16px;box-shadow:0 1px 4px #0001}
 .days{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:7px}
 .day{border:1px solid #dce2e9;border-radius:9px;min-height:180px;padding:8px;overflow-wrap:anywhere}
+.day,.month-day{box-shadow:0 2px 4px #22304714,0 1px 1px #2230470a}
 .day-heading{text-align:center;display:block;margin-bottom:8px}
 .day-body{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px;align-items:start}
 .events{text-align:left}
@@ -58,7 +59,12 @@ small,.muted{color:#627083}.notice{padding:10px 14px;background:#e6f3ff;border-r
 #day-events{overflow-y:auto;overscroll-behavior:contain}
 .day-event{margin:6px 0;padding:10px}
 .day-event p{margin:4px 0;overflow-wrap:anywhere}
+.event-meta{display:flex;align-items:baseline;gap:6px}
+.event-icon{flex:0 0 1.2em;text-align:center}
+.day-event details{margin-top:6px}
 .day-event summary{cursor:pointer;min-height:32px}
+.day-event summary .description-preview{margin-inline-start:1.2em;color:#4a596b}
+.day-event .description-full{margin-inline-start:1.2em}
 .description-preview{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
 .day-event details[open] .description-preview{display:none}
 #quick-pin{min-width:88px;border:1px solid #cbd5e1;border-radius:8px;min-height:38px}
@@ -315,9 +321,9 @@ document.getElementById('routine').addEventListener('click', () => {
 });
 const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const demoDays = [
-  {icon:'☀️', condition:'Sunny', high:75, low:55, events:[['School drop-off','',{time:'7:30–8:00 AM'}], ['Soccer practice','alt',{time:'5:00–6:00 PM',location:'Field 2'}]]},
+  {icon:'☀️', condition:'Sunny', high:75, low:55, events:[['School drop-off','',{time:'7:30–8:00 AM'}], ['Soccer practice','alt',{time:'5:00–6:00 PM',location:'Field 2',description:'Bring a water bottle and shin guards. Meet Coach Lee at the north gate ten minutes before practice.'}]]},
   {icon:'🌤️', condition:'Mostly sunny', high:76, low:57, events:[['Library day','third',{time:'All day'}], ['Taco Tuesday','alt',{time:'6:00–7:00 PM'}]]},
-  {icon:'☀️', condition:'Sunny', high:77, low:58, current:72, events:[['Dentist appointment', '', {time:'9:00–9:45 AM', location:'Oak Dental · 123 Example Lane', description:'Bring the updated insurance card and arrive 10 minutes early to check in. Ask about scheduling the next cleaning before leaving.'}]]},
+  {icon:'☀️', condition:'Sunny', high:77, low:58, current:72, events:[['Dentist appointment', '', {time:'9:00–9:45 AM', location:'Oak Dental · 123 Example Lane', description:'Bring the updated insurance card and arrive 10 minutes early to check in. Ask the front desk to verify the new insurance on file. After the appointment, pick up the school excuse note and schedule the next cleaning. The office is on the second floor, and parking is on the east side of the building.'}], ['Pick up library holds', 'third', {time:'12:15–12:35 PM', location:'Cedar Library · Curbside pickup'}], ['School project supplies', 'alt', {time:'4:30–5:15 PM', description:'Pick up poster board, glue sticks, and a black marker. Check the supply drawer before leaving so we only buy what we need.'}]]},
   {icon:'⛅', condition:'Partly cloudy', high:74, low:61, events:[['Team practice','alt',{time:'4:30–5:30 PM'}]]},
   {icon:'🌧️', condition:'Rain', high:68, low:57, events:[['Movie night','third',{time:'7:00–9:00 PM'}]]},
   {icon:'🌥️', condition:'Mostly cloudy', high:66, low:53, events:[['Family outing','',{time:'All day'}]]},
@@ -338,10 +344,14 @@ function eventCards(events, tag = 'div') {
 function dayEventCards(events) {
   return events.map(([title, color = '', details = {}]) => `<article class="event day-event ${color}">
     <strong>${title}</strong>
-    ${details.time ? `<p>${details.time}</p>` : ''}
-    ${details.location ? `<p>${details.location}</p>` : ''}
-    ${details.description ? `<details><summary>Event notes</summary>
-      <p>${details.description}</p></details><p class="description-preview">${details.description}</p>` : ''}
+    ${details.time ? `<p class="event-meta"><span class="event-icon" role="img" aria-label="Time">🕒</span><span>${details.time}</span></p>` : ''}
+    ${details.location ? `<p class="event-meta"><span class="event-icon" role="img" aria-label="Location">📍</span><span>${details.location}</span></p>` : ''}
+    ${details.description ? `<details>
+      <summary><span class="event-icon" aria-hidden="true">📝</span> Event notes
+        <span class="description-preview">${details.description}</span>
+      </summary>
+      <p class="description-full">${details.description}</p>
+    </details>` : ''}
   </article>`).join('');
 }
 
